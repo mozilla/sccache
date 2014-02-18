@@ -155,9 +155,16 @@ class Bucket(object):
         self._status = -1
         if not self._name:
             return None
+        # Doing this unconditionally makes builds not requiring it ~2 minutes slower.
+        if 'BOTO_CONFIG' in os.environ:
+            from boto.s3.connection import S3Connection
+            from boto.utils import find_class
+            fmt = find_class(S3Connection.DefaultCallingFormat)()
+            url = 'http://%s%s' % (fmt.build_host(S3Connection.DefaultHost, self._name), fmt.build_path_base(self._name, key))
+        else:
+            url = 'http://%s.s3.amazonaws.com/%s' % (self._name, key)
         try:
-            data = urllib2.urlopen('http://%s.s3.amazonaws.com/%s' %
-                (self._name, key)).read()
+            data = urllib2.urlopen(url).read()
             self._status = 200
             return CacheData(data) if data else None
         except urllib2.HTTPError as e:
@@ -173,8 +180,12 @@ class Bucket(object):
         from boto.s3.connection import S3Connection
         from boto.exception import S3ResponseError
         try:
-            conn = S3Connection(
-                https_connection_factory=(SCCacheHTTPSConnection, ()))
+            if 'SCCACHE_NO_HTTPS' in os.environ:
+                conn = S3Connection(port=80, is_secure=False,
+                    https_connection_factory=(SCCacheHTTPConnection, ()))
+            else:
+                conn = S3Connection(
+                    https_connection_factory=(SCCacheHTTPSConnection, ()))
             bucket = conn.get_bucket(self._name, validate=False)
             k = bucket.new_key(key)
             k.set_contents_from_string(data, headers={
