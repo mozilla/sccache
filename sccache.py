@@ -305,28 +305,17 @@ def hash_key(program, args, preprocessed):
     return '%s/%s/%s/%s' % (digest[0], digest[1], digest[2], digest)
 
 
-def cache_store(out, output, key):
-    def do_store(output, key, conn):
-        cache = CacheData.from_object(output)
-        conn.send('')
-        conn.close()
-
-        timer = Timer.current().start_group('put')
-        bucket = Bucket()
-        try:
-            bucket.put(key, cache.data)
-        except:
-            out.write('sccache: Failure caching %s as %s to cache [%s]\n' %
-                (output, key, status(timer, bucket=bucket)))
-            return
-        out.write('sccache: Cached %s as %s [%s]\n' %
-            (output, key, status(timer)))
-
-    from multiprocessing import Process, Pipe
-    parent_conn, child_conn = Pipe()
-    Process(target=do_store, args=(output, key, child_conn)).start()
-    parent_conn.recv()
-    parent_conn.close()
+def cache_store(stderr, path, cache_data, key):
+    timer = Timer().start_group('put')
+    bucket = Bucket()
+    try:
+        bucket.put(key, cache_data.data)
+    except:
+        stderr.write('sccache: Failure caching %s as %s to cache [%s]\n' %
+            (path, key, status(timer, bucket=bucket)))
+        return
+    stderr.write('sccache: Cached %s as %s [%s]\n' %
+            (path, key, status(timer)))
 
 
 def status(timer, bytes=0, bucket=None):
@@ -341,8 +330,9 @@ def status(timer, bytes=0, bucket=None):
         'timer': timer,
     }
 
-def main(command, stdout=sys.stdout, stderr=sys.stderr):
-    timer = Timer()
+def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
+    if not timer:
+        timer = Timer()
     if not command:
         return 0
 
@@ -405,11 +395,32 @@ def main(command, stdout=sys.stdout, stderr=sys.stderr):
             (output, status(timer, bucket=bucket)))
         return ret
 
-    timer.start('spawn')
-    cache_store(stderr, output, key)
-    stderr.write('sccache: Caching %s as %s [%s]\n' % (output, key,
-        status(timer, bucket=bucket)))
-    return 0
+    return 0, output, bucket, key
+
+
+def main(command, stdout=sys.stdout, stderr=sys.stderr):
+    timer = Timer()
+    result = get_result(command, stdout, stderr, timer)
+    if isinstance(result, tuple):
+        result, output, bucket, key = result
+        timer.start('spawn')
+
+        def do_store(stderr, output, key, conn):
+            cache = CacheData.from_object(output)
+            conn.send('')
+            conn.close()
+            cache_store(stderr, output, cache, key)
+
+        from multiprocessing import Process, Pipe
+        parent_conn, child_conn = Pipe()
+        Process(target=do_store, args=(stderr, output, key, child_conn)).start()
+        parent_conn.recv()
+        parent_conn.close()
+
+        stderr.write('sccache: Caching %s as %s [%s]\n' % (output, key,
+            status(timer, bucket=bucket)))
+
+    return result
 
 
 if __name__ == '__main__':
