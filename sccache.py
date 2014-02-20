@@ -341,7 +341,7 @@ def status(timer, bytes=0, bucket=None):
         'timer': timer,
     }
 
-def main(command, out=sys.stderr):
+def main(command, stdout=sys.stdout, stderr=sys.stderr):
     timer = Timer()
     if not command:
         return 0
@@ -351,16 +351,27 @@ def main(command, out=sys.stderr):
     if not compilation:
         # Fallback to whatever we're wrapping in case parse_arguments didn't
         # like the command line.
-        return subprocess.call(command)
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        stdout_data, stderr_data = proc.communicate()
+        ret = proc.wait()
+        if stdout_data:
+            stdout.write(stdout_data)
+        if stderr_data:
+            stderr.write(stderr_data)
+        return ret
 
     timer.start('pp')
     program, input, file_type, output, args, mt, reduced_args = compilation
-    try:
-        preprocessed = subprocess.check_output(
-            [program, '-E', input] + mt + reduced_args)
-    except subprocess.CalledProcessError as e:
-        out.write('sccache: Preprocessor failed [%s]\n' % (timer))
-        return e.returncode
+    proc = subprocess.Popen([program, '-E', input] + mt + reduced_args,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    preprocessed, stderr_data = proc.communicate()
+    ret = proc.wait()
+    if stderr_data:
+        stderr.write(stderr_data)
+    if ret:
+        stderr.write('sccache: Preprocessor failed [%s]\n' % (timer))
+        return ret
 
     bucket = None
 
@@ -375,24 +386,28 @@ def main(command, out=sys.stderr):
             if cache:
                 timer.start('unz')
                 cache.dump(output)
-                out.write('sccache: Using cache %s for %s [%s]\n' %
+                stderr.write('sccache: Using cache %s for %s [%s]\n' %
                     (key, output, status(timer, len(cache.data))))
                 return 0
 
     timer.start('comp')
     proc = subprocess.Popen([program, '-c', '-x', file_type, '-', '-o', output]
-        + reduced_args, stdin=subprocess.PIPE)
-    proc.communicate(preprocessed)
+        + reduced_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout_data, stderr_data = proc.communicate(preprocessed)
     ret = proc.wait()
+    if stdout_data:
+        stdout.write(stdout_data)
+    if stderr_data:
+        stderr.write(stderr_data)
 
     if ret or not os.path.exists(output):
-        out.write('sccache: Compilation failed for %s [%s]\n' %
+        stderr.write('sccache: Compilation failed for %s [%s]\n' %
             (output, status(timer, bucket=bucket)))
         return ret
 
     timer.start('spawn')
-    cache_store(out, output, key)
-    out.write('sccache: Caching %s as %s [%s]\n' % (output, key,
+    cache_store(stderr, output, key)
+    stderr.write('sccache: Caching %s as %s [%s]\n' % (output, key,
         status(timer, bucket=bucket)))
     return 0
 
@@ -403,11 +418,11 @@ if __name__ == '__main__':
     # descriptors, so we can redirect to file descriptor 5, which is
     # config.log.
     try:
-        out = os.fdopen(5, 'w')
+        stderr = os.fdopen(5, 'w')
     except:
-        out = sys.stderr
+        stderr = sys.stderr
 
-    ret = main(sys.argv[1:], out=out)
-    out.flush()
+    ret = main(sys.argv[1:], stderr=stderr)
+    stderr.flush()
     # Use os._exit because we don't want automatic Process.join.
     os._exit(ret)
