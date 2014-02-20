@@ -312,21 +312,21 @@ def cache_store(stderr, path, cache_data, key):
         bucket.put(key, cache_data.data)
     except:
         stderr.write('sccache: Failure caching %s as %s to cache [%s]\n' %
-            (path, key, status(timer, bucket=bucket)))
+            (path, key, status(timer, status_code=bucket.status)))
         return
     stderr.write('sccache: Cached %s as %s [%s]\n' %
             (path, key, status(timer)))
 
 
-def status(timer, bytes=0, bucket=None):
+def status(timer, bytes=0, status_code=None):
     fmt = '%(timer)s'
     if bytes:
         fmt += ' %(bytes)dB'
-    if bucket:
+    if status_code is not None:
         fmt += ' %(status)d'
     return fmt % {
         'bytes': bytes,
-        'status': bucket.status if bucket else 0,
+        'status': status_code if status_code is not None else 0,
         'timer': timer,
     }
 
@@ -392,17 +392,17 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
 
     if ret or not os.path.exists(output):
         stderr.write('sccache: Compilation failed for %s [%s]\n' %
-            (output, status(timer, bucket=bucket)))
+            (output, status(timer, status_code=bucket.status)))
         return ret
 
-    return 0, output, bucket, key
+    return 0, output, bucket.status if bucket else None, key
 
 
 def main(command, stdout=sys.stdout, stderr=sys.stderr):
     timer = Timer()
     result = get_result(command, stdout, stderr, timer)
     if isinstance(result, tuple):
-        result, output, bucket, key = result
+        result, output, bucket_status, key = result
         timer.start('spawn')
 
         def do_store(stderr, output, key, conn):
@@ -418,7 +418,7 @@ def main(command, stdout=sys.stdout, stderr=sys.stderr):
         parent_conn.close()
 
         stderr.write('sccache: Caching %s as %s [%s]\n' % (output, key,
-            status(timer, bucket=bucket)))
+            status(timer, status_code=bucket_status)))
 
     return result
 
