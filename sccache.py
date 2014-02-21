@@ -246,7 +246,7 @@ def parse_arguments(command):
     if not os.path.exists(program):
         try:
             program = which.which(program)
-        except which.whichError:
+        except which.WhichError:
             return None
 
     reduced_args = []
