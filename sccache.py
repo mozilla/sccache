@@ -13,8 +13,9 @@ from collections import OrderedDict
 
 
 if 'SCCACHE_NAMESERVER' in os.environ:
-    from dns.resolver import Resolver
+    from dns.resolver import Resolver, Cache
     resolver = Resolver(configure=False)
+    resolver.cache = Cache()
     resolver.nameservers.append(os.environ['SCCACHE_NAMESERVER'])
     def dns_query(host):
         for rr in resolver.query(host):
