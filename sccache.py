@@ -331,7 +331,8 @@ def status(timer, bytes=0, status_code=None):
         'timer': timer,
     }
 
-def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
+def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
+               timer=None, cwd=None):
     if not timer:
         timer = Timer()
     if not command:
@@ -343,7 +344,7 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
         # Fallback to whatever we're wrapping in case parse_arguments didn't
         # like the command line.
         proc = subprocess.Popen(command, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
+            stderr=subprocess.PIPE, cwd=cwd)
         stdout_data, stderr_data = proc.communicate()
         ret = proc.wait()
         if stdout_data:
@@ -355,7 +356,7 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
     timer.start('pp')
     program, input, file_type, output, args, mt, reduced_args = compilation
     proc = subprocess.Popen([program, '-E', input] + mt + reduced_args,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     preprocessed, stderr_data = proc.communicate()
     ret = proc.wait()
     if stderr_data:
@@ -366,6 +367,7 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
 
     bucket = None
 
+    output_from_cwd = os.path.join(cwd, output) if cwd else output
     if preprocessed:
         timer.start('hash')
         key = hash_key(program, args, preprocessed)
@@ -376,14 +378,14 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
             cache = bucket.get(key)
             if cache:
                 timer.start('unz')
-                cache.dump(output)
+                cache.dump(output_from_cwd)
                 stderr.write('sccache: Using cache %s for %s [%s]\n' %
                     (key, output, status(timer, len(cache.data))))
                 return 0
 
     timer.start('comp')
     proc = subprocess.Popen([program, '-c', '-x', file_type, '-', '-o', output]
-        + reduced_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        + reduced_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     stdout_data, stderr_data = proc.communicate(preprocessed)
     ret = proc.wait()
     if stdout_data:
@@ -391,7 +393,7 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr, timer=None):
     if stderr_data:
         stderr.write(stderr_data)
 
-    if ret or not os.path.exists(output):
+    if ret or not os.path.exists(output_from_cwd):
         stderr.write('sccache: Compilation failed for %s [%s]\n' %
             (output, status(timer, status_code=bucket.status)))
         return ret
