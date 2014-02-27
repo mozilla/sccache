@@ -31,27 +31,8 @@ else:
 def WrapperFactory(parent_class):
     class WrapperConnection(parent_class):
         def connect(self):
-            timer = Timer.current()
-            timer.start('dns')
             self.host = dns_query(self.host)
-            timer.start('conn')
             parent_class.connect(self)
-            timer.stop()
-
-        def send(self, data):
-            if self.sock is None:
-                self.connect()
-            timer = Timer.current()
-            timer.start('send')
-            parent_class.send(self, data)
-            timer.stop()
-
-        def getresponse(self, buffering=False):
-            timer = Timer.current()
-            timer.start('resp')
-            res = parent_class.getresponse(self, buffering)
-            timer.stop()
-            return res
 
     return WrapperConnection
 
@@ -77,82 +58,12 @@ FILE_TYPES = {
 }
 
 
-class Timer(object):
-    _stack = []
-
-    @classmethod
-    def current(cls):
-        if cls._stack:
-            return cls._stack[-1]
-        return None
-
-    def __init__(self):
-        self._timings = OrderedDict()
-        self._timers = {}
-        self._current = None
-        self._stop = None
-
-    def start(self, name):
-        now = time.time()
-        self.stop(now)
-        self._stop = None
-        self._current = (name, now)
-        Timer._stack.append(self)
-
-    def start_group(self, name):
-        self.start(name)
-        timer = self._timers[name] = Timer()
-        Timer._stack.append(timer)
-        return timer
-
-    def stop(self, when=None):
-        end = when or time.time()
-        if self._stop:
-            duration = (end - self._stop) * 1000
-            if duration >= 1:
-                self._store('other', duration)
-        if not self._current:
-            return
-        self._stop = end
-        n, t = self._current
-        duration = (end - t) * 1000
-        self._store(n, duration)
-        if n in self._timers:
-            self._timers[n].stop(end)
-        self._current = None
-        Timer._stack.pop()
-
-    def _store(self, name, duration):
-        if name in self._timings:
-            self._timings[name] += duration
-        else:
-            self._timings[name] = duration
-
-    def __getitem__(self, name):
-        return self._timings[name]
-
-    def __str__(self):
-        self.stop()
-
-        def serialize(o):
-            if isinstance(o, Timer):
-                return '%.2f (%s)' % (
-                    sum(o._timings.values()),
-                    '; '.join('%s: %s' % (k, serialize(self._timers.get(k, v)))
-                              for k, v in o._timings.items()),
-                )
-            else:
-                return '%.2f' % o
-
-        return serialize(self)
-
-
 class Bucket(object):
     def __init__(self):
         self._name = os.environ.get('SCCACHE_BUCKET', '')
         self._status = 0
 
-    def get(self, key, timer=None):
+    def get(self, key):
         self._status = -1
         if not self._name:
             return None
@@ -307,38 +218,22 @@ def hash_key(program, args, preprocessed):
 
 
 def cache_store(stderr, path, cache_data, key):
-    timer = Timer().start_group('put')
     bucket = Bucket()
     try:
         bucket.put(key, cache_data.data)
     except:
-        stderr.write('sccache: Failure caching %s as %s to cache [%s]\n' %
-            (path, key, status(timer, status_code=bucket.status)))
+        stderr.write('sccache: Failure caching %s as %s to cache [%d]\n' %
+            (path, key, bucket.status))
         return
-    stderr.write('sccache: Cached %s as %s [%s]\n' %
-            (path, key, status(timer)))
+    stderr.write('sccache: Cached %s as %s\n' %
+            (path, key))
 
-
-def status(timer, bytes=0, status_code=None):
-    fmt = '%(timer)s'
-    if bytes:
-        fmt += ' %(bytes)dB'
-    if status_code is not None:
-        fmt += ' %(status)d'
-    return fmt % {
-        'bytes': bytes,
-        'status': status_code if status_code is not None else 0,
-        'timer': timer,
-    }
 
 def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
-               timer=None, cwd=None):
-    if not timer:
-        timer = Timer()
+               cwd=None):
     if not command:
         return 0
 
-    timer.start('args')
     compilation = parse_arguments(command)
     if not compilation:
         # Fallback to whatever we're wrapping in case parse_arguments didn't
@@ -353,7 +248,6 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
             stderr.write(stderr_data)
         return ret
 
-    timer.start('pp')
     program, input, file_type, output, args, mt, reduced_args = compilation
     proc = subprocess.Popen([program, '-E', input] + mt + reduced_args,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
@@ -362,28 +256,24 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
     if stderr_data:
         stderr.write(stderr_data)
     if ret:
-        stderr.write('sccache: Preprocessor failed [%s]\n' % (timer))
+        stderr.write('sccache: Preprocessor failed\n')
         return ret
 
     bucket = None
 
     output_from_cwd = os.path.join(cwd, output) if cwd else output
     if preprocessed:
-        timer.start('hash')
         key = hash_key(program, args, preprocessed)
 
         if not 'SCCACHE_RECACHE' in os.environ:
-            timer.start_group('get')
             bucket = Bucket()
             cache = bucket.get(key)
             if cache:
-                timer.start('unz')
                 cache.dump(output_from_cwd)
-                stderr.write('sccache: Using cache %s for %s [%s]\n' %
-                    (key, output, status(timer, len(cache.data))))
+                stderr.write('sccache: Using cache %s for %s\n' %
+                    (key, output))
                 return 0
 
-    timer.start('comp')
     proc = subprocess.Popen([program, '-c', '-x', file_type, '-', '-o', output]
         + reduced_args, stdin=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     stdout_data, stderr_data = proc.communicate(preprocessed)
@@ -394,19 +284,17 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
         stderr.write(stderr_data)
 
     if ret or not os.path.exists(output_from_cwd):
-        stderr.write('sccache: Compilation failed for %s [%s]\n' %
-            (output, status(timer, status_code=bucket.status)))
+        stderr.write('sccache: Compilation failed for %s\n' %
+            (output))
         return ret
 
-    return 0, output, bucket.status if bucket else None, key
+    return 0, output, key
 
 
 def main(command, stdout=sys.stdout, stderr=sys.stderr):
-    timer = Timer()
-    result = get_result(command, stdout, stderr, timer)
+    result = get_result(command, stdout, stderr)
     if isinstance(result, tuple):
-        result, output, bucket_status, key = result
-        timer.start('spawn')
+        result, output, key = result
 
         def do_store(stderr, output, key, conn):
             cache = CacheData.from_object(output)
@@ -420,8 +308,7 @@ def main(command, stdout=sys.stdout, stderr=sys.stderr):
         parent_conn.recv()
         parent_conn.close()
 
-        stderr.write('sccache: Caching %s as %s [%s]\n' % (output, key,
-            status(timer, status_code=bucket_status)))
+        stderr.write('sccache: Caching %s as %s\n' % (output, key))
 
     return result
 
