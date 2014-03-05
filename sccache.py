@@ -217,17 +217,13 @@ def hash_key(program, args, preprocessed):
     return '%s/%s/%s/%s' % (digest[0], digest[1], digest[2], digest)
 
 
-def cache_store(stderr, path, cache_data, key):
+def cache_store(path, cache_data, key):
     bucket = Bucket()
     try:
         bucket.put(key, cache_data.data)
+        return True
     except:
-        stderr.write('sccache: Failure caching %s as %s to cache [%d]\n' %
-            (path, key, bucket.status))
-        return
-    stderr.write('sccache: Cached %s as %s\n' %
-            (path, key))
-
+        return False
 
 def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
                cwd=None):
@@ -256,7 +252,6 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
     if stderr_data:
         stderr.write(stderr_data)
     if ret:
-        stderr.write('sccache: Preprocessor failed\n')
         return ret
 
     bucket = None
@@ -270,8 +265,6 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
             cache = bucket.get(key)
             if cache:
                 cache.dump(output_from_cwd)
-                stderr.write('sccache: Using cache %s for %s\n' %
-                    (key, output))
                 return 0
 
     proc = subprocess.Popen([program, '-c', '-x', file_type, '-', '-o', output]
@@ -284,8 +277,6 @@ def get_result(command, stdout=sys.stdout, stderr=sys.stderr,
         stderr.write(stderr_data)
 
     if ret or not os.path.exists(output_from_cwd):
-        stderr.write('sccache: Compilation failed for %s\n' %
-            (output))
         return ret
 
     return 0, output, key
@@ -300,15 +291,13 @@ def main(command, stdout=sys.stdout, stderr=sys.stderr):
             cache = CacheData.from_object(output)
             conn.send('')
             conn.close()
-            cache_store(stderr, output, cache, key)
+            cache_store(output, cache, key)
 
         from multiprocessing import Process, Pipe
         parent_conn, child_conn = Pipe()
         Process(target=do_store, args=(stderr, output, key, child_conn)).start()
         parent_conn.recv()
         parent_conn.close()
-
-        stderr.write('sccache: Caching %s as %s\n' % (output, key))
 
     return result
 
