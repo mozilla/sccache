@@ -54,7 +54,7 @@ FILE_TYPES = {
     '.c': 'cpp-output',
     '.cc': 'c++-cpp-output',
     '.cpp': 'c++-cpp-output',
-    '.cxx': 'c++-cpp-outout',
+    '.cxx': 'c++-cpp-output',
 }
 
 
