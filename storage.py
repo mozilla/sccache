@@ -4,6 +4,7 @@
 
 # Helpers for storage access (S3)
 
+import errno
 import httplib
 import os
 import time
@@ -35,13 +36,19 @@ class Storage(object):
             SCCACHE_NO_HTTPS defines whether put shall use HTTP instead of
                 HTTPS,
             SCCACHE_NAMESERVER defines a DNS server to use instead of using
-                getaddrinfo.
+                getaddrinfo,
+            SCCACHE_DIR defines a directory where to store a local cache.
+                Defining SCCACHE_DIR makes any of the above variable ignored.
         '''
         if Storage._storage:
             return Storage._storage
 
-        bucket_name = os.environ.get('SCCACHE_BUCKET')
         storage = None
+        directory = os.environ.get('SCCACHE_DIR')
+        if directory:
+            storage = LocalStorage(directory)
+
+        bucket_name = os.environ.get('SCCACHE_BUCKET')
         if bucket_name:
             storage = S3Storage(bucket_name,
                 os.environ.get('SCCACHE_NO_HTTPS') != '1',
@@ -52,7 +59,41 @@ class Storage(object):
         raise RuntimeError('Cannot configure storage')
 
 
-class S3Storage(object):
+class LocalStorage(Storage):
+    '''
+    Storage class for a local directory.
+    '''
+    def __init__(self, directory):
+        self._ensure_dir(directory)
+
+        self._directory = directory
+        self.last_stats = {}
+
+    def _ensure_dir(self, path):
+        if not os.path.exists(path):
+            try:
+                os.makedirs(path)
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+        if not os.path.isdir(path):
+            raise RuntimeError('%s is not a directory' % directory)
+
+    def get(self, key):
+        path = os.path.join(self._directory, key)
+        if os.path.isfile(path):
+            with open(path, 'rb') as data:
+                return data.read()
+
+    def put(self, key, data):
+        path = os.path.join(self._directory, key)
+        parent = os.path.dirname(path)
+        self._ensure_dir(os.path.dirname(path))
+        with open(path, 'wb') as out:
+            out.write(data)
+
+
+class S3Storage(Storage):
     '''
     Storage class for S3.
     '''
