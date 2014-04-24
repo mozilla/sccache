@@ -2,50 +2,47 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import gzip
 import shutil
 from cStringIO import StringIO
+from zipfile import ZipFile, ZIP_DEFLATED
 
 
 class CacheData(object):
     '''
-    Helper to format the sccache data for storage.
+    Helper to format the sccache data for storage. For consumers, it's a
+    dict-like interface, and the data property returns a serialized form for
+    the data callers have stored. The current format for this serialization is
+    a zip file.
+    The constructor can take a previously serialized form, to prefill the
+    dict-like.
     '''
-    def __init__(self, data=None, obj=None):
-        assert bool(data) != bool(obj)
-        self._data = data
-        self._obj = obj
+    # Update VERSION when the serialization format is modified.
+    VERSION = 2
 
-    def dump(self, output):
-        '''
-        Write the cache data content to the given file.
-        '''
-        with open(output, 'wb') as out:
-            if self._obj:
-                out.write(self._obj)
-            else:
-                with gzip.GzipFile(mode='r',
-                        fileobj=StringIO(self._data)) as obj:
-                    shutil.copyfileobj(obj, out)
+    def __init__(self, data=None):
+        self._data = StringIO(data) if data else StringIO()
+        self._obj = {}
+        self._zip = ZipFile(self._data, 'r' if data else 'w', ZIP_DEFLATED)
+
+    def __getitem__(self, key):
+        if key not in self._obj:
+            try:
+                with self._zip.open(key, 'r') as obj:
+                    self._obj[key] = obj.read()
+            except:
+                self._obj[key] = ''
+        return self._obj[key]
+
+    def __setitem__(self, key, value):
+        assert key not in self._obj
+        self._obj[key] = value
+        if value:
+            self._zip.writestr(key, value)
 
     @property
     def data(self):
         '''
         Return the raw cache data content.
         '''
-        if not self._data:
-            data = StringIO()
-            with gzip.GzipFile(mode='w', compresslevel=6, fileobj=data) as fh:
-                fh.write(self._obj)
-            self._data = data.getvalue()
-
-        return self._data
-
-    @staticmethod
-    def from_file(path):
-        '''
-        Read cache data content from the given file and return an instance
-        corresponding to that data.
-        '''
-        with open(path, 'rb') as fh:
-            return CacheData(obj=fh.read())
+        self._zip.close()
+        return self._data.getvalue()

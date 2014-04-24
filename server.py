@@ -17,6 +17,8 @@
 # - The server receives the compilation or cache hit status on a dedicated
 #   thread, which then redispatches it to the ResponseHelper corresponding
 #   to the job.
+# The data in cache keeps track of stderr from the cached command, as well as
+# the output object.
 
 import base_server
 import hashlib
@@ -207,6 +209,9 @@ def hash_key(compiler, args, preprocessed):
     h = hashlib.new('sha1')
     h.update(compiler.digest)
     h.update(compiler.executable)
+    # Add another string here if a given command line sees its cache data
+    # modified by code changes (e.g. adding more data)
+    h.update(str(CacheData.VERSION))
     h.update(' '.join(args))
     h.update(preprocessed)
     return h.hexdigest()
@@ -241,8 +246,11 @@ def _run_command(job):
             # Get cached data if there is.
             data = storage.get(key)
             if data:
-                CacheData(data).dump(output_from_cwd)
-                yield dict(id=id, retcode=0, status='hit',
+                cache = CacheData(data)
+                with open(output_from_cwd, 'wb') as obj:
+                    obj.write(cache['obj'])
+                stderr = cache['stderr']
+                yield dict(id=id, retcode=0, stderr=stderr, status='hit',
                     stats=storage.last_stats)
                 return
 
@@ -250,7 +258,10 @@ def _run_command(job):
     ret, stdout, stderr = compiler.compile(preprocessed, parsed_args, cwd)
     # Get the output file content before returning the job status
     if not ret and os.path.exists(output_from_cwd):
-        cache = CacheData.from_file(output_from_cwd)
+        cache = CacheData()
+        cache['stderr'] = stderr
+        with open(output_from_cwd, 'rb') as obj:
+            cache['obj'] = obj.read()
     else:
         cache = None
 
