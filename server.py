@@ -18,7 +18,8 @@
 #   thread, which then redispatches it to the ResponseHelper corresponding
 #   to the job.
 # The data in cache keeps track of stdout and stderr from the cached command,
-# as well as the output object.
+# as well as the output object(s), as determined by
+# Compiler.parsed_args()['output'].
 
 import base_server
 import hashlib
@@ -234,21 +235,22 @@ def _run_command(job):
         yield dict(id=id, retcode=retcode, stderr=stderr, status='failure')
         return
 
-    output = parsed_args['output']
-    output_from_cwd = os.path.join(cwd, output) if cwd else output
+    outputs = {key: os.path.join(cwd, path) if cwd else path
+        for key, path in parsed_args['output'].items()}
     if preprocessed:
         # Compute the key corresponding to the preprocessor output, the command
         # line, and the compiler.
         # TODO: Remove preprocessor-only arguments from args (like -D, -I...)
-        key = hash_key(compiler, args, preprocessed)
+        cache_key = hash_key(compiler, args, preprocessed)
 
         if not 'SCCACHE_RECACHE' in os.environ:
             # Get cached data if there is.
-            data = storage.get(key)
+            data = storage.get(cache_key)
             if data:
                 cache = CacheData(data)
-                with open(output_from_cwd, 'wb') as obj:
-                    obj.write(cache['obj'])
+                for key, path in outputs.items():
+                    with open(path, 'wb') as obj:
+                        obj.write(cache[key])
                 stdout = cache['stdout']
                 stderr = cache['stderr']
                 yield dict(id=id, retcode=0, stdout=stdout, stderr=stderr,
@@ -258,12 +260,13 @@ def _run_command(job):
     # In case of cache miss, compile
     ret, stdout, stderr = compiler.compile(preprocessed, parsed_args, cwd)
     # Get the output file content before returning the job status
-    if not ret and os.path.exists(output_from_cwd):
+    if not ret and all(os.path.exists(out) for out in outputs.values()):
         cache = CacheData()
         cache['stdout'] = stdout
         cache['stderr'] = stderr
-        with open(output_from_cwd, 'rb') as obj:
-            cache['obj'] = obj.read()
+        for key, path in outputs.items():
+            with open(path, 'rb') as f:
+                cache[key] = f.read()
     else:
         cache = None
 
@@ -272,7 +275,7 @@ def _run_command(job):
 
     # Store cache after returning the job status.
     if cache:
-        storage.put(key, cache.data)
+        storage.put(cache_key, cache.data)
         yield dict(stats=storage.last_stats)
 
 

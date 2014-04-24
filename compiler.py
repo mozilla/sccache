@@ -23,9 +23,12 @@ class Compiler(object):
     '''
     Base class for compiler helpers. Subclasses must implement the following
     methods:
-        parse_arguments: parse a command line and return an object containing
+        parse_arguments: parse a command line and return a dict containing
             all necessary information for preprocessing and compilation. This
-            object is meant to be passed to the two other methods.
+            dict is meant to be passed to the two other methods. As a contract
+            with the caller, this dict also contains a 'output' item which
+            value is a dict associating keys to output files (a compilation
+            can have more than one output)
         preprocess: return the preprocessor output corresponding to the command
             line in the form of a tuple return_code, stdout_buf, stderr_buf
             (with the preprocessor output in stdout_buf)
@@ -190,7 +193,9 @@ class GCCCompiler(Compiler):
         return {
             'input': input,
             'extension': extension,
-            'output': output,
+            'output': {
+                'obj': output,
+            },
             'mt': mt,
             'common_args': common_args,
         }
@@ -208,7 +213,7 @@ class GCCCompiler(Compiler):
         # Compile from the preprocessor output
         proc = subprocess.Popen([self.executable, '-c', '-x',
             GCCCompiler.FILE_TYPES[parsed_args['extension']], '-', '-o',
-            parsed_args['output']] + parsed_args['common_args'],
+            parsed_args['output']['obj']] + parsed_args['common_args'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, cwd=cwd)
 
@@ -230,7 +235,7 @@ class ClangCompiler(GCCCompiler):
             f.write(preprocessor_output)
         try:
             proc = subprocess.Popen([self.executable, '-c', path, '-o',
-                parsed_args['output']] + parsed_args['common_args'],
+                parsed_args['output']['obj']] + parsed_args['common_args'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
 
             stdout, stderr = proc.communicate()
@@ -330,7 +335,9 @@ class MSVCCompiler(Compiler):
         return {
             'input': input,
             'extension': extension,
-            'output': output,
+            'output': {
+                'obj': output,
+            },
             'depfile': depfile,
             'common_args': common_args,
         }
@@ -351,7 +358,7 @@ class MSVCCompiler(Compiler):
             from win32util import normcase
             from makeutil import Makefile
             mk = Makefile()
-            rule = mk.create_rule([parsed_args['output']])
+            rule = mk.create_rule([parsed_args['output']['obj']])
             rule.add_dependencies([normcase(parsed_args['input'])])
             filtered_stderr = ''
             for line in stderr.splitlines(True):
@@ -378,7 +385,7 @@ class MSVCCompiler(Compiler):
             f.write(preprocessor_output)
         try:
             proc = subprocess.Popen([self.executable, '-c', path,
-                '-Fo' + parsed_args['output']] + parsed_args['common_args'],
+                '-Fo' + parsed_args['output']['obj']] + parsed_args['common_args'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
             stdout, stderr = proc.communicate()
             ret = proc.wait()
@@ -395,7 +402,7 @@ class MSVCCompiler(Compiler):
             # Sadly, MSVC preprocessor output is such that it sometimes fails to
             # compile. So try again if it did fail.
             proc = subprocess.Popen([self.executable, '-c', parsed_args['input'],
-                '-Fo' + parsed_args['output']] + parsed_args['common_args'],
+                '-Fo' + parsed_args['output']['obj']] + parsed_args['common_args'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
             stdout, stderr = proc.communicate()
             ret = proc.wait()
