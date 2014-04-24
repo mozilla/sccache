@@ -209,8 +209,7 @@ def hash_key(compiler, args, preprocessed):
     h.update(compiler.executable)
     h.update(' '.join(args))
     h.update(preprocessed)
-    digest = h.hexdigest()
-    return '%s/%s/%s/%s' % (digest[0], digest[1], digest[2], digest)
+    return h.hexdigest()
 
 
 def _run_command(job):

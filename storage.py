@@ -77,14 +77,17 @@ class LocalStorage(Storage):
         if not os.path.isdir(path):
             raise RuntimeError('%s is not a directory' % directory)
 
+    def _normalize_key(self, key):
+        return '%s/%s/%s' % (key[0], key[1], key)
+
     def get(self, key):
-        path = os.path.join(self._directory, key)
+        path = os.path.join(self._directory, self._normalize_key(key))
         if os.path.isfile(path):
             with open(path, 'rb') as data:
                 return data.read()
 
     def put(self, key, data):
-        path = os.path.join(self._directory, key)
+        path = os.path.join(self._directory, self._normalize_key(key))
         parent = os.path.dirname(path)
         self._ensure_dir(os.path.dirname(path))
         with open(path, 'wb') as out:
@@ -130,11 +133,15 @@ class S3Storage(Storage):
 
         self.last_stats = {}
 
+    def _normalize_key(self, key):
+        return '%s/%s/%s/%s' % (key[0], key[1], key[2], key)
+
     def get(self, key):
         # Don't use boto here, because it can't do simple GET requests, and those
         # are actually significantly faster.
         url = 'http://%s%s' % (self._host,
-            self._calling_format.build_path_base(self._bucket_name, key))
+            self._calling_format.build_path_base(self._bucket_name,
+                self._normalize_key(key)))
         _last_stats.clear()
         try:
             data = self._url_opener.open(url).read()
@@ -152,7 +159,7 @@ class S3Storage(Storage):
         _last_stats.clear()
         _last_stats['size'] = len(data)
         try:
-            k = self._bucket.new_key(key)
+            k = self._bucket.new_key(self._normalize_key(key))
             k.set_contents_from_string(data, headers={
                 'x-amz-acl': 'public-read',
             })
