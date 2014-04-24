@@ -53,7 +53,7 @@ class CommandHandler(base_server.CommandHandler):
             stderr.write('sccache: Terminated sccache server\n')
             stderr.write('sccache: Cache hits: %d\n' % (stats['hit']))
             stderr.write('sccache: Cache misses: %d\n'
-                % (stats['miss'] + stats['cachefail']))
+                % (stats['miss'] + stats['cachefail'] + stats['wontcache']))
             if stats['failure']:
                 stderr.write('sccache: Failure to preprocess: %d\n'
                     % stats['failure'])
@@ -63,6 +63,9 @@ class CommandHandler(base_server.CommandHandler):
             if stats['non-cachable']:
                 stderr.write('sccache: Non-cachable calls: %d\n'
                     % stats['non-cachable'])
+            if stats['wontcache']:
+                stderr.write('sccache: Did not cache: %d\n'
+                    % stats['wontcache'])
             if stats['non-compile']:
                 stderr.write('sccache: Non-compilation calls: %d\n'
                     % stats['non-compile'])
@@ -269,9 +272,11 @@ def _run_command(job):
                 return
 
     # In case of cache miss, compile
-    ret, stdout, stderr = compiler.compile(preprocessed, parsed_args, cwd)
+    ret, stdout, stderr, can_cache = \
+        compiler.compile(preprocessed, parsed_args, cwd)
     # Get the output file content before returning the job status
-    if not ret and all(os.path.exists(out) for out in outputs.values()):
+    if not ret and can_cache and \
+            all(os.path.exists(out) for out in outputs.values()):
         try:
             cache = CacheData()
             cache['stdout'] = stdout
@@ -284,8 +289,14 @@ def _run_command(job):
     else:
         cache = None
 
-    yield dict(id=id, retcode=ret, stdout=stdout, stderr=stderr,
-        status='miss' if cache else 'cachefail', stats=storage.last_stats)
+    if cache:
+        status = 'miss'
+    elif can_cache:
+        status = 'cachefail'
+    else:
+        status = 'wontcache'
+    yield dict(id=id, retcode=ret, stdout=stdout, stderr=stderr, status=status,
+        stats=storage.last_stats)
 
     # Store cache after returning the job status.
     if cache:

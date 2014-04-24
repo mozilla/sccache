@@ -34,7 +34,7 @@ class Compiler(object):
             (with the preprocessor output in stdout_buf)
         compile: run the compilation corresponding to the command line,
             possibly using the preprocessor output directly. Returns a tuple
-            return_code, stdout_buf, stderr_buf.
+            return_code, stdout_buf, stderr_buf, may_cache.
     '''
     def __init__(self, executable):
         self.executable = executable
@@ -226,7 +226,7 @@ class GCCCompiler(Compiler):
 
         stdout, stderr = proc.communicate(preprocessor_output)
         ret = proc.wait()
-        return ret, stdout, stderr
+        return ret, stdout, stderr, True
 
 
 class ClangCompiler(GCCCompiler):
@@ -250,7 +250,7 @@ class ClangCompiler(GCCCompiler):
         finally:
             os.remove(path)
 
-        return ret, stdout, stderr
+        return ret, stdout, stderr, True
 
 
 class MSVCCompiler(Compiler):
@@ -299,6 +299,8 @@ class MSVCCompiler(Compiler):
 
         input = ()
         output = None
+        debug_info = False
+        pdb = None
         compilation = False
         depfile = None
         iter_args = iter(args)
@@ -313,14 +315,20 @@ class MSVCCompiler(Compiler):
                 common_args.append(iter_args.next())
             elif arg.startswith('-deps'):
                 depfile = arg[5:]
-            elif arg in ('-Zi', '-showIncludes') or arg.startswith('@'):
+            elif arg == '-showIncludes' or arg.startswith('@'):
                 # Flags we can't handle.
                 raise CannotCacheError()
-            elif arg[:3] in ('-FA', '-Fa', '-Fd', '-Fe', '-Fm', 'Fp', '-FR',
+            elif arg == '-Zi':
+                debug_info = True
+                common_args.append(arg)
+            elif arg.startswith('-Fd'):
+                pdb = arg[3:]
+                common_args.append(arg)
+            elif arg[:3] in ('-FA', '-Fa', '-Fe', '-Fm', 'Fp', '-FR',
                              '-Fx'):
                 # Flags we can't handle as they output more files and we can
-                # only cache one at the moment. TODO: handle multi-file
-                # outputs, at least for debug info (-Fd, with -Zi).
+                # only cache one at the moment. TODO: handle more multi-file
+                # outputs.
                 raise CannotCacheError()
             else:
                 if arg.startswith('-') and len(arg) != 1:
@@ -339,12 +347,21 @@ class MSVCCompiler(Compiler):
         input = input[0]
         extension = os.path.splitext(input)[1]
 
+        output = { 'obj': output }
+
+        # -Fd is not taken into account unless -Zi is given
+        if debug_info:
+            # -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
+            # MSVC version), and that's used for all compilations with the same
+            # working directory. We can't cache such a pdb.
+            if not pdb:
+                raise CannotCacheError()
+            output['pdb'] = pdb
+
         return {
             'input': input,
             'extension': extension,
-            'output': {
-                'obj': output,
-            },
+            'output': output,
             'depfile': depfile,
             'common_args': common_args,
         }
@@ -387,6 +404,15 @@ class MSVCCompiler(Compiler):
     def compile(self, preprocessor_output, parsed_args, cwd=None):
         # MSVC doesn't read anything from stdin, so it needs a temporary file
         # as input.
+        may_cache = True
+        if 'pdb' in parsed_args['output']:
+            pdb = parsed_args['output']['pdb']
+            pdb = os.path.join(cwd, pdb) if cwd else pdb
+            # If the pdb exists, we don't know if it's shared with another
+            # compilation, and if it is, we can't cache. Sadly, this is racy.
+            if os.path.exists(pdb):
+                may_cache = False
+
         fh, path = tempfile.mkstemp(suffix=parsed_args['extension'])
         with os.fdopen(fh, 'w') as f:
             f.write(preprocessor_output)
@@ -414,4 +440,4 @@ class MSVCCompiler(Compiler):
             stdout, stderr = proc.communicate()
             ret = proc.wait()
 
-        return ret, stdout, stderr
+        return ret, stdout, stderr, may_cache
