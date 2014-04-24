@@ -137,6 +137,7 @@ class GCCCompiler(Compiler):
 
         input = ()
         output = None
+        split_dwarf = False
         target = None
         need_explicit_target = False
         compilation = False
@@ -146,6 +147,9 @@ class GCCCompiler(Compiler):
                 compilation = True
             elif arg == '-o':
                 output = iter_args.next()
+            elif arg == '-gsplit-dwarf':
+                split_dwarf = True
+                common_args.append(arg)
             elif arg in ('--param', '-A', '-D', '-F', '-G', '-I', '-L', '-MF',
                          '-MQ', '-U', '-V', '-Xassembler', '-Xlinker',
                          '-Xpreprocessor', '-aux-info', '-b', '-idirafter',
@@ -190,12 +194,15 @@ class GCCCompiler(Compiler):
 
         mt = ['-MT', target or output] if need_explicit_target else []
 
+        output = { 'obj': output }
+
+        if split_dwarf:
+            output['dwo'] = os.path.splitext(output['obj'])[0] + '.dwo'
+
         return {
             'input': input,
             'extension': extension,
-            'output': {
-                'obj': output,
-            },
+            'output': output,
             'mt': mt,
             'common_args': common_args,
         }
