@@ -9,8 +9,6 @@ import httplib
 import os
 import time
 import urllib2
-from boto.s3.connection import S3Connection
-from boto.utils import find_class
 
 
 class Storage(object):
@@ -102,6 +100,8 @@ class S3Storage(Storage):
         self._bucket_name = bucket_name
         self._store_with_https = store_with_https
 
+        from boto.s3.connection import S3Connection
+        from boto.utils import find_class
         # The boto config can override the default calling format, and since
         # we don't use boto for get(), we need to use the right calling format.
         self._calling_format = find_class(S3Connection.DefaultCallingFormat)()
