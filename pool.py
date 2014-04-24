@@ -6,6 +6,7 @@
 
 import multiprocessing.queues
 import os
+import sys
 from multiprocessing import Process
 from threading import Thread, current_thread
 from Queue import Queue, Empty
@@ -188,3 +189,17 @@ class AdaptiveProcessPool(AdaptivePool):
 class AdaptiveThreadPool(AdaptivePool):
     PROCESS_CLASS = Thread
     QUEUE_CLASS = Queue
+
+if sys.platform == 'win32':
+    # Wrap CreateProcess to avoid the pool creating windows for each
+    # new process. Ideally, we'd make the effort to change create_flags
+    # only when CreateProcess is called from the instantiation of Process,
+    # but it doesn't really matter for now.
+    import _subprocess
+    _CreateProcess = _subprocess.CreateProcess
+    def _WrapCreateProcess(name, cmd, process_attr, thread_attr,
+            inherit_handler, create_flags, env, cwd, startup_info):
+        create_flags |= 0x08000000; # CREATE_NO_WINDOW
+        return _CreateProcess(name, cmd, process_attr, thread_attr,
+            inherit_handler, create_flags, env, cwd, startup_info)
+    _subprocess.CreateProcess = _WrapCreateProcess
