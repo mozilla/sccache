@@ -17,8 +17,8 @@
 # - The server receives the compilation or cache hit status on a dedicated
 #   thread, which then redispatches it to the ResponseHelper corresponding
 #   to the job.
-# The data in cache keeps track of stderr from the cached command, as well as
-# the output object.
+# The data in cache keeps track of stdout and stderr from the cached command,
+# as well as the output object.
 
 import base_server
 import hashlib
@@ -249,9 +249,10 @@ def _run_command(job):
                 cache = CacheData(data)
                 with open(output_from_cwd, 'wb') as obj:
                     obj.write(cache['obj'])
+                stdout = cache['stdout']
                 stderr = cache['stderr']
-                yield dict(id=id, retcode=0, stderr=stderr, status='hit',
-                    stats=storage.last_stats)
+                yield dict(id=id, retcode=0, stdout=stdout, stderr=stderr,
+                    status='hit', stats=storage.last_stats)
                 return
 
     # In case of cache miss, compile
@@ -259,6 +260,7 @@ def _run_command(job):
     # Get the output file content before returning the job status
     if not ret and os.path.exists(output_from_cwd):
         cache = CacheData()
+        cache['stdout'] = stdout
         cache['stderr'] = stderr
         with open(output_from_cwd, 'rb') as obj:
             cache['obj'] = obj.read()
