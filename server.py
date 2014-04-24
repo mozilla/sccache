@@ -49,17 +49,28 @@ class CommandHandler(base_server.CommandHandler):
         if request is None:
             self.server.stop()
             stats = self.server.stats
-            self.responder.respond(0, stderr=
-                'sccache: Terminated sccache server\n' +
-                'sccache: Cache hits: %d\n' % (stats['hit']) +
-                'sccache: Cache misses: %d\n' % (stats['miss']) +
-                'sccache: Failures: %d\n' % (stats['failure']) +
-                'sccache: Non-cachable calls: %d\n' % (stats['non-cachable']) +
-                'sccache: Non-compilation calls: %d\n' % (stats['non-compile']) +
-                'sccache: Max processes used: %d\n' %
-                    (self.server._pool.max_processes_used) +
-                self._time_stats()
-            )
+            stderr = StringIO()
+            stderr.write('sccache: Terminated sccache server\n')
+            stderr.write('sccache: Cache hits: %d\n' % (stats['hit']))
+            stderr.write('sccache: Cache misses: %d\n'
+                % (stats['miss'] + stats['cachefail']))
+            if stats['failure']:
+                stderr.write('sccache: Failure to preprocess: %d\n'
+                    % stats['failure'])
+            if stats['cachefail']:
+                stderr.write('sccache: Failure to cache: %d\n'
+                    % stats['cachefail'])
+            if stats['non-cachable']:
+                stderr.write('sccache: Non-cachable calls: %d\n'
+                    % stats['non-cachable'])
+            if stats['non-compile']:
+                stderr.write('sccache: Non-compilation calls: %d\n'
+                    % stats['non-compile'])
+            stderr.write('sccache: Max processes used: %d\n'
+                    % self.server._pool.max_processes_used)
+            stderr.write(self._time_stats())
+
+            self.responder.respond(0, stderr=stderr.getvalue())
             return
 
         if not isinstance(request, dict):
@@ -261,17 +272,20 @@ def _run_command(job):
     ret, stdout, stderr = compiler.compile(preprocessed, parsed_args, cwd)
     # Get the output file content before returning the job status
     if not ret and all(os.path.exists(out) for out in outputs.values()):
-        cache = CacheData()
-        cache['stdout'] = stdout
-        cache['stderr'] = stderr
-        for key, path in outputs.items():
-            with open(path, 'rb') as f:
-                cache[key] = f.read()
+        try:
+            cache = CacheData()
+            cache['stdout'] = stdout
+            cache['stderr'] = stderr
+            for key, path in outputs.items():
+                with open(path, 'rb') as f:
+                    cache[key] = f.read()
+        except:
+            cache = None
     else:
         cache = None
 
-    yield dict(id=id, retcode=ret, stdout=stdout, stderr=stderr, status='miss',
-        stats=storage.last_stats)
+    yield dict(id=id, retcode=ret, stdout=stdout, stderr=stderr,
+        status='miss' if cache else 'cachefail', stats=storage.last_stats)
 
     # Store cache after returning the job status.
     if cache:
