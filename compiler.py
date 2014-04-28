@@ -98,7 +98,7 @@ class Compiler(object):
         # Try preprocessing the above temporary file
         try:
             out = subprocess.check_output([executable, '-E', path],
-                stderr=open(os.devnull, 'r'))
+                stderr=open(os.devnull, 'w'))
         except:
             out = ''
         finally:
@@ -129,11 +129,23 @@ class GCCCompiler(Compiler):
         '.cxx': 'c++-cpp-output',
     }
 
+    ARGS_WITH_VALUE = set([
+        '--param', '-A', '-D', '-F', '-G', '-I', '-L', '-MF',
+        '-MQ', '-U', '-V', '-Xassembler', '-Xlinker',
+        '-Xpreprocessor', '-aux-info', '-b', '-idirafter',
+        '-iframework', '-imacros', '-imultilib', '-include',
+        '-install_name', '-iprefix', '-iquote', '-isysroot',
+        '-isystem', '-iwithprefix', '-iwithprefixbefore',
+        '-u',
+    ])
+
     def parse_arguments(self, args):
         # TODO: Handle more flags. This is enough to build Firefox.
 
         # Arguments common to preprocessor and compilation invocations.
         common_args = []
+        # Arguments for the preprocessor only
+        preprocessor_args = []
 
         input = ()
         output = None
@@ -150,16 +162,14 @@ class GCCCompiler(Compiler):
             elif arg == '-gsplit-dwarf':
                 split_dwarf = True
                 common_args.append(arg)
-            elif arg in ('--param', '-A', '-D', '-F', '-G', '-I', '-L', '-MF',
-                         '-MQ', '-U', '-V', '-Xassembler', '-Xlinker',
-                         '-Xpreprocessor', '-aux-info', '-b', '-idirafter',
-                         '-iframework', '-imacros', '-imultilib', '-include',
-                         '-install_name', '-iprefix', '-iquote', '-isysroot',
-                         '-isystem', '-iwithprefix', '-iwithprefixbefore',
-                         '-u'):
+            elif arg in self.ARGS_WITH_VALUE:
                 # All these flags take a value.
-                common_args.append(arg)
-                common_args.append(iter_args.next())
+                if arg in ('-MF', '-MQ'):
+                    preprocessor_args.append(arg)
+                    preprocessor_args.append(iter_args.next())
+                else:
+                    common_args.append(arg)
+                    common_args.append(iter_args.next())
             elif arg == '-MT':
                 # Target used for depfiles. If given, we want to keep it
                 # instead of passing the output.
@@ -173,7 +183,8 @@ class GCCCompiler(Compiler):
                     # need -MT on the preprocessor command line, whether it's
                     # been passed already or not
                     need_explicit_target = True
-                if arg.startswith('-') and len(arg) != 1:
+                    preprocessor_args.append(arg)
+                elif arg.startswith('-') and len(arg) != 1:
                     common_args.append(arg)
                 else:
                     input += (arg,)
@@ -192,7 +203,8 @@ class GCCCompiler(Compiler):
         if extension not in GCCCompiler.FILE_TYPES:
             raise CannotCacheError()
 
-        mt = ['-MT', target or output] if need_explicit_target else []
+        if need_explicit_target:
+            preprocessor_args.extend(['-MT', target or output])
 
         output = { 'obj': output }
 
@@ -203,14 +215,14 @@ class GCCCompiler(Compiler):
             'input': input,
             'extension': extension,
             'output': output,
-            'mt': mt,
+            'preprocessor_args': preprocessor_args,
             'common_args': common_args,
         }
 
     def preprocess(self, parsed_args, cwd=None):
         # Preprocess over a pipe.
         proc = subprocess.Popen([self.executable, '-E', parsed_args['input']]
-            + parsed_args['mt'] + parsed_args['common_args'],
+            + parsed_args['preprocessor_args'] + parsed_args['common_args'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
         preprocessed, stderr = proc.communicate()
         ret = proc.wait()
@@ -234,6 +246,10 @@ class ClangCompiler(GCCCompiler):
     Compiler implementation for Clang
     '''
 
+    ARGS_WITH_VALUE = GCCCompiler.ARGS_WITH_VALUE | set([
+        '-arch',
+    ])
+
     def compile(self, preprocessor_output, parsed_args, cwd=None):
         # Clang needs a temporary file for compilation, otherwise debug info
         # doesn't have a reference to the input file.
@@ -249,6 +265,18 @@ class ClangCompiler(GCCCompiler):
             ret = proc.wait()
         finally:
             os.remove(path)
+
+        if ret and any(arg.startswith('-Werror')
+                for arg in parsed_args['common_args']):
+            # Sadly, clang tries to be smart with warning, and may emit more
+            # of them when compiling preprocessed output, which can lead to
+            # -Werror triggering failures. So try again if it did fail.
+            proc = subprocess.Popen([self.executable, '-c', parsed_args['input'],
+                '-o' + parsed_args['output']['obj']] + parsed_args['common_args'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+
+            stdout, stderr = proc.communicate()
+            ret = proc.wait()
 
         return ret, stdout, stderr, True
 

@@ -16,11 +16,7 @@ import os
 import socket
 import sys
 from base_server import CommandClient, PORT
-
-if sys.platform.lower().startswith("win"):
-    ECONNREFUSED = 10061
-else:
-    ECONNREFUSED = 111
+from errno import ECONNREFUSED
 
 if __name__ == '__main__':
     cmd = sys.argv[1:]

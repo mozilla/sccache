@@ -40,7 +40,7 @@ class CommandServer(object):
             # LISTENing sockets.
             self._dispatcher.set_reuse_addr()
         self._dispatcher.bind(addr)
-        self._dispatcher.listen(5)
+        self._dispatcher.listen(128)
 
         Thread(target=self._listeners_and_readers_loop).start()
 
