@@ -41,3 +41,4 @@ Known caveats
 * Sccache doesn't try to be smart about the command line arguments it uses when computing a key for a given compilation result (like skipping preprocessor-specific arguments)
 * It doesn't support all kinds of compiler flags, and is certainly broken with a few of them. Really only the flags used during Firefox builds have been tested.
 * It doesn't support ccache's direct mode.
+* Local storage mode doesn't do any kind of cleanup. The cache will keep growing indefinitely.
