@@ -83,7 +83,11 @@ if __name__ == '__main__':
                 result = client.request(data)
             except socket.error as e:
                 if e.errno == ECONNREFUSED: # Connection refused
-                    raise RuntimeError("Couldn't start server")
+                    raise RuntimeError("Couldn't start server. Try running it manually to find out why:\n\t%s %s" % (
+                        sys.executable,
+                        os.path.join(os.path.abspath(os.path.dirname(__file__)),
+                                     'server.py'),
+                    ))
 
     retcode = result.get('retcode', 1)
     # The server returns a code -2 when the command line can't be handled.
