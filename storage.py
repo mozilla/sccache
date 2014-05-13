@@ -31,8 +31,6 @@ class Storage(object):
         Return a Storage instance matching the configuration in the
         environment.
             SCCACHE_BUCKET sets the S3 bucket,
-            SCCACHE_NO_HTTPS defines whether put shall use HTTP instead of
-                HTTPS,
             SCCACHE_NAMESERVER defines a DNS server to use instead of using
                 getaddrinfo,
             SCCACHE_DIR defines a directory where to store a local cache.
@@ -49,7 +47,6 @@ class Storage(object):
         bucket_name = os.environ.get('SCCACHE_BUCKET')
         if bucket_name:
             storage = S3Storage(bucket_name,
-                os.environ.get('SCCACHE_NO_HTTPS') != '1',
                 os.environ.get('SCCACHE_NAMESERVER'))
         if storage:
             Storage._storage = storage
@@ -98,13 +95,19 @@ class S3Storage(Storage):
     '''
     Storage class for S3.
     '''
-    def __init__(self, bucket_name, store_with_https=True, dns_server=None):
+    def __init__(self, bucket_name, dns_server=None):
         assert bucket_name
         self._bucket_name = bucket_name
+
+        from boto import config
+        store_with_https = True
+        if config.has_option('Boto', 'is_secure'):
+            store_with_https = config.getboolean('Boto', 'is_secure')
         self._store_with_https = store_with_https
 
         from boto.s3.connection import S3Connection
         from boto.utils import find_class
+
         # The boto config can override the default calling format, and since
         # we don't use boto for get(), we need to use the right calling format.
         self._calling_format = find_class(S3Connection.DefaultCallingFormat)()
@@ -125,7 +128,7 @@ class S3Storage(Storage):
             s3_connection = S3Connection(
                 https_connection_factory=(self._https_connection_class, ()))
         else:
-            s3_connection = S3Connection(port=80, is_secure=False,
+            s3_connection = S3Connection(
                 https_connection_factory=(self._http_connection_class, ()))
 
         self._bucket = s3_connection.get_bucket(self._bucket_name,
