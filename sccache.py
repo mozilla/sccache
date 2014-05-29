@@ -17,8 +17,18 @@ import json
 import os
 import socket
 import sys
+import codecs
+import locale
 from base_server import CommandClient, PORT
 from errno import ECONNREFUSED
+
+# Set the output encoding in case the output is being redirected to a file.  In
+# this case, the default encoding is ASCII, but we may have unicode characters
+# in stderr/stdout, which causes python to report a UnicodeEncodeError.
+if not sys.stdout.encoding:
+    sys.stdout = codecs.getwriter(locale.getpreferredencoding())(sys.stdout);
+if not sys.stderr.encoding:
+    sys.stderr = codecs.getwriter(locale.getpreferredencoding())(sys.stderr);
 
 if __name__ == '__main__':
     cmd = sys.argv[1:]
