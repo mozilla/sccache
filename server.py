@@ -257,7 +257,7 @@ def _run_command(job):
         # TODO: Remove preprocessor-only arguments from args (like -D, -I...)
         cache_key = hash_key(compiler, args, preprocessed)
 
-        if not 'SCCACHE_RECACHE' in os.environ:
+        if not 'SCCACHE_RECACHE' in os.environ and storage:
             # Get cached data if there is.
             data = storage.get(cache_key)
             if data:
@@ -275,7 +275,7 @@ def _run_command(job):
     ret, stdout, stderr, can_cache = \
         compiler.compile(preprocessed, parsed_args, cwd)
     # Get the output file content before returning the job status
-    if not ret and can_cache and \
+    if not ret and can_cache and storage and \
             all(os.path.exists(out) for out in outputs.values()):
         try:
             cache = CacheData()
@@ -296,7 +296,7 @@ def _run_command(job):
     else:
         status = 'wontcache'
     yield dict(id=id, retcode=ret, stdout=stdout, stderr=stderr, status=status,
-        stats=storage.last_stats)
+        stats=storage.last_stats if storage else None)
 
     # Store cache after returning the job status.
     if cache:

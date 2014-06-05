@@ -23,7 +23,12 @@ class Storage(object):
         raise NotImplementedError('%s.put is not implemented' %
             self.__class__.__name__)
 
+    def failed(self):
+        '''Return whether the given Storage has failed during previous uses.'''
+        return False
+
     _storage = None
+    _iter = None
 
     @staticmethod
     def from_environment():
@@ -36,22 +41,35 @@ class Storage(object):
             SCCACHE_DIR defines a directory where to store a local cache.
                 Defining SCCACHE_DIR makes any of the above variable ignored.
         '''
-        if Storage._storage:
+        if Storage._storage and not Storage._storage.failed():
             return Storage._storage
 
-        storage = None
+        if not Storage._iter:
+            Storage._iter = iter(Storage._iter_storages())
+
+        try:
+            Storage._storage = Storage._iter.next()
+            return Storage._storage
+        except StopIteration:
+            return None
+
+    @staticmethod
+    def _iter_storages():
         directory = os.environ.get('SCCACHE_DIR')
         if directory:
-            storage = LocalStorage(directory)
+            yield LocalStorage(directory)
 
         bucket_name = os.environ.get('SCCACHE_BUCKET')
         if bucket_name:
-            storage = S3Storage(bucket_name,
-                os.environ.get('SCCACHE_NAMESERVER'))
-        if storage:
-            Storage._storage = storage
-            return storage
-        raise RuntimeError('Cannot configure storage')
+            storage = BotoStorage(bucket_name,
+                dns_server=os.environ.get('SCCACHE_NAMESERVER'))
+            yield storage
+
+            if not isinstance(storage, S3Storage):
+                from boto import config
+                if config.getbool('s3', 'fallback', False):
+                    yield S3Storage(bucket_name,
+                        dns_server=os.environ.get('SCCACHE_NAMESERVER'))
 
 
 class LocalStorage(Storage):
@@ -86,33 +104,36 @@ class LocalStorage(Storage):
     def put(self, key, data):
         path = os.path.join(self._directory, self._normalize_key(key))
         parent = os.path.dirname(path)
-        self._ensure_dir(os.path.dirname(path))
-        with open(path, 'wb') as out:
-            out.write(data)
+        try:
+            self._ensure_dir(os.path.dirname(path))
+            with open(path, 'wb') as out:
+                out.write(data)
+            return True
+        except:
+            return False
 
 
-class S3Storage(Storage):
+class S3CompatibleStorage(Storage):
     '''
-    Storage class for S3.
+    Storage class for S3-compatible servers.
     '''
-    def __init__(self, bucket_name, dns_server=None):
+    DefaultHost = 's3.amazonaws.com'
+    DefaultCallingFormat = 'boto.s3.connection.SubdomainCallingFormat'
+
+    def __init__(self, bucket_name, host=DefaultHost,
+            calling_format=DefaultCallingFormat,
+            dns_server=None):
+
         assert bucket_name
         self._bucket_name = bucket_name
 
-        from boto import config
-        store_with_https = True
-        if config.has_option('Boto', 'is_secure'):
-            store_with_https = config.getboolean('Boto', 'is_secure')
-        self._store_with_https = store_with_https
-
         from boto.s3.connection import S3Connection
         from boto.utils import find_class
+        from boto import config
 
-        # The boto config can override the default calling format, and since
-        # we don't use boto for get(), we need to use the right calling format.
-        self._calling_format = find_class(S3Connection.DefaultCallingFormat)()
-        self._host = self._calling_format.build_host(S3Connection.DefaultHost,
-            self._bucket_name)
+        self._calling_format = find_class(calling_format)()
+        self._host = self._calling_format.build_host(host, self._bucket_name)
+        self._failed = False
 
         # Prepare the wrapper classes to use for urllib and boto.
         dns_query = dns_query_function(dns_server)
@@ -124,11 +145,11 @@ class S3Storage(Storage):
             self._http_connection_class, self._https_connection_class)
 
         # Get the boto S3 bucket instance
-        if store_with_https:
-            s3_connection = S3Connection(
+        if config.getbool('Boto', 'is_secure', True):
+            s3_connection = S3Connection(host=host, port=443,
                 https_connection_factory=(self._https_connection_class, ()))
         else:
-            s3_connection = S3Connection(
+            s3_connection = S3Connection(host=host, port=80,
                 https_connection_factory=(self._http_connection_class, ()))
 
         self._bucket = s3_connection.get_bucket(self._bucket_name,
@@ -150,7 +171,9 @@ class S3Storage(Storage):
             data = self._url_opener.open(url).read()
             _last_stats['size'] = len(data)
             return data
-        except:
+        except Exception as e:
+            if not isinstance(e, urllib2.HTTPError) or e.code not in (404, 403):
+                self._failed = True
             return None
         finally:
             if 'TINDERBOX_OUTPUT' in os.environ:
@@ -168,13 +191,46 @@ class S3Storage(Storage):
                 'Cache-Control': 'max-age=1296000', # Two weeks
             })
         except:
+            self._failed = True
             pass
         finally:
             if 'TINDERBOX_OUTPUT' in os.environ:
                 self.last_stats = dict(_last_stats)
 
+    def failed(self):
+        return self._failed
+
 
 _last_stats = {}
+
+
+class S3Storage(S3CompatibleStorage):
+    pass
+
+
+class BotoStorage(S3CompatibleStorage):
+    '''
+    Storage class for boto-configured S3-compatible servers.
+    '''
+    def __new__(cls, bucket_name, dns_server):
+        from boto.s3.connection import S3Connection
+        # If the boto config points to S3, just return a S3Storage instance.
+        if S3Connection.DefaultHost == S3CompatibleStorage.DefaultHost:
+            return S3Storage(bucket_name=bucket_name, dns_server=dns_server)
+
+        return super(BotoStorage, cls).__new__(cls)
+
+    def __init__(self, bucket_name, dns_server=None):
+        from boto.s3.connection import S3Connection
+
+        S3CompatibleStorage.__init__(self,
+            bucket_name=bucket_name,
+            host=S3Connection.DefaultHost,
+            # The boto config can override the default calling format, and since
+            # we don't use boto for get(), we need to use the right calling format.
+            calling_format=S3Connection.DefaultCallingFormat,
+            dns_server=dns_server
+        )
 
 
 def ConnectionWrapperFactory(parent_class, dns_query):
