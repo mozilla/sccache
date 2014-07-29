@@ -48,8 +48,6 @@ if __name__ == '__main__':
             raise
         if not cmd:
             sys.exit(0)
-        sys.stdout.write('Start server\n')
-        sys.stdout.flush()
         import subprocess
         import time
         if sys.platform == 'win32':
