@@ -191,7 +191,14 @@ class S3CompatibleStorage(Storage):
                 'Cache-Control': 'max-age=1296000', # Two weeks
             })
             return True
-        except:
+        except Exception as e:
+            from boto.exception import S3ResponseError
+            if isinstance(e, S3ResponseError) and e.status == 403 and \
+                    e.error_code == 'SignatureDoesNotMatch':
+                # More often than it should, S3 returns a SignatureDoesNotMatch
+                # error. Consider it an error (returning False as such), but
+                # don't consider it hard enough to trigger a fallback.
+                return False
             self._failed = True
             return False
         finally:

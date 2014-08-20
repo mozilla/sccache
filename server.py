@@ -57,6 +57,9 @@ class CommandHandler(base_server.CommandHandler):
             if stats['failure']:
                 stderr.write('sccache: Failure to preprocess: %d\n'
                     % stats['failure'])
+            if stats['stored']:
+                stderr.write('sccache: Successfully cached: %d\n'
+                    % stats['stored'])
             if stats['cachefail'] or stats['storagefail']:
                 stderr.write('sccache: Failure to cache: %d\n'
                     % (stats['cachefail'] + stats['storagefail']))
@@ -300,10 +303,12 @@ def _run_command(job):
 
     # Store cache after returning the job status.
     if cache:
-        if storage.put(cache_key, cache.data):
-            yield dict(stats=storage.last_stats)
-        else:
-            yield dict(status='storagefail')
+        for retry in range(0, 3):
+            if storage.put(cache_key, cache.data):
+                yield dict(status='stored', stats=storage.last_stats)
+                break
+            else:
+                yield dict(status='storagefail')
 
 
 def run_command(job):
