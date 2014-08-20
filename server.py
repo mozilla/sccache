@@ -57,9 +57,9 @@ class CommandHandler(base_server.CommandHandler):
             if stats['failure']:
                 stderr.write('sccache: Failure to preprocess: %d\n'
                     % stats['failure'])
-            if stats['cachefail']:
+            if stats['cachefail'] or stats['storagefail']:
                 stderr.write('sccache: Failure to cache: %d\n'
-                    % stats['cachefail'])
+                    % (stats['cachefail'] + stats['storagefail']))
             if stats['non-cachable']:
                 stderr.write('sccache: Non-cachable calls: %d\n'
                     % stats['non-cachable'])
@@ -185,6 +185,9 @@ class CommandServer(base_server.CommandServer):
                     else:
                         self.put_time_stats[key].append(value)
             responder = self._responders.get(id)
+            status = result.get('status')
+            if status:
+                self.stats[status] += 1
             if not responder:
                 continue
             responder.respond(
@@ -192,9 +195,6 @@ class CommandServer(base_server.CommandServer):
                 result.get('stdout', ''),
                 result.get('stderr', ''),
             )
-            status = result.get('status')
-            if status:
-                self.stats[status] += 1
 
     def _watchdog(self):
         # This runs in a dedicated thread.
@@ -291,7 +291,7 @@ def _run_command(job):
 
     if cache:
         status = 'miss'
-    elif can_cache:
+    elif can_cache and storage:
         status = 'cachefail'
     else:
         status = 'wontcache'
@@ -300,8 +300,10 @@ def _run_command(job):
 
     # Store cache after returning the job status.
     if cache:
-        storage.put(cache_key, cache.data)
-        yield dict(stats=storage.last_stats)
+        if storage.put(cache_key, cache.data):
+            yield dict(stats=storage.last_stats)
+        else:
+            yield dict(status='storagefail')
 
 
 def run_command(job):

@@ -190,9 +190,10 @@ class S3CompatibleStorage(Storage):
                 'x-amz-acl': 'public-read',
                 'Cache-Control': 'max-age=1296000', # Two weeks
             })
+            return True
         except:
             self._failed = True
-            pass
+            return False
         finally:
             if 'TINDERBOX_OUTPUT' in os.environ:
                 self.last_stats = dict(_last_stats)
