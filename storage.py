@@ -250,10 +250,19 @@ def ConnectionWrapperFactory(parent_class, dns_query):
     class ConnectionWrapper(parent_class):
         def connect(self):
             t0 = time.time()
+            # httplib uses self.host both as the host to connect to and as the
+            # Host header, because boto doesn't set that. As it happens,
+            # httplib sets the Host header before this method is called, so
+            # we can change self.host for use when opening the socket. However,
+            # boto reuses HTTP(S)Connection instances, and on the next request,
+            # httplib resets the Host header with self.host, so we need to
+            # restore it.
+            host = self.host
             self.host = dns_query(self.host)
             t1 = time.time()
             _last_stats['dns'] = (t1 - t0) * 1000
             parent_class.connect(self)
+            self.host = host
             self._connect_time = time.time()
             _last_stats['connect'] = (self._connect_time - t1) * 1000
 
