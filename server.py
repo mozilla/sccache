@@ -254,6 +254,7 @@ def _run_command(job):
 
     outputs = {key: os.path.join(cwd, path) if cwd else path
         for key, path in parsed_args['output'].items()}
+    cache = None
     if preprocessed:
         # Compute the key corresponding to the preprocessor output, the command
         # line, and the compiler.
@@ -264,7 +265,11 @@ def _run_command(job):
             # Get cached data if there is.
             data = storage.get(cache_key)
             if data:
-                cache = CacheData(data)
+                try:
+                    cache = CacheData(data)
+                except:
+                    pass
+            if cache:
                 for key, path in outputs.items():
                     with open(path, 'wb') as obj:
                         obj.write(cache[key])
@@ -289,8 +294,6 @@ def _run_command(job):
                     cache[key] = f.read()
         except:
             cache = None
-    else:
-        cache = None
 
     if cache:
         status = 'miss'

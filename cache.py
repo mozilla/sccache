@@ -4,7 +4,7 @@
 
 import shutil
 from cStringIO import StringIO
-from zipfile import ZipFile, ZIP_DEFLATED, BadZipfile
+from zipfile import ZipFile, ZIP_DEFLATED
 
 
 class CacheData(object):
@@ -22,10 +22,7 @@ class CacheData(object):
     def __init__(self, data=None):
         self._data = StringIO(data) if data else StringIO()
         self._obj = {}
-        try:
-            self._zip = ZipFile(self._data, 'r' if data else 'w', ZIP_DEFLATED)
-        except BadZipfile:
-            self._zip = ZipFile(self._data, 'w', ZIP_DEFLATED)
+        self._zip = ZipFile(self._data, 'r' if data else 'w', ZIP_DEFLATED)
 
     def __getitem__(self, key):
         if key not in self._obj:
