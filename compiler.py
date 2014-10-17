@@ -87,12 +87,12 @@ class Compiler(object):
         fh, path = tempfile.mkstemp(suffix='.c')
         with os.fdopen(fh, 'w') as f:
             f.write(
-                '#if defined(__clang__)\n'
+                '#if defined(_MSC_VER)\n'
+                'msvc\n'
+                '#elif defined(__clang__)\n'
                 'clang\n'
                 '#elif defined(__GNUC__)\n'
                 'gcc\n'
-                '#elif defined(_MSC_VER)\n'
-                'msvc\n'
                 '#endif\n'
             )
         # Try preprocessing the above temporary file
