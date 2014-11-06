@@ -188,6 +188,7 @@ class S3CompatibleStorage(Storage):
             k = self._bucket.new_key(self._normalize_key(key))
             k.set_contents_from_string(data, headers={
                 'x-amz-acl': 'public-read',
+                'x-amz-storage-class': 'REDUCED_REDUNDANCY',
                 'Cache-Control': 'max-age=1296000', # Two weeks
             })
             return True
