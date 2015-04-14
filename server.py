@@ -231,10 +231,12 @@ def hash_key(compiler, args, preprocessed):
     # modified by code changes (e.g. adding more data)
     h.update(str(CacheData.VERSION))
     h.update(' '.join(args))
-    osx_target = os.environ.get('MACOSX_DEPLOYMENT_TARGET')
-    if osx_target:
-        h.update('MACOSX_DEPLOYMENT_TARGET=')
-        h.update(osx_target)
+    for var in ('MACOSX_DEPLOYMENT_TARGET', 'IPHONEOS_DEPLOYMENT_TARGET'):
+        target = os.environ.get(var)
+        if target:
+            h.update(var)
+            h.update('=')
+            h.update(target)
     h.update(preprocessed)
     return h.hexdigest()
 
