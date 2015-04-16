@@ -10,6 +10,7 @@ import socket
 import sys
 import traceback
 from threading import Thread, Event
+import multiprocessing.util
 
 PORT = 4225
 
@@ -41,6 +42,18 @@ class CommandServer(object):
             self._dispatcher.set_reuse_addr()
         self._dispatcher.bind(addr)
         self._dispatcher.listen(128)
+        # On Unix, forked processes inherit the listening sockets from their
+        # parent process. But on OSX, contrary to Linux, when the parent
+        # process stops listening, the socket, at the OS level, is still
+        # LISTENing, but the child processes are not taking handling
+        # connections, and that can lead to a dead-lock situation when a
+        # sccache server stopped listening but one of its worker process
+        # is stuck for some reason. In that case a client won't fork a new
+        # server for further processing.
+        multiprocessing.util.register_after_fork(
+            self._dispatcher.socket,
+            lambda socket: socket.close()
+        )
 
         Thread(target=self._listeners_and_readers_loop).start()
 
