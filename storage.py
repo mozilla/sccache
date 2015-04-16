@@ -168,7 +168,7 @@ class S3CompatibleStorage(Storage):
                 self._normalize_key(key)))
         _last_stats.clear()
         try:
-            data = self._url_opener.open(url).read()
+            data = self._url_opener.open(url, timeout=5).read()
             _last_stats['size'] = len(data)
             return data
         except Exception as e:
