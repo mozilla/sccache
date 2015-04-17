@@ -224,14 +224,20 @@ class BotoStorage(S3CompatibleStorage):
     '''
     def __new__(cls, bucket_name, dns_server):
         from boto.s3.connection import S3Connection
-        # If the boto config points to S3, just return a S3Storage instance.
-        if S3Connection.DefaultHost == S3CompatibleStorage.DefaultHost:
+        from boto import config
+
+        # If the boto config points to S3 and doesn't have a separate host for
+        # get requests (see further below), just return a S3Storage instance.
+        get_host = config.get('get', 'host', S3Connection.DefaultHost)
+        if get_host == S3CompatibleStorage.DefaultHost:
             return S3Storage(bucket_name=bucket_name, dns_server=dns_server)
 
         return super(BotoStorage, cls).__new__(cls)
 
     def __init__(self, bucket_name, dns_server=None):
         from boto.s3.connection import S3Connection
+        from boto.utils import find_class
+        from boto import config
 
         S3CompatibleStorage.__init__(self,
             bucket_name=bucket_name,
@@ -241,6 +247,21 @@ class BotoStorage(S3CompatibleStorage):
             calling_format=S3Connection.DefaultCallingFormat,
             dns_server=dns_server
         )
+
+        # Allow to use a different host/calling format for GET requests by
+        # adding the following boto config:
+        #   [get]
+        #   host = my.server.tld
+        #   calling_format = boto.s3.connection.TheCallingFormat
+        get_host = config.get('get', 'host', S3Connection.DefaultHost)
+        get_calling_format = config.get('get', 'calling_format',
+                                        S3Connection.DefaultCallingFormat)
+
+        if get_host != S3Connection.DefaultHost:
+            if get_calling_format != S3Connection.DefaultCallingFormat:
+                self._calling_format = find_class(get_calling_format)()
+            self._host = self._calling_format.build_host(get_host,
+                                                         self._bucket_name)
 
 
 def ConnectionWrapperFactory(parent_class, dns_query):
