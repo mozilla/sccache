@@ -36,8 +36,15 @@ from compiler import (
     NotACompilationError,
 )
 from pool import AdaptiveProcessPool
-from storage import Storage
+from storage import (
+    ensure_dir,
+    Storage,
+)
 from threading import Thread, Event
+
+# Somehow, when using __file__ directly, we get "global name '__file__' is not
+# defined".
+FILE = __file__
 
 
 class CommandHandler(base_server.CommandHandler):
@@ -109,6 +116,8 @@ class CommandServer(base_server.CommandServer):
         self.stats = defaultdict(int)
         self.get_time_stats = defaultdict(list)
         self.put_time_stats = defaultdict(list)
+
+        self._read_stats()
 
         try:
             base_server.CommandServer.__init__(self, addr, CommandHandler)
@@ -207,16 +216,64 @@ class CommandServer(base_server.CommandServer):
             # If the server hasn't received a connection in the past 600
             # seconds, stop it.
             if not self._taking_work.is_set():
-                self.stop()
+                self.stop(dump_stats=True)
                 break
 
-    def stop(self):
+    def stop(self, dump_stats=False):
         if not self.stopping:
             base_server.CommandServer.stop(self)
             # If the watchdog is waiting for the taking_work event timeout,
             # trigger one now to unblock it and make it quit.
             self._taking_work.set()
             self._pool.stop()
+            if dump_stats:
+                self._dump_stats()
+
+    def _stats_file_path(self):
+        # Use the local cache storage directory if one is given.
+        dir = os.environ.get('SCCACHE_DIR')
+        if dir:
+            try:
+                ensure_dir(dir)
+            except:
+                dir = None
+        if not dir:
+            dir = os.path.dirname(FILE)
+
+        return os.path.join(dir, 'sccache.stats')
+
+    def _dump_stats(self):
+        if (not self.stats and not self.get_time_stats
+                and not self.put_time_stats):
+            return
+
+        try:
+            stats_file = open(self._stats_file_path(), 'w')
+        except:
+            # Just don't dump anything if we couldn't open the stats file.
+            return
+
+        stats_file.write('%s\n%s\n%s\n' % (
+            json.dumps(self.stats),
+            json.dumps(self.get_time_stats),
+            json.dumps(self.put_time_stats),
+        ))
+        stats_file.close()
+
+    def _read_stats(self):
+        stats = (
+            self.stats,
+            self.get_time_stats,
+            self.put_time_stats,
+        )
+        try:
+            stats_file = self._stats_file_path()
+            with open(stats_file) as f:
+                for n, line in enumerate(f):
+                    stats[n % len(stats)].update(json.loads(line))
+            os.remove(stats_file)
+        except:
+            pass
 
 
 def hash_key(compiler, args, preprocessed):

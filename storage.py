@@ -11,6 +11,17 @@ import time
 import urllib2
 
 
+def ensure_dir(path):
+    if not os.path.exists(path):
+        try:
+            os.makedirs(path)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+    if not os.path.isdir(path):
+        raise RuntimeError('%s is not a directory' % directory)
+
+
 class Storage(object):
     '''
     Abstract class defining the interface for Storage classes.
@@ -77,20 +88,10 @@ class LocalStorage(Storage):
     Storage class for a local directory.
     '''
     def __init__(self, directory):
-        self._ensure_dir(directory)
+        ensure_dir(directory)
 
         self._directory = directory
         self.last_stats = {}
-
-    def _ensure_dir(self, path):
-        if not os.path.exists(path):
-            try:
-                os.makedirs(path)
-            except OSError as e:
-                if e.errno != errno.EEXIST:
-                    raise
-        if not os.path.isdir(path):
-            raise RuntimeError('%s is not a directory' % directory)
 
     def _normalize_key(self, key):
         return '%s/%s/%s' % (key[0], key[1], key)
@@ -105,7 +106,7 @@ class LocalStorage(Storage):
         path = os.path.join(self._directory, self._normalize_key(key))
         parent = os.path.dirname(path)
         try:
-            self._ensure_dir(os.path.dirname(path))
+            ensure_dir(os.path.dirname(path))
             with open(path, 'wb') as out:
                 out.write(data)
             return True
