@@ -46,8 +46,6 @@ if __name__ == '__main__':
     except socket.error as e:
         if e.errno != ECONNREFUSED: # Connection refused
             raise
-        if not cmd:
-            sys.exit(0)
         import subprocess
         import time
         if sys.platform == 'win32':
