@@ -1,0 +1,9 @@
+[package]
+name = "sccache"
+version = "0.1.0"
+authors = ["Ted Mielczarek <ted@mielczarek.org>"]
+
+[dependencies]
+clap = "2.3.0"
+retry = "0.4.0"
+protobuf = "1.0.18"
