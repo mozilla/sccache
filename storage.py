@@ -7,6 +7,7 @@
 import errno
 import httplib
 import os
+import socket
 import time
 import urllib2
 
@@ -271,23 +272,34 @@ def ConnectionWrapperFactory(parent_class, dns_query):
     method uses the dns_query function to resolve the connection host name.
     '''
     class ConnectionWrapper(parent_class):
-        def connect(self):
+        def create_connection(self, address, timeout, source_address):
+            '''
+            httplib.HTTP(S)Connection creates a socket connection to
+            self.host using _create_connection, which by default is a
+            redirect to socket.create_connection(). self._create_connection exists
+            on httplib.HTTPConnection as a way of overriding it for unit tests.
+            Connections are made to self.host by default.  When attempting
+            to perform DNS resolution and connecting to an IP address instead
+            of hostname, SSL certificate validation is broken in Python 2.7.9+.
+            This wrapper allows for a dns query to be made, and socket
+            connection made to an IP address while still maintaining self.host
+            as the unresolved hostname for validation.
+            '''
             t0 = time.time()
-            # httplib uses self.host both as the host to connect to and as the
-            # Host header, because boto doesn't set that. As it happens,
-            # httplib sets the Host header before this method is called, so
-            # we can change self.host for use when opening the socket. However,
-            # boto reuses HTTP(S)Connection instances, and on the next request,
-            # httplib resets the Host header with self.host, so we need to
-            # restore it.
-            host = self.host
-            self.host = dns_query(self.host)
-            t1 = time.time()
+            host, port = address
+            resolvedHost = dns_query(host)
+            self._socket_connect_timestamp = t1 = time.time()
             _last_stats['dns'] = (t1 - t0) * 1000
+            sock = socket.create_connection((resolvedHost, port),
+                                            timeout, source_address)
+            return sock
+
+        def connect(self):
+            self._create_connection = self.create_connection
             parent_class.connect(self)
-            self.host = host
             self._connect_time = time.time()
-            _last_stats['connect'] = (self._connect_time - t1) * 1000
+            _last_stats['connect'] = (
+                self._connect_time - self._socket_connect_timestamp) * 1000
 
         def getresponse(self, buffering=False):
             res = parent_class.getresponse(self, buffering)
