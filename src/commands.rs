@@ -64,6 +64,7 @@ fn connect_or_start_server(port : u16) -> io::Result<ServerConnection> {
             // the server.
             run_server_process().and_then(|()| connect_with_retry(port))
         } else {
+            debug!("Error: {}", e);
             Err(e)
         }
     })
