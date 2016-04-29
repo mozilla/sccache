@@ -96,9 +96,27 @@ fn request_shutdown(mut conn : ServerConnection) -> io::Result<CacheStats> {
     }
 }
 
-fn format_size(size : u64) -> String {
-    //TODO: actual nice formatting
-    format!("{} {}", size, "bytes")
+/// Format `size_in_bytes` as a size in sensible units.
+///
+/// e.g. format_size(3 * 1024 * 1024 * 1024) == "3 GB"
+fn format_size(size_in_bytes : u64) -> String {
+    let mut size = size_in_bytes;
+    let mut remainder = 0;
+    for suffix in ["bytes", "kB", "MB", "GB", "TB"].iter() {
+        if size < 1024 {
+            let frac = if remainder > 0 {
+                let rem = (100.0 * remainder as f32 / 1024.0).trunc() as i32;
+                format!(".{}", if rem % 10 == 0 { rem / 10 } else { rem })
+            } else {
+                "".to_owned()
+            };
+            return format!("{}{} {}", size, frac, suffix);
+        }
+        remainder = size % 1024;
+        size = size / 1024;
+    }
+    //TODO: handle this more gracefully
+    return format!("{} {}", size, "PB");
 }
 
 fn print_stats(stats : CacheStats) -> io::Result<()> {
@@ -158,5 +176,25 @@ pub fn run_command(cmd : Command) -> i32 {
                                  println!("compile failed: {}", e);
                              })
         },
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::format_size;
+
+    #[test]
+    fn test_format_size() {
+        assert_eq!("10 bytes", format_size(10));
+        assert_eq!("1023 bytes", format_size(1023));
+        assert_eq!("1 kB", format_size(1024));
+        assert_eq!("1.5 kB", format_size(1024 + 512));
+        assert_eq!("1023.99 kB", format_size(1024 * 1024 - 1));
+        assert_eq!("1 MB", format_size(1024 * 1024));
+        assert_eq!("1 GB", format_size(1024 * 1024 * 1024));
+        assert_eq!("1.25 GB", format_size(1024 * 1024 * (1024 + 256)));
+        assert_eq!("3 GB", format_size(1024 * 1024 * 1024 * 3));
+        assert_eq!("1 TB", format_size(1024 * 1024 * 1024 * 1024));
+        assert_eq!("1 PB", format_size(1024 * 1024 * 1024 * 1024 * 1024));
     }
 }
