@@ -63,6 +63,7 @@ impl SccacheServer {
     }
 
     /// Get the port on which this server is listening for connections.
+    #[allow(dead_code)]
     pub fn port(&self) -> u16 { self.sock.local_addr().unwrap().port() }
 
     /// Register Server with the event loop.
@@ -177,9 +178,22 @@ impl SccacheServer {
     }
 }
 
+/// Messages that can be sent to the server by way of the event loop.
+#[allow(dead_code)]
+pub enum ServerMessage {
+    /// Request shutdown.
+    Shutdown,
+}
+
 impl Handler for SccacheServer {
     type Timeout = ();
-    type Message = ();
+    type Message = ServerMessage;
+
+    fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Self::Message) {
+        match msg {
+            ServerMessage::Shutdown => self.initiate_shutdown(event_loop),
+        }
+    }
 
     fn ready(&mut self, event_loop: &mut EventLoop<SccacheServer>, token: Token, events: EventSet) {
         trace!("Handler::ready: events = {:?}", events);
@@ -399,16 +413,18 @@ impl ClientConnection {
 }
 
 /// Create an sccache server, listening on `port`.
-pub fn create_server(port : u16) -> io::Result<SccacheServer> {
-    SccacheServer::new(port)
+pub fn create_server(port : u16) -> io::Result<(SccacheServer, EventLoop<SccacheServer>)> {
+    EventLoop::new()
+        .or_else(|e| {
+            error!("event loop creation failed: {}", e); Err(e)
+        })
+        .and_then(|event_loop| {
+            SccacheServer::new(port).and_then(|server| Ok((server, event_loop)))
+        })
 }
 
 /// Run `server`, handling client connections until shutdown is requested.
-pub fn run_server(mut server : SccacheServer) -> io::Result<()> {
-    let mut event_loop = try!(EventLoop::new().or_else(|e| {
-        error!("event loop creation failed: {}", e); Err(e)
-    }));
-
+pub fn run_server(mut server : SccacheServer, mut event_loop : EventLoop<SccacheServer>) -> io::Result<()> {
     try!(server.register(&mut event_loop).or_else(|e| {
         error!("server event loop registration failed: {}", e);
         Err(e)
@@ -426,9 +442,9 @@ pub fn run_server(mut server : SccacheServer) -> io::Result<()> {
 /// requests a shutdown.
 pub fn start_server(port : u16) -> io::Result<()> {
     debug!("start_server");
-    let server = try!(create_server(port).or_else(|e| {
+    let (server, event_loop) = try!(create_server(port).or_else(|e| {
         error!("failed to create server: {}", e);
         Err(e)
     }));
-    run_server(server)
+    run_server(server, event_loop)
 }
