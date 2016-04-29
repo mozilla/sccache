@@ -24,6 +24,8 @@ mod cmdline;
 mod commands;
 mod protocol;
 mod server;
+#[cfg(test)]
+mod test;
 
 fn main() {
     env_logger::init().unwrap();

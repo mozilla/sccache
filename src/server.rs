@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use mio::*;
-use mio::tcp::{TcpListener, TcpStream};
+use mio::tcp::{
+    TcpListener,
+    TcpStream,
+};
 use mio::util::Slab;
 use protobuf::{
     Message,
@@ -33,7 +36,7 @@ use std::io::{self,Error,ErrorKind};
 use std::net::{SocketAddr, SocketAddrV4};
 
 /// Represents an sccache server instance.
-struct SccacheServer {
+pub struct SccacheServer {
     /// The listen socket for the server.
     sock: TcpListener,
 
@@ -42,6 +45,9 @@ struct SccacheServer {
 
     /// A list of accepted connections.
     conns: Slab<ClientConnection>,
+
+    /// True if the server is actively shutting down.
+    shutting_down: bool,
 }
 
 impl SccacheServer {
@@ -51,9 +57,13 @@ impl SccacheServer {
         Ok(SccacheServer {
             sock: listener,
             token: Token(1),
-            conns: Slab::new_starting_at(Token(2), 128)
+            conns: Slab::new_starting_at(Token(2), 128),
+            shutting_down: false,
         })
     }
+
+    /// Get the port on which this server is listening for connections.
+    pub fn port(&self) -> u16 { self.sock.local_addr().unwrap().port() }
 
     /// Register Server with the event loop.
     fn register(&mut self, event_loop: &mut EventLoop<SccacheServer>) -> io::Result<()> {
@@ -67,15 +77,17 @@ impl SccacheServer {
 
     /// Re-register Server with the event loop.
     fn reregister(&mut self, event_loop: &mut EventLoop<SccacheServer>) {
-        event_loop.reregister(
-            &self.sock,
-            self.token,
-            EventSet::readable(),
-            PollOpt::edge() | PollOpt::oneshot()
-        ).unwrap_or_else(|_e| {
-            let server_token = self.token;
-            self.reset_connection(event_loop, server_token);
-        })
+        if !self.shutting_down {
+            event_loop.reregister(
+                &self.sock,
+                self.token,
+                EventSet::readable(),
+                PollOpt::edge() | PollOpt::oneshot()
+             ).unwrap_or_else(|_e| {
+                 let server_token = self.token;
+                 self.reset_connection(event_loop, server_token);
+             })
+        }
     }
 
     /// Accept a new client connection.
@@ -109,11 +121,34 @@ impl SccacheServer {
     /// Reset a connection, either the listen socket or a client socket.
     fn reset_connection(&mut self, event_loop: &mut EventLoop<SccacheServer>, token: Token) {
         if self.token == token {
-            event_loop.shutdown();
+            if !self.shutting_down {
+                // Not actively trying to shut down, but something bad happened.
+                event_loop.shutdown();
+            }
         } else {
             debug!("reset connection; token={:?}", token);
             self.conns.remove(token);
+            self.check_shutdown(event_loop);
         }
+    }
+
+    /// Check if the server is finished handling in-progress client requests.
+    fn check_shutdown(&mut self, event_loop: &mut EventLoop<SccacheServer>) {
+        if self.shutting_down && self.conns.is_empty() {
+            // All done.
+            event_loop.shutdown();
+        }
+    }
+
+    /// Start server shutdown.
+    ///
+    /// The server will stop accepting incoming requests, and shut down
+    /// after it finishes processing any in-progress requests.
+    fn initiate_shutdown(&mut self, event_loop: &mut EventLoop<SccacheServer>) {
+        if !self.shutting_down {
+            self.shutting_down = true;
+        }
+        self.check_shutdown(event_loop);
     }
 
     /// Handle one request from a client and send a response.
@@ -125,7 +160,9 @@ impl SccacheServer {
             res.set_stats(generate_stats());
         } else if req.has_shutdown() {
             debug!("handle_client: shutdown");
-            //TODO: actually handle this
+            //TODO: actually handle this, shutdown listen socket,
+            // handle existing clients then shut down event loop.
+            self.initiate_shutdown(event_loop);
             let mut shutting_down = ShuttingDown::new();
             shutting_down.set_stats(generate_stats());
             res.set_shuttingdown(shutting_down);
@@ -168,7 +205,7 @@ impl Handler for SccacheServer {
         }
 
         if events.is_readable() {
-            if self.token == token {
+            if self.token == token && !self.shutting_down {
                 self.accept(event_loop);
             } else {
                 trace!("Reading from {:?}", token);
@@ -228,7 +265,6 @@ impl ClientConnection {
             send_queue: vec!(),
         }
     }
-
 
     /// Handle read event from event loop.
     ///
@@ -362,19 +398,17 @@ impl ClientConnection {
     }
 }
 
-/// Start an sccache server, listening on `port`.
-///
-/// Spins an event loop handling client connections until a client
-/// requests a shutdown.
-pub fn start_server(port : u16) -> io::Result<()> {
-    debug!("start_server");
+/// Create an sccache server, listening on `port`.
+pub fn create_server(port : u16) -> io::Result<SccacheServer> {
+    SccacheServer::new(port)
+}
+
+/// Run `server`, handling client connections until shutdown is requested.
+pub fn run_server(mut server : SccacheServer) -> io::Result<()> {
     let mut event_loop = try!(EventLoop::new().or_else(|e| {
         error!("event loop creation failed: {}", e); Err(e)
     }));
-    let mut server = try!(SccacheServer::new(port).or_else(|e| {
-        error!("failed to create server: {}", e);
-        Err(e)
-    }));
+
     try!(server.register(&mut event_loop).or_else(|e| {
         error!("server event loop registration failed: {}", e);
         Err(e)
@@ -384,4 +418,17 @@ pub fn start_server(port : u16) -> io::Result<()> {
         Err(e)
     }));
     Ok(())
+}
+
+/// Start an sccache server, listening on `port`.
+///
+/// Spins an event loop handling client connections until a client
+/// requests a shutdown.
+pub fn start_server(port : u16) -> io::Result<()> {
+    debug!("start_server");
+    let server = try!(create_server(port).or_else(|e| {
+        error!("failed to create server: {}", e);
+        Err(e)
+    }));
+    run_server(server)
 }
