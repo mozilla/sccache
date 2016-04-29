@@ -12,14 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use protobuf::{Message,ProtobufResult,parse_from_reader};
+use protobuf::{
+    CodedInputStream,
+    Message,
+    ProtobufError,
+    ProtobufResult,
+    parse_from_bytes,
+};
 use protocol::{
     ClientRequest,
     ServerResponse,
 };
 use retry::retry;
-use std::io;
-use std::net::{Shutdown,TcpStream};
+use std::io::{
+    self,
+    BufReader,
+    BufWriter,
+    Read,
+};
+use std::net::TcpStream;
 
 /// A connection to an sccache server.
 pub struct ServerConnection {
@@ -31,12 +42,22 @@ impl ServerConnection {
     /// Send `request` to the server, read and return a `ServerResponse`.
     pub fn request(&mut self, request : ClientRequest)
                    -> ProtobufResult<ServerResponse> {
-        println!("ServerConnection::request");
-        try!(request.write_to_writer(&mut self.stream));
-        //TODO: propogate error
-        self.stream.shutdown(Shutdown::Write).unwrap();
-        println!("ServerConnection::request: sent request, reading response");
-        parse_from_reader::<ServerResponse>(&mut self.stream)
+        trace!("ServerConnection::request");
+        let writer = try!(self.stream.try_clone().or_else(|e| Err(ProtobufError::IoError(e))));
+        try!(request.write_length_delimited_to_writer(&mut BufWriter::new(writer)));
+        trace!("ServerConnection::request: sent request, reading response");
+        let reader = try!(self.stream.try_clone().or_else(|e| Err(ProtobufError::IoError(e))));
+        let mut buf_read = BufReader::new(reader);
+        //FIXME: wish `parse_length_delimited_from` worked here!
+        let len = try!({
+            let mut is = CodedInputStream::from_buffered_reader(&mut buf_read);
+            is.read_raw_varint32()
+        });
+        trace!("Should read {} more bytes", len);
+        let mut buf = vec![0; len as usize];
+        try!(buf_read.read_exact(&mut buf).or_else(|e| Err(ProtobufError::IoError(e))));
+        trace!("Done reading");
+        parse_from_bytes::<ServerResponse>(&mut buf)
     }
 }
 

@@ -5,5 +5,8 @@ authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
 [dependencies]
 clap = "2.3.0"
+env_logger = "0.3.3"
+log = "0.3.6"
+mio = "0.5"
 retry = "0.4.0"
 protobuf = "1.0.18"

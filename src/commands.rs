@@ -70,7 +70,7 @@ fn connect_or_start_server(port : u16) -> io::Result<ServerConnection> {
 }
 
 fn request_stats(mut conn : ServerConnection) -> io::Result<CacheStats> {
-    println!("request_stats");
+    debug!("request_stats");
     let mut req = ClientRequest::new();
     req.set_get_stats(GetStats::new());
     //TODO: better error mapping
@@ -83,7 +83,7 @@ fn request_stats(mut conn : ServerConnection) -> io::Result<CacheStats> {
 }
 
 fn request_shutdown(mut conn : ServerConnection) -> io::Result<CacheStats> {
-    println!("request_shutdown");
+    debug!("request_shutdown");
     let mut req = ClientRequest::new();
     req.set_shutdown(Shutdown::new());
     //TODO: better error mapping
