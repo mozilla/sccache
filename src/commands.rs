@@ -89,8 +89,8 @@ pub fn request_shutdown(mut conn : ServerConnection) -> io::Result<CacheStats> {
     req.set_shutdown(Shutdown::new());
     //TODO: better error mapping
     let mut response = try!(conn.request(req).or(Err(Error::new(ErrorKind::Other, "Failed to send data to or receive data from server"))));
-    if response.has_shuttingdown() {
-        Ok(response.take_shuttingdown().take_stats())
+    if response.has_shutting_down() {
+        Ok(response.take_shutting_down().take_stats())
     } else {
         Err(Error::new(ErrorKind::Other, "Unexpected server response!"))
     }

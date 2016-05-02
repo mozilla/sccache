@@ -60,8 +60,11 @@ message ShuttingDown {
   required CacheStats stats = 1;
 }
 
+// The server started executing a compilation.
+message CompileStarted {}
+
 // The server ran a compile command.
-message Compiled {
+message CompileFinished {
   // The return code of the process.
   oneof exit_status {
     // Normal exit.
@@ -83,9 +86,10 @@ message ServerResponse {
   // A server response can be any one of the following:
   oneof response {
     CacheStats stats = 1;
-    ShuttingDown shuttingdown = 2;
-    Compiled compiled = 3;
-    UnhandledCompile unhandled_compile = 4;
-    UnknownCommand unknown = 5;
+    ShuttingDown shutting_down = 2;
+    CompileStarted compile_started = 3;
+    CompileFinished compile_finished = 4;
+    UnhandledCompile unhandled_compile = 5;
+    UnknownCommand unknown = 6;
   }
 }

@@ -161,12 +161,10 @@ impl SccacheServer {
             res.set_stats(generate_stats());
         } else if req.has_shutdown() {
             debug!("handle_client: shutdown");
-            //TODO: actually handle this, shutdown listen socket,
-            // handle existing clients then shut down event loop.
             self.initiate_shutdown(event_loop);
             let mut shutting_down = ShuttingDown::new();
             shutting_down.set_stats(generate_stats());
-            res.set_shuttingdown(shutting_down);
+            res.set_shutting_down(shutting_down);
         } else {
             warn!("handle_client: unknown command");
             res.set_unknown(UnknownCommand::new());
