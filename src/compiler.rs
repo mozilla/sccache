@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use log::LogLevel::Trace;
-use mock_process::{
+use mock_command::{
     CommandChild,
     CommandCreator,
     RunCommand,

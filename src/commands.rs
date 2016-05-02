@@ -15,7 +15,7 @@
 use client::{connect_to_server,connect_with_retry,ServerConnection};
 use cmdline::Command;
 use compiler::run_compiler;
-use mock_process::{
+use mock_command::{
     CommandCreator,
     ProcessCommandCreator,
 };

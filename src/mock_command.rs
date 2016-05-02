@@ -99,7 +99,7 @@ pub struct MockChild {
 
 impl MockChild {
     #[allow(dead_code)]
-    fn new(status : ExitStatus, stdout : &str, stderr : &str) -> MockChild {
+    pub fn new(status : ExitStatus, stdout : &str, stderr : &str) -> MockChild {
         MockChild {
             output : Some(Ok(Output {
                 status: status,
@@ -110,7 +110,7 @@ impl MockChild {
     }
 
     #[allow(dead_code)]
-    fn with_error(err : io::Error) -> MockChild {
+    pub fn with_error(err : io::Error) -> MockChild {
         MockChild {
             output : Some(Err(err)),
         }
@@ -156,7 +156,7 @@ pub struct MockCommandCreator {
 
 impl MockCommandCreator {
     #[allow(dead_code)]
-    fn new() -> MockCommandCreator {
+    pub fn new() -> MockCommandCreator {
         MockCommandCreator {
             children: vec!(),
         }
@@ -164,7 +164,7 @@ impl MockCommandCreator {
 
     /// The next `MockCommand` created will return `child` from `RunCommand::spawn`.
     #[allow(dead_code)]
-    fn next_command_spawns(&mut self, child : io::Result<MockChild>) {
+    pub fn next_command_spawns(&mut self, child : io::Result<MockChild>) {
         self.children.push(child);
     }
 }
@@ -204,14 +204,14 @@ mod test {
     }
 
     #[test]
-    fn test_mock_process_wait() {
+    fn test_mock_command_wait() {
         let mut creator = MockCommandCreator::new();
         creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         assert_eq!(0, spawn_wait_command(&mut creator, "foo").unwrap().code().unwrap());
     }
 
     #[test]
-    fn test_mock_process_output() {
+    fn test_mock_command_output() {
         let mut creator = MockCommandCreator::new();
         creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         let output = spawn_output_command(&mut creator, "foo").unwrap();

@@ -16,10 +16,12 @@ use ::client::{
     connect_to_server,
 };
 use ::commands::{
+    do_compile,
     request_shutdown,
     request_stats,
 };
 use mio::Sender;
+use ::mock_command::*;
 use ::server::{
     ServerMessage,
     create_server,
@@ -58,6 +60,26 @@ fn test_server_stats() {
     let stats = request_stats(conn).unwrap();
     assert!(stats.get_stats().len() > 0);
     // Now signal it to shut down.
+    sender.send(ServerMessage::Shutdown).unwrap();
+    // Ensure that it shuts down.
+    child.join().unwrap();
+}
+
+#[test]
+fn test_server_unhandled_compile() {
+    let (port, sender, child) = run_server_thread();
+    // Connect to the server.
+    let conn = connect_to_server(port).unwrap();
+    let mut creator = MockCommandCreator::new();
+    creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
+    // Ask the server to compile something.
+    //TODO: MockCommand should validate these!
+    let cmdline = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    let cwd = "/foo/bar".to_owned();
+    assert_eq!(0, do_compile(&mut creator, conn, cmdline, cwd).unwrap());
+    // Make sure we ran a mock process.
+    assert_eq!(0, creator.children.len());
+    // Shut down the server.
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
