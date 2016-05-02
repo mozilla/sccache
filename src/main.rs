@@ -22,6 +22,7 @@ extern crate retry;
 mod client;
 mod cmdline;
 mod commands;
+mod compiler;
 mod protocol;
 mod server;
 #[cfg(test)]

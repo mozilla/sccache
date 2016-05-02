@@ -14,20 +14,36 @@
 
 use client::{connect_to_server,connect_with_retry,ServerConnection};
 use cmdline::Command;
+use compiler::run_compiler;
+use protobuf::RepeatedField;
 use protocol::{
     CacheStats,
     ClientRequest,
+    Compile,
+    CompileStarted,
     GetStats,
     Shutdown,
+    UnhandledCompile,
 };
 use server;
 use std::env;
 use std::io::{self,Error,ErrorKind};
 use std::process;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 /// The default sccache server port.
 pub const DEFAULT_PORT : u16 = 4225;
 
+/// Possible responses from the server for a `Compile` request.
+enum CompileResponse {
+    /// The compilation was started.
+    CompileStarted(CompileStarted),
+    /// The server could not handle this compilation request.
+    UnhandledCompile(UnhandledCompile),
+}
+
+/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 fn maybe_redirect_stdio(cmd : &mut process::Command) {
     if !match env::var("SCCACHE_NO_DAEMON") {
             Ok(val) => val == "1",
@@ -49,6 +65,10 @@ fn run_server_process() -> io::Result<()> {
     }).and(Ok(()))
 }
 
+/// Convert `res` into a process exit code.
+///
+/// If `res` is `Ok`, return `0`, else call `else_func` and then
+/// return 1.
 fn result_exit_code<T : FnOnce(io::Error)>(res : io::Result<()>,
                                            else_func : T) -> i32 {
     res.and(Ok(0)).unwrap_or_else(|e| {
@@ -57,8 +77,10 @@ fn result_exit_code<T : FnOnce(io::Error)>(res : io::Result<()>,
     })
 }
 
+/// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
 fn connect_or_start_server(port : u16) -> io::Result<ServerConnection> {
     connect_to_server(port).or_else(|e| {
+        //FIXME: this can sometimes hit a connection timed out?
         if e.kind() == io::ErrorKind::ConnectionRefused {
             // If the connection was refused we probably need to start
             // the server.
@@ -70,6 +92,7 @@ fn connect_or_start_server(port : u16) -> io::Result<ServerConnection> {
     })
 }
 
+/// Send a `GetStats` request to the server, and return the `CacheStats` request if successful.
 pub fn request_stats(mut conn : ServerConnection) -> io::Result<CacheStats> {
     debug!("request_stats");
     let mut req = ClientRequest::new();
@@ -83,6 +106,7 @@ pub fn request_stats(mut conn : ServerConnection) -> io::Result<CacheStats> {
     }
 }
 
+/// Send a `Shutdown` request to the server, and return the `CacheStats` contained within the response if successful.
 pub fn request_shutdown(mut conn : ServerConnection) -> io::Result<CacheStats> {
     debug!("request_shutdown");
     let mut req = ClientRequest::new();
@@ -119,6 +143,7 @@ fn format_size(size_in_bytes : u64) -> String {
     return format!("{} {}", size, "PB");
 }
 
+/// Print `stats` to stdout.
 fn print_stats(stats : CacheStats) -> io::Result<()> {
     for stat in stats.get_stats().iter() {
         //TODO: properly align output
@@ -133,6 +158,73 @@ fn print_stats(stats : CacheStats) -> io::Result<()> {
         print!("\n");
     }
     Ok(())
+}
+
+/// Send a `Compile` request to the server, and return the server response if successful.
+fn request_compile(conn : &mut ServerConnection, cmdline : &Vec<String>, cwd : &str) -> io::Result<CompileResponse> {
+    let mut req = ClientRequest::new();
+    let mut compile = Compile::new();
+    compile.set_cwd(cwd.to_owned());
+    compile.set_command(RepeatedField::from_vec(cmdline.clone()));
+    req.set_compile(compile);
+    //TODO: better error mapping
+    let mut response = try!(conn.request(req).or(Err(Error::new(ErrorKind::Other, "Failed to send data to or receive data from server"))));
+    if response.has_compile_started() {
+        Ok(CompileResponse::CompileStarted(response.take_compile_started()))
+    } else if response.has_unhandled_compile() {
+        Ok(CompileResponse::UnhandledCompile(response.take_unhandled_compile()))
+    } else {
+        Err(Error::new(ErrorKind::Other, "Unexpected response from server"))
+    }
+}
+
+/// Return the signal that caused a process to exit from `status`.
+#[cfg(unix)]
+#[allow(dead_code)]
+fn status_signal(status : process::ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+/// Not implemented for non-Unix.
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn status_signal(status : process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
+///
+/// If the server returned `CompileStarted`, wait for a `CompileFinished` and
+/// print the results.
+///
+/// If the server returned `UnhandledCompile`, run the compilation command
+/// locally and return the result.
+fn handle_compile_response(_conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
+    match response {
+        CompileResponse::CompileStarted(_) => {
+            debug!("Server sent CompileStarted");
+            //TODO: wait for CompileFinished!
+            Ok(0)
+        }
+        CompileResponse::UnhandledCompile(_) => {
+            debug!("Server sent UnhandledCompile");
+            run_compiler(cmdline, cwd)
+                .and_then(|status| {
+                    Ok(status.code()
+                       .unwrap_or_else(|| {
+                           /* TODO: this breaks type inference, figure out why
+                           status_signal(status)
+                           .and_then(|sig : i32| {
+                           println!("Compile terminated by signal {}", sig);
+                           None
+                       });
+                            */
+                           // Arbitrary.
+                           2
+                       }))
+                })
+        }
+    }
 }
 
 pub fn run_command(cmd : Command) -> i32 {
@@ -165,16 +257,14 @@ pub fn run_command(cmd : Command) -> i32 {
                              })
 
         },
-        Command::Compile(compile_cmdline) => {
-            result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(|_conn| {
-                //TODO: send Compile request
-                let cmd_str = compile_cmdline.join(" ");
-                println!("Command: '{}'", cmd_str);
-                Ok(())
-            }),
-                             |e| {
-                                 println!("compile failed: {}", e);
-                             })
+        Command::Compile { cmdline, cwd } => {
+            connect_or_start_server(DEFAULT_PORT)
+                .and_then(|mut conn| request_compile(&mut conn, &cmdline, &cwd)
+                          .and_then(|res| handle_compile_response(&mut conn, res, &cmdline, &cwd)))
+                .unwrap_or_else(|e| {
+                    println!("Failed to execute compile: {}", e);
+                    1
+                })
         },
     }
 }

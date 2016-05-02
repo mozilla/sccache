@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use compiler::{
+    can_handle_compile,
+};
 use mio::*;
 use mio::tcp::{
     TcpListener,
@@ -28,8 +31,10 @@ use protocol::{
     ClientRequest,
     CacheStats,
     CacheStatistic,
+    Compile,
     ServerResponse,
     ShuttingDown,
+    UnhandledCompile,
     UnknownCommand,
 };
 use std::io::{self,Error,ErrorKind};
@@ -152,8 +157,24 @@ impl SccacheServer {
         self.check_shutdown(event_loop);
     }
 
+    /// Handle a compile request from a client.
+    ///
+    /// This will either start compilation and set a `CompileStarted`
+    /// response in `res`, or set an `UnhandledCompile` response in `res`.
+    fn handle_compile(&mut self, _token: Token, mut compile: Compile, res: &mut ServerResponse, _event_loop: &mut EventLoop<SccacheServer>) {
+        let cmd = compile.take_command().into_vec();
+        match can_handle_compile(&cmd) {
+            Some(_compiler) => {
+                //TODO: check cache, run compile, etc
+            }
+            None => {
+                res.set_unhandled_compile(UnhandledCompile::new());
+            }
+        }
+    }
+
     /// Handle one request from a client and send a response.
-    fn handle_request(&mut self, token: Token, req: ClientRequest, event_loop: &mut EventLoop<SccacheServer>) {
+    fn handle_request(&mut self, token: Token, mut req: ClientRequest, event_loop: &mut EventLoop<SccacheServer>) {
         trace!("handle_request");
         let mut res = ServerResponse::new();
         if req.has_get_stats() {
@@ -165,6 +186,9 @@ impl SccacheServer {
             let mut shutting_down = ShuttingDown::new();
             shutting_down.set_stats(generate_stats());
             res.set_shutting_down(shutting_down);
+        } else if req.has_compile() {
+            debug!("handle_client: compile");
+            self.handle_compile(token, req.take_compile(), &mut res, event_loop);
         } else {
             warn!("handle_client: unknown command");
             res.set_unknown(UnknownCommand::new());

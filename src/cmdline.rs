@@ -28,7 +28,12 @@ pub enum Command {
     /// Stop background server.
     StopServer,
     /// Run a compiler command.
-    Compile(Vec<String>),
+    Compile {
+        /// The command to execute
+        cmdline: Vec<String>,
+        /// The directory in which to execute the command.
+        cwd: String,
+    },
 }
 
 /// Get the `App` used for argument parsing.
@@ -87,7 +92,16 @@ pub fn parse<'a>() -> Command {
     } else if stop_server {
         Command::StopServer
     } else if let Some(a) = cmd {
-        Command::Compile(a.map(|s| s.to_owned()).collect())
+        if let Some(cwd) = env::current_dir().ok()
+            .and_then(|d| d.to_str().and_then(|s| Some(s.to_owned()))) {
+                Command::Compile {
+                    cmdline: a.map(|s| s.to_owned()).collect(),
+                    cwd: cwd,
+                }
+            } else {
+                println!("sccache: Couldn't determine current working directory");
+                usage()
+            }
     } else {
         println!("sccache: No command specified");
         usage()
