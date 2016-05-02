@@ -23,6 +23,7 @@ mod client;
 mod cmdline;
 mod commands;
 mod compiler;
+mod mock_process;
 mod protocol;
 mod server;
 #[cfg(test)]

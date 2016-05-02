@@ -13,6 +13,11 @@
 // limitations under the License.
 
 use log::LogLevel::Trace;
+use mock_process::{
+    CommandChild,
+    CommandCreator,
+    RunCommand,
+};
 use std::io;
 use std::process;
 
@@ -33,14 +38,14 @@ pub fn can_handle_compile(_cmdline : &Vec<String>) -> Option<Compiler> {
     None
 }
 
-/// Run `cmdline` in `cwd`, and return the exit status.
-pub fn run_compiler(cmdline : &Vec<String>, cwd : &str) -> io::Result<process::ExitStatus> {
+/// Run `cmdline` in `cwd` using `creator`, and return the exit status.
+pub fn run_compiler<T : CommandCreator>(creator : &T, cmdline : &Vec<String>, cwd : &str) -> io::Result<process::ExitStatus> {
     if log_enabled!(Trace) {
         let cmd_str = cmdline.join(" ");
         trace!("run_compiler: '{}' in '{}'", cmd_str, cwd);
     }
     //TODO: should allow capturing output.
-    process::Command::new(&cmdline[0])
+    creator.new_command(&cmdline[0])
         .args(&cmdline[1..])
         .current_dir(cwd)
         .spawn()

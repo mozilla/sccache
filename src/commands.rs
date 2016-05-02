@@ -15,6 +15,10 @@
 use client::{connect_to_server,connect_with_retry,ServerConnection};
 use cmdline::Command;
 use compiler::run_compiler;
+use mock_process::{
+    CommandCreator,
+    ProcessCommandCreator,
+};
 use protobuf::RepeatedField;
 use protocol::{
     CacheStats,
@@ -198,8 +202,8 @@ fn status_signal(status : process::ExitStatus) -> Option<i32> {
 /// print the results.
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
-/// locally and return the result.
-fn handle_compile_response(_conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
+/// locally using `creator` and return the result.
+fn handle_compile_response<T : CommandCreator>(creator : &T, _conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
@@ -208,7 +212,7 @@ fn handle_compile_response(_conn : &mut ServerConnection, response : CompileResp
         }
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
-            run_compiler(cmdline, cwd)
+            run_compiler(creator, cmdline, cwd)
                 .and_then(|status| {
                     Ok(status.code()
                        .unwrap_or_else(|| {
@@ -230,9 +234,9 @@ fn handle_compile_response(_conn : &mut ServerConnection, response : CompileResp
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
 ///
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile(mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
+pub fn do_compile<T : CommandCreator>(creator : &T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
     request_compile(&mut conn, &cmdline, &cwd)
-        .and_then(|res| handle_compile_response(&mut conn, res, &cmdline, &cwd))
+        .and_then(|res| handle_compile_response(creator, &mut conn, res, &cmdline, &cwd))
 }
 
 /// Run `cmd` and return the process exit status.
@@ -268,7 +272,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(conn, cmdline, cwd))
+                .and_then(|conn| do_compile(&ProcessCommandCreator, conn, cmdline, cwd))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
