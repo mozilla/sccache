@@ -39,7 +39,7 @@ pub fn can_handle_compile(_cmdline : &Vec<String>) -> Option<Compiler> {
 }
 
 /// Run `cmdline` in `cwd` using `creator`, and return the exit status.
-pub fn run_compiler<T : CommandCreator>(creator : &T, cmdline : &Vec<String>, cwd : &str) -> io::Result<process::ExitStatus> {
+pub fn run_compiler<T : CommandCreator>(creator : &mut T, cmdline : &Vec<String>, cwd : &str) -> io::Result<process::ExitStatus> {
     if log_enabled!(Trace) {
         let cmd_str = cmdline.join(" ");
         trace!("run_compiler: '{}' in '{}'", cmd_str, cwd);

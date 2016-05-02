@@ -203,7 +203,7 @@ fn status_signal(status : process::ExitStatus) -> Option<i32> {
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
-fn handle_compile_response<T : CommandCreator>(creator : &T, _conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
+fn handle_compile_response<T : CommandCreator>(creator : &mut T, _conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
@@ -234,7 +234,7 @@ fn handle_compile_response<T : CommandCreator>(creator : &T, _conn : &mut Server
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
 ///
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile<T : CommandCreator>(creator : &T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
+pub fn do_compile<T : CommandCreator>(creator : &mut T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
     request_compile(&mut conn, &cmdline, &cwd)
         .and_then(|res| handle_compile_response(creator, &mut conn, res, &cmdline, &cwd))
 }
@@ -272,7 +272,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(&ProcessCommandCreator, conn, cmdline, cwd))
+                .and_then(|conn| do_compile(&mut ProcessCommandCreator, conn, cmdline, cwd))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
