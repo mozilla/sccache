@@ -227,6 +227,15 @@ fn handle_compile_response(_conn : &mut ServerConnection, response : CompileResp
     }
 }
 
+/// Send a `Compile` request to the sccache server `conn`, and handle the response.
+///
+/// See `request_compile` and `handle_compile_response`.
+pub fn do_compile(mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
+    request_compile(&mut conn, &cmdline, &cwd)
+        .and_then(|res| handle_compile_response(&mut conn, res, &cmdline, &cwd))
+}
+
+/// Run `cmd` and return the process exit status.
 pub fn run_command(cmd : Command) -> i32 {
     match cmd {
         // Actual usage gets printed in `cmdline::parse`.
@@ -259,8 +268,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|mut conn| request_compile(&mut conn, &cmdline, &cwd)
-                          .and_then(|res| handle_compile_response(&mut conn, res, &cmdline, &cwd)))
+                .and_then(|conn| do_compile(conn, cmdline, cwd))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
