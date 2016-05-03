@@ -192,7 +192,7 @@ fn status_signal(status : process::ExitStatus) -> Option<i32> {
 /// Not implemented for non-Unix.
 #[cfg(not(unix))]
 #[allow(dead_code)]
-fn status_signal(status : process::ExitStatus) -> Option<i32> {
+fn status_signal(_status : process::ExitStatus) -> Option<i32> {
     None
 }
 
