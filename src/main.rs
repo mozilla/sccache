@@ -19,6 +19,7 @@ extern crate libc;
 extern crate mio;
 extern crate protobuf;
 extern crate retry;
+extern crate tempdir;
 
 mod client;
 mod cmdline;
