@@ -92,7 +92,7 @@ pub fn connect_with_retry(port : u16) -> io::Result<ServerConnection> {
     //   if the process exited.
     // * Send a pipe handle to the server process so it can notify
     //   us once it starts the server instead of us polling.
-    match retry(10, 1, || connect_to_server(port), |res| res.is_ok()) {
+    match retry(10, 10, || connect_to_server(port), |res| res.is_ok()) {
         Ok(Ok(conn)) => Ok(conn),
         _ => Err(io::Error::new(io::ErrorKind::TimedOut,
                                 "Connection to server timed out")),
