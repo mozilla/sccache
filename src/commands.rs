@@ -14,7 +14,10 @@
 
 use client::{connect_to_server,connect_with_retry,ServerConnection};
 use cmdline::Command;
-use compiler::run_compiler;
+use compiler::{
+    ProcessOutput,
+    run_compiler,
+};
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
@@ -24,6 +27,7 @@ use protocol::{
     CacheStats,
     ClientRequest,
     Compile,
+    CompileFinished,
     CompileStarted,
     GetStats,
     Shutdown,
@@ -31,7 +35,7 @@ use protocol::{
 };
 use server;
 use std::env;
-use std::io::{self,Error,ErrorKind};
+use std::io::{self,Error,ErrorKind,Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::process;
@@ -197,6 +201,28 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
     None
 }
 
+/// Handle `response`, the output from running a compile on the server. Return the compiler exit status.
+fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, stdout : &mut T, stderr : &mut U) -> io::Result<i32> {
+    // It might be nice if the server sent stdout/stderr as the process
+    // ran, but then it would have to also save them in the cache as
+    // interleaved streams to really make it work.
+    if response.has_stdout() {
+        try!(stdout.write(response.get_stdout()));
+    }
+    if response.has_stderr() {
+        try!(stderr.write(response.get_stderr()));
+    }
+    if response.has_retcode() {
+        Ok(response.get_retcode())
+    } else if response.has_signal() {
+        println!("Compiler killed by signal {}", response.get_signal());
+        Ok(-2)
+    } else {
+        println!("Missing compiler exit status!");
+        Ok(-3)
+    }
+}
+
 /// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
 ///
 /// If the server returned `CompileStarted`, wait for a `CompileFinished` and
@@ -204,18 +230,32 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
-fn handle_compile_response<T : CommandCreatorSync>(creator : T, _conn : &mut ServerConnection, response : CompileResponse, cmdline : &Vec<String>, cwd : &str) -> io::Result<i32> {
+fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator : T, conn : &mut ServerConnection, response : CompileResponse, cmdline : Vec<String>, cwd : &str, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
-            //TODO: wait for CompileFinished!
-            Ok(0)
+            // Wait for CompileFinished.
+            conn.read_one_response()
+                .or_else(|err| {
+                    //TODO: something better here?
+                    error!("Error reading compile response from server: {}", err);
+                    Err(Error::new(ErrorKind::Other, "Error reading compile response from server"))
+                })
+                .and_then(|mut res| {
+                    if res.has_compile_finished() {
+                        handle_compile_finished(res.take_compile_finished(),
+                                                stdout, stderr)
+                    } else {
+                        Err(Error::new(ErrorKind::Other, "Unexpected response from server"))
+                    }
+                })
         }
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
-            run_compiler(creator, cmdline, cwd)
-                .and_then(|status| {
-                    Ok(status.code()
+            //TODO: possibly capture output here for testing.
+            run_compiler(creator, cmdline, cwd, ProcessOutput::Inherit)
+                .and_then(|output| {
+                    Ok(output.status.code()
                        .unwrap_or_else(|| {
                            /* TODO: this breaks type inference, figure out why
                            status_signal(status)
@@ -235,9 +275,9 @@ fn handle_compile_response<T : CommandCreatorSync>(creator : T, _conn : &mut Ser
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
 ///
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile<T : CommandCreatorSync>(creator : T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String) -> io::Result<i32> {
+pub fn do_compile<T : CommandCreatorSync, U : Write, V : Write>(creator : T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
     request_compile(&mut conn, &cmdline, &cwd)
-        .and_then(|res| handle_compile_response(creator, &mut conn, res, &cmdline, &cwd))
+        .and_then(|res| handle_compile_response(creator, &mut conn, res, cmdline, &cwd, stdout, stderr))
 }
 
 /// Run `cmd` and return the process exit status.
@@ -273,7 +313,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, cwd))
+                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, cwd, &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1

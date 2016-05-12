@@ -14,7 +14,9 @@
 
 use compiler::{
     Compiler,
+    ProcessOutput,
     detect_compiler,
+    run_compiler,
 };
 use mio::*;
 use mio::tcp::{
@@ -38,6 +40,7 @@ use protocol::{
     CacheStats,
     CacheStatistic,
     Compile,
+    CompileFinished,
     CompileStarted,
     ServerResponse,
     ShuttingDown,
@@ -49,6 +52,7 @@ use std::collections::HashMap;
 use std::fs::metadata;
 use std::io::{self,Error,ErrorKind};
 use std::net::{SocketAddr, SocketAddrV4};
+use std::process::Output;
 use std::thread;
 
 /// A background task.
@@ -277,15 +281,35 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         };
     }
 
-    /// Check that `compiler` can handle and cache when run with the commandline `cmd`.
+    /// Send a `CompileFinished` response to the client at `token`.
     ///
-    /// Not all compiler options can be cached, so this tests the set of
-    /// options for each compiler.
-    fn compiler_commandline_ok(&mut self, _compiler : Compiler, _cmd : Vec<String>, _token : Token, _event_loop : &mut EventLoop<SccacheServer<C>>) -> bool {
-        trace!("check_compiler_commandline");
-        //TODO
-        false
+    /// This indicates that the server has finished running a compile,
+    /// and contains the process exit status and stdout/stderr.
+    fn send_compile_finished(&mut self, output: Option<Output>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+        let mut res = ServerResponse::new();
+        let mut finish = CompileFinished::new();
+        match output {
+            Some(out) => {
+                let Output { status, stdout, stderr } = out;
+                status.code().map(|s| finish.set_retcode(s));
+                //TODO: sort out getting signal return on Unix
+                finish.set_stdout(stdout);
+                finish.set_stderr(stderr);
+            }
+            None => {
+                //TODO: figure out a better way to communicate this?
+                finish.set_retcode(-2);
+            }
+        };
+        res.set_compile_finished(finish);
+        match self.conns[token].send(res, event_loop) {
+            Ok(_) => {}
+            Err(_) => {
+                error!("Failed to send response");
+            }
+        };
     }
+
 
     /// Check that `compiler` is `Some` and can handle `cmd`.
     ///
@@ -293,7 +317,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// (see `compiler_commandline_ok`), send the client a `CompileStarted`
     /// message and begin compilation on a background task. Otherwise,
     /// send the client an `UnhandledCompile` message.
-    fn check_compiler(&mut self, compiler : Option<Compiler>, cmd : Vec<String>, token : Token, event_loop : &mut EventLoop<SccacheServer<C>>) {
+    fn check_compiler(&mut self, compiler: Option<Compiler>, cmd: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         match compiler {
             None => {
                 trace!("check_compiler: Unsupported compiler");
@@ -303,14 +327,34 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 trace!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                if self.compiler_commandline_ok(c, cmd, token, event_loop) {
+                if c.commandline_ok(&cmd) {
                     self.send_compile_started(token, event_loop);
-                    //TODO: run compile
+                    self.start_compile_task(cmd, cwd, token, event_loop);
                 } else {
                     self.send_unhandled_compile(token, event_loop);
                 }
             }
         }
+    }
+
+    /// Start running `cmd` in a background task, in `cwd`.
+    fn start_compile_task(&mut self, cmd: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+        let creator = self.creator.clone();
+        self.run_task(token, event_loop,
+                      // Task, runs on a background thread.
+                      move || {
+                          let res = run_compiler(creator, cmd, &cwd, ProcessOutput::Capture);
+                          TaskResult::Compiled(res.ok())
+                      },
+                      // Callback, runs on the event loop thread.
+                      move |token, res, this, event_loop| {
+                          match res {
+                              TaskResult::Compiled(output) => {
+                                  this.send_compile_finished(output, token, event_loop);
+                              },
+                              _ => error!("Unexpected task result!"),
+                          };
+                      })
     }
 
     /// Handle a compile request from a client.
@@ -319,11 +363,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// response in `res`, or set an `UnhandledCompile` response in `res`.
     fn handle_compile(&mut self, token: Token, mut compile: Compile, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let cmd = compile.take_command().into_vec();
+        let cwd = compile.take_cwd();
         // See if this compiler is already in the cache.
         match self.compiler_info_cached(&cmd) {
             Cache::Hit(c) => {
                 trace!("compiler_info Cache::Hit");
-                self.check_compiler(c, cmd, token, event_loop);
+                self.check_compiler(c, cmd, cwd, token, event_loop);
             }
             Cache::Miss => {
                 trace!("compiler_info Cache::Miss");
@@ -341,10 +386,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                                   match res {
                                       TaskResult::DetectCompiler(path, c) => {
                                           this.cache_compiler_info(path, c);
-                                          //TODO: when FnBox is stable, can use that and avoid the clone here.
-                                          this.check_compiler(c, cmd.clone(), token, event_loop);
+                                          //TODO: when FnBox is stable, can use that and avoid the clones here.
+                                          this.check_compiler(c, cmd.clone(), cwd.clone(), token, event_loop);
                                       },
-                                      //_ => error!("Unexpected task result!"),
+                                      _ => error!("Unexpected task result!"),
                                   };
                               })
             }
@@ -386,10 +431,11 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
 }
 
 /// Results from background tasks.
-#[derive(Debug)]
 pub enum TaskResult {
     /// Compiler type detection.
     DetectCompiler(String, Option<Compiler>),
+    /// Compile finished.
+    Compiled(Option<Output>),
 }
 
 /// Messages that can be sent to the server by way of the event loop.
@@ -418,9 +464,17 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
             ServerMessage::Shutdown => self.initiate_shutdown(event_loop),
             ServerMessage::TaskDone { res, token } => {
                 trace!("TaskDone: {:?}", token);
-                match self.conns[token].take_task() {
-                    Some(task) => (task.callback)(token, res, self, event_loop),
-                    None => error!("Client missing task: {:?}", token),
+                if self.conns.get(token).is_none() {
+                    // Probably the client just hung up on us.
+                    warn!("Missing client at task completion!");
+                } else {
+                    match self.conns[token].take_task() {
+                        Some(task) => (task.callback)(token, res, self, event_loop),
+                        None => {
+                            //FIXME: should probably hang up on client here.
+                            error!("Client missing task: {:?}", token);
+                        }
+                    }
                 }
             }
         };

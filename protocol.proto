@@ -72,8 +72,8 @@ message CompileFinished {
     // Terminated by a signal.
     int32 signal = 2;
   }
-  optional string stdout = 3;
-  optional string stderr = 4;
+  optional bytes stdout = 3;
+  optional bytes stderr = 4;
 }
 
 // The server could not handle this compile command line.

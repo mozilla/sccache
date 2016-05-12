@@ -20,6 +20,7 @@ use ::commands::{
     request_shutdown,
     request_stats,
 };
+use env_logger;
 use mio::Sender;
 use ::mock_command::*;
 use ::server::{
@@ -27,6 +28,7 @@ use ::server::{
     create_server,
     run_server,
 };
+use std::io::Cursor;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 
@@ -81,23 +83,69 @@ fn test_server_stats() {
 
 #[test]
 fn test_server_unhandled_compile() {
-    let (port, sender, creator, child) = run_server_thread();
+    let (port, sender, server_creator, child) = run_server_thread();
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     {
-        let mut c = creator.lock().unwrap();
-        // Once for the server to run.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
-        // Once for the client to run.
+        let mut c = server_creator.lock().unwrap();
+        // The server will check the compiler, so pretend to be an unsupported
+        // compiler.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
     let cmdline = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
     let cwd = "/foo/bar".to_owned();
-    assert_eq!(0, do_compile(creator.clone(), conn, cmdline, cwd).unwrap());
-    // Make sure we ran a mock process.
-    assert_eq!(0, creator.lock().unwrap().children.len());
+    let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+    {
+        let mut c = client_creator.lock().unwrap();
+        // Actual client output.
+        //TODO: do_compile should take stdout/stderr handles!
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "some stdout", "some stderr")));
+    }
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, &mut stdout, &mut stderr).unwrap());
+    // Make sure we ran the mock processes.
+    assert_eq!(0, server_creator.lock().unwrap().children.len());
+    assert_eq!(0, client_creator.lock().unwrap().children.len());
+    //TODO: make local process execution capture output so we can check
+    // stdout + stderr
+    // Shut down the server.
+    sender.send(ServerMessage::Shutdown).unwrap();
+    // Ensure that it shuts down.
+    child.join().unwrap();
+}
+
+#[test]
+fn test_server_compile() {
+    env_logger::init().unwrap();
+    let (port, sender, server_creator, child) = run_server_thread();
+    // Connect to the server.
+    const STDOUT : &'static str = "some stdout";
+    const STDERR : &'static str = "some stderr";
+    let conn = connect_to_server(port).unwrap();
+    {
+        let mut c = server_creator.lock().unwrap();
+        // The server will check the compiler. Pretend it's GCC.
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "gcc", "")));
+        // Actual compiler invocation.
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), STDOUT, STDERR)));
+    }
+    // Ask the server to compile something.
+    //TODO: MockCommand should validate these!
+    let cmdline = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    let cwd = "/foo/bar".to_owned();
+    // This creator shouldn't create any processes. It will assert if
+    // it tries to.
+    let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, &mut stdout, &mut stderr).unwrap());
+    // Make sure we ran the mock processes.
+    assert_eq!(0, server_creator.lock().unwrap().children.len());
+    assert_eq!(STDOUT.as_bytes(), &stdout.into_inner()[..]);
+    assert_eq!(STDERR.as_bytes(), &stderr.into_inner()[..]);
     // Shut down the server.
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.

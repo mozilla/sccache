@@ -39,6 +39,17 @@ pub enum Compiler {
     Msvc,
 }
 
+impl Compiler {
+    /// Check that this compiler can handle and cache when run with the commandline `cmd`.
+    ///
+    /// Not all compiler options can be cached, so this tests the set of
+    /// options for each compiler.
+    pub fn commandline_ok(&self, _cmd : &Vec<String>) -> bool {
+        //TODO: actually implement this.
+        true
+    }
+}
+
 /// Write `contents` to `path`.
 fn write_file(path : &Path, contents: &[u8]) -> io::Result<()> {
     let mut f = try!(File::create(path));
@@ -97,18 +108,29 @@ gcc
         })
 }
 
+/// Whether to capture a processes output or inherit the parent stdio handles.
+#[derive(PartialEq)]
+pub enum ProcessOutput {
+    /// Capture process output.
+    Capture,
+    /// Inherit parent stdio handles.
+    Inherit,
+}
+
 /// Run `cmdline` in `cwd` using `creator`, and return the exit status.
-pub fn run_compiler<T : CommandCreatorSync>(mut creator : T, cmdline : &Vec<String>, cwd : &str) -> io::Result<process::ExitStatus> {
+pub fn run_compiler<T : CommandCreatorSync>(mut creator : T, cmdline : Vec<String>, cwd : &str, capture_output: ProcessOutput) -> io::Result<process::Output> {
     if log_enabled!(Trace) {
         let cmd_str = cmdline.join(" ");
         trace!("run_compiler: '{}' in '{}'", cmd_str, cwd);
     }
-    //TODO: should allow capturing output.
+    let capture = capture_output == ProcessOutput::Capture;
     creator.new_command_sync(&cmdline[0])
         .args(&cmdline[1..])
         .current_dir(cwd)
+        .stdout(if capture { Stdio::piped() } else { Stdio::inherit() })
+        .stderr(if capture { Stdio::piped() } else { Stdio::inherit() })
         .spawn()
-        .and_then(|mut child| child.wait())
+        .and_then(|child| child.wait_with_output())
 }
 
 #[cfg(test)]

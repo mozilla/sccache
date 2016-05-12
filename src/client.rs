@@ -29,33 +29,49 @@ use std::io::{
     BufReader,
     BufWriter,
     Read,
+    Write,
 };
 use std::net::TcpStream;
 
 /// A connection to an sccache server.
 pub struct ServerConnection {
-    /// The socket connected to the server.
-    stream : TcpStream,
+    /// A reader for the socket connected to the server.
+    reader : BufReader<TcpStream>,
+    /// A writer for the socket connected to the server.
+    writer : BufWriter<TcpStream>,
 }
 
 impl ServerConnection {
+    /// Create a new connection using `stream`.
+    pub fn new(stream : TcpStream) -> io::Result<ServerConnection> {
+        let writer = try!(stream.try_clone());
+        Ok(ServerConnection {
+            reader : BufReader::new(stream),
+            writer : BufWriter::new(writer),
+        })
+    }
+
     /// Send `request` to the server, read and return a `ServerResponse`.
     pub fn request(&mut self, request : ClientRequest)
                    -> ProtobufResult<ServerResponse> {
         trace!("ServerConnection::request");
-        let writer = try!(self.stream.try_clone().or_else(|e| Err(ProtobufError::IoError(e))));
-        try!(request.write_length_delimited_to_writer(&mut BufWriter::new(writer)));
-        trace!("ServerConnection::request: sent request, reading response");
-        let reader = try!(self.stream.try_clone().or_else(|e| Err(ProtobufError::IoError(e))));
-        let mut buf_read = BufReader::new(reader);
+        try!(request.write_length_delimited_to_writer(&mut self.writer));
+        try!(self.writer.flush().or_else(|e| Err(ProtobufError::IoError(e))));
+        trace!("ServerConnection::request: sent request");
+        self.read_one_response()
+    }
+
+    /// Read a single `ServerResponse` from the server.
+    pub fn read_one_response(&mut self) -> ProtobufResult<ServerResponse> {
+        trace!("ServerConnection::read_one_response");
         //FIXME: wish `parse_length_delimited_from` worked here!
         let len = try!({
-            let mut is = CodedInputStream::from_buffered_reader(&mut buf_read);
+            let mut is = CodedInputStream::from_buffered_reader(&mut self.reader);
             is.read_raw_varint32()
         });
         trace!("Should read {} more bytes", len);
         let mut buf = vec![0; len as usize];
-        try!(buf_read.read_exact(&mut buf).or_else(|e| Err(ProtobufError::IoError(e))));
+        try!(self.reader.read_exact(&mut buf).or_else(|e| Err(ProtobufError::IoError(e))));
         trace!("Done reading");
         parse_from_bytes::<ServerResponse>(&mut buf)
     }
@@ -64,7 +80,7 @@ impl ServerConnection {
 /// Establish a TCP connection to an sccache server listening on `port`.
 pub fn connect_to_server(port : u16) -> io::Result<ServerConnection> {
     let stream = try!(TcpStream::connect(("127.0.0.1", port)));
-    Ok(ServerConnection { stream : stream })
+    ServerConnection::new(stream)
 }
 
 /// Attempt to establish a TCP connection to an sccache server listening on `port`.
