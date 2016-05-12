@@ -17,6 +17,7 @@ extern crate env_logger;
 #[macro_use] extern crate log;
 extern crate libc;
 extern crate mio;
+extern crate number_prefix;
 extern crate protobuf;
 extern crate retry;
 extern crate tempdir;
