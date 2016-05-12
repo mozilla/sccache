@@ -618,6 +618,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
                     }
                 },
                 ProtobufError::IoError(ioe) => Err(ioe),
+                ProtobufError::MessageNotInitialized { message } => Err(Error::new(ErrorKind::Other, message)),
             })
     }
 
@@ -675,6 +676,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             match err {
                 ProtobufError::IoError(ioe) => Err(ioe),
                 ProtobufError::WireError(s) => Err(Error::new(ErrorKind::Other, s)),
+                ProtobufError::MessageNotInitialized { message } => Err(Error::new(ErrorKind::Other, message)),
             }
         }));
         trace!("ClientConnection::send: queueing {} bytes", msg.len());
