@@ -12,17 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use client::{connect_to_server,connect_with_retry,ServerConnection};
+use client::{
+    connect_to_server,
+    connect_with_retry,
+    ServerConnection,
+};
 use cmdline::Command;
 use compiler::{
     ProcessOutput,
     run_compiler,
 };
+#[cfg(unix)]
+use libc;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
 };
-use number_prefix::{binary_prefix, Standalone, Prefixed};
+use number_prefix::{
+    binary_prefix,
+    Prefixed,
+    Standalone,
+};
 use protobuf::RepeatedField;
 use protocol::{
     CacheStats,
@@ -36,9 +46,23 @@ use protocol::{
 };
 use server;
 use std::env;
-use std::io::{self,Error,ErrorKind,Write};
+#[cfg(unix)]
+use std::ffi::CString;
+use std::io::{
+    self,
+    Error,
+    ErrorKind,
+    Write,
+};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+use std::path::{
+    self,
+    Path,
+    PathBuf,
+};
 use std::process;
 
 
@@ -63,6 +87,79 @@ fn maybe_redirect_stdio(cmd : &mut process::Command) {
             .stdout(process::Stdio::null())
             .stderr(process::Stdio::null());
     }
+}
+
+/// Return `true` if `path` is executable.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    CString::new(path.as_os_str().as_bytes()).and_then(|c| {
+        Ok(unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
+    })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool { true }
+
+//TODO: upstream this all to the `which` crate.
+pub fn which(path: &str, os_path: Option<String>, cwd: &str) -> Option<String> {
+    // Does it have a path separator?
+    if path.chars().any(path::is_separator) {
+        let p = Path::new(&path);
+        if p.is_absolute() {
+            // Already fine.
+            //XXX: should probably use Cow
+            Some(path.to_owned())
+        } else {
+            // Try to make it absolute.
+            let mut new_path = PathBuf::from(cwd);
+            new_path.push(p);
+            if new_path.exists() {
+                new_path.canonicalize()
+                    .ok()
+                    .and_then(|canonical_path|
+                              canonical_path.to_str()
+                              .and_then(|canonical_str| Some(canonical_str.to_owned())))
+            } else {
+                // File doesn't exist.
+                None
+            }
+        }
+    } else {
+        // No separator, look it up in `path`.
+        os_path.and_then(|paths| {
+            env::split_paths(&paths)
+                .map(|p| p.join(&path))
+                .skip_while(|p| !(p.exists() && is_executable(&p)))
+                .take(1)
+                .next()
+                //TODO: shouldn't need to canonicalize here, but
+                // tests break on Windows otherwise. Make this return
+                // a PathBuf and then the tests can call this.
+                .and_then(|p| p.canonicalize().ok())
+                .and_then(|p| p.to_str().map(|ps| ps.to_owned()))
+        })
+    }
+}
+
+/// Make the first element of `cmd` into an absolute path relative to `cwd`, finding it in `os_path` if necessary.
+pub fn find_in_path(mut cmd: Vec<String>, os_path: Option<String>, cwd: &str) -> Vec<String> {
+    match cmd.first_mut() {
+        // Empty commandline?
+        None => {}
+        Some(s) => {
+            match which(&s, os_path, &cwd) {
+                Some(new_path_str) => {
+                    if &new_path_str != s {
+                        s.clear();
+                        s.push_str(&new_path_str);
+                    }
+                }
+                None => {} //TODO: We should error somewhere.
+            }
+        }
+    }
+    cmd
 }
 
 /// Re-execute the current executable as a background server.
@@ -255,8 +352,18 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
 ///
+/// The first entry in `cmdline` will be looked up in `path` if it is not
+/// an absolute path.
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile<T : CommandCreatorSync, U : Write, V : Write>(creator : T, mut conn : ServerConnection, cmdline : Vec<String>, cwd : String, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
+pub fn do_compile<T, U, V>(creator: T,
+                           mut conn: ServerConnection,
+                           mut cmdline: Vec<String>,
+                           cwd: String,
+                           path: Option<String>,
+                           stdout: &mut U,
+                           stderr: &mut V) -> io::Result<i32>
+  where T : CommandCreatorSync, U : Write, V : Write {
+    cmdline = find_in_path(cmdline, path, &cwd);
     request_compile(&mut conn, &cmdline, &cwd)
         .and_then(|res| handle_compile_response(creator, &mut conn, res, cmdline, &cwd, stdout, stderr))
 }
@@ -294,11 +401,159 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, cwd, &mut io::stdout(), &mut io::stderr()))
+                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, cwd, env::var("PATH").ok(), &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
                 })
         },
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[cfg(unix)]
+    use libc;
+    use std::env;
+    use std::fs;
+    use std::io;
+    use std::path::{Path,PathBuf};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tempdir::TempDir;
+
+    struct TestFixture {
+        /// Temp directory.
+        pub tempdir: TempDir,
+        /// $PATH
+        pub paths: String,
+        /// Binaries created in $PATH
+        pub bins: Vec<PathBuf>,
+    }
+
+    const SUBDIRS: &'static [&'static str] = &["a", "b", "c"];
+    const BIN_NAME: &'static str = "bin";
+
+    fn touch(dir: &Path, path: &str) -> io::Result<PathBuf> {
+        let b = dir.join(path);
+        try!(fs::File::create(&b));
+        b.canonicalize()
+    }
+
+    #[cfg(unix)]
+    fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let bin = dir.join(path);
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .mode(0o666 | libc::S_IXUSR)
+                .open(&bin)
+                .and_then(|_| bin.canonicalize())
+    }
+
+    #[cfg(not(unix))]
+    fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
+        touch(dir, path)
+    }
+
+    impl TestFixture {
+        pub fn new() -> TestFixture {
+            let tempdir = TempDir::new("sccache_find_in_path").unwrap();
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            let mut paths = vec!();
+            let mut bins = vec!();
+            for d in SUBDIRS.iter() {
+                let p = tempdir.path().join(d);
+                builder.create(&p).unwrap();
+                bins.push(mk_bin(&p, &BIN_NAME).unwrap());
+                paths.push(p);
+            }
+            TestFixture {
+                tempdir: tempdir,
+                paths: env::join_paths(paths).unwrap().to_str().unwrap().to_owned(),
+                bins: bins,
+            }
+        }
+
+        #[allow(dead_code)]
+        pub fn touch(&self, path: &str) -> io::Result<PathBuf> {
+            touch(self.tempdir.path(), &path)
+        }
+
+        pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
+            mk_bin(self.tempdir.path(), &path)
+        }
+
+        pub fn which(&self, path: &str) -> Option<String> {
+            which(path, Some(self.paths.clone()), self.tempdir.path().to_str().unwrap())
+        }
+    }
+
+    #[test]
+    fn test_which() {
+        let f = TestFixture::new();
+        assert_eq!(f.which(&BIN_NAME).unwrap(), f.bins[0].to_str().unwrap())
+    }
+
+    #[test]
+    fn test_which_not_found() {
+        let f = TestFixture::new();
+        assert!(f.which("a").is_none());
+    }
+
+    #[test]
+    fn test_which_second() {
+        let f = TestFixture::new();
+        let b = f.mk_bin("b/another").unwrap();
+        assert_eq!(f.which("another").unwrap(), b.to_str().unwrap());
+    }
+
+    #[test]
+    fn test_which_relative() {
+        let f = TestFixture::new();
+        assert_eq!(f.which("b/bin").unwrap(), f.bins[1].to_str().unwrap());
+    }
+
+    #[test]
+    fn test_which_relative_leading_dot() {
+        let f = TestFixture::new();
+        assert_eq!(f.which("./b/bin").unwrap(), f.bins[1].to_str().unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_which_non_executable() {
+        // Shouldn't return non-executable files.
+        let f = TestFixture::new();
+        f.touch("b/another").unwrap().canonicalize().unwrap();
+        assert!(f.which("another").is_none());
+    }
+
+    macro_rules! stringvec {
+        ( $( $x:expr ),* ) => {
+            vec!($( $x.to_owned(), )*)
+        };
+    }
+
+    #[test]
+    fn test_find_in_path() {
+        let f = TestFixture::new();
+        assert_eq!(find_in_path(stringvec!(BIN_NAME, "b", "c"),
+                                Some(f.paths.clone()),
+                                f.tempdir.path().to_str().unwrap()),
+                   stringvec!(f.bins[0].to_str().unwrap(), "b", "c"));
+    }
+
+    #[test]
+    fn test_find_in_path_not_found() {
+        let f = TestFixture::new();
+        let v = stringvec!("a", "b", "c");
+        assert_eq!(find_in_path(v.clone(),
+                                Some(f.paths.clone()),
+                                f.tempdir.path().to_str().unwrap()),
+                   v);
     }
 }

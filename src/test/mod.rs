@@ -105,7 +105,8 @@ fn test_server_unhandled_compile() {
     }
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, &mut stdout, &mut stderr).unwrap());
+    let path = None;
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
@@ -141,7 +142,8 @@ fn test_server_compile() {
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, &mut stdout, &mut stderr).unwrap());
+    let path = None;
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(STDOUT.as_bytes(), &stdout.into_inner()[..]);

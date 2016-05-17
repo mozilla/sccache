@@ -226,7 +226,6 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         trace!("compiler_info_cached");
         match cmd.first() {
             Some(path) => {
-                //TODO: check $PATH!
                 match metadata(path) {
                     Ok(_attr) => {
                         match self.compilers.get(path) {
