@@ -448,7 +448,7 @@ mod test {
             fs::OpenOptions::new()
                 .write(true)
                 .create(true)
-                .mode(0o666 | libc::S_IXUSR)
+                .mode(0o666 | (libc::S_IXUSR as u32))
                 .open(&bin)
                 .and_then(|_| bin.canonicalize())
     }
