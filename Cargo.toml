@@ -6,12 +6,14 @@ authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 [dependencies]
 clap = "2.3.0"
 env_logger = "0.3.3"
+filetime = "0.1"
 libc = "0.2.10"
 log = "0.3.6"
 mio = "0.5"
 number_prefix = "0.2.5"
 protobuf = "1.0.18"
 retry = "0.4.0"
+sha1 = "0.1.1"
 tempdir = "0.3.4"
 
 [profile.release]

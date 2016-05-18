@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use filetime::FileTime;
 use log::LogLevel::Trace;
 use mock_command::{
     CommandChild,
@@ -19,18 +20,24 @@ use mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
+use sha1;
 use std::ffi::OsString;
-use std::fs::File;
-use std::io::{self,Error,ErrorKind,Write};
+use std::fs::{self,File};
+use std::io::prelude::*;
+use std::io::{
+    self,
+    BufReader,
+    Error,
+    ErrorKind,
+};
 use std::path::Path;
 use std::process::{self,Stdio};
 use std::str;
 use tempdir::TempDir;
 
 /// Supported compilers.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Compiler {
+pub enum CompilerKind {
     /// GCC
     Gcc,
     /// clang
@@ -39,7 +46,53 @@ pub enum Compiler {
     Msvc,
 }
 
+/// Information about a compiler.
+#[derive(Clone)]
+pub struct Compiler {
+    /// The path to the compiler binary.
+    pub executable: String,
+    /// The last modified time of `executable`.
+    pub mtime: FileTime,
+    /// The sha-1 digest of `executable`, as a hex string.
+    pub digest: String,
+    /// The kind of compiler, from the set of known compilers.
+    pub kind: CompilerKind,
+}
+
 impl Compiler {
+    /// Create a new `Compiler` of `kind`, with `executable` as the binary.
+    ///
+    /// This will generate a hash of the contents of `executable`, so
+    /// don't call it where it shouldn't block on I/O.
+    pub fn new(executable: &str, kind: CompilerKind) -> io::Result<Compiler> {
+        let attr = try!(fs::metadata(executable));
+        let f = try!(File::open(executable));
+        let mut m = sha1::Sha1::new();
+        let mut reader = BufReader::new(f);
+        loop {
+            let mut buffer = [0; 1024];
+            let count = try!(reader.read(&mut buffer[..]));
+            if count == 0 {
+                break;
+            }
+            m.update(&buffer[..count]);
+        }
+        Ok(Compiler {
+            executable: executable.to_owned(),
+            mtime: FileTime::from_last_modification_time(&attr),
+            digest: m.hexdigest(),
+            kind: kind,
+        })
+    }
+
+    /*
+    pub fn dump_info(&self) {
+        println!("executable: {}", self.executable);
+        println!("mtime: {}", self.mtime);
+        println!("digest: {}", self.digest);
+    }
+    */
+
     /// Check that this compiler can handle and cache when run with the commandline `cmd`.
     ///
     /// Not all compiler options can be cached, so this tests the set of
@@ -56,8 +109,8 @@ fn write_file(path : &Path, contents: &[u8]) -> io::Result<()> {
     f.write_all(contents)
 }
 
-/// If this is using a known compiler, return the compiler type.
-pub fn detect_compiler<T : CommandCreatorSync>(mut creator : T,  executable : &str) -> Option<Compiler> {
+/// If `executable` is a known compiler, return `Some(CompilerKind)`.
+pub fn detect_compiler_kind<T : CommandCreatorSync>(mut creator : T,  executable : &str) -> Option<CompilerKind> {
     trace!("detect_compiler");
     TempDir::new("sccache")
         .and_then(|dir| {
@@ -90,13 +143,13 @@ gcc
                                 //TODO: do something smarter here.
                                 if line == "gcc" {
                                     trace!("Found GCC");
-                                    return Ok(Some(Compiler::Gcc));
+                                    return Ok(Some(CompilerKind::Gcc));
                                 } else if line == "clang" {
                                     trace!("Found clang");
-                                    return Ok(Some(Compiler::Clang));
+                                    return Ok(Some(CompilerKind::Clang));
                                 } else if line == "msvc" {
                                     trace!("Found MSVC");
-                                    return Ok(Some(Compiler::Msvc));
+                                    return Ok(Some(CompilerKind::Msvc));
                                 }
                             }
                             Ok(None)
@@ -105,6 +158,19 @@ gcc
         }).unwrap_or_else(|e| {
             warn!("Failed to run compiler: {}", e);
             None
+        })
+}
+
+/// If `executable` is a known compiler, return `Some(Compiler)` containing information about it.
+pub fn get_compiler_info<T : CommandCreatorSync>(creator : T,  executable : &str) -> Option<Compiler> {
+    detect_compiler_kind(creator, &executable)
+        .and_then(|kind| {
+            Compiler::new(&executable, kind)
+                .or_else(|e| {
+                    error!("Failed to create Compiler: {}", e);
+                    Err(())
+                })
+                .ok()
         })
 }
 
@@ -139,6 +205,7 @@ mod test {
     use mock_command::*;
     use std::io;
     use std::sync::{Arc,Mutex};
+    use test::utils::*;
 
     fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
         Arc::new(Mutex::new(MockCommandCreator::new()))
@@ -150,37 +217,63 @@ mod test {
     }
 
     #[test]
-    fn test_detect_compiler_gcc() {
+    fn test_detect_compiler_kind_gcc() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")));
-        assert_eq!(Some(Compiler::Gcc), detect_compiler(creator.clone(), "/foo/bar"));
+        assert_eq!(Some(CompilerKind::Gcc), detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]
-    fn test_detect_compiler_clang() {
+    fn test_detect_compiler_kind_clang() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\nfoo", "")));
-        assert_eq!(Some(Compiler::Clang), detect_compiler(creator.clone(), "/foo/bar"));
+        assert_eq!(Some(CompilerKind::Clang), detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]
-    fn test_detect_compiler_msvc() {
+    fn test_detect_compiler_kind_msvc() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
-        assert_eq!(Some(Compiler::Msvc), detect_compiler(creator.clone(), "/foo/bar"));
+        assert_eq!(Some(CompilerKind::Msvc), detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]
-    fn test_detect_compiler_unknown() {
+    fn test_detect_compiler_kind_unknown() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "something", "")));
-        assert_eq!(None, detect_compiler(creator.clone(), "/foo/bar"));
+        assert_eq!(None, detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]
-    fn test_detect_compiler_process_fail() {
+    fn test_detect_compiler_kind_process_fail() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert_eq!(None, detect_compiler(creator.clone(), "/foo/bar"));
+        assert_eq!(None, detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
+
+    #[test]
+    fn test_get_compiler_info() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(creator.clone(),
+                                  f.bins[0].to_str().unwrap()).unwrap();
+        assert_eq!(f.bins[0].to_str().unwrap(), c.executable);
+        // sha-1 digest of an empty file.
+        assert_eq!("da39a3ee5e6b4b0d3255bfef95601890afd80709", c.digest);
+        assert_eq!(CompilerKind::Gcc, c.kind);
+    }
+
+/*
+    #[test]
+    fn foo() {
+        use std::env;
+        use mock_command::ProcessCommandCreator;
+        let creator = ProcessCommandCreator;
+        let executable = env::args().skip_while(|a| a != "foo").nth(1).unwrap();
+        let compiler = get_compiler_info(creator, &executable).unwrap();
+        compiler.dump_info();
+    }
+*/
 }

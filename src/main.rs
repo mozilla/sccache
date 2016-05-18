@@ -14,12 +14,14 @@
 
 extern crate clap;
 extern crate env_logger;
+extern crate filetime;
 #[macro_use] extern crate log;
 extern crate libc;
 extern crate mio;
 extern crate number_prefix;
 extern crate protobuf;
 extern crate retry;
+extern crate sha1;
 extern crate tempdir;
 
 mod client;

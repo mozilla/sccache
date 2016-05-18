@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod utils;
+
 use ::client::{
     connect_to_server,
 };
@@ -31,6 +33,7 @@ use ::server::{
 use std::io::Cursor;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
+use test::utils::*;
 
 /// Run a server on a background thread, and return a tuple of useful things.
 ///
@@ -84,6 +87,7 @@ fn test_server_stats() {
 #[test]
 fn test_server_unhandled_compile() {
     let (port, sender, server_creator, child) = run_server_thread();
+    let f = TestFixture::new();
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     {
@@ -94,8 +98,8 @@ fn test_server_unhandled_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
-    let cwd = "/foo/bar".to_owned();
+    let cmdline = vec![f.bins[0].to_str().unwrap().to_owned(), "b".to_owned(), "c".to_owned()];
+    let cwd = f.tempdir.path().to_str().unwrap().to_owned();
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     {
         let mut c = client_creator.lock().unwrap();
@@ -105,7 +109,7 @@ fn test_server_unhandled_compile() {
     }
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
-    let path = None;
+    let path = Some(f.paths);
     assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
@@ -121,6 +125,7 @@ fn test_server_unhandled_compile() {
 #[test]
 fn test_server_compile() {
     env_logger::init().unwrap();
+    let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread();
     // Connect to the server.
     const STDOUT : &'static str = "some stdout";
@@ -135,14 +140,14 @@ fn test_server_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
-    let cwd = "/foo/bar".to_owned();
+    let cmdline = vec![f.bins[0].to_str().unwrap().to_owned(), "b".to_owned(), "c".to_owned()];
+    let cwd = f.tempdir.path().to_str().unwrap().to_owned();
     // This creator shouldn't create any processes. It will assert if
     // it tries to.
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
-    let path = None;
+    let path = Some(f.paths);
     assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());

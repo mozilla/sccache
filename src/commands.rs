@@ -413,114 +413,41 @@ pub fn run_command(cmd : Command) -> i32 {
 #[cfg(test)]
 mod test {
     use super::*;
-    #[cfg(unix)]
-    use libc;
-    use std::env;
-    use std::fs;
-    use std::io;
-    use std::path::{Path,PathBuf};
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use tempdir::TempDir;
+    use test::utils::*;
 
-    struct TestFixture {
-        /// Temp directory.
-        pub tempdir: TempDir,
-        /// $PATH
-        pub paths: String,
-        /// Binaries created in $PATH
-        pub bins: Vec<PathBuf>,
-    }
-
-    const SUBDIRS: &'static [&'static str] = &["a", "b", "c"];
-    const BIN_NAME: &'static str = "bin";
-
-    fn touch(dir: &Path, path: &str) -> io::Result<PathBuf> {
-        let b = dir.join(path);
-        try!(fs::File::create(&b));
-        b.canonicalize()
-    }
-
-    #[cfg(unix)]
-    fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let bin = dir.join(path);
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .mode(0o666 | (libc::S_IXUSR as u32))
-                .open(&bin)
-                .and_then(|_| bin.canonicalize())
-    }
-
-    #[cfg(not(unix))]
-    fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
-        touch(dir, path)
-    }
-
-    impl TestFixture {
-        pub fn new() -> TestFixture {
-            let tempdir = TempDir::new("sccache_find_in_path").unwrap();
-            let mut builder = fs::DirBuilder::new();
-            builder.recursive(true);
-            let mut paths = vec!();
-            let mut bins = vec!();
-            for d in SUBDIRS.iter() {
-                let p = tempdir.path().join(d);
-                builder.create(&p).unwrap();
-                bins.push(mk_bin(&p, &BIN_NAME).unwrap());
-                paths.push(p);
-            }
-            TestFixture {
-                tempdir: tempdir,
-                paths: env::join_paths(paths).unwrap().to_str().unwrap().to_owned(),
-                bins: bins,
-            }
-        }
-
-        #[allow(dead_code)]
-        pub fn touch(&self, path: &str) -> io::Result<PathBuf> {
-            touch(self.tempdir.path(), &path)
-        }
-
-        pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
-            mk_bin(self.tempdir.path(), &path)
-        }
-
-        pub fn which(&self, path: &str) -> Option<String> {
-            which(path, Some(self.paths.clone()), self.tempdir.path().to_str().unwrap())
-        }
+    fn _which(f: &TestFixture, path: &str) -> Option<String> {
+        which(path, Some(f.paths.clone()), f.tempdir.path().to_str().unwrap())
     }
 
     #[test]
     fn test_which() {
         let f = TestFixture::new();
-        assert_eq!(f.which(&BIN_NAME).unwrap(), f.bins[0].to_str().unwrap())
+        assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[0].to_str().unwrap())
     }
 
     #[test]
     fn test_which_not_found() {
         let f = TestFixture::new();
-        assert!(f.which("a").is_none());
+        assert!(_which(&f, "a").is_none());
     }
 
     #[test]
     fn test_which_second() {
         let f = TestFixture::new();
         let b = f.mk_bin("b/another").unwrap();
-        assert_eq!(f.which("another").unwrap(), b.to_str().unwrap());
+        assert_eq!(_which(&f, "another").unwrap(), b.to_str().unwrap());
     }
 
     #[test]
     fn test_which_relative() {
         let f = TestFixture::new();
-        assert_eq!(f.which("b/bin").unwrap(), f.bins[1].to_str().unwrap());
+        assert_eq!(_which(&f, "b/bin").unwrap(), f.bins[1].to_str().unwrap());
     }
 
     #[test]
     fn test_which_relative_leading_dot() {
         let f = TestFixture::new();
-        assert_eq!(f.which("./b/bin").unwrap(), f.bins[1].to_str().unwrap());
+        assert_eq!(_which(&f, "./b/bin").unwrap(), f.bins[1].to_str().unwrap());
     }
 
     #[test]
@@ -529,7 +456,7 @@ mod test {
         // Shouldn't return non-executable files.
         let f = TestFixture::new();
         f.touch("b/another").unwrap().canonicalize().unwrap();
-        assert!(f.which("another").is_none());
+        assert!(_which(&f, "another").is_none());
     }
 
     macro_rules! stringvec {

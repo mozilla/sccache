@@ -15,9 +15,10 @@
 use compiler::{
     Compiler,
     ProcessOutput,
-    detect_compiler,
+    get_compiler_info,
     run_compiler,
 };
+use filetime::FileTime;
 use mio::*;
 use mio::tcp::{
     TcpListener,
@@ -227,10 +228,14 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         match cmd.first() {
             Some(path) => {
                 match metadata(path) {
-                    Ok(_attr) => {
+                    Ok(attr) => {
+                        let mtime = FileTime::from_last_modification_time(&attr);
                         match self.compilers.get(path) {
-                            None => Cache::Miss,
-                            Some(v) => Cache::Hit(*v),
+                            // It's a hit only if the mtime matches.
+                            Some(&Some(ref c)) if c.mtime == mtime => Cache::Hit(Some(c.clone())),
+                            // We cache non-results.
+                            Some(&None) => Cache::Hit(None),
+                            _ => Cache::Miss,
                         }
                     }
                     Err(_) => Cache::Miss,
@@ -244,8 +249,8 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     }
 
     /// Store `info` in the compiler info cache for `path`.
-    fn cache_compiler_info(&mut self, path : String, info : Option<Compiler>) {
-        self.compilers.insert(path, info);
+    fn cache_compiler_info(&mut self, path : String, info : &Option<Compiler>) {
+        self.compilers.insert(path, info.clone());
     }
 
     /// Send an `UnhandledCompile` response to the client at `token`.
@@ -377,16 +382,16 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 self.run_task(token, event_loop,
                               // Task, runs on a background thread.
                               move || {
-                                  let c = detect_compiler(creator, &exe);
-                                  TaskResult::DetectCompiler(exe, c)
+                                  let c = get_compiler_info(creator, &exe);
+                                  TaskResult::GetCompilerInfo(exe, c)
                               },
                               // Callback, runs on the event loop thread.
                               move |token, res, this, event_loop| {
                                   match res {
-                                      TaskResult::DetectCompiler(path, c) => {
-                                          this.cache_compiler_info(path, c);
+                                      TaskResult::GetCompilerInfo(path, c) => {
+                                          this.cache_compiler_info(path, &c);
                                           //TODO: when FnBox is stable, can use that and avoid the clones here.
-                                          this.check_compiler(c, cmd.clone(), cwd.clone(), token, event_loop);
+                                          this.check_compiler(c.clone(), cmd.clone(), cwd.clone(), token, event_loop);
                                       },
                                       _ => error!("Unexpected task result!"),
                                   };
@@ -432,7 +437,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
 /// Results from background tasks.
 pub enum TaskResult {
     /// Compiler type detection.
-    DetectCompiler(String, Option<Compiler>),
+    GetCompilerInfo(String, Option<Compiler>),
     /// Compile finished.
     Compiled(Option<Output>),
 }
