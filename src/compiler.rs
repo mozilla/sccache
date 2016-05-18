@@ -203,18 +203,7 @@ pub fn run_compiler<T : CommandCreatorSync>(mut creator : T, cmdline : Vec<Strin
 mod test {
     use super::*;
     use mock_command::*;
-    use std::io;
-    use std::sync::{Arc,Mutex};
     use test::utils::*;
-
-    fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
-        Arc::new(Mutex::new(MockCommandCreator::new()))
-    }
-
-    fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
-                    child: io::Result<MockChild>) {
-        creator.lock().unwrap().next_command_spawns(child);
-    }
 
     #[test]
     fn test_detect_compiler_kind_gcc() {

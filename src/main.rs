@@ -24,6 +24,12 @@ extern crate retry;
 extern crate sha1;
 extern crate tempdir;
 
+// To get macros in scope, this has to be first.
+#[cfg(test)]
+#[macro_use]
+mod test;
+
+mod cache;
 mod client;
 mod cmdline;
 mod commands;
@@ -31,8 +37,6 @@ mod compiler;
 mod mock_command;
 mod protocol;
 mod server;
-#[cfg(test)]
-mod test;
 
 fn main() {
     env_logger::init().unwrap();

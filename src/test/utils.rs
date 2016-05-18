@@ -14,13 +14,43 @@
 
 #[cfg(unix)]
 use libc;
+use mock_command::*;
 use std::env;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
+
+macro_rules! stringvec {
+    ( $( $x:expr ),* ) => {
+        vec!($( $x.to_owned(), )*)
+    };
+}
+
+macro_rules! assert_neq {
+    ($left:expr , $right:expr) => ({
+        match (&($left), &($right)) {
+            (left_val, right_val) => {
+                if !(*left_val != *right_val) {
+                    panic!("assertion failed: `(left != right)` \
+                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
+                }
+            }
+        }
+    })
+}
+
+pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
+    Arc::new(Mutex::new(MockCommandCreator::new()))
+}
+
+pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
+                child: io::Result<MockChild>) {
+    creator.lock().unwrap().next_command_spawns(child);
+}
 
 pub struct TestFixture {
     /// Temp directory.

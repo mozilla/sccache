@@ -459,12 +459,6 @@ mod test {
         assert!(_which(&f, "another").is_none());
     }
 
-    macro_rules! stringvec {
-        ( $( $x:expr ),* ) => {
-            vec!($( $x.to_owned(), )*)
-        };
-    }
-
     #[test]
     fn test_find_in_path() {
         let f = TestFixture::new();
