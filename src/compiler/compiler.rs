@@ -56,9 +56,15 @@ pub enum CompilerKind {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub struct ParsedArguments {
+    /// The input source file.
     pub input: String,
+    /// The file extension of the input source file.
+    pub extension: String,
+    /// Output files, keyed by a simple name, like "obj".
     pub outputs: HashMap<&'static str, String>,
+    /// Commandline arguments for the preprocessor.
     pub preprocessor_args: Vec<String>,
+    /// Commandline arguments for the preprocessor or the compiler.
     pub common_args: Vec<String>,
 }
 

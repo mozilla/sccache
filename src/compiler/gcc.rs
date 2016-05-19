@@ -96,12 +96,12 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
-    let input = match input_arg {
+    let (input, extension) = match input_arg {
         Some(i) => {
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
             match Path::new(i).extension().and_then(|e| e.to_str()) {
-                Some("c") | Some("cc") | Some("cpp") | Some("cxx") => i.to_owned(),
+                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
                 e @ _ => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                     return CompilerArguments::CannotCache;
@@ -132,6 +132,7 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
 
     CompilerArguments::Ok(ParsedArguments {
         input: input,
+        extension: extension,
         outputs: outputs,
         preprocessor_args: preprocessor_args,
         common_args: common_args,
@@ -146,9 +147,10 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -161,10 +163,11 @@ mod test {
 
     #[test]
     fn test_parse_arguments_split_dwarf() {
-        match parse_arguments(&stringvec!["-gsplit-dwarf", "-c", "foo.c", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+        match parse_arguments(&stringvec!["-gsplit-dwarf", "-c", "foo.cpp", "-o", "foo.o"]) {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
+                assert_eq!("foo.cpp", input);
+                assert_eq!("cpp", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"), ("dwo", "foo.dwo"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(2, outputs.len());
@@ -177,10 +180,11 @@ mod test {
 
     #[test]
     fn test_parse_arguments_extra() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-o", "foo.o", "-mxyz"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+        match parse_arguments(&stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"]) {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
+                assert_eq!("foo.cc", input);
+                assert_eq!("cc", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -193,10 +197,11 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+        match parse_arguments(&stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
+                assert_eq!("foo.cxx", input);
+                assert_eq!("cxx", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -210,9 +215,10 @@ mod test {
     #[test]
     fn test_parse_arguments_preprocessor_args() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -226,9 +232,10 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -242,9 +249,10 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
@@ -258,9 +266,10 @@ mod test {
     #[test]
     fn test_parse_arguments_dep_target_needed() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
-            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
                 assert_map_contains!(outputs, ("obj", "foo.o"));
                 //TODO: fix assert_map_contains to assert no extra keys!
                 assert_eq!(1, outputs.len());
