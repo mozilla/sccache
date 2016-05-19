@@ -14,6 +14,7 @@
 
 use compiler::{
     Compiler,
+    CompilerArguments,
     ProcessOutput,
     get_compiler_info,
     run_compiler,
@@ -331,11 +332,17 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 trace!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                if c.commandline_ok(&cmd) {
-                    self.send_compile_started(token, event_loop);
-                    self.start_compile_task(cmd, cwd, token, event_loop);
-                } else {
-                    self.send_unhandled_compile(token, event_loop);
+                match c.parse_arguments(&cmd[1..]) {
+                    CompilerArguments::Ok(_args) => {
+                        self.send_compile_started(token, event_loop);
+                        self.start_compile_task(cmd, cwd, token, event_loop);
+                    }
+                    CompilerArguments::CannotCache => {
+                        self.send_unhandled_compile(token, event_loop);
+                    }
+                    CompilerArguments::NotCompilation => {
+                        self.send_unhandled_compile(token, event_loop);
+                    }
                 }
             }
         }

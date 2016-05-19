@@ -86,7 +86,7 @@ fn test_server_stats() {
 }
 
 #[test]
-fn test_server_unhandled_compile() {
+fn test_server_unsupported_compiler() {
     let (port, sender, server_creator, child) = run_server_thread();
     let f = TestFixture::new();
     // Connect to the server.
@@ -99,7 +99,7 @@ fn test_server_unhandled_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = vec![f.bins[0].to_str().unwrap().to_owned(), "b".to_owned(), "c".to_owned()];
+    let cmdline = stringvec![f.bins[0].to_str().unwrap(), "-c", "file.c", "-o", "file.o"];
     let cwd = f.tempdir.path().to_str().unwrap().to_owned();
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     {
@@ -141,7 +141,7 @@ fn test_server_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = vec![f.bins[0].to_str().unwrap().to_owned(), "b".to_owned(), "c".to_owned()];
+    let cmdline = stringvec![f.bins[0].to_str().unwrap(), "-c", "file.c", "-o", "file.o"];
     let cwd = f.tempdir.path().to_str().unwrap().to_owned();
     // This creator shouldn't create any processes. It will assert if
     // it tries to.

@@ -24,12 +24,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
 
+/// Return a `Vec` with each listed entry converted to an owned `String`.
 macro_rules! stringvec {
     ( $( $x:expr ),* ) => {
         vec!($( $x.to_owned(), )*)
     };
 }
 
+/// Assert that `left != right`.
 macro_rules! assert_neq {
     ($left:expr , $right:expr) => ({
         match (&($left), &($right)) {
@@ -41,6 +43,19 @@ macro_rules! assert_neq {
             }
         }
     })
+}
+
+/// Assert that `map` contains all of the (`key`, `val`) pairs specified.
+macro_rules! assert_map_contains {
+    ( $map:ident , $( ($key:expr, $val:expr) ),* ) => {
+        $(
+            match $map.get(&$key) {
+                Some(&ref v) =>
+                    assert!($val == *v, format!("{} key `{:?}` doesn't match expected! (expected `{:?}` != actual `{:?}`)", stringify!($map), $key, $val, v)),
+                None => panic!("{} missing key `{:?}`", stringify!($map), $key),
+            }
+         )*
+    }
 }
 
 pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
@@ -131,4 +146,32 @@ impl TestFixture {
     pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
         mk_bin(self.tempdir.path(), &path)
     }
+}
+
+#[test]
+fn test_map_contains_ok() {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    assert_map_contains!(m, ("a", 1), ("b", 2));
+}
+
+#[test]
+#[should_panic]
+fn test_map_contains_missing_key() {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    m.insert("a", 1);
+    assert_map_contains!(m, ("a", 1), ("b", 2));
+}
+
+#[test]
+#[should_panic]
+fn test_map_contains_wrong_value() {
+    use std::collections::HashMap;
+    let mut m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 3);
+    assert_map_contains!(m, ("a", 1), ("b", 2));
 }

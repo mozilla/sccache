@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod clang;
+mod gcc;
+mod msvc;
+
 use filetime::FileTime;
 use log::LogLevel::Trace;
 use mock_command::{
@@ -21,6 +25,7 @@ use mock_command::{
     RunCommand,
 };
 use sha1;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io::prelude::*;
@@ -44,6 +49,27 @@ pub enum CompilerKind {
     Clang,
     /// Microsoft Visual C++
     Msvc,
+}
+
+/// The results of parsing a compiler commandline.
+#[allow(dead_code)]
+#[derive(Debug, PartialEq)]
+pub struct ParsedArguments {
+    input: String,
+    outputs: HashMap<&'static str, String>,
+    preprocessor_args: Vec<String>,
+    common_args: Vec<String>,
+}
+
+/// Possible results of parsing compiler arguments.
+#[derive(Debug, PartialEq)]
+pub enum CompilerArguments {
+    /// Commandline can be handled.
+    Ok(ParsedArguments),
+    /// Cannot cache this compilation.
+    CannotCache,
+    /// This commandline is not a compile.
+    NotCompilation,
 }
 
 /// Information about a compiler.
@@ -93,13 +119,16 @@ impl Compiler {
     }
     */
 
-    /// Check that this compiler can handle and cache when run with the commandline `cmd`.
+    /// Check that this compiler can handle and cache when run with `arguments`, and parse out the relevant bits.
     ///
     /// Not all compiler options can be cached, so this tests the set of
     /// options for each compiler.
-    pub fn commandline_ok(&self, _cmd : &Vec<String>) -> bool {
-        //TODO: actually implement this.
-        true
+    pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
+        match self.kind {
+            CompilerKind::Gcc => gcc::parse_arguments(arguments),
+            CompilerKind::Clang => clang::parse_arguments(arguments),
+            CompilerKind::Msvc => msvc::parse_arguments(arguments),
+        }
     }
 }
 
