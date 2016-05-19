@@ -125,7 +125,7 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
                     .and_then(|dwo| outputs.insert("dwo", dwo.to_owned()));
             }
             if need_explicit_dep_target {
-                preprocessor_args.push(dep_target.unwrap_or(o).to_owned());
+                preprocessor_args.extend_from_slice(&["-MT".to_owned(), dep_target.unwrap_or(o).to_owned()]);
             }
         }
     }
@@ -175,11 +175,101 @@ mod test {
         }
     }
 
-    //TODO:
-    // * test that other args get persisted
-    // * test that args with value get persisted with value
-    // * test preprocessor_args
-    // * test -MT
+    #[test]
+    fn test_parse_arguments_extra() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-o", "foo.o", "-mxyz"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert!(preprocessor_args.is_empty());
+                assert_eq!(stringvec!["-fabc", "-mxyz"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_values() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert!(preprocessor_args.is_empty());
+                assert_eq!(stringvec!["-fabc", "-I", "include", "-include", "file"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_preprocessor_args() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert_eq!(stringvec!["-MF", "file", "-MQ", "abc"], preprocessor_args);
+                assert_eq!(stringvec!["-fabc"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_dep_target() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert_eq!(stringvec!["-MF", "file"], preprocessor_args);
+                assert_eq!(stringvec!["-fabc"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_dep_target_needed() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert_eq!(stringvec!["-MF", "file", "-MD", "-MT", "depfile"], preprocessor_args);
+                assert_eq!(stringvec!["-fabc"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_dep_target_needed() {
+        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
+            CompilerArguments::Ok(ParsedArguments { input, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert_eq!(stringvec!["-MF", "file", "-MD", "-MT", "foo.o"], preprocessor_args);
+                assert_eq!(stringvec!["-fabc"], common_args);
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
+    }
 
     #[test]
     fn test_parse_arguments_empty_args() {
