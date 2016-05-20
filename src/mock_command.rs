@@ -48,10 +48,17 @@
 #[cfg(unix)]
 use libc;
 use std::ffi::OsStr;
-use std::io;
+use std::io::{
+    self,
+    Read,
+    Write,
+};
 use std::path::Path;
 use std::process::{
     Child,
+    ChildStderr,
+    ChildStdin,
+    ChildStdout,
     Command,
     ExitStatus,
     Output,
@@ -61,13 +68,20 @@ use std::sync::{Arc,Mutex};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 pub trait CommandChild {
+    type I: Write + Sync + Send + 'static;
+    type O: Read + Sync + Send + 'static;
+    type E: Read + Sync + Send + 'static;
+
+    fn take_stdin(&mut self) -> Option<Self::I>;
+    fn take_stdout(&mut self) -> Option<Self::O>;
+    fn take_stderr(&mut self) -> Option<Self::E>;
     fn wait(&mut self) -> io::Result<ExitStatus>;
     fn wait_with_output(self) -> io::Result<Output>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
 pub trait RunCommand {
-    type C: CommandChild;
+    type C: CommandChild + 'static;
 
     fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Self;
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self;
@@ -97,6 +111,14 @@ pub trait CommandCreatorSync : Clone + Send {
 
 /// Trivial implementation of `CommandChild` for `std::process::Child`.
 impl CommandChild for Child {
+    type I = ChildStdin;
+    type O = ChildStdout;
+    type E = ChildStderr;
+
+    fn take_stdin(&mut self) -> Option<ChildStdin> { self.stdin.take() }
+    fn take_stdout(&mut self) -> Option<ChildStdout> { self.stdout.take() }
+    fn take_stderr(&mut self) -> Option<ChildStderr> { self.stderr.take() }
+
     fn wait(&mut self) -> io::Result<ExitStatus> {
         self.wait()
     }
@@ -175,41 +197,91 @@ pub fn exit_status(v : ExitStatusValue) -> ExitStatus {
     unsafe { transmute(InnerExitStatus(v)) }
 }
 
+/// A struct to track what happened with a `MockChild`.
+pub struct MockChildResult {
+    /// Data that was written to stdin.
+    pub stdin: Vec<u8>,
+    /// Number of calls to `wait`.
+    pub wait_calls: usize,
+}
+
+impl MockChildResult {
+    /// Create a new `MockChildResult`.
+    pub fn new() -> MockChildResult {
+        MockChildResult {
+            stdin: vec!(),
+            wait_calls: 0,
+        }
+    }
+}
+
+/// A struct that mocks `std::process::Child`.
 #[allow(dead_code)]
 pub struct MockChild {
-    pub output : Option<io::Result<Output>>,
+    //TODO: this doesn't work to actually track writes...
+    /// A `Cursor` to hand out as stdin.
+    pub stdin: Option<io::Cursor<Vec<u8>>>,
+    /// A `Cursor` to hand out as stdout.
+    pub stdout: Option<io::Cursor<Vec<u8>>>,
+    /// A `Cursor` to hand out as stderr.
+    pub stderr: Option<io::Cursor<Vec<u8>>>,
+    /// The `Result` to be handed out when `wait` is called.
+    pub wait_result: Option<io::Result<ExitStatus>>,
+    /// A place to track the status of this `MockChild`.
+    pub result: Arc<Mutex<MockChildResult>>,
 }
 
 /// A mocked child process that simply returns stored values for its status and output.
 impl MockChild {
     /// Create a `MockChild` that will return the specified `status`, `stdout`, and `stderr` when waited upon.
     #[allow(dead_code)]
-    pub fn new(status : ExitStatus, stdout : &str, stderr : &str) -> MockChild {
+    pub fn new<T: AsRef<[u8]>>(status: ExitStatus, stdout: T, stderr: T) -> MockChild {
         MockChild {
-            output : Some(Ok(Output {
-                status: status,
-                stdout: stdout.as_bytes().to_vec(),
-                stderr: stderr.as_bytes().to_vec(),
-            }))
+            stdin: Some(io::Cursor::new(vec!())),
+            stdout: Some(io::Cursor::new(stdout.as_ref().to_vec())),
+            stderr: Some(io::Cursor::new(stderr.as_ref().to_vec())),
+            wait_result: Some(Ok(status)),
+            result: Arc::new(Mutex::new(MockChildResult::new())),
         }
     }
 
     /// Create a `MockChild` that will return the specified `err` when waited upon.
     #[allow(dead_code)]
-    pub fn with_error(err : io::Error) -> MockChild {
+    pub fn with_error(err: io::Error) -> MockChild {
         MockChild {
-            output : Some(Err(err)),
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            wait_result: Some(Err(err)),
+            result: Arc::new(Mutex::new(MockChildResult::new())),
         }
     }
 }
 
 impl CommandChild for MockChild {
+    type I = io::Cursor<Vec<u8>>;
+    type O = io::Cursor<Vec<u8>>;
+    type E = io::Cursor<Vec<u8>>;
+
+    fn take_stdin(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stdin.take() }
+    fn take_stdout(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stdout.take() }
+    fn take_stderr(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stderr.take() }
+
     fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.output.take().unwrap().and_then(|o| Ok(o.status))
+        self.result.lock().unwrap().wait_calls += 1;
+        self.wait_result.take().unwrap()
     }
+
     fn wait_with_output(self) -> io::Result<Output> {
-        let MockChild { mut output } = self;
-        output.take().unwrap()
+        let MockChild { stdout, stderr, wait_result, result, .. } = self;
+        result.lock().unwrap().wait_calls += 1;
+        wait_result.unwrap().and_then(|status| {
+            Ok(Output {
+                status: status,
+                stdout: stdout.map(|c| c.into_inner()).unwrap_or(vec!()),
+                stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec!()),
+            })
+        })
     }
 }
 
@@ -254,8 +326,13 @@ pub struct MockCommandCreator {
 impl MockCommandCreator {
     /// The next `MockCommand` created will return `child` from `RunCommand::spawn`.
     #[allow(dead_code)]
-    pub fn next_command_spawns(&mut self, child : io::Result<MockChild>) {
+    pub fn next_command_spawns(&mut self, child: io::Result<MockChild>) -> Arc<Mutex<MockChildResult>> {
+        let res = child
+            .as_ref()
+            .and_then(|c| Ok(c.result.clone()))
+            .unwrap_or(Arc::new(Mutex::new(MockChildResult::new())));
         self.children.push(child);
+        res
     }
 }
 
@@ -302,6 +379,7 @@ mod test {
     };
     use std::sync::{Arc,Mutex};
     use std::thread;
+    use test::utils::*;
 
     fn spawn_command<T : CommandCreator, S: AsRef<OsStr>>(creator : &mut T, program: S) -> io::Result<<<T as CommandCreator>::Cmd as RunCommand>::C> {
         creator.new_command(program).spawn()
@@ -328,8 +406,9 @@ mod test {
     #[test]
     fn test_mock_command_wait() {
         let mut creator = MockCommandCreator::new();
-        creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
+        let res = creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         assert_eq!(0, spawn_wait_command(&mut creator, "foo").unwrap().code().unwrap());
+        assert_eq!(1, res.lock().unwrap().wait_calls);
     }
 
     #[test]
@@ -372,7 +451,7 @@ mod test {
     #[test]
     fn test_mock_command_sync() {
         let creator = Arc::new(Mutex::new(MockCommandCreator::new()));
-        creator.lock().unwrap().next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "hello", "error")));
         assert_eq!(exit_status(0), spawn_on_thread(creator.clone(), true));
     }
 

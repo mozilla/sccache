@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use cache::hash_key;
 use compiler::{
     clang,
     gcc,
@@ -27,7 +28,7 @@ use mock_command::{
 };
 use sha1;
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self,File};
 use std::io::prelude::*;
 use std::io::{
@@ -39,6 +40,7 @@ use std::io::{
 use std::path::Path;
 use std::process::{self,Stdio};
 use std::str;
+use std::thread;
 use tempdir::TempDir;
 
 /// Supported compilers.
@@ -50,6 +52,32 @@ pub enum CompilerKind {
     Clang,
     /// Microsoft Visual C++
     Msvc,
+}
+
+impl CompilerKind {
+    pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
+        match self {
+            &CompilerKind::Gcc => gcc::parse_arguments(arguments),
+            &CompilerKind::Clang => clang::parse_arguments(arguments),
+            &CompilerKind::Msvc => msvc::parse_arguments(arguments),
+        }
+    }
+
+    pub fn preprocess<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+        match self {
+            &CompilerKind::Gcc => gcc::preprocess(creator, compiler, parsed_args, cwd),
+            &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Msvc => Err(Error::new(ErrorKind::Other, "error")),
+        }
+    }
+
+    pub fn compile<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+        match self {
+            &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
+            &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Msvc => Err(Error::new(ErrorKind::Other, "error")),
+        }
+    }
 }
 
 /// The results of parsing a compiler commandline.
@@ -118,24 +146,31 @@ impl Compiler {
         })
     }
 
-    /*
-    pub fn dump_info(&self) {
-        println!("executable: {}", self.executable);
-        println!("mtime: {}", self.mtime);
-        println!("digest: {}", self.digest);
-    }
-    */
-
     /// Check that this compiler can handle and cache when run with `arguments`, and parse out the relevant bits.
     ///
     /// Not all compiler options can be cached, so this tests the set of
     /// options for each compiler.
     pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
-        match self.kind {
-            CompilerKind::Gcc => gcc::parse_arguments(arguments),
-            CompilerKind::Clang => clang::parse_arguments(arguments),
-            CompilerKind::Msvc => msvc::parse_arguments(arguments),
+        trace!("parse_arguments");
+        self.kind.parse_arguments(arguments)
+    }
+
+    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+        trace!("get_cached_or_compile");
+        let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
+        // If the preprocessor failed, just return that result.
+        if !preprocessor_result.status.success() {
+            return Ok(preprocessor_result);
         }
+        trace!("Preprocessor output is {} bytes", preprocessor_result.stdout.len());
+
+        let key = hash_key(self, arguments, &preprocessor_result.stdout);
+        trace!("Hash key: {}", key);
+        //TODO: Check cache, return cached result.
+        let process::Output { stdout, .. } = preprocessor_result;
+        let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
+        //TODO: read output files contents, store in cache.
+        Ok(compiler_result)
     }
 }
 
@@ -219,20 +254,56 @@ pub enum ProcessOutput {
     Inherit,
 }
 
-/// Run `cmdline` in `cwd` using `creator`, and return the exit status.
-pub fn run_compiler<T : CommandCreatorSync>(mut creator : T, cmdline : Vec<String>, cwd : &str, capture_output: ProcessOutput) -> io::Result<process::Output> {
+/// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
+///
+/// This was lifted from `std::process::Child::wait_with_output` and modified
+/// to also write to stdin.
+pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Option<Vec<u8>>) -> io::Result<process::Output> {
+    let stdin = input.and_then(|i| {
+        child.take_stdin().map(|mut stdin| {
+            thread::spawn(move || {
+                stdin.write_all(&i)
+            })
+        })
+    });
+    fn read<R>(mut input: R) -> thread::JoinHandle<io::Result<Vec<u8>>>
+        where R: Read + Send + 'static
+    {
+        thread::spawn(move || {
+            let mut ret = Vec::new();
+            input.read_to_end(&mut ret).map(|_| ret)
+        })
+    }
+    // Finish writing stdin before waiting, because waiting drops stdin.
+    stdin.and_then(|t| t.join().unwrap().ok());
+    let stdout = child.take_stdout().map(read);
+    let stderr = child.take_stderr().map(read);
+    let status = try!(child.wait());
+    let stdout = stdout.and_then(|t| t.join().unwrap().ok());
+    let stderr = stderr.and_then(|t| t.join().unwrap().ok());
+
+    Ok(process::Output {
+        status: status,
+        stdout: stdout.unwrap_or(Vec::new()),
+        stderr: stderr.unwrap_or(Vec::new()),
+    })
+}
+
+/// Run `executable` with `cmdline` in `cwd` using `creator`, and return the exit status and possibly the output, if `capture_output` is `ProcessOutput::Capture`.
+pub fn run_compiler<T : CommandCreatorSync, U: AsRef<OsStr>, V: AsRef<OsStr>, W: AsRef<OsStr>>(mut creator: T, executable: &U, cmdline: &[V], cwd: &W, stdin: Option<Vec<u8>>, capture_output: ProcessOutput) -> io::Result<process::Output> {
     if log_enabled!(Trace) {
-        let cmd_str = cmdline.join(" ");
-        trace!("run_compiler: '{}' in '{}'", cmd_str, cwd);
+        //let cmd_str = cmdline.join(" ");
+        //trace!("run_compiler: '{}' in '{}'", cmd_str, cwd.borrow());
     }
     let capture = capture_output == ProcessOutput::Capture;
-    creator.new_command_sync(&cmdline[0])
-        .args(&cmdline[1..])
-        .current_dir(cwd)
+    creator.new_command_sync(executable.as_ref())
+        .args(cmdline)
+        .current_dir(cwd.as_ref())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(if capture { Stdio::piped() } else { Stdio::inherit() })
         .stderr(if capture { Stdio::piped() } else { Stdio::inherit() })
         .spawn()
-        .and_then(|child| child.wait_with_output())
+        .and_then(|child| wait_with_input_output(child, stdin))
 }
 
 #[cfg(test)]
@@ -290,15 +361,29 @@ mod test {
         assert_eq!(CompilerKind::Gcc, c.kind);
     }
 
-/*
     #[test]
-    fn foo() {
-        use std::env;
-        use mock_command::ProcessCommandCreator;
-        let creator = ProcessCommandCreator;
-        let executable = env::args().skip_while(|a| a != "foo").nth(1).unwrap();
-        let compiler = get_compiler_info(creator, &executable).unwrap();
-        compiler.dump_info();
+    fn test_compiler_get_cached_or_compile_uncached() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(creator.clone(),
+                                  f.bins[0].to_str().unwrap()).unwrap();
+        // The preprocessor invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+        // The compiler invocation.
+        const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
+        const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
+        next_command(&creator, Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)));
+        let cwd = f.tempdir.path().to_str().unwrap();
+        let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match c.parse_arguments(&arguments) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let res = c.get_cached_or_compile(creator.clone(), &arguments, &parsed_args, cwd).unwrap();
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
-*/
 }

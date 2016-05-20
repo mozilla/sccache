@@ -27,11 +27,11 @@ pub const CACHED_ENV_VARS : &'static [&'static str] = &[
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 #[allow(dead_code)]
-pub fn hash_key(compiler: &Compiler, args: &Vec<String>, preprocessor_output: &[u8]) -> String {
+pub fn hash_key(compiler: &Compiler, args: &[String], preprocessor_output: &[u8]) -> String {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = sha1::Sha1::new();
     m.update(compiler.digest.as_bytes());
-    //TODO: use basename
+    //TODO: drop the compiler filename from the hash
     m.update(compiler.executable.as_bytes());
     m.update(CACHE_VERSION);
     let last = args.len() - 1;
@@ -41,7 +41,8 @@ pub fn hash_key(compiler: &Compiler, args: &Vec<String>, preprocessor_output: &[
             m.update(&b" "[..]);
         }
     }
-    //TODO: should probably propogate these over from the client.
+    //TODO: should propogate these over from the client.
+    // https://github.com/glandium/sccache/issues/5
     for var in CACHED_ENV_VARS.iter() {
         match env::var(var) {
             Ok(val) => {

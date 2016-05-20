@@ -108,7 +108,7 @@ fn test_server_unsupported_compiler() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, &cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
@@ -126,14 +126,19 @@ fn test_server_compile() {
     let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread();
     // Connect to the server.
-    const STDOUT : &'static str = "some stdout";
-    const STDERR : &'static str = "some stderr";
+    const PREPROCESSOR_STDOUT : &'static [u8] = b"preprocessor stdout";
+    const PREPROCESSOR_STDERR : &'static [u8] = b"preprocessor stderr";
+    const STDOUT : &'static [u8] = b"some stdout";
+    const STDERR : &'static [u8] = b"some stderr";
     let conn = connect_to_server(port).unwrap();
     {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler. Pretend it's GCC.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), "gcc", "")));
-        // Actual compiler invocation.
+        // Preprocessor invocation.
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), PREPROCESSOR_STDOUT, PREPROCESSOR_STDERR)));
+        // Compiler invocation.
+        //TODO: wire up a way to get data written to stdin.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), STDOUT, STDERR)));
     }
     // Ask the server to compile something.
@@ -146,11 +151,11 @@ fn test_server_compile() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, &cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
-    assert_eq!(STDOUT.as_bytes(), &stdout.into_inner()[..]);
-    assert_eq!(STDERR.as_bytes(), &stderr.into_inner()[..]);
+    assert_eq!(STDOUT, stdout.into_inner().as_slice());
+    assert_eq!(STDERR, stderr.into_inner().as_slice());
     // Shut down the server.
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.

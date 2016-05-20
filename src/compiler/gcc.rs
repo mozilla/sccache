@@ -13,11 +13,25 @@
 // limitations under the License.
 
 use ::compiler::{
+    Compiler,
     CompilerArguments,
     ParsedArguments,
+    ProcessOutput,
+    run_compiler,
+};
+use log::LogLevel::Trace;
+use mock_command::{
+    CommandCreator,
+    CommandCreatorSync,
 };
 use std::collections::HashMap;
+use std::io::{
+    self,
+    Error,
+    ErrorKind,
+};
 use std::path::Path;
+use std::process;
 
 pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
     trace!("gcc::parse_arguments");
@@ -137,6 +151,45 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
         preprocessor_args: preprocessor_args,
         common_args: common_args,
     })
+}
+
+pub fn preprocess<T : CommandCreatorSync>(creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    trace!("preprocess");
+    let mut cmdline = vec!["-E".to_string(), parsed_args.input.clone()];
+    cmdline.extend(parsed_args.preprocessor_args.clone());
+    cmdline.extend(parsed_args.common_args.clone());
+
+    if log_enabled!(Trace) {
+        let cmd_str = cmdline.join(" ");
+        trace!("preprocess: `{} {}` in '{}'", compiler.executable, cmd_str, cwd);
+    }
+    run_compiler(creator.clone(), &compiler.executable, &cmdline, &cwd, None, ProcessOutput::Capture)
+}
+
+pub fn compile<T : CommandCreatorSync>(creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    trace!("compile");
+    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+    //FIXME: sort out the ownership nonsense here
+    let mut cmdline = vec![
+        "-c".to_string(),
+        "-x".to_string(),
+        match parsed_args.extension.as_ref() {
+            "c" => "cpp-output".to_string(),
+            "cc" | "cpp" | "cxx" => "c++-cpp-output".to_string(),
+            e @ _ => {
+                error!("gcc::compile: Got an unexpected file extension {}", e);
+                return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
+            }
+        },
+        "-".to_string(),
+        "-o".to_string(), output.clone(),
+        ];
+    cmdline.extend(parsed_args.common_args.clone());
+    if log_enabled!(Trace) {
+        let cmd_str = cmdline.join(" ");
+        trace!("compile: `{} {}` in '{}'", compiler.executable, cmd_str, cwd);
+    }
+    run_compiler(creator.clone(), &compiler.executable, &cmdline, &cwd, Some(preprocessor_output), ProcessOutput::Capture)
 }
 
 #[cfg(test)]

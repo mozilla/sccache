@@ -67,7 +67,7 @@ use std::process;
 
 
 /// The default sccache server port.
-pub const DEFAULT_PORT : u16 = 4225;
+pub const DEFAULT_PORT : u16 = 4226;
 
 /// Possible responses from the server for a `Compile` request.
 enum CompileResponse {
@@ -331,7 +331,7 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
             //TODO: possibly capture output here for testing.
-            run_compiler(creator, cmdline, cwd, ProcessOutput::Inherit)
+            run_compiler(creator, &cmdline[0], &cmdline[1..], &cwd, None, ProcessOutput::Inherit)
                 .and_then(|output| {
                     Ok(output.status.code()
                        .unwrap_or_else(|| {
@@ -358,7 +358,7 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator
 pub fn do_compile<T, U, V>(creator: T,
                            mut conn: ServerConnection,
                            mut cmdline: Vec<String>,
-                           cwd: String,
+                           cwd: &str,
                            path: Option<String>,
                            stdout: &mut U,
                            stderr: &mut V) -> io::Result<i32>
@@ -401,7 +401,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { cmdline, cwd } => {
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, cwd, env::var("PATH").ok(), &mut io::stdout(), &mut io::stderr()))
+                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, &cwd, env::var("PATH").ok(), &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1

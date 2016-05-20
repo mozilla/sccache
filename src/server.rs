@@ -15,9 +15,8 @@
 use compiler::{
     Compiler,
     CompilerArguments,
-    ProcessOutput,
+    ParsedArguments,
     get_compiler_info,
-    run_compiler,
 };
 use filetime::FileTime;
 use mio::*;
@@ -205,20 +204,36 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     F : FnOnce() -> TaskResult + Send + 'static,
     G : Fn(Token, TaskResult, &mut SccacheServer<C>, &mut EventLoop<SccacheServer<C>>) + 'static {
         trace!("run_task");
-        let sender = event_loop.channel();
+        let task_sender = event_loop.channel();
         match thread::Builder::new().spawn(move || {
-            thread::park();
             let msg = ServerMessage::TaskDone {
                 res: task(),
                 token: token
             };
-            sender.send(msg).unwrap();
+            task_sender.send(msg).unwrap();
         }) {
             Ok(handle) => {
                 // Save the callback in the ClientConnection.
                 self.conns[token].set_task(Task { callback: Box::new(callback) });
-                handle.thread().unpark();
+                // Wait on the task thread handle as well.
+                let wait_sender = event_loop.channel();
+                thread::spawn(move || {
+                    match handle.join() {
+                        Ok(_) => {},
+                        Err(e) => {
+                            e.downcast::<String>()
+                                .map(|s| error!("Task thread panicked: {}", s))
+                                .unwrap_or_else(|_| error!("Task thread panicked (panic argument was not a String)"));
+                            let msg = ServerMessage::TaskDone {
+                                res: TaskResult::Panic,
+                                token: token
+                            };
+                            wait_sender.send(msg).unwrap();
+                        },
+                    }
+                });
             },
+            //TODO: this should probably just disconnect the client.
             Err(e) => error!("Failed to spawn task: {}", e),
         }
     }
@@ -333,9 +348,9 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 // Now check that we can handle this compiler with
                 // the provided commandline.
                 match c.parse_arguments(&cmd[1..]) {
-                    CompilerArguments::Ok(_args) => {
+                    CompilerArguments::Ok(args) => {
                         self.send_compile_started(token, event_loop);
-                        self.start_compile_task(cmd, cwd, token, event_loop);
+                        self.start_compile_task(c, args, cmd, cwd, token, event_loop);
                     }
                     CompilerArguments::CannotCache => {
                         self.send_unhandled_compile(token, event_loop);
@@ -349,12 +364,15 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     }
 
     /// Start running `cmd` in a background task, in `cwd`.
-    fn start_compile_task(&mut self, cmd: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+    fn start_compile_task(&mut self, compiler: Compiler, parsed_arguments: ParsedArguments, arguments: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let creator = self.creator.clone();
         self.run_task(token, event_loop,
                       // Task, runs on a background thread.
                       move || {
-                          let res = run_compiler(creator, cmd, &cwd, ProcessOutput::Capture);
+                          let parsed_args = parsed_arguments;
+                          let args = arguments;
+                          let c = cwd;
+                          let res = compiler.get_cached_or_compile(creator, &args[1..], &parsed_args, &c);
                           TaskResult::Compiled(res.ok())
                       },
                       // Callback, runs on the event loop thread.
@@ -362,6 +380,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                           match res {
                               TaskResult::Compiled(output) => {
                                   this.send_compile_finished(output, token, event_loop);
+                              },
+                              TaskResult::Panic => {
+                                  error!("Compile task panic!");
+                                  this.send_compile_finished(None, token, event_loop);
                               },
                               _ => error!("Unexpected task result!"),
                           };
@@ -447,6 +469,8 @@ pub enum TaskResult {
     GetCompilerInfo(String, Option<Compiler>),
     /// Compile finished.
     Compiled(Option<Output>),
+    /// Task `panic`ed.
+    Panic,
 }
 
 /// Messages that can be sent to the server by way of the event loop.
