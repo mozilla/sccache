@@ -23,6 +23,7 @@ extern crate protobuf;
 extern crate retry;
 extern crate sha1;
 extern crate tempdir;
+extern crate zip;
 
 // To get macros in scope, this has to be first.
 #[cfg(test)]

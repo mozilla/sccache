@@ -63,8 +63,12 @@ pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
 }
 
 pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
-                child: io::Result<MockChild>) -> Arc<Mutex<MockChildResult>> {
-    creator.lock().unwrap().next_command_spawns(child)
+                child: io::Result<MockChild>) {
+    creator.lock().unwrap().next_command_spawns(child);
+}
+
+pub fn next_command_calls<C: Fn() -> io::Result<MockChild> + Send + 'static>(creator : &Arc<Mutex<MockCommandCreator>>, call: C) {
+    creator.lock().unwrap().next_command_calls(call);
 }
 
 pub struct TestFixture {

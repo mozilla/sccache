@@ -15,6 +15,7 @@ protobuf = "1.0.18"
 retry = "0.4.0"
 sha1 = "0.1.1"
 tempdir = "0.3.4"
+zip = { version = "0.1", default-features = false }
 
 [profile.release]
 debug = true

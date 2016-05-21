@@ -20,6 +20,7 @@ use ::commands::{
     request_shutdown,
     request_stats,
 };
+#[allow(unused_imports)]
 use env_logger;
 use mio::Sender;
 use ::mock_command::*;
@@ -28,7 +29,11 @@ use ::server::{
     create_server,
     run_server,
 };
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{
+    Cursor,
+    Write,
+};
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 use test::utils::*;
@@ -122,7 +127,7 @@ fn test_server_unsupported_compiler() {
 
 #[test]
 fn test_server_compile() {
-    env_logger::init().unwrap();
+    //env_logger::init().unwrap();
     let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread();
     // Connect to the server.
@@ -139,7 +144,15 @@ fn test_server_compile() {
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), PREPROCESSOR_STDOUT, PREPROCESSOR_STDERR)));
         // Compiler invocation.
         //TODO: wire up a way to get data written to stdin.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), STDOUT, STDERR)));
+        let obj = f.tempdir.path().join("file.o");
+        c.next_command_calls(move || {
+            // Pretend to compile something.
+            match File::create(&obj)
+                .and_then(|mut f| f.write_all(b"file contents")) {
+                    Ok(_) => Ok(MockChild::new(exit_status(0), STDOUT, STDERR)),
+                    Err(e) => Err(e),
+                }
+        });
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!

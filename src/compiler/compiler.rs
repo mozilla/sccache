@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::hash_key;
+use cache::disk::DiskCache;
+use cache::{
+    Storage,
+    hash_key,
+};
 use compiler::{
     clang,
     gcc,
@@ -25,9 +29,11 @@ use mock_command::{
     CommandCreator,
     CommandCreatorSync,
     RunCommand,
+    exit_status,
 };
 use sha1;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self,File};
 use std::io::prelude::*;
@@ -166,11 +172,49 @@ impl Compiler {
 
         let key = hash_key(self, arguments, &preprocessor_result.stdout);
         trace!("Hash key: {}", key);
-        //TODO: Check cache, return cached result.
-        let process::Output { stdout, .. } = preprocessor_result;
-        let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
-        //TODO: read output files contents, store in cache.
-        Ok(compiler_result)
+        let pwd = Path::new(cwd);
+        let outputs = parsed_args.outputs.iter()
+            .map(|(key, path)| (key, pwd.join(path)))
+            .collect::<HashMap<_, _>>();
+        //TODO: derive this from the environment or settings
+        let d = env::var_os(&"SCCACHE_DIR")
+            .unwrap_or(OsString::from("/tmp/sccache_cache"));
+        let storage = DiskCache::new(&d);
+        storage.get(&key)
+            .map(|mut entry| {
+                debug!("Cache hit!");
+                for (key, path) in outputs.iter() {
+                    let mut f = try!(File::create(path));
+                    try!(entry.get_object(key, &mut f));
+                }
+                let mut stdout = io::Cursor::new(vec!());
+                let mut stderr = io::Cursor::new(vec!());
+                entry.get_object("stdout", &mut stdout).unwrap_or(());
+                entry.get_object("stderr", &mut stderr).unwrap_or(());
+                Ok(process::Output {
+                    status: exit_status(0),
+                    stdout: stdout.into_inner(),
+                    stderr: stderr.into_inner(),
+                })
+            })
+            .unwrap_or_else(move || {
+                debug!("Cache miss!");
+                let process::Output { stdout, .. } = preprocessor_result;
+                let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
+                trace!("Compiled, storing in cache");
+                let mut entry = try!(storage.start_put(&key));
+                for (key, path) in outputs.iter() {
+                    let mut f = try!(File::open(&path));
+                    try!(entry.put_object(key, &mut f)
+                         .or_else(|e| {
+                             error!("Failed to put object `{:?}` in storage: {:?}", path, e);
+                             Err(e)
+                         }));
+                }
+                //TODO: do this on a background thread.
+                try!(storage.finish_put(&key, entry));
+                Ok(compiler_result)
+            })
     }
 }
 
@@ -310,6 +354,8 @@ pub fn run_compiler<T : CommandCreatorSync, U: AsRef<OsStr>, V: AsRef<OsStr>, W:
 mod test {
     use super::*;
     use mock_command::*;
+    use std::fs::File;
+    use std::io::Write;
     use test::utils::*;
 
     #[test]
@@ -363,6 +409,8 @@ mod test {
 
     #[test]
     fn test_compiler_get_cached_or_compile_uncached() {
+        use env_logger;
+        env_logger::init().unwrap();
         let creator = new_creator();
         let f = TestFixture::new();
         // Pretend to be GCC.
@@ -374,7 +422,15 @@ mod test {
         // The compiler invocation.
         const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
         const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
-        next_command(&creator, Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)));
+        let obj = f.tempdir.path().join("foo.o");
+        next_command_calls(&creator, move || {
+            // Pretend to compile something.
+            match File::create(&obj)
+                .and_then(|mut f| f.write_all(b"file contents")) {
+                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
+                    Err(e) => Err(e),
+                }
+        });
         let cwd = f.tempdir.path().to_str().unwrap();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let parsed_args = match c.parse_arguments(&arguments) {

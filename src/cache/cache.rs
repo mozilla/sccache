@@ -15,6 +15,74 @@
 use compiler::Compiler;
 use sha1;
 use std::env;
+use std::io::{
+    self,
+    Error,
+    ErrorKind,
+    Read,
+    Seek,
+    Write,
+};
+use zip::{
+    CompressionMethod,
+    ZipArchive,
+    ZipWriter,
+};
+
+/// Data stored in the compiler cache.
+pub struct CacheRead<R: Read + Seek> {
+    zip: ZipArchive<R>,
+}
+
+impl<R: Read + Seek> CacheRead<R> {
+    /// Create a cache entry from `reader`.
+    pub fn from(reader: R) -> io::Result<CacheRead<R>> {
+        let z = try!(ZipArchive::new(reader).or(Err(Error::new(ErrorKind::Other, "Failed to parse cache entry"))));
+        Ok(CacheRead {
+            zip: z,
+        })
+    }
+
+    /// Get an object from this cache entry at `name` and write it to `to`.
+    pub fn get_object<T: Write>(&mut self, name: &str, to: &mut T) -> io::Result<()> {
+        let mut file = try!(self.zip.by_name(name).or(Err(Error::new(ErrorKind::Other, "Failed to read object from cache entry"))));
+        try!(io::copy(&mut file, to));
+        Ok(())
+    }
+}
+
+/// Data to be stored in the compiler cache.
+pub struct CacheWrite<W: Write + Seek> {
+    zip: ZipWriter<W>,
+}
+
+impl<W: Write + Seek> CacheWrite<W> {
+    /// Create a new, empty cache entry that writes to `writer`.
+    pub fn new(writer: W) -> CacheWrite<W> {
+        CacheWrite {
+            zip: ZipWriter::new(writer),
+        }
+    }
+
+    /// Add an object containing the contents of `from` to this cache entry at `name`.
+    pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> io::Result<()> {
+        try!(self.zip.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
+        try!(io::copy(from, &mut self.zip));
+        Ok(())
+    }
+}
+
+/// An interface to cache storage.
+pub trait Storage {
+    type T: Read + Write + Seek;
+    /// Get a cache entry by `key`.
+    fn get(&self, key: &str) -> Option<CacheRead<Self::T>>;
+
+    /// Get a cache entry for `key` that can be filled with data.
+    fn start_put(&self, key: &str) -> io::Result<CacheWrite<Self::T>>;
+    /// Put `entry` in the cache under `key`.
+    fn finish_put(&self, key: &str, entry: CacheWrite<Self::T>) -> io::Result<()>;
+}
 
 /// The cache is versioned by the inputs to `hash_key`.
 pub const CACHE_VERSION : &'static [u8] = b"2";
