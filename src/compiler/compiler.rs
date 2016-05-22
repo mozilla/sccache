@@ -157,8 +157,17 @@ impl Compiler {
     /// Not all compiler options can be cached, so this tests the set of
     /// options for each compiler.
     pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
-        trace!("parse_arguments");
-        self.kind.parse_arguments(arguments)
+        if log_enabled!(Trace) {
+            let cmd_str = arguments.join(" ");
+            trace!("parse_arguments: `{}`", cmd_str);
+        }
+        let parsed_args = self.kind.parse_arguments(arguments);
+        match parsed_args {
+            CompilerArguments::Ok(_) => trace!("parse_arguments: Ok"),
+            CompilerArguments::CannotCache => trace!("parse_arguments: CannotCache"),
+            CompilerArguments::NotCompilation => trace!("parse_arguments: NotCompilation"),
+        };
+        parsed_args
     }
 
     pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
@@ -335,10 +344,12 @@ pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Op
 
 /// Run `executable` with `cmdline` in `cwd` using `creator`, and return the exit status and possibly the output, if `capture_output` is `ProcessOutput::Capture`.
 pub fn run_compiler<T : CommandCreatorSync, U: AsRef<OsStr>, V: AsRef<OsStr>, W: AsRef<OsStr>>(mut creator: T, executable: &U, cmdline: &[V], cwd: &W, stdin: Option<Vec<u8>>, capture_output: ProcessOutput) -> io::Result<process::Output> {
+    /*
     if log_enabled!(Trace) {
-        //let cmd_str = cmdline.join(" ");
-        //trace!("run_compiler: '{}' in '{}'", cmd_str, cwd.borrow());
+        let cmd_str = cmdline.join(" ");
+        trace!("run_compiler: '{}' in '{}'", cmd_str, cwd.borrow());
     }
+*/
     let capture = capture_output == ProcessOutput::Capture;
     creator.new_command_sync(executable.as_ref())
         .args(cmdline)

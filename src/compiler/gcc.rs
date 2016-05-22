@@ -34,7 +34,6 @@ use std::path::Path;
 use std::process;
 
 pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
-    trace!("gcc::parse_arguments");
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;

@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use clap::{App, AppSettings};
+use clap::{
+    App,
+    AppSettings,
+    Arg,
+};
+use log::LogLevel::Trace;
 use std::env;
 
 /// A specific command to run.
@@ -44,8 +49,12 @@ fn get_app<'a, 'b>() -> App<'a, 'b> {
         .args_from_usage(
             "-s --show-stats 'show cache statistics'
              --start-server  'start background server'
-             --stop-server   'stop background server'
-             [cmd]... 'commands to run'"
+             --stop-server   'stop background server'"
+                )
+        .arg(
+            Arg::with_name("cmd")
+                .multiple(true)
+                .use_delimiter(false)
                 )
 }
 
@@ -94,8 +103,13 @@ pub fn parse<'a>() -> Command {
     } else if let Some(a) = cmd {
         if let Some(cwd) = env::current_dir().ok()
             .and_then(|d| d.to_str().and_then(|s| Some(s.to_owned()))) {
+                let cmdline = a.map(|s| s.to_owned()).collect::<Vec<_>>();
+                if log_enabled!(Trace) {
+                    let cmd_str = cmdline.join(" ");
+                    trace!("parse: `{}`", cmd_str);
+                }
                 Command::Compile {
-                    cmdline: a.map(|s| s.to_owned()).collect(),
+                    cmdline: cmdline,
                     cwd: cwd,
                 }
             } else {
