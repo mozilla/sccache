@@ -12,9 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::compiler::CompilerArguments;
+#![allow(unused_imports,dead_code,unused_variables)]
+
+use ::compiler::{
+    Compiler,
+    CompilerArguments,
+    ParsedArguments,
+    ProcessOutput,
+    run_compiler,
+};
+use mock_command::{
+    CommandCreator,
+    CommandCreatorSync,
+};
+use std::io::{
+    self,
+    Error,
+    ErrorKind,
+};
+use std::process;
 
 pub fn parse_arguments(_cmd : &[String]) -> CompilerArguments {
     //TODO
     CompilerArguments::CannotCache
+}
+
+pub fn preprocess<T : CommandCreatorSync>(creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    trace!("preprocess");
+    unimplemented!();
+}
+
+pub fn compile<T : CommandCreatorSync>(creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    trace!("compile");
+    unimplemented!();
 }
