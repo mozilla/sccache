@@ -344,12 +344,10 @@ pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Op
 
 /// Run `executable` with `cmdline` in `cwd` using `creator`, and return the exit status and possibly the output, if `capture_output` is `ProcessOutput::Capture`.
 pub fn run_compiler<T : CommandCreatorSync, U: AsRef<OsStr>, V: AsRef<OsStr>, W: AsRef<OsStr>>(mut creator: T, executable: &U, cmdline: &[V], cwd: &W, stdin: Option<Vec<u8>>, capture_output: ProcessOutput) -> io::Result<process::Output> {
-    /*
     if log_enabled!(Trace) {
-        let cmd_str = cmdline.join(" ");
-        trace!("run_compiler: '{}' in '{}'", cmd_str, cwd.borrow());
+        let cmd_str = cmdline.iter().map(|c| c.as_ref().to_string_lossy()).collect::<Vec<_>>().join(" ");
+        trace!("run_compiler: '{}' in '{}'", cmd_str, cwd.as_ref().to_string_lossy());
     }
-*/
     let capture = capture_output == ProcessOutput::Capture;
     creator.new_command_sync(executable.as_ref())
         .args(cmdline)
