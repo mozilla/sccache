@@ -44,25 +44,25 @@ environment:
     #   target: i686-pc-windows-msvc
 
 ### GNU Toolchains ###
-
+#TODO: figure out how to get mingw64 working on appveyor
   # Stable 64-bit GNU
-    - channel: stable
-      target: x86_64-pc-windows-gnu
-  # Stable 32-bit GNU
     # - channel: stable
-    #   target: i686-pc-windows-gnu
+    #   target: x86_64-pc-windows-gnu
+  # Stable 32-bit GNU
+    - channel: stable
+      target: i686-pc-windows-gnu
   # Beta 64-bit GNU
-    - channel: beta
-      target: x86_64-pc-windows-gnu
-  # Beta 32-bit GNU
     # - channel: beta
-    #   target: i686-pc-windows-gnu
+    #   target: x86_64-pc-windows-gnu
+  # Beta 32-bit GNU
+     - channel: beta
+       target: i686-pc-windows-gnu
   # Nightly 64-bit GNU
-    - channel: nightly
-      target: x86_64-pc-windows-gnu
-  # Nightly 32-bit GNU
     # - channel: nightly
-    #   target: i686-pc-windows-gnu
+    #   target: x86_64-pc-windows-gnu
+  # Nightly 32-bit GNU
+    - channel: nightly
+      target: i686-pc-windows-gnu
 
 ### Allowed failures ###
 
