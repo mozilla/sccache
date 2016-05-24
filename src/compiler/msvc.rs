@@ -21,18 +21,24 @@ use ::compiler::{
     ProcessOutput,
     run_compiler,
 };
+use log::LogLevel::Trace;
 use mock_command::{
     CommandCreator,
     CommandCreatorSync,
+    RunCommand,
 };
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs::File;
 use std::io::{
     self,
     Error,
     ErrorKind,
+    Write,
 };
 use std::path::Path;
 use std::process;
+use tempdir::TempDir;
 
 pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     let mut output_arg = None;
@@ -137,15 +143,42 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     })
 }
 
-pub fn preprocess<T : CommandCreatorSync>(creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
     trace!("preprocess");
-    unimplemented!();
+    //TODO: support depfile by way of -showIncludes
+    let mut cmd = creator.new_command_sync(&compiler.executable);
+    cmd.arg("-E")
+        .arg(&parsed_args.input)
+        .arg("-nologo")
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+
+    run_compiler(cmd, None, ProcessOutput::Capture)
 }
 
-pub fn compile<T : CommandCreatorSync>(creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
     trace!("compile");
-    unimplemented!();
+    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+    //TODO: check for the presence of the pdb file, refuse to cache if present.
+    // MSVC doesn't read anything from stdin, so it needs a temporary file
+    // as input.
+    let tempdir = try!(TempDir::new("sccache"));
+    let input = tempdir.path().join(Path::new(&parsed_args.input).file_name().unwrap_or(OsStr::new("file.c")));
+    {
+        try!(File::create(&input)
+             .and_then(|mut f| f.write_all(&preprocessor_output)))
+    }
+
+    let mut cmd = creator.new_command_sync(&compiler.executable);
+    cmd.arg("-c")
+        .arg(&input)
+        .arg(&format!("-Fo{}", output))
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+
+    run_compiler(cmd, None, ProcessOutput::Capture)
 }
+
 
 #[cfg(test)]
 mod test {
