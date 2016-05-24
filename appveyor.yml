@@ -55,8 +55,8 @@ environment:
     # - channel: beta
     #   target: x86_64-pc-windows-gnu
   # Beta 32-bit GNU
-     - channel: beta
-       target: i686-pc-windows-gnu
+    - channel: beta
+      target: i686-pc-windows-gnu
   # Nightly 64-bit GNU
     # - channel: nightly
     #   target: x86_64-pc-windows-gnu
