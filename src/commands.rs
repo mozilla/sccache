@@ -46,6 +46,7 @@ use protocol::{
 };
 use server;
 use std::env;
+use std::ffi::OsStr;
 #[cfg(unix)]
 use std::ffi::CString;
 use std::io::{
@@ -102,7 +103,7 @@ fn is_executable(path: &Path) -> bool {
 fn is_executable(_path: &Path) -> bool { true }
 
 //TODO: upstream this all to the `which` crate.
-pub fn which(path: &str, os_path: Option<String>, cwd: &str) -> Option<String> {
+pub fn which<T: AsRef<OsStr>>(path: &str, os_path: Option<String>, cwd: &T) -> Option<String> {
     // Does it have a path separator?
     if path.chars().any(path::is_separator) {
         let p = Path::new(&path);
@@ -416,7 +417,7 @@ mod test {
     use test::utils::*;
 
     fn _which(f: &TestFixture, path: &str) -> Option<String> {
-        which(path, Some(f.paths.clone()), f.tempdir.path().to_str().unwrap())
+        which(path, Some(f.paths.clone()), &f.tempdir.path().to_str().unwrap())
     }
 
     #[test]
