@@ -79,8 +79,8 @@ fn test_server_stats() {
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
-    let stats = request_stats(conn).unwrap();
-    assert!(stats.get_stats().len() > 0);
+    let stats = cache_stats_map(request_stats(conn).unwrap());
+    assert_eq!(&CacheStat::Count(0), stats.get("Compile requests").unwrap());
     // Now signal it to shut down.
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use cache::Cache;
 use compiler::{
     Compiler,
     CompilerArguments,
@@ -73,6 +74,9 @@ pub struct SccacheServer<C : CommandCreatorSync + 'static> {
     /// A list of accepted connections.
     conns: Slab<ClientConnection<C>>,
 
+    /// Server statistics.
+    stats: ServerStats,
+
     /// True if the server is actively shutting down.
     shutting_down: bool,
 
@@ -86,6 +90,54 @@ pub struct SccacheServer<C : CommandCreatorSync + 'static> {
     creator: C,
 }
 
+/// Statistics about the cache.
+#[derive(Default)]
+struct ServerStats {
+    /// The count of client compile requests.
+    pub compile_requests: u64,
+    /// The count of client requests that used an unsupported compiler.
+    pub requests_unsupported_compiler: u64,
+    /// The count of client requests that were not compilation.
+    pub requests_not_compile: u64,
+    /// The count of client requests that were not cacheable.
+    pub requests_not_cacheable: u64,
+    /// The count of client requests that were executed.
+    pub requests_executed: u64,
+    /// The count of errors handling compile requests.
+    pub cache_errors: u64,
+    /// The count of cache hits for handled compile requests.
+    pub cache_hits: u64,
+    /// The count of cache misses for handled compile requests.
+    pub cache_misses: u64,
+}
+
+impl ServerStats {
+    fn to_cache_stats(&self) -> CacheStats {
+        macro_rules! set_stat {
+            ($vec:ident, $var:expr, $name:expr) => {{
+                let mut stat = CacheStatistic::new();
+                stat.set_name(String::from($name));
+                stat.set_count($var);
+                $vec.push(stat);
+            }};
+        }
+
+        let mut stats_vec = vec!();
+        set_stat!(stats_vec, self.compile_requests, "Compile requests");
+        set_stat!(stats_vec, self.requests_executed, "Compile requests executed");
+        set_stat!(stats_vec, self.cache_hits, "Cache hits");
+        set_stat!(stats_vec, self.cache_misses, "Cache misses");
+        set_stat!(stats_vec, self.cache_errors, "Cache errors");
+        set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
+        set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
+        set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
+
+        let mut stats = CacheStats::new();
+        stats.set_stats(RepeatedField::from_vec(stats_vec));
+        stats
+    }
+}
+
 impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// Create an `SccacheServer` bound to `port`.
     fn new(port : u16) -> io::Result<SccacheServer<C>> {
@@ -94,6 +146,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             sock: listener,
             token: Token(1),
             conns: Slab::new_starting_at(Token(2), 128),
+            stats: ServerStats::default(),
             shutting_down: false,
             compilers: HashMap::new(),
             creator: C::new(),
@@ -239,7 +292,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     }
 
     /// Look up compiler info from the cache for the compiler in `cmd`.
-    fn compiler_info_cached(&mut self, cmd : &Vec<String>) -> Cache<Option<Compiler>> {
+    fn compiler_info_cached(&mut self, cmd : &Vec<String>) -> Option<Option<Compiler>> {
         trace!("compiler_info_cached");
         match cmd.first() {
             Some(path) => {
@@ -248,18 +301,18 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                         let mtime = FileTime::from_last_modification_time(&attr);
                         match self.compilers.get(path) {
                             // It's a hit only if the mtime matches.
-                            Some(&Some(ref c)) if c.mtime == mtime => Cache::Hit(Some(c.clone())),
+                            Some(&Some(ref c)) if c.mtime == mtime => Some(Some(c.clone())),
                             // We cache non-results.
-                            Some(&None) => Cache::Hit(None),
-                            _ => Cache::Miss,
+                            Some(&None) => Some(None),
+                            _ => None,
                         }
                     }
-                    Err(_) => Cache::Miss,
+                    Err(_) => None,
                 }
             }
             None => {
                 warn!("Got empty compile commandline?");
-                Cache::Miss
+                None
             },
         }
     }
@@ -305,11 +358,16 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     ///
     /// This indicates that the server has finished running a compile,
     /// and contains the process exit status and stdout/stderr.
-    fn send_compile_finished(&mut self, output: Option<Output>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+    fn send_compile_finished(&mut self, result: Option<(Cache, Output)>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let mut res = ServerResponse::new();
         let mut finish = CompileFinished::new();
-        match output {
-            Some(out) => {
+        match result {
+            Some((cached, out)) => {
+                match cached {
+                    Cache::Error => self.stats.cache_errors += 1,
+                    Cache::Hit => self.stats.cache_hits += 1,
+                    Cache::Miss => self.stats.cache_misses += 1,
+                };
                 let Output { status, stdout, stderr } = out;
                 status.code().map(|s| finish.set_retcode(s));
                 //TODO: sort out getting signal return on Unix
@@ -317,6 +375,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 finish.set_stderr(stderr);
             }
             None => {
+                self.stats.cache_errors += 1;
                 //TODO: figure out a better way to communicate this?
                 finish.set_retcode(-2);
             }
@@ -341,6 +400,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         match compiler {
             None => {
                 trace!("check_compiler: Unsupported compiler");
+                self.stats.requests_unsupported_compiler += 1;
                 self.send_unhandled_compile(token, event_loop);
             }
             Some(c) => {
@@ -349,13 +409,16 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 // the provided commandline.
                 match c.parse_arguments(&cmd[1..]) {
                     CompilerArguments::Ok(args) => {
+                        self.stats.requests_executed += 1;
                         self.send_compile_started(token, event_loop);
                         self.start_compile_task(c, args, cmd, cwd, token, event_loop);
                     }
                     CompilerArguments::CannotCache => {
+                        self.stats.requests_not_cacheable += 1;
                         self.send_unhandled_compile(token, event_loop);
                     }
                     CompilerArguments::NotCompilation => {
+                        self.stats.requests_not_compile += 1;
                         self.send_unhandled_compile(token, event_loop);
                     }
                 }
@@ -378,8 +441,8 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                       // Callback, runs on the event loop thread.
                       move |token, res, this, event_loop| {
                           match res {
-                              TaskResult::Compiled(output) => {
-                                  this.send_compile_finished(output, token, event_loop);
+                              TaskResult::Compiled(res) => {
+                                  this.send_compile_finished(res, token, event_loop);
                               },
                               TaskResult::Panic => {
                                   error!("Compile task panic!");
@@ -399,12 +462,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         let cwd = compile.take_cwd();
         // See if this compiler is already in the cache.
         match self.compiler_info_cached(&cmd) {
-            Cache::Hit(c) => {
-                trace!("compiler_info Cache::Hit");
+            Some(c) => {
+                trace!("compiler_info cache hit");
                 self.check_compiler(c, cmd, cwd, token, event_loop);
             }
-            Cache::Miss => {
-                trace!("compiler_info Cache::Miss");
+            None => {
+                trace!("compiler_info cache miss");
                 // Run a Task to check the compiler type.
                 let exe = cmd.first().unwrap().clone();
                 let creator = self.creator.clone();
@@ -436,18 +499,19 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             // This may need to do some work before even
             // sending the initial response.
             debug!("handle_client: compile");
+            self.stats.compile_requests += 1;
             self.handle_compile(token, req.take_compile(), event_loop);
         } else {
             // Simple requests that can generate responses right away.
             let mut res = ServerResponse::new();
             if req.has_get_stats() {
                 debug!("handle_client: get_stats");
-                res.set_stats(generate_stats());
+                res.set_stats(self.stats.to_cache_stats());
             } else if req.has_shutdown() {
                 debug!("handle_client: shutdown");
                 self.initiate_shutdown(event_loop);
                 let mut shutting_down = ShuttingDown::new();
-                shutting_down.set_stats(generate_stats());
+                shutting_down.set_stats(self.stats.to_cache_stats());
                 res.set_shutting_down(shutting_down);
             } else {
                 warn!("handle_client: unknown command");
@@ -468,7 +532,7 @@ pub enum TaskResult {
     /// Compiler type detection.
     GetCompilerInfo(String, Option<Compiler>),
     /// Compile finished.
-    Compiled(Option<Output>),
+    Compiled(Option<(Cache, Output)>),
     /// Task `panic`ed.
     Panic,
 }
@@ -480,12 +544,6 @@ pub enum ServerMessage {
     Shutdown,
     /// Background task completed.
     TaskDone { res: TaskResult, token: Token },
-}
-
-/// Result of a cache lookup.
-enum Cache<T> {
-    Hit(T),
-    Miss,
 }
 
 impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
@@ -551,25 +609,6 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
             }
         }
     }
-}
-
-/// Generate cache statistics.
-///
-/// Currently generating bogus data.
-fn generate_stats() -> CacheStats {
-    //TODO: actually populate this with real data
-    let mut stats = CacheStats::new();
-    let mut s1 = CacheStatistic::new();
-    s1.set_name("stat 1".to_owned());
-    s1.set_count(1000);
-    let mut s2 = CacheStatistic::new();
-    s2.set_name("stat 2".to_owned());
-    s2.set_str("some/value".to_owned());
-    let mut s3 = CacheStatistic::new();
-    s3.set_name("stat 3".to_owned());
-    s3.set_size(1024 * 1024 * 1024 * 3);
-    stats.set_stats(RepeatedField::from_vec(vec!(s1, s2, s3)));
-    stats
 }
 
 /// A connetion to a single sccache client.

@@ -14,6 +14,7 @@
 
 use cache::disk::DiskCache;
 use cache::{
+    Cache,
     Storage,
     hash_key,
 };
@@ -170,12 +171,12 @@ impl Compiler {
         parsed_args
     }
 
-    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cache, process::Output)> {
         trace!("get_cached_or_compile");
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
-            return Ok(preprocessor_result);
+            return Ok((Cache::Error, preprocessor_result));
         }
         trace!("Preprocessor output is {} bytes", preprocessor_result.stdout.len());
 
@@ -200,11 +201,12 @@ impl Compiler {
                 let mut stderr = io::Cursor::new(vec!());
                 entry.get_object("stdout", &mut stdout).unwrap_or(());
                 entry.get_object("stderr", &mut stderr).unwrap_or(());
-                Ok(process::Output {
-                    status: exit_status(0),
-                    stdout: stdout.into_inner(),
-                    stderr: stderr.into_inner(),
-                })
+                Ok((Cache::Hit,
+                    process::Output {
+                        status: exit_status(0),
+                        stdout: stdout.into_inner(),
+                        stderr: stderr.into_inner(),
+                    }))
             })
             .unwrap_or_else(move || {
                 debug!("Cache miss!");
@@ -222,7 +224,7 @@ impl Compiler {
                 }
                 //TODO: do this on a background thread.
                 try!(storage.finish_put(&key, entry));
-                Ok(compiler_result)
+                Ok((Cache::Miss, compiler_result))
             })
     }
 }
@@ -362,6 +364,7 @@ pub fn run_compiler<T : CommandCreatorSync, U: AsRef<OsStr>, V: AsRef<OsStr>, W:
 #[cfg(test)]
 mod test {
     use super::*;
+    use cache::Cache;
     use mock_command::*;
     use std::fs::File;
     use std::io::Write;
@@ -446,7 +449,8 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let res = c.get_cached_or_compile(creator.clone(), &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &arguments, &parsed_args, cwd).unwrap();
+        assert_eq!(Cache::Miss, cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());

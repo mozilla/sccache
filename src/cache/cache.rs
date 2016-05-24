@@ -29,6 +29,17 @@ use zip::{
     ZipWriter,
 };
 
+/// Result of a cache lookup.
+#[derive(Debug, PartialEq)]
+pub enum Cache {
+    /// Error fetching from cache.
+    Error,
+    /// Result was found in cache.
+    Hit,
+    /// Result was not found in cache.
+    Miss,
+}
+
 /// Data stored in the compiler cache.
 pub struct CacheRead<R: Read + Seek> {
     zip: ZipArchive<R>,

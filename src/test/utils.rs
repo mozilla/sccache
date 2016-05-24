@@ -15,6 +15,8 @@
 #[cfg(unix)]
 use libc;
 use mock_command::*;
+use protocol::CacheStats;
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self,File};
 use std::io;
@@ -150,6 +152,17 @@ impl TestFixture {
     pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
         mk_bin(self.tempdir.path(), &path)
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CacheStat {
+    Count(u64),
+    String(String),
+    Size(u64),
+}
+
+pub fn cache_stats_map(mut stats: CacheStats) -> HashMap<String, CacheStat> {
+    stats.take_stats().into_iter().map(|mut s| (s.take_name(), if s.has_count() { CacheStat::Count(s.get_count()) } else if s.has_size() { CacheStat::Size(s.get_size()) } else { CacheStat::String(s.take_str()) })).collect()
 }
 
 #[test]

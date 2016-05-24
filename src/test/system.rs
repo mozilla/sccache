@@ -31,6 +31,7 @@ use std::process::{
     Stdio,
 };
 use tempdir::TempDir;
+use test::utils::*;
 
 #[cfg(target_os="linux")]
 const COMPILER : &'static str = "gcc";
@@ -75,12 +76,18 @@ fn run_sccache_command_test(sccache: &Path, compiler: &str, tempdir: &Path) {
     let out_file = tempdir.join("test.o");
     assert_eq!(true, run(sccache, &[compiler, "-c", source_file.to_str().unwrap(), "-o", out_file.to_str().unwrap()]));
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
-    let _stats = request_stats(conn);
-    //TODO: check stats: should be 1 cache miss.
+    let stats = cache_stats_map(request_stats(conn).unwrap());
+    assert_eq!(&CacheStat::Count(1), stats.get("Compile requests").unwrap());
+    assert_eq!(&CacheStat::Count(1), stats.get("Compile requests executed").unwrap());
+    assert_eq!(&CacheStat::Count(0), stats.get("Cache hits").unwrap());
+    assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
     assert_eq!(true, run(sccache, &[compiler, "-c", source_file.to_str().unwrap(), "-o", out_file.to_str().unwrap()]));
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
-    let _stats = request_stats(conn);
-    //TODO: check stats: should be 1 cache hit, 1 cache miss.
+    let stats = cache_stats_map(request_stats(conn).unwrap());
+    assert_eq!(&CacheStat::Count(2), stats.get("Compile requests").unwrap());
+    assert_eq!(&CacheStat::Count(2), stats.get("Compile requests executed").unwrap());
+    assert_eq!(&CacheStat::Count(1), stats.get("Cache hits").unwrap());
+    assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
     assert_eq!(true, run(sccache, &["--stop-server"]));
 }
 

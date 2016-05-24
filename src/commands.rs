@@ -229,21 +229,25 @@ pub fn request_shutdown(mut conn : ServerConnection) -> io::Result<CacheStats> {
 }
 
 /// Print `stats` to stdout.
-fn print_stats(stats : CacheStats) -> io::Result<()> {
-    for stat in stats.get_stats().iter() {
-        //TODO: properly align output
-        print!("{}\t\t", stat.get_name());
-        if stat.has_count() {
-            print!("{}", stat.get_count());
-        } else if stat.has_str() {
-            print!("{}", stat.get_str());
-        } else if stat.has_size() {
-            match binary_prefix(stat.get_size() as f64) {
-                Standalone(bytes) => print!("{} bytes", bytes),
-                Prefixed(prefix, n) => print!("{:.0} {}B", n, prefix),
+fn print_stats(stats: CacheStats) -> io::Result<()> {
+    let formatted = stats.get_stats().iter()
+        .map(|s| (s.get_name(), if s.has_count() {
+            format!("{}", s.get_count())
+        } else if s.has_str() {
+            format!("{}", s.get_str())
+        } else if s.has_size() {
+            match binary_prefix(s.get_size() as f64) {
+                Standalone(bytes) => format!("{} bytes", bytes),
+                Prefixed(prefix, n) => format!("{:.0} {}B", n, prefix),
             }
-        }
-        print!("\n");
+        } else {
+            String::from("???")
+        }))
+        .collect::<Vec<_>>();
+    let name_width = formatted.iter().map(|&(n, _)| n.len()).max().unwrap();
+    let stat_width = formatted.iter().map(|&(_, ref s)| s.len()).max().unwrap();
+    for (name, stat) in formatted {
+        println!("{:<name_width$} {:>stat_width$}", name, stat, name_width=name_width, stat_width=stat_width);
     }
     Ok(())
 }
