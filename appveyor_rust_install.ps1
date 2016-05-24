@@ -57,7 +57,7 @@ echo "Installing $installer to $installDir"
 &"${env:Temp}\$installer" /VERYSILENT /NORESTART /DIR="$installDir" | Write-Output
 
 # Add Rust to the path.
-$env:Path += ";${installDir}\bin;C:\msys64\usr\bin"
+$env:Path += ";${installDir}\bin;C:\MinGW\bin"
 
 echo "Installation of $channel Rust $target completed"
 
