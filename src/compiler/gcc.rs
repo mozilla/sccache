@@ -19,10 +19,11 @@ use ::compiler::{
     ProcessOutput,
     run_compiler,
 };
-use log::LogLevel::Trace;
+//use log::LogLevel::Trace;
 use mock_command::{
     CommandCreator,
     CommandCreatorSync,
+    RunCommand,
 };
 use std::collections::HashMap;
 use std::io::{
@@ -152,43 +153,34 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
     })
 }
 
-pub fn preprocess<T : CommandCreatorSync>(creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
     trace!("preprocess");
-    let mut cmdline = vec!["-E".to_string(), parsed_args.input.clone()];
-    cmdline.extend(parsed_args.preprocessor_args.clone());
-    cmdline.extend(parsed_args.common_args.clone());
-
-    if log_enabled!(Trace) {
-        let cmd_str = cmdline.join(" ");
-        trace!("preprocess: `{} {}` in '{}'", compiler.executable, cmd_str, cwd);
-    }
-    run_compiler(creator.clone(), &compiler.executable, &cmdline, &cwd, None, ProcessOutput::Capture)
+    let mut cmd = creator.new_command_sync(&compiler.executable);
+    cmd.arg("-E")
+        .arg(&parsed_args.input)
+        .args(&parsed_args.preprocessor_args)
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+    run_compiler(cmd, None, ProcessOutput::Capture)
 }
 
-pub fn compile<T : CommandCreatorSync>(creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
     trace!("compile");
     let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-    //FIXME: sort out the ownership nonsense here
-    let mut cmdline = vec![
-        "-c".to_string(),
-        "-x".to_string(),
-        match parsed_args.extension.as_ref() {
-            "c" => "cpp-output".to_string(),
-            "cc" | "cpp" | "cxx" => "c++-cpp-output".to_string(),
+    let mut cmd = creator.new_command_sync(&compiler.executable);
+    cmd.args(&["-c", "-x"])
+        .arg(match parsed_args.extension.as_ref() {
+            "c" => "cpp-output",
+            "cc" | "cpp" | "cxx" => "c++-cpp-output",
             e @ _ => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
                 return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
             }
-        },
-        "-".to_string(),
-        "-o".to_string(), output.clone(),
-        ];
-    cmdline.extend(parsed_args.common_args.clone());
-    if log_enabled!(Trace) {
-        let cmd_str = cmdline.join(" ");
-        trace!("compile: `{} {}` in '{}'", compiler.executable, cmd_str, cwd);
-    }
-    run_compiler(creator.clone(), &compiler.executable, &cmdline, &cwd, Some(preprocessor_output), ProcessOutput::Capture)
+        })
+        .args(&["-", "-o", &output.clone()])
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+    run_compiler(cmd, Some(preprocessor_output), ProcessOutput::Capture)
 }
 
 #[cfg(test)]

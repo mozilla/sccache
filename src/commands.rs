@@ -27,6 +27,7 @@ use libc;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
+    RunCommand,
 };
 use number_prefix::{
     binary_prefix,
@@ -313,7 +314,7 @@ fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, std
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
-fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator : T, conn : &mut ServerConnection, response : CompileResponse, cmdline : Vec<String>, cwd : &str, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
+fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(mut creator : T, conn : &mut ServerConnection, response : CompileResponse, cmdline : Vec<String>, cwd : &str, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
@@ -336,7 +337,10 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(creator
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
             //TODO: possibly capture output here for testing.
-            run_compiler(creator, &cmdline[0], &cmdline[1..], &cwd, None, ProcessOutput::Inherit)
+            let mut cmd = creator.new_command_sync(&cmdline[0]);
+            cmd.args(&cmdline[1..])
+                .current_dir(cwd);
+            run_compiler(cmd, None, ProcessOutput::Inherit)
                 .and_then(|output| {
                     Ok(output.status.code()
                        .unwrap_or_else(|| {

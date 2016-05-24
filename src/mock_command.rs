@@ -84,6 +84,7 @@ pub trait CommandChild {
 pub trait RunCommand {
     type C: CommandChild + 'static;
 
+    fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self;
     fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Self;
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self;
     fn stdin(&mut self, cfg: Stdio) -> &mut Self;
@@ -132,6 +133,9 @@ impl CommandChild for Child {
 impl RunCommand for Command {
     type C = Child;
 
+    fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Command {
+        self.arg(arg)
+    }
     fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Command {
         self.args(args)
     }
@@ -276,6 +280,10 @@ pub struct MockCommand {
 impl RunCommand for MockCommand {
     type C = MockChild;
 
+    fn arg<S: AsRef<OsStr>>(&mut self, _arg: S) -> &mut MockCommand {
+        //TODO: assert value of args
+        self
+    }
     fn args<S: AsRef<OsStr>>(&mut self, _args: &[S]) -> &mut MockCommand {
         //TODO: assert value of args
         self
