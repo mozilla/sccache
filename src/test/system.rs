@@ -131,7 +131,7 @@ fn test_sccache_command() {
         Err(_) => {},
     }
     let tempdir = TempDir::new("sccache_system_test").unwrap();
-    let sccache = env::current_exe().unwrap().parent().unwrap().join("sccache");
+    let sccache = env::current_exe().unwrap().parent().unwrap().join("sccache").with_extension(env::consts::EXE_EXTENSION);
     match fs::metadata(&sccache) {
         Ok(_) => {},
         Err(_) => panic!("Error: sccache binary not found at `{:?}. Do you need to run `cargo build`?", sccache),
