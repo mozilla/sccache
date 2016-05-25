@@ -172,7 +172,10 @@ impl Compiler {
     }
 
     pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cache, process::Output)> {
-        trace!("get_cached_or_compile");
+        if log_enabled!(Trace) {
+            let cmd_str = arguments.join(" ");
+            trace!("get_cached_or_compile: {}", cmd_str);
+        }
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
@@ -189,7 +192,8 @@ impl Compiler {
         //TODO: derive this from the environment or settings
         let d = env::var_os(&"SCCACHE_DIR")
             .and_then(|p| Some(PathBuf::from(p)))
-            .unwrap_or(env::temp_dir());
+            .unwrap_or(env::temp_dir().join("sccache_cache"));
+        trace!("cache dir: {:?}", d);
         let storage = DiskCache::new(&d);
         storage.get(&key)
             .map(|mut entry| {
@@ -415,6 +419,7 @@ mod test {
 
     #[test]
     fn test_compiler_get_cached_or_compile_uncached() {
+        ///XXX: set cache dir here!
         use env_logger;
         env_logger::init().unwrap();
         let creator = new_creator();
@@ -448,5 +453,6 @@ mod test {
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        // Now compile again, which should be a cache hit.
     }
 }

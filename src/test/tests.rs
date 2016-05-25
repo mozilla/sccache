@@ -20,7 +20,6 @@ use ::commands::{
     request_shutdown,
     request_stats,
 };
-#[allow(unused_imports)]
 use env_logger;
 use mio::Sender;
 use ::mock_command::*;
@@ -127,7 +126,10 @@ fn test_server_unsupported_compiler() {
 
 #[test]
 fn test_server_compile() {
-    //env_logger::init().unwrap();
+    match env_logger::init() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
     let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread();
     // Connect to the server.
