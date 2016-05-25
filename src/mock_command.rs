@@ -49,6 +49,7 @@
 use libc;
 use std::boxed::Box;
 use std::ffi::OsStr;
+use std::fmt;
 use std::io::{
     self,
     Read,
@@ -81,7 +82,7 @@ pub trait CommandChild {
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
-pub trait RunCommand {
+pub trait RunCommand : fmt::Debug {
     type C: CommandChild + 'static;
 
     fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self;
@@ -204,6 +205,7 @@ pub fn exit_status(v : ExitStatusValue) -> ExitStatus {
 
 /// A struct that mocks `std::process::Child`.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct MockChild {
     //TODO: this doesn't work to actually track writes...
     /// A `Cursor` to hand out as stdin.
@@ -271,8 +273,18 @@ pub enum ChildOrCall {
     Call(Box<Fn() -> io::Result<MockChild> + Send>),
 }
 
+impl fmt::Debug for ChildOrCall {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &ChildOrCall::Child(ref r) => write!(f, "ChildOrCall::Child({:?}", r),
+            &ChildOrCall::Call(_) => write!(f, "ChildOrCall::Call(...)"),
+        }
+    }
+}
+
 /// A mocked command that simply returns its `child` from `spawn`.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct MockCommand {
     pub child : Option<ChildOrCall>,
 }

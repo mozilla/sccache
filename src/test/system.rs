@@ -12,14 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(dead_code, unused_imports)]
+
 use client::connect_with_retry;
 use commands::{
     DEFAULT_PORT,
     request_stats,
     which,
 };
+use env_logger;
 use std::env;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::{
     self,
     Write,
@@ -33,15 +37,19 @@ use std::process::{
 use tempdir::TempDir;
 use test::utils::*;
 
-#[cfg(target_os="linux")]
+#[cfg(unix)]
 const COMPILER : &'static str = "gcc";
 
+#[cfg(target_env="msvc")]
+const COMPILER : &'static str = "cl.exe";
+
 fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T]) -> Output {
-    Command::new(exe)
-        .args(args)
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    trace!("do_run: {:?}", cmd);
+    cmd.spawn()
         .unwrap_or_else(|e| { panic!("failed to execute child: {}", e) })
         .wait_with_output()
         .unwrap()
@@ -64,40 +72,72 @@ fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T]) -> bool {
     }
 }
 
+fn compile_cmdline(compiler: &str, exe: &str, input: &Path, output: &Path) -> Vec<String> {
+    match compiler {
+        "gcc" => vec!(exe.to_owned(), "-c".to_owned(), input.to_str().unwrap().to_owned(), "-o".to_owned(), output.to_str().unwrap().to_owned()),
+        "cl.exe" => vec!(exe.to_owned(), "-c".to_owned(), input.to_str().unwrap().to_owned(), format!("-Fo{}", output.to_str().unwrap())),
+        _ => panic!("Unsupported compiler: {}", compiler),
+    }
+}
+
 
 #[allow(dead_code)]
-fn run_sccache_command_test(sccache: &Path, compiler: &str, tempdir: &Path) {
+fn run_sccache_command_test(sccache: &Path, compiler: &str, exe: &str, tempdir: &Path) {
     // Ensure there's no existing sccache server running.
+    trace!("stop server");
     do_run(sccache, &["--stop-server"]);
     // Start a server.
-    assert_eq!(true, run(sccache, &["--start-server"]));
+    trace!("start server");
+    // Don't run this with run() because on Windows `wait_with_output`
+    // will hang because the internal server process is not detached.
+    assert!(Command::new(sccache)
+            .arg("--start-server")
+            .status()
+            .unwrap()
+            .success());
     // Compile a source file.
     let source_file = Path::new(file!()).parent().unwrap().join("test.c");
     let out_file = tempdir.join("test.o");
-    assert_eq!(true, run(sccache, &[compiler, "-c", source_file.to_str().unwrap(), "-o", out_file.to_str().unwrap()]));
+    trace!("compile");
+    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe, &source_file, &out_file)));
+    trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
+    trace!("request stats");
     let stats = cache_stats_map(request_stats(conn).unwrap());
     assert_eq!(&CacheStat::Count(1), stats.get("Compile requests").unwrap());
     assert_eq!(&CacheStat::Count(1), stats.get("Compile requests executed").unwrap());
     assert_eq!(&CacheStat::Count(0), stats.get("Cache hits").unwrap());
     assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
-    assert_eq!(true, run(sccache, &[compiler, "-c", source_file.to_str().unwrap(), "-o", out_file.to_str().unwrap()]));
+    trace!("compile");
+    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe, &source_file, &out_file)));
+    trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
+    trace!("request stats");
     let stats = cache_stats_map(request_stats(conn).unwrap());
     assert_eq!(&CacheStat::Count(2), stats.get("Compile requests").unwrap());
     assert_eq!(&CacheStat::Count(2), stats.get("Compile requests executed").unwrap());
     assert_eq!(&CacheStat::Count(1), stats.get("Cache hits").unwrap());
     assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
+    trace!("stop server");
     assert_eq!(true, run(sccache, &["--stop-server"]));
 }
 
+// Don't run this on OS X until we actually support clang.
 #[test]
-#[cfg(target_os="linux")]
+#[cfg(all(not(target_os="macos"), any(unix, target_env="msvc")))]
 fn test_sccache_command() {
+    match env_logger::init() {
+        Ok(_) => {},
+        Err(_) => {},
+    }
     let tempdir = TempDir::new("sccache_system_test").unwrap();
     let sccache = env::current_exe().unwrap().parent().unwrap().join("sccache");
+    match fs::metadata(&sccache) {
+        Ok(_) => {},
+        Err(_) => panic!("Error: sccache binary not found at `{:?}. Do you need to run `cargo build`?", sccache),
+    }
     match which(COMPILER, env::var("PATH").ok(), &env::current_dir().unwrap()) {
-        Some(c) => run_sccache_command_test(&sccache, &c, tempdir.path()),
+        Some(c) => run_sccache_command_test(&sccache, COMPILER, &c, tempdir.path()),
         None => {
             assert!(true, "No `{}` compiler found, skipping test", COMPILER);
         }

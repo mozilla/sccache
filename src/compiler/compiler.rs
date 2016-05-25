@@ -44,7 +44,7 @@ use std::io::{
     Error,
     ErrorKind,
 };
-use std::path::Path;
+use std::path::{Path,PathBuf};
 use std::process::{self,Stdio};
 use std::str;
 use std::thread;
@@ -74,7 +74,7 @@ impl CompilerKind {
         match self {
             &CompilerKind::Gcc => gcc::preprocess(creator, compiler, parsed_args, cwd),
             &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
-            &CompilerKind::Msvc => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Msvc => msvc::preprocess(creator, compiler, parsed_args, cwd),
         }
     }
 
@@ -82,7 +82,7 @@ impl CompilerKind {
         match self {
             &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
             &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
-            &CompilerKind::Msvc => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Msvc => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
         }
     }
 }
@@ -188,7 +188,8 @@ impl Compiler {
             .collect::<HashMap<_, _>>();
         //TODO: derive this from the environment or settings
         let d = env::var_os(&"SCCACHE_DIR")
-            .unwrap_or(OsString::from("/tmp/sccache_cache"));
+            .and_then(|p| Some(PathBuf::from(p)))
+            .unwrap_or(env::temp_dir());
         let storage = DiskCache::new(&d);
         storage.get(&key)
             .map(|mut entry| {

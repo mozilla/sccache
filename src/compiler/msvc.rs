@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_imports,dead_code,unused_variables)]
-
 use ::compiler::{
     Compiler,
     CompilerArguments,
@@ -105,7 +103,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
         Some(i) => {
             match Path::new(i).extension().and_then(|e| e.to_str()) {
                 Some(e) => (i.to_owned(), e.to_owned()),
-                e @ _ => {
+                _ => {
                     trace!("Bad or missing source extension: {:?}", i);
                     return CompilerArguments::CannotCache;
                 }
@@ -152,6 +150,10 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
         .arg("-nologo")
         .args(&parsed_args.common_args)
         .current_dir(cwd);
+
+    if log_enabled!(Trace) {
+        trace!("preprocess: {:?}", cmd);
+    }
 
     run_compiler(cmd, None, ProcessOutput::Capture)
 }
