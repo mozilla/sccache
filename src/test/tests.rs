@@ -28,11 +28,13 @@ use ::server::{
     create_server,
     run_server,
 };
+use std::env;
 use std::fs::File;
 use std::io::{
     Cursor,
     Write,
 };
+use std::path::Path;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 use test::utils::*;
@@ -45,8 +47,9 @@ use test::utils::*;
 /// * An `Arc`-and-`Mutex`-wrapped `MockCommandCreator` which the server will
 ///   use for all process creation.
 /// * The `JoinHandle` for the server thread.
-fn run_server_thread() -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
+fn run_server_thread(cache_dir: &Path) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
     // Create a server on a background thread, get some useful bits from it.
+    env::set_var("SCCACHE_DIR", cache_dir);
     let (tx, rx) = mpsc::channel();
     let handle = thread::spawn(move || {
         let (server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0).unwrap();
@@ -63,7 +66,8 @@ fn run_server_thread() -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCrea
 
 #[test]
 fn test_server_shutdown() {
-    let (port, _, _, child) = run_server_thread();
+    let f = TestFixture::new();
+    let (port, _, _, child) = run_server_thread(&f.tempdir.path());
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it to shut down
@@ -74,7 +78,8 @@ fn test_server_shutdown() {
 
 #[test]
 fn test_server_stats() {
-    let (port, sender, _, child) = run_server_thread();
+    let f = TestFixture::new();
+    let (port, sender, _, child) = run_server_thread(&f.tempdir.path());
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
@@ -88,8 +93,8 @@ fn test_server_stats() {
 
 #[test]
 fn test_server_unsupported_compiler() {
-    let (port, sender, server_creator, child) = run_server_thread();
     let f = TestFixture::new();
+    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path());
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     {
@@ -131,7 +136,7 @@ fn test_server_compile() {
         Err(_) => {},
     }
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread();
+    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path());
     // Connect to the server.
     const PREPROCESSOR_STDOUT : &'static [u8] = b"preprocessor stdout";
     const PREPROCESSOR_STDERR : &'static [u8] = b"preprocessor stderr";

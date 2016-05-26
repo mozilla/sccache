@@ -364,6 +364,7 @@ mod test {
     use super::*;
     use cache::Cache;
     use mock_command::*;
+    use std::env;
     use std::fs::File;
     use std::io::Write;
     use test::utils::*;
@@ -424,6 +425,7 @@ mod test {
         env_logger::init().unwrap();
         let creator = new_creator();
         let f = TestFixture::new();
+        env::set_var("SCCACHE_DIR", &f.tempdir.path());
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
