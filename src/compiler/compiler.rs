@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::disk::DiskCache;
 use cache::{
     Cache,
     Storage,
@@ -34,7 +33,6 @@ use mock_command::{
 };
 use sha1;
 use std::collections::HashMap;
-use std::env;
 use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io::prelude::*;
@@ -44,7 +42,7 @@ use std::io::{
     Error,
     ErrorKind,
 };
-use std::path::{Path,PathBuf};
+use std::path::Path;
 use std::process::{self,Stdio};
 use std::str;
 use std::thread;
@@ -171,7 +169,7 @@ impl Compiler {
         parsed_args
     }
 
-    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cache, process::Output)> {
+    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cache, process::Output)> {
         if log_enabled!(Trace) {
             let cmd_str = arguments.join(" ");
             trace!("get_cached_or_compile: {}", cmd_str);
@@ -189,12 +187,6 @@ impl Compiler {
         let outputs = parsed_args.outputs.iter()
             .map(|(key, path)| (key, pwd.join(path)))
             .collect::<HashMap<_, _>>();
-        //TODO: derive this from the environment or settings
-        let d = env::var_os(&"SCCACHE_DIR")
-            .and_then(|p| Some(PathBuf::from(p)))
-            .unwrap_or(env::temp_dir().join("sccache_cache"));
-        trace!("cache dir: {:?}", d);
-        let storage = DiskCache::new(&d);
         storage.get(&key)
             .map(|mut entry| {
                 debug!("Cache hit!");
@@ -363,9 +355,9 @@ pub fn run_compiler<C: RunCommand>(mut command: C, stdin: Option<Vec<u8>>, captu
 mod test {
     use super::*;
     use cache::Cache;
+    use cache::disk::DiskCache;
     use mock_command::*;
-    use std::env;
-    use std::fs::File;
+    use std::fs::{self,File};
     use std::io::Write;
     use test::utils::*;
 
@@ -420,12 +412,14 @@ mod test {
 
     #[test]
     fn test_compiler_get_cached_or_compile_uncached() {
-        ///XXX: set cache dir here!
         use env_logger;
-        env_logger::init().unwrap();
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
         let creator = new_creator();
         let f = TestFixture::new();
-        env::set_var("SCCACHE_DIR", &f.tempdir.path());
+        let storage = DiskCache::new(&f.tempdir.path());
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -436,9 +430,10 @@ mod test {
         const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
         const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
+        let o = obj.clone();
         next_command_calls(&creator, move || {
             // Pretend to compile something.
-            match File::create(&obj)
+            match File::create(&o)
                 .and_then(|mut f| f.write_all(b"file contents")) {
                     Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
                     Err(e) => Err(e),
@@ -450,11 +445,25 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(creator.clone(), &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(Cache::Miss, cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         // Now compile again, which should be a cache hit.
+        fs::remove_file(&obj).unwrap();
+        // The preprocessor invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+        // There should be no actual compiler invocation.
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        assert_eq!(Cache::Hit, cached);
+        assert_eq!(exit_status(0), res.status);
+        //FIXME: this is broken!
+        //assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        //assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 }

@@ -23,6 +23,7 @@ use std::io;
 use std::path::{Path,PathBuf};
 
 /// A cache that stores entries at local disk paths.
+#[derive(Clone)]
 pub struct DiskCache {
     /// The root directory of the cache.
     root: PathBuf,
@@ -43,15 +44,14 @@ fn make_key_path(root: &Path, key: &str) -> PathBuf {
 }
 
 impl Storage for DiskCache {
-    type T = File;
 
-    fn get(&self, key: &str) -> Option<CacheRead<File>> {
+    fn get(&self, key: &str) -> Option<CacheRead> {
         File::open(make_key_path(&self.root, key))
             .ok()
             .and_then(|f| CacheRead::from(f).ok())
     }
 
-    fn start_put(&self, key: &str) -> io::Result<CacheWrite<File>> {
+    fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
         let path = make_key_path(&self.root, key);
         path.parent().map(|p| fs::create_dir_all(p));
         File::create(&path)
@@ -62,7 +62,7 @@ impl Storage for DiskCache {
             .map(|f| CacheWrite::new(f))
     }
 
-    fn finish_put(&self, _key: &str, entry: CacheWrite<File>) -> io::Result<()> {
+    fn finish_put(&self, _key: &str, entry: CacheWrite) -> io::Result<()> {
         // Dropping the ZipWriter is enough to finish it.
         drop(entry);
         Ok(())

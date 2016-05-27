@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::Cache;
+use cache::{
+    Cache,
+    Storage,
+    storage_from_environment,
+};
 use compiler::{
     Compiler,
     CompilerArguments,
@@ -49,12 +53,12 @@ use protocol::{
     UnhandledCompile,
     UnknownCommand,
 };
-use std::boxed::Box;
 use std::collections::HashMap;
 use std::fs::metadata;
 use std::io::{self,Error,ErrorKind};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::process::Output;
+use std::sync::Arc;
 use std::thread;
 
 /// A background task.
@@ -64,7 +68,7 @@ struct Task<C : CommandCreatorSync + 'static> {
 }
 
 /// Represents an sccache server instance.
-pub struct SccacheServer<C : CommandCreatorSync + 'static> {
+pub struct SccacheServer<C: CommandCreatorSync + 'static> {
     /// The listen socket for the server.
     sock: TcpListener,
 
@@ -73,6 +77,9 @@ pub struct SccacheServer<C : CommandCreatorSync + 'static> {
 
     /// A list of accepted connections.
     conns: Slab<ClientConnection<C>>,
+
+    /// Cache storage.
+    storage: Arc<Box<Storage>>,
 
     /// Server statistics.
     stats: ServerStats,
@@ -140,12 +147,18 @@ impl ServerStats {
 
 impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// Create an `SccacheServer` bound to `port`.
-    fn new(port : u16) -> io::Result<SccacheServer<C>> {
+    fn new(port: u16) -> io::Result<SccacheServer<C>> {
+        SccacheServer::with_storage(port, storage_from_environment())
+    }
+
+    /// Create an `SccacheServer` bound to `port`, using `storage` as cache storage.
+    fn with_storage(port: u16, storage: Box<Storage>) -> io::Result<SccacheServer<C>> {
         let listener = try!(TcpListener::bind(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port))));
         Ok(SccacheServer {
             sock: listener,
             token: Token(1),
             conns: Slab::new_starting_at(Token(2), 128),
+            storage: Arc::new(storage),
             stats: ServerStats::default(),
             shutting_down: false,
             compilers: HashMap::new(),
@@ -429,13 +442,14 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// Start running `cmd` in a background task, in `cwd`.
     fn start_compile_task(&mut self, compiler: Compiler, parsed_arguments: ParsedArguments, arguments: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let creator = self.creator.clone();
+        let storage = self.storage.clone();
         self.run_task(token, event_loop,
                       // Task, runs on a background thread.
                       move || {
                           let parsed_args = parsed_arguments;
                           let args = arguments;
                           let c = cwd;
-                          let res = compiler.get_cached_or_compile(creator, &args[1..], &parsed_args, &c);
+                          let res = compiler.get_cached_or_compile(creator, storage.as_ref().as_ref(), &args[1..], &parsed_args, &c);
                           TaskResult::Compiled(res.ok())
                       },
                       // Callback, runs on the event loop thread.

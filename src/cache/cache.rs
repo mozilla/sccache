@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use cache::disk::DiskCache;
 use compiler::Compiler;
 use sha1;
 use std::env;
@@ -23,6 +24,7 @@ use std::io::{
     Seek,
     Write,
 };
+use std::path::PathBuf;
 use zip::{
     CompressionMethod,
     ZipArchive,
@@ -40,15 +42,20 @@ pub enum Cache {
     Miss,
 }
 
+/// Trait objects can't be bounded by more than one non-builtin trait.
+pub trait ReadSeek : Read + Seek {}
+
+impl<T: Read + Seek> ReadSeek for T {}
+
 /// Data stored in the compiler cache.
-pub struct CacheRead<R: Read + Seek> {
-    zip: ZipArchive<R>,
+pub struct CacheRead {
+    zip: ZipArchive<Box<ReadSeek>>,
 }
 
-impl<R: Read + Seek> CacheRead<R> {
+impl CacheRead {
     /// Create a cache entry from `reader`.
-    pub fn from(reader: R) -> io::Result<CacheRead<R>> {
-        let z = try!(ZipArchive::new(reader).or(Err(Error::new(ErrorKind::Other, "Failed to parse cache entry"))));
+    pub fn from<R: ReadSeek + 'static>(reader: R) -> io::Result<CacheRead> {
+        let z = try!(ZipArchive::new(Box::new(reader) as Box<ReadSeek>).or(Err(Error::new(ErrorKind::Other, "Failed to parse cache entry"))));
         Ok(CacheRead {
             zip: z,
         })
@@ -62,16 +69,21 @@ impl<R: Read + Seek> CacheRead<R> {
     }
 }
 
+/// Trait objects can't be bounded by more than one non-builtin trait.
+pub trait WriteSeek : Write + Seek {}
+
+impl<T: Write + Seek> WriteSeek for T {}
+
 /// Data to be stored in the compiler cache.
-pub struct CacheWrite<W: Write + Seek> {
-    zip: ZipWriter<W>,
+pub struct CacheWrite {
+    zip: ZipWriter<Box<WriteSeek>>,
 }
 
-impl<W: Write + Seek> CacheWrite<W> {
+impl CacheWrite {
     /// Create a new, empty cache entry that writes to `writer`.
-    pub fn new(writer: W) -> CacheWrite<W> {
+    pub fn new<W: WriteSeek + 'static>(writer: W) -> CacheWrite {
         CacheWrite {
-            zip: ZipWriter::new(writer),
+            zip: ZipWriter::new(Box::new(writer) as Box<WriteSeek>),
         }
     }
 
@@ -84,15 +96,23 @@ impl<W: Write + Seek> CacheWrite<W> {
 }
 
 /// An interface to cache storage.
-pub trait Storage {
-    type T: Read + Write + Seek;
+pub trait Storage : Send + Sync {
     /// Get a cache entry by `key`.
-    fn get(&self, key: &str) -> Option<CacheRead<Self::T>>;
+    fn get(&self, key: &str) -> Option<CacheRead>;
 
     /// Get a cache entry for `key` that can be filled with data.
-    fn start_put(&self, key: &str) -> io::Result<CacheWrite<Self::T>>;
+    fn start_put(&self, key: &str) -> io::Result<CacheWrite>;
     /// Put `entry` in the cache under `key`.
-    fn finish_put(&self, key: &str, entry: CacheWrite<Self::T>) -> io::Result<()>;
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()>;
+}
+
+/// Get a suitable `Storage` implementation from the environment.
+pub fn storage_from_environment() -> Box<Storage + Send> {
+    let d = env::var_os(&"SCCACHE_DIR")
+        .and_then(|p| Some(PathBuf::from(p)))
+        //TODO: better default storage location.
+        .unwrap_or(env::temp_dir().join("sccache_cache"));
+    Box::new(DiskCache::new(&d))
 }
 
 /// The cache is versioned by the inputs to `hash_key`.

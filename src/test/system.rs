@@ -92,7 +92,6 @@ fn print_stats(stats: &HashMap<String, CacheStat>) {
 
 #[allow(dead_code)]
 fn run_sccache_command_test(sccache: &Path, compiler: &str, exe: &str, tempdir: &Path) {
-    //XXX: set cache dir here!
     // Ensure there's no existing sccache server running.
     trace!("stop server");
     do_run(sccache, &["--stop-server"], tempdir);
