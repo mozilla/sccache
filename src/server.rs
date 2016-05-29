@@ -119,7 +119,7 @@ struct ServerStats {
 }
 
 impl ServerStats {
-    fn to_cache_stats(&self) -> CacheStats {
+    fn to_cache_statistics(&self) -> Vec<CacheStatistic> {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 let mut stat = CacheStatistic::new();
@@ -138,10 +138,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
         set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
         set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
-
-        let mut stats = CacheStats::new();
-        stats.set_stats(RepeatedField::from_vec(stats_vec));
-        stats
+        stats_vec
     }
 }
 
@@ -506,6 +503,20 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         }
     }
 
+    /// Get stats about the cache.
+    fn get_stats(&self) -> CacheStats {
+        let mut stats = CacheStats::new();
+        let mut stats_vec = self.stats.to_cache_statistics();
+
+        let mut stat = CacheStatistic::new();
+        stat.set_name(String::from("Cache location"));
+        stat.set_str(self.storage.get_location());
+        stats_vec.insert(0, stat);
+
+        stats.set_stats(RepeatedField::from_vec(stats_vec));
+        stats
+    }
+
     /// Handle one request from a client and possibly send a response.
     fn handle_request(&mut self, token: Token, mut req: ClientRequest, event_loop: &mut EventLoop<SccacheServer<C>>) {
         trace!("handle_request");
@@ -520,12 +531,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             let mut res = ServerResponse::new();
             if req.has_get_stats() {
                 debug!("handle_client: get_stats");
-                res.set_stats(self.stats.to_cache_stats());
+                res.set_stats(self.get_stats());
             } else if req.has_shutdown() {
                 debug!("handle_client: shutdown");
                 self.initiate_shutdown(event_loop);
                 let mut shutting_down = ShuttingDown::new();
-                shutting_down.set_stats(self.stats.to_cache_stats());
+                shutting_down.set_stats(self.get_stats());
                 res.set_shutting_down(shutting_down);
             } else {
                 warn!("handle_client: unknown command");

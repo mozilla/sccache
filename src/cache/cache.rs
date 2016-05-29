@@ -104,6 +104,9 @@ pub trait Storage : Send + Sync {
     fn start_put(&self, key: &str) -> io::Result<CacheWrite>;
     /// Put `entry` in the cache under `key`.
     fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()>;
+
+    /// Get the storage location.
+    fn get_location(&self) -> String;
 }
 
 /// Get a suitable `Storage` implementation from the environment.

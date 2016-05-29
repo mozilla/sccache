@@ -44,7 +44,6 @@ fn make_key_path(root: &Path, key: &str) -> PathBuf {
 }
 
 impl Storage for DiskCache {
-
     fn get(&self, key: &str) -> Option<CacheRead> {
         File::open(make_key_path(&self.root, key))
             .ok()
@@ -66,5 +65,9 @@ impl Storage for DiskCache {
         // Dropping the ZipWriter is enough to finish it.
         drop(entry);
         Ok(())
+    }
+
+    fn get_location(&self) -> String {
+        format!("Local disk: {:?}", self.root)
     }
 }
