@@ -213,25 +213,31 @@ impl Compiler {
                 debug!("Cache miss!");
                 let process::Output { stdout, .. } = preprocessor_result;
                 let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
-                trace!("Compiled, storing in cache");
-                let mut entry = try!(storage.start_put(&key));
-                for (key, path) in outputs.iter() {
-                    let mut f = try!(File::open(&path));
-                    try!(entry.put_object(key, &mut f)
-                         .or_else(|e| {
-                             error!("Failed to put object `{:?}` in storage: {:?}", path, e);
-                             Err(e)
-                         }));
+                if compiler_result.status.success() {
+                    trace!("Compiled, storing in cache");
+                    let mut entry = try!(storage.start_put(&key));
+                    for (key, path) in outputs.iter() {
+                        let mut f = try!(File::open(&path));
+                        try!(entry.put_object(key, &mut f)
+                             .or_else(|e| {
+                                 error!("Failed to put object `{:?}` in storage: {:?}", path, e);
+                                 Err(e)
+                             }));
+                    }
+                    if !compiler_result.stdout.is_empty() {
+                        try!(entry.put_object("stdout", &mut io::Cursor::new(&compiler_result.stdout)));
+                    }
+                    if !compiler_result.stderr.is_empty() {
+                        try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
+                    }
+                    //TODO: do this on a background thread.
+                    try!(storage.finish_put(&key, entry));
+                    Ok((Cache::Miss, compiler_result))
+                } else {
+                    trace!("Compiled but failed, not storing in cache");
+                    Ok((Cache::CompileFailed, compiler_result))
                 }
-                if !compiler_result.stdout.is_empty() {
-                    try!(entry.put_object("stdout", &mut io::Cursor::new(&compiler_result.stdout)));
-                }
-                if !compiler_result.stderr.is_empty() {
-                    try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
-                }
-                //TODO: do this on a background thread.
-                try!(storage.finish_put(&key, entry));
-                Ok((Cache::Miss, compiler_result))
+
             })
     }
 }

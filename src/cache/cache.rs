@@ -40,6 +40,8 @@ pub enum Cache {
     Hit,
     /// Result was not found in cache.
     Miss,
+    /// Not in cache, but compilation failed.
+    CompileFailed,
 }
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
