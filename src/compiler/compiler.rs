@@ -223,6 +223,12 @@ impl Compiler {
                              Err(e)
                          }));
                 }
+                if !compiler_result.stdout.is_empty() {
+                    try!(entry.put_object("stdout", &mut io::Cursor::new(&compiler_result.stdout)));
+                }
+                if !compiler_result.stderr.is_empty() {
+                    try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
+                }
                 //TODO: do this on a background thread.
                 try!(storage.finish_put(&key, entry));
                 Ok((Cache::Miss, compiler_result))
@@ -467,7 +473,7 @@ mod test {
         assert_eq!(Cache::Hit, cached);
         assert_eq!(exit_status(0), res.status);
         //FIXME: this is broken!
-        //assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
-        //assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 }
