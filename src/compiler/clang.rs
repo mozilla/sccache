@@ -19,8 +19,7 @@ use ::compiler::{
     Compiler,
     CompilerArguments,
     ParsedArguments,
-    ProcessOutput,
-    run_compiler,
+    run_input_output,
 };
 use mock_command::{
     CommandCreator,
@@ -69,7 +68,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     //TODO: clang may fail when compiling preprocessor output with -Werror,
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
-    run_compiler(cmd, None, ProcessOutput::Capture)
+    run_input_output(cmd, None)
 }
 
 #[cfg(test)]

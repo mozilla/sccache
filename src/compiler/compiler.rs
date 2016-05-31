@@ -313,15 +313,6 @@ pub fn get_compiler_info<T : CommandCreatorSync>(creator : T,  executable : &str
         })
 }
 
-/// Whether to capture a processes output or inherit the parent stdio handles.
-#[derive(PartialEq)]
-pub enum ProcessOutput {
-    /// Capture process output.
-    Capture,
-    /// Inherit parent stdio handles.
-    Inherit,
-}
-
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
@@ -357,14 +348,13 @@ pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Op
     })
 }
 
-/// Run `executable` with `cmdline` in `cwd` using `creator`, and return the exit status and possibly the output, if `capture_output` is `ProcessOutput::Capture`.
-pub fn run_compiler<C: RunCommand>(mut command: C, stdin: Option<Vec<u8>>, capture_output: ProcessOutput) -> io::Result<process::Output> {
-    let capture = capture_output == ProcessOutput::Capture;
-    command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::inherit() })
-        .stdout(if capture { Stdio::piped() } else { Stdio::inherit() })
-        .stderr(if capture { Stdio::piped() } else { Stdio::inherit() })
+/// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
+pub fn run_input_output<C: RunCommand>(mut command: C, input: Option<Vec<u8>>) -> io::Result<process::Output> {
+    command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .and_then(|child| wait_with_input_output(child, stdin))
+        .and_then(|child| wait_with_input_output(child, input))
 }
 
 #[cfg(test)]

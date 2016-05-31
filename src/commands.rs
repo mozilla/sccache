@@ -19,8 +19,7 @@ use client::{
 };
 use cmdline::Command;
 use compiler::{
-    ProcessOutput,
-    run_compiler,
+    run_input_output,
 };
 #[cfg(unix)]
 use libc;
@@ -340,8 +339,14 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(mut cre
             let mut cmd = creator.new_command_sync(&cmdline[0]);
             cmd.args(&cmdline[1..])
                 .current_dir(cwd);
-            run_compiler(cmd, None, ProcessOutput::Inherit)
+            run_input_output(cmd, None)
                 .and_then(|output| {
+                    if !output.stdout.is_empty() {
+                        try!(stdout.write_all(&output.stdout));
+                    }
+                    if !output.stderr.is_empty() {
+                        try!(stderr.write_all(&output.stderr));
+                    }
                     Ok(output.status.code()
                        .unwrap_or_else(|| {
                            /* TODO: this breaks type inference, figure out why

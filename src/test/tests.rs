@@ -108,11 +108,12 @@ fn test_server_unsupported_compiler() {
     let cmdline = stringvec![f.bins[0].to_str().unwrap(), "-c", "file.c", "-o", "file.o"];
     let cwd = f.tempdir.path().to_str().unwrap().to_owned();
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+    const COMPILER_STDOUT: &'static [u8] = b"some stdout";
+    const COMPILER_STDERR: &'static [u8] = b"some stderr";
     {
         let mut c = client_creator.lock().unwrap();
         // Actual client output.
-        //TODO: do_compile should take stdout/stderr handles!
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "some stdout", "some stderr")));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)));
     }
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
@@ -121,8 +122,8 @@ fn test_server_unsupported_compiler() {
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
-    //TODO: make local process execution capture output so we can check
-    // stdout + stderr
+    assert_eq!(COMPILER_STDOUT, &stdout.into_inner()[..]);
+    assert_eq!(COMPILER_STDERR, &stderr.into_inner()[..]);
     // Shut down the server.
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.

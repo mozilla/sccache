@@ -16,8 +16,7 @@ use ::compiler::{
     Compiler,
     CompilerArguments,
     ParsedArguments,
-    ProcessOutput,
-    run_compiler,
+    run_input_output,
 };
 //use log::LogLevel::Trace;
 use mock_command::{
@@ -184,7 +183,7 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .current_dir(cwd);
-    run_compiler(cmd, None, ProcessOutput::Capture)
+    run_input_output(cmd, None)
 }
 
 pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
@@ -203,7 +202,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
         .args(&["-", "-o", &output.clone()])
         .args(&parsed_args.common_args)
         .current_dir(cwd);
-    run_compiler(cmd, Some(preprocessor_output), ProcessOutput::Capture)
+    run_input_output(cmd, Some(preprocessor_output))
 }
 
 #[cfg(test)]
