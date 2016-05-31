@@ -34,7 +34,36 @@ use std::io::{
 use std::path::Path;
 use std::process;
 
-pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
+/// Arguments that take a value. Shared with clang.
+pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
+    "--param", "-A", "-D", "-F", "-G", "-I", "-L",
+    "-U", "-V", "-Xassembler", "-Xlinker",
+    "-Xpreprocessor", "-aux-info", "-b", "-idirafter",
+    "-iframework", "-imacros", "-imultilib", "-include",
+    "-install_name", "-iprefix", "-iquote", "-isysroot",
+    "-isystem", "-iwithprefix", "-iwithprefixbefore",
+    "-u",
+    ];
+
+
+/// Return true if `arg` is a GCC commandline argument that takes a value.
+pub fn argument_takes_value(arg: &str) -> bool {
+    ARGS_WITH_VALUE.contains(&arg)
+}
+
+/// Parse `arguments`, determining whether it is supported.
+///
+/// `argument_takes_value` should return `true` when called with
+/// a compiler option that takes a value.
+///
+/// If any of the entries in `arguments` result in a compilation that
+/// cannot be cached, return `CompilerArguments::CannotCache`.
+/// If the commandline described by `arguments` is not compilation,
+/// return `CompilerArguments::NotCompilation`.
+/// Otherwise, return `CompilerArguments::Ok(ParsedArguments)`, with
+/// the `ParsedArguments` struct containing information parsed from
+/// `arguments`.
+pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes_value: F) -> CompilerArguments {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;
@@ -58,13 +87,7 @@ pub fn parse_arguments(arguments : &[String]) -> CompilerArguments {
                     // Arguments that take a value.
                     // -MF and -MQ are in this set but are handled separately
                     // because they are also preprocessor options.
-                    "--param" | "-A" | "-D" | "-F" | "-G" | "-I" | "-L" |
-                    "-U" | "-V" | "-Xassembler" | "-Xlinker" |
-                    "-Xpreprocessor" | "-aux-info" | "-b" | "-idirafter" |
-                    "-iframework" | "-imacros" | "-imultilib" | "-include" |
-                    "-install_name" | "-iprefix" | "-iquote" | "-isysroot" |
-                    "-isystem" | "-iwithprefix" | "-iwithprefixbefore" |
-                    "-u" => {
+                    a @ _ if argument_takes_value(a) => {
                         common_args.push(arg.clone());
                         if let Some(arg_val) = it.next() {
                             common_args.push(arg_val.clone());
@@ -188,9 +211,13 @@ mod test {
     use super::*;
     use ::compiler::*;
 
+    fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
+        parse_arguments(arguments, argument_takes_value)
+    }
+
     #[test]
     fn test_parse_arguments_simple() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
@@ -207,7 +234,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_split_dwarf() {
-        match parse_arguments(&stringvec!["-gsplit-dwarf", "-c", "foo.cpp", "-o", "foo.o"]) {
+        match _parse_arguments(&stringvec!["-gsplit-dwarf", "-c", "foo.cpp", "-o", "foo.o"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cpp", input);
@@ -224,7 +251,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_extra() {
-        match parse_arguments(&stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cc", input);
@@ -241,7 +268,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        match parse_arguments(&stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cxx", input);
@@ -258,7 +285,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_preprocessor_args() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
@@ -275,7 +302,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
@@ -292,7 +319,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
@@ -309,7 +336,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_dep_target_needed() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
+        match _parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
             CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
@@ -327,31 +354,31 @@ mod test {
     #[test]
     fn test_parse_arguments_empty_args() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&vec!()));
+                   _parse_arguments(&vec!()));
     }
 
     #[test]
     fn test_parse_arguments_not_compile() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&stringvec!["-o", "foo"]));
+                   _parse_arguments(&stringvec!["-o", "foo"]));
     }
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(CompilerArguments::CannotCache,
-                   parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"]));
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"]));
     }
 
     #[test]
     fn test_parse_arguments_pgo() {
         assert_eq!(CompilerArguments::CannotCache,
-                   parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
     }
 
 
     #[test]
     fn test_parse_arguments_response_file() {
         assert_eq!(CompilerArguments::CannotCache,
-                   parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
+                   _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
     }
 }

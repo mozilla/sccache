@@ -62,16 +62,20 @@ pub enum CompilerKind {
 impl CompilerKind {
     pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
         match self {
-            &CompilerKind::Gcc => gcc::parse_arguments(arguments),
-            &CompilerKind::Clang => clang::parse_arguments(arguments),
+            // GCC and clang share the same argument parsing logic, but
+            // accept different sets of arguments.
+            &CompilerKind::Gcc => gcc::parse_arguments(arguments, gcc::argument_takes_value),
+            &CompilerKind::Clang => gcc::parse_arguments(arguments, clang::argument_takes_value),
             &CompilerKind::Msvc => msvc::parse_arguments(arguments),
         }
     }
 
     pub fn preprocess<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
         match self {
-            &CompilerKind::Gcc => gcc::preprocess(creator, compiler, parsed_args, cwd),
-            &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Gcc | &CompilerKind::Clang => {
+                // GCC and clang use the same preprocessor invocation.
+                gcc::preprocess(creator, compiler, parsed_args, cwd)
+            },
             &CompilerKind::Msvc => msvc::preprocess(creator, compiler, parsed_args, cwd),
         }
     }
@@ -79,7 +83,7 @@ impl CompilerKind {
     pub fn compile<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
         match self {
             &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
-            &CompilerKind::Clang => Err(Error::new(ErrorKind::Other, "error")),
+            &CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
             &CompilerKind::Msvc => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
         }
     }
