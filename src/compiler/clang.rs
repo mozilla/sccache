@@ -25,13 +25,18 @@ use ::compiler::{
 use mock_command::{
     CommandCreator,
     CommandCreatorSync,
+    RunCommand,
 };
+use std::fs::File;
 use std::io::{
     self,
     Error,
     ErrorKind,
+    Write,
 };
+use std::path::Path;
 use std::process;
+use tempdir::TempDir;
 
 /// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
 const ARGS_WITH_VALUE: &'static [&'static str] = &["-arch"];
@@ -41,9 +46,30 @@ pub fn argument_takes_value(arg: &str) -> bool {
     gcc::ARGS_WITH_VALUE.contains(&arg) || ARGS_WITH_VALUE.contains(&arg)
 }
 
-pub fn compile<T : CommandCreatorSync>(creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
     trace!("compile");
-    unimplemented!();
+    // Clang needs a temporary file for compilation, otherwise debug info
+    // doesn't have a reference to the input file.
+    let tempdir = try!(TempDir::new("sccache"));
+    let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+    let input = tempdir.path().join(filename);
+    {
+        try!(File::create(&input)
+             .and_then(|mut f| f.write_all(&preprocessor_output)))
+    }
+    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+    let mut cmd = creator.new_command_sync(&compiler.executable);
+    cmd.arg("-c")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+
+    //TODO: clang may fail when compiling preprocessor output with -Werror,
+    // so retry compilation from the original input file if it fails and
+    // -Werror is in the commandline.
+    run_compiler(cmd, None, ProcessOutput::Capture)
 }
 
 #[cfg(test)]

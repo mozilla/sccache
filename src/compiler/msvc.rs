@@ -26,7 +26,6 @@ use mock_command::{
     RunCommand,
 };
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{
     self,
@@ -165,7 +164,8 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     // MSVC doesn't read anything from stdin, so it needs a temporary file
     // as input.
     let tempdir = try!(TempDir::new("sccache"));
-    let input = tempdir.path().join(Path::new(&parsed_args.input).file_name().unwrap_or(OsStr::new("file.c")));
+    let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+    let input = tempdir.path().join(filename);
     {
         try!(File::create(&input)
              .and_then(|mut f| f.write_all(&preprocessor_output)))
