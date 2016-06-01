@@ -30,7 +30,7 @@ use std::io::{
     self,
     Write,
 };
-use std::path::Path;
+use std::path::{Path,PathBuf};
 use std::process::{
     Command,
     Output,
@@ -39,11 +39,19 @@ use std::process::{
 use tempdir::TempDir;
 use test::utils::*;
 
-#[cfg(unix)]
-const COMPILER : &'static str = "gcc";
+// Test GCC + clang on non-OS X platforms.
+#[cfg(all(unix, not(target_os="macos")))]
+const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
 
+// OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
+#[cfg(target_os="macos")]
+const COMPILERS: &'static [&'static str] = &["clang"];
+
+// Test MSVC when targeting MSVC.
 #[cfg(target_env="msvc")]
-const COMPILER : &'static str = "cl.exe";
+const COMPILERS: &'static[&'static str] = &["cl.exe"];
+
+//TODO: could test gcc when targeting mingw.
 
 fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> Output {
     let mut cmd = Command::new(exe);
@@ -83,7 +91,7 @@ macro_rules! vec_from {
 
 fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output: &str) -> Vec<OsString> {
     match compiler {
-        "gcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     }
@@ -95,8 +103,6 @@ fn print_stats(stats: &HashMap<String, CacheStat>) {
     }
 }
 
-
-#[allow(dead_code)]
 fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe: T, tempdir: &Path) {
     // Ensure there's no existing sccache server running.
     trace!("stop server");
@@ -115,6 +121,7 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
             .status()
             .unwrap()
             .success());
+    trace!("run_sccache_command_test: {}", compiler);
     // Compile a source file.
     let original_source_file = Path::new(file!()).parent().unwrap().join("test.c");
     // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -159,9 +166,20 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     assert_eq!(true, run(sccache, &["--stop-server"], tempdir));
 }
 
-// Don't run this on OS X until we actually support clang.
+fn find_compilers() -> Vec<(&'static str, OsString)> {
+    let cwd = env::current_dir().unwrap();
+    COMPILERS.iter()
+        .filter_map(|c| {
+            match which(c, env::var_os("PATH"), &cwd) {
+                Some(full_path) => Some((*c, full_path)),
+                None => None,
+            }
+        })
+        .collect::<Vec<_>>()
+}
+
 #[test]
-#[cfg(all(not(target_os="macos"), any(unix, target_env="msvc")))]
+#[cfg(any(unix, target_env="msvc"))]
 fn test_sccache_command() {
     match env_logger::init() {
         Ok(_) => {},
@@ -173,10 +191,12 @@ fn test_sccache_command() {
         Ok(_) => {},
         Err(_) => panic!("Error: sccache binary not found at `{:?}. Do you need to run `cargo build`?", sccache),
     }
-    match which(COMPILER, env::var("PATH").ok(), &env::current_dir().unwrap()) {
-        Some(c) => run_sccache_command_test(&sccache, COMPILER, &c, tempdir.path()),
-        None => {
-            assert!(true, "No `{}` compiler found, skipping test", COMPILER);
+    let compilers = find_compilers();
+    if compilers.is_empty() {
+        assert!(true, "No compilers found, skipping test");
+    } else {
+        for (compiler, path) in compilers {
+            run_sccache_command_test(&sccache, compiler, path, tempdir.path())
         }
     }
 }
