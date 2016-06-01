@@ -454,13 +454,13 @@ mod test {
     #[test]
     fn test_which_relative() {
         let f = TestFixture::new();
-        assert_eq!(_which(&f, "b/bin").unwrap(), f.bins[1].as_os_str());
+        assert_eq!(Path::new(&_which(&f, "b/bin").unwrap()).canonicalize().unwrap(), f.bins[1].canonicalize().unwrap());
     }
 
     #[test]
     fn test_which_relative_leading_dot() {
         let f = TestFixture::new();
-        assert_eq!(Path::new(&_which(&f, "./b/bin").unwrap()).canonicalize().unwrap(), f.bins[1]);
+        assert_eq!(Path::new(&_which(&f, "./b/bin").unwrap()).canonicalize().unwrap(), f.bins[1].canonicalize().unwrap());
     }
 
     #[test]
