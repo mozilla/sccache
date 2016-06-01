@@ -24,7 +24,7 @@ use env_logger;
 use log::LogLevel::Trace;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr,OsString};
 use std::fs;
 use std::io::{
     self,
@@ -75,10 +75,16 @@ fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> bool {
     }
 }
 
-fn compile_cmdline(compiler: &str, exe: &str, input: &str, output: &str) -> Vec<String> {
+macro_rules! vec_from {
+    ( $t:ty, $( $x:expr ),* ) => {
+        vec!($( Into::<$t>::into(&$x), )*)
+    };
+}
+
+fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output: &str) -> Vec<OsString> {
     match compiler {
-        "gcc" => vec!(exe.to_owned(), "-c".to_owned(), input.to_owned(), "-o".to_owned(), output.to_owned()),
-        "cl.exe" => vec!(exe.to_owned(), "-c".to_owned(), input.to_owned(), format!("-Fo{}", output)),
+        "gcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     }
 }
@@ -91,7 +97,7 @@ fn print_stats(stats: &HashMap<String, CacheStat>) {
 
 
 #[allow(dead_code)]
-fn run_sccache_command_test(sccache: &Path, compiler: &str, exe: &str, tempdir: &Path) {
+fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe: T, tempdir: &Path) {
     // Ensure there's no existing sccache server running.
     trace!("stop server");
     do_run(sccache, &["--stop-server"], tempdir);
@@ -113,12 +119,13 @@ fn run_sccache_command_test(sccache: &Path, compiler: &str, exe: &str, tempdir: 
     let original_source_file = Path::new(file!()).parent().unwrap().join("test.c");
     // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
     let source_file = tempdir.join("test.c");
+    trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
     fs::copy(&original_source_file, &source_file).unwrap();
     let out_file = tempdir.join("test.o");
     let input = source_file.file_name().unwrap().to_str().unwrap();
     let output = out_file.file_name().unwrap().to_str().unwrap();
     trace!("compile");
-    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe, &input, &output), tempdir));
+    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
@@ -134,7 +141,7 @@ fn run_sccache_command_test(sccache: &Path, compiler: &str, exe: &str, tempdir: 
     assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe, &input, &output), tempdir));
+    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();

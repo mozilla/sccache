@@ -46,7 +46,7 @@ use protocol::{
 };
 use server;
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr,OsString};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::io::{
@@ -60,7 +60,6 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{
-    self,
     Path,
     PathBuf,
 };
@@ -103,24 +102,20 @@ fn is_executable(path: &Path) -> bool {
 fn is_executable(_path: &Path) -> bool { true }
 
 //TODO: upstream this all to the `which` crate.
-pub fn which<T: AsRef<OsStr>>(path: &str, os_path: Option<String>, cwd: &T) -> Option<String> {
+pub fn which<T: AsRef<OsStr>, U: AsRef<OsStr>, V: AsRef<Path>>(filename: T, os_path: Option<U>, cwd: V) -> Option<OsString> {
     // Does it have a path separator?
-    if path.chars().any(path::is_separator) {
-        let p = Path::new(&path);
-        if p.is_absolute() {
+    let path = Path::new(&filename);
+    if path.components().count() > 1 {
+        if path.is_absolute() {
             // Already fine.
             //XXX: should probably use Cow
-            Some(path.to_owned())
+            Some(filename.as_ref().to_owned())
         } else {
             // Try to make it absolute.
-            let mut new_path = PathBuf::from(cwd);
-            new_path.push(p);
+            let mut new_path = PathBuf::from(cwd.as_ref());
+            new_path.push(path);
             if new_path.exists() {
-                new_path.canonicalize()
-                    .ok()
-                    .and_then(|canonical_path|
-                              canonical_path.to_str()
-                              .and_then(|canonical_str| Some(canonical_str.to_owned())))
+                Some(new_path.into_os_string())
             } else {
                 // File doesn't exist.
                 None
@@ -138,29 +133,9 @@ pub fn which<T: AsRef<OsStr>>(path: &str, os_path: Option<String>, cwd: &T) -> O
                 // tests break on Windows otherwise. Make this return
                 // a PathBuf and then the tests can call this.
                 .and_then(|p| p.canonicalize().ok())
-                .and_then(|p| p.to_str().map(|ps| ps.to_owned()))
+                .map(|p| p.into_os_string())
         })
     }
-}
-
-/// Make the first element of `cmd` into an absolute path relative to `cwd`, finding it in `os_path` if necessary.
-pub fn find_in_path(mut cmd: Vec<String>, os_path: Option<String>, cwd: &str) -> Vec<String> {
-    match cmd.first_mut() {
-        // Empty commandline?
-        None => {}
-        Some(s) => {
-            match which(&s, os_path, &cwd) {
-                Some(new_path_str) => {
-                    if &new_path_str != s {
-                        s.clear();
-                        s.push_str(&new_path_str);
-                    }
-                }
-                None => {} //TODO: We should error somewhere.
-            }
-        }
-    }
-    cmd
 }
 
 /// Re-execute the current executable as a background server.
@@ -253,13 +228,22 @@ fn print_stats(stats: CacheStats) -> io::Result<()> {
 }
 
 /// Send a `Compile` request to the server, and return the server response if successful.
-fn request_compile(conn : &mut ServerConnection, cmdline : &Vec<String>, cwd : &str) -> io::Result<CompileResponse> {
+fn request_compile<W: AsRef<Path>, X: AsRef<OsStr>, Y: AsRef<Path>>(conn: &mut ServerConnection, exe: W, args: &Vec<X>, cwd: Y) -> io::Result<CompileResponse> {
+    //TODO: It'd be nicer to send these over as raw bytes.
+    let exe = try!(exe.as_ref().to_str().ok_or(Error::new(ErrorKind::Other, "Bad exe")));
+    let cwd = try!(cwd.as_ref().to_str().ok_or(Error::new(ErrorKind::Other, "Bad cwd")));
+    let args = args.iter().filter_map(|a| a.as_ref().to_str().map(|s| s.to_owned())).collect::<Vec<_>>();
+    if args.len() == 0 {
+        return Err(Error::new(ErrorKind::Other, "Bad commandline"));
+    }
     let mut req = ClientRequest::new();
     let mut compile = Compile::new();
+    compile.set_exe(exe.to_owned());
     compile.set_cwd(cwd.to_owned());
-    compile.set_command(RepeatedField::from_vec(cmdline.clone()));
+    compile.set_command(RepeatedField::from_vec(args));
+    trace!("request_compile: {:?}", compile);
     req.set_compile(compile);
-    //TODO: better error mapping
+    //TODO: better error mapping?
     let mut response = try!(conn.request(req).or(Err(Error::new(ErrorKind::Other, "Failed to send data to or receive data from server"))));
     if response.has_compile_started() {
         Ok(CompileResponse::CompileStarted(response.take_compile_started()))
@@ -313,7 +297,15 @@ fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, std
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
-fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(mut creator : T, conn : &mut ServerConnection, response : CompileResponse, cmdline : Vec<String>, cwd : &str, stdout : &mut U, stderr : &mut V) -> io::Result<i32> {
+fn handle_compile_response<T, U, V, W, X, Y>(mut creator: T,
+                                             conn: &mut ServerConnection,
+                                             response: CompileResponse,
+                                             exe: W,
+                                             cmdline: Vec<X>,
+                                             cwd: Y,
+                                             stdout: &mut U,
+                                             stderr: &mut V) -> io::Result<i32>
+  where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
@@ -336,9 +328,9 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(mut cre
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
             //TODO: possibly capture output here for testing.
-            let mut cmd = creator.new_command_sync(&cmdline[0]);
-            cmd.args(&cmdline[1..])
-                .current_dir(cwd);
+            let mut cmd = creator.new_command_sync(exe.as_ref());
+            cmd.args(&cmdline)
+                .current_dir(cwd.as_ref());
             run_input_output(cmd, None)
                 .and_then(|output| {
                     if !output.stdout.is_empty() {
@@ -369,17 +361,21 @@ fn handle_compile_response<T : CommandCreatorSync, U : Write, V : Write>(mut cre
 /// The first entry in `cmdline` will be looked up in `path` if it is not
 /// an absolute path.
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile<T, U, V>(creator: T,
-                           mut conn: ServerConnection,
-                           mut cmdline: Vec<String>,
-                           cwd: &str,
-                           path: Option<String>,
-                           stdout: &mut U,
-                           stderr: &mut V) -> io::Result<i32>
-  where T : CommandCreatorSync, U : Write, V : Write {
-    cmdline = find_in_path(cmdline, path, &cwd);
-    request_compile(&mut conn, &cmdline, &cwd)
-        .and_then(|res| handle_compile_response(creator, &mut conn, res, cmdline, &cwd, stdout, stderr))
+pub fn do_compile<T, U, V, W, X, Y>(creator: T,
+                                    mut conn: ServerConnection,
+                                    exe: W,
+                                    cmdline: Vec<X>,
+                                    cwd: Y,
+                                    path: Option<OsString>,
+                                    stdout: &mut U,
+                                    stderr: &mut V) -> io::Result<i32>
+  where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
+    which(exe, path, &cwd)
+          .ok_or(Error::new(ErrorKind::Other, "Couldn't find exe"))
+          .and_then(|exe_path| {
+              request_compile(&mut conn, &exe_path, &cmdline, &cwd)
+                  .and_then(|res| handle_compile_response(creator, &mut conn, res, exe_path, cmdline, cwd, stdout, stderr))
+          })
 }
 
 /// Run `cmd` and return the process exit status.
@@ -413,9 +409,10 @@ pub fn run_command(cmd : Command) -> i32 {
                              })
 
         },
-        Command::Compile { cmdline, cwd } => {
+        Command::Compile { exe, cmdline, cwd } => {
+            trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             connect_or_start_server(DEFAULT_PORT)
-                .and_then(|conn| do_compile(ProcessCommandCreator, conn, cmdline, &cwd, env::var("PATH").ok(), &mut io::stdout(), &mut io::stderr()))
+                .and_then(|conn| do_compile(ProcessCommandCreator, conn, &exe, cmdline, &cwd, env::var_os("PATH"), &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
@@ -427,16 +424,18 @@ pub fn run_command(cmd : Command) -> i32 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::ffi::OsString;
+    use std::path::Path;
     use test::utils::*;
 
-    fn _which(f: &TestFixture, path: &str) -> Option<String> {
-        which(path, Some(f.paths.clone()), &f.tempdir.path().to_str().unwrap())
+    fn _which(f: &TestFixture, path: &str) -> Option<OsString> {
+        which(path, Some(f.paths.clone()), f.tempdir.path())
     }
 
     #[test]
     fn test_which() {
         let f = TestFixture::new();
-        assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[0].to_str().unwrap())
+        assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[0].as_os_str())
     }
 
     #[test]
@@ -449,19 +448,19 @@ mod test {
     fn test_which_second() {
         let f = TestFixture::new();
         let b = f.mk_bin("b/another").unwrap();
-        assert_eq!(_which(&f, "another").unwrap(), b.to_str().unwrap());
+        assert_eq!(_which(&f, "another").unwrap(), b.as_os_str());
     }
 
     #[test]
     fn test_which_relative() {
         let f = TestFixture::new();
-        assert_eq!(_which(&f, "b/bin").unwrap(), f.bins[1].to_str().unwrap());
+        assert_eq!(_which(&f, "b/bin").unwrap(), f.bins[1].as_os_str());
     }
 
     #[test]
     fn test_which_relative_leading_dot() {
         let f = TestFixture::new();
-        assert_eq!(_which(&f, "./b/bin").unwrap(), f.bins[1].to_str().unwrap());
+        assert_eq!(Path::new(&_which(&f, "./b/bin").unwrap()).canonicalize().unwrap(), f.bins[1]);
     }
 
     #[test]
@@ -471,24 +470,5 @@ mod test {
         let f = TestFixture::new();
         f.touch("b/another").unwrap().canonicalize().unwrap();
         assert!(_which(&f, "another").is_none());
-    }
-
-    #[test]
-    fn test_find_in_path() {
-        let f = TestFixture::new();
-        assert_eq!(find_in_path(stringvec!(BIN_NAME, "b", "c"),
-                                Some(f.paths.clone()),
-                                f.tempdir.path().to_str().unwrap()),
-                   stringvec!(f.bins[0].to_str().unwrap(), "b", "c"));
-    }
-
-    #[test]
-    fn test_find_in_path_not_found() {
-        let f = TestFixture::new();
-        let v = stringvec!("a", "b", "c");
-        assert_eq!(find_in_path(v.clone(),
-                                Some(f.paths.clone()),
-                                f.tempdir.path().to_str().unwrap()),
-                   v);
     }
 }

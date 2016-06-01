@@ -304,29 +304,21 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         }
     }
 
-    /// Look up compiler info from the cache for the compiler in `cmd`.
-    fn compiler_info_cached(&mut self, cmd : &Vec<String>) -> Option<Option<Compiler>> {
+    /// Look up compiler info from the cache for the compiler `path`.
+    fn compiler_info_cached(&mut self, path: &str) -> Option<Option<Compiler>> {
         trace!("compiler_info_cached");
-        match cmd.first() {
-            Some(path) => {
-                match metadata(path) {
-                    Ok(attr) => {
-                        let mtime = FileTime::from_last_modification_time(&attr);
-                        match self.compilers.get(path) {
-                            // It's a hit only if the mtime matches.
-                            Some(&Some(ref c)) if c.mtime == mtime => Some(Some(c.clone())),
-                            // We cache non-results.
-                            Some(&None) => Some(None),
-                            _ => None,
-                        }
-                    }
-                    Err(_) => None,
+        match metadata(path) {
+            Ok(attr) => {
+                let mtime = FileTime::from_last_modification_time(&attr);
+                match self.compilers.get(path) {
+                    // It's a hit only if the mtime matches.
+                    Some(&Some(ref c)) if c.mtime == mtime => Some(Some(c.clone())),
+                    // We cache non-results.
+                    Some(&None) => Some(None),
+                    _ => None,
                 }
             }
-            None => {
-                warn!("Got empty compile commandline?");
-                None
-            },
+            Err(_) => None,
         }
     }
 
@@ -421,7 +413,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 trace!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                match c.parse_arguments(&cmd[1..]) {
+                match c.parse_arguments(&cmd) {
                     CompilerArguments::Ok(args) => {
                         self.stats.requests_executed += 1;
                         self.send_compile_started(token, event_loop);
@@ -450,7 +442,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                           let parsed_args = parsed_arguments;
                           let args = arguments;
                           let c = cwd;
-                          let res = compiler.get_cached_or_compile(creator, storage.as_ref().as_ref(), &args[1..], &parsed_args, &c);
+                          let res = compiler.get_cached_or_compile(creator, storage.as_ref().as_ref(), &args, &parsed_args, &c);
                           TaskResult::Compiled(res.ok())
                       },
                       // Callback, runs on the event loop thread.
@@ -473,10 +465,11 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// This will either start compilation and set a `CompileStarted`
     /// response in `res`, or set an `UnhandledCompile` response in `res`.
     fn handle_compile(&mut self, token: Token, mut compile: Compile, event_loop: &mut EventLoop<SccacheServer<C>>) {
+        let exe = compile.take_exe();
         let cmd = compile.take_command().into_vec();
         let cwd = compile.take_cwd();
         // See if this compiler is already in the cache.
-        match self.compiler_info_cached(&cmd) {
+        match self.compiler_info_cached(&exe) {
             Some(c) => {
                 trace!("compiler_info cache hit");
                 self.check_compiler(c, cmd, cwd, token, event_loop);
@@ -484,7 +477,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             None => {
                 trace!("compiler_info cache miss");
                 // Run a Task to check the compiler type.
-                let exe = cmd.first().unwrap().clone();
+                let exe = exe.clone();
                 let creator = self.creator.clone();
                 self.run_task(token, event_loop,
                               // Task, runs on a background thread.

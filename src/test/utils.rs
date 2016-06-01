@@ -18,6 +18,7 @@ use mock_command::*;
 use protocol::CacheStats;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
@@ -77,7 +78,7 @@ pub struct TestFixture {
     /// Temp directory.
     pub tempdir: TempDir,
     /// $PATH
-    pub paths: String,
+    pub paths: OsString,
     /// Binaries created in $PATH
     pub bins: Vec<PathBuf>,
 }
@@ -139,7 +140,7 @@ impl TestFixture {
         }
         TestFixture {
             tempdir: tempdir,
-            paths: env::join_paths(paths).unwrap().to_str().unwrap().to_owned(),
+            paths: env::join_paths(paths).unwrap(),
             bins: bins,
         }
     }

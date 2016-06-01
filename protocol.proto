@@ -24,8 +24,10 @@ message Shutdown {}
 message Compile {
   // The directory in which to run the command.
   required string cwd = 1;
-  // The full command line.
-  repeated string command = 2;
+  // The executable to run.
+  required string exe = 2;
+  // The command line arguments.
+  repeated string command = 3;
 }
 
 message ClientRequest {

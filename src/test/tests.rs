@@ -105,8 +105,9 @@ fn test_server_unsupported_compiler() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = stringvec![f.bins[0].to_str().unwrap(), "-c", "file.c", "-o", "file.o"];
-    let cwd = f.tempdir.path().to_str().unwrap().to_owned();
+    let exe = &f.bins[0];
+    let cmdline = vec!["-c", "file.c", "-o", "file.o"];
+    let cwd = f.tempdir.path();
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     const COMPILER_STDOUT: &'static [u8] = b"some stdout";
     const COMPILER_STDERR: &'static [u8] = b"some stderr";
@@ -118,7 +119,7 @@ fn test_server_unsupported_compiler() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, &cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
@@ -164,15 +165,16 @@ fn test_server_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let cmdline = stringvec![f.bins[0].to_str().unwrap(), "-c", "file.c", "-o", "file.o"];
-    let cwd = f.tempdir.path().to_str().unwrap().to_owned();
+    let exe = &f.bins[0];
+    let cmdline = vec!["-c", "file.c", "-o", "file.o"];
+    let cwd = f.tempdir.path();
     // This creator shouldn't create any processes. It will assert if
     // it tries to.
     let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, cmdline, &cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(STDOUT, stdout.into_inner().as_slice());

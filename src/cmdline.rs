@@ -17,8 +17,9 @@ use clap::{
     AppSettings,
     Arg,
 };
-use log::LogLevel::Trace;
 use std::env;
+use std::ffi::OsString;
+use std::path::PathBuf;
 
 /// A specific command to run.
 pub enum Command {
@@ -34,10 +35,12 @@ pub enum Command {
     StopServer,
     /// Run a compiler command.
     Compile {
-        /// The command to execute
-        cmdline: Vec<String>,
+        /// The binary to execute.
+        exe: OsString,
+        /// The commandline arguments to pass to `exe`.
+        cmdline: Vec<OsString>,
         /// The directory in which to execute the command.
-        cwd: String,
+        cwd: PathBuf,
     },
 }
 
@@ -76,10 +79,10 @@ pub fn parse<'a>() -> Command {
     let show_stats = matches.is_present("show-stats");
     let start_server = matches.is_present("start-server");
     let stop_server = matches.is_present("stop-server");
-    let cmd = matches.values_of("cmd");
+    let cmd = matches.values_of_os("cmd");
     // Ensure that we've only received one command to run.
     fn is_some<T>(x : &Option<T>) -> bool {
-        x.is_some() // .as_ref().and(Some(true)).unwrap_or(false)
+        x.is_some()
     }
     if [
         internal_start_server,
@@ -100,22 +103,29 @@ pub fn parse<'a>() -> Command {
         Command::StartServer
     } else if stop_server {
         Command::StopServer
-    } else if let Some(a) = cmd {
-        if let Some(cwd) = env::current_dir().ok()
-            .and_then(|d| d.to_str().and_then(|s| Some(s.to_owned()))) {
-                let cmdline = a.map(|s| s.to_owned()).collect::<Vec<_>>();
+    } else if let Some(mut args) = cmd {
+        if let Ok(cwd) = env::current_dir() {
+            if let Some(exe) = args.next() {
+                let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
+                /*
                 if log_enabled!(Trace) {
                     let cmd_str = cmdline.join(" ");
                     trace!("parse: `{}`", cmd_str);
                 }
+                 */
                 Command::Compile {
+                    exe: exe.to_owned(),
                     cmdline: cmdline,
                     cwd: cwd,
                 }
             } else {
-                println!("sccache: Couldn't determine current working directory");
+                println!("sccache: No compile command");
                 usage()
             }
+        } else {
+            println!("sccache: Couldn't determine current working directory");
+            usage()
+        }
     } else {
         println!("sccache: No command specified");
         usage()
