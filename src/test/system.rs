@@ -166,6 +166,7 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     assert_eq!(true, run(sccache, &["--stop-server"], tempdir));
 }
 
+#[cfg(any(unix, target_env="msvc"))]
 fn find_compilers() -> Vec<(&'static str, OsString)> {
     let cwd = env::current_dir().unwrap();
     COMPILERS.iter()
