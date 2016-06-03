@@ -21,6 +21,7 @@ extern crate mio;
 extern crate number_prefix;
 extern crate protobuf;
 extern crate retry;
+extern crate rusoto;
 extern crate sha1;
 extern crate tempdir;
 extern crate zip;

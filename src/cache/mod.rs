@@ -14,5 +14,6 @@
 
 pub mod cache;
 pub mod disk;
+pub mod s3;
 
 pub use cache::cache::*;

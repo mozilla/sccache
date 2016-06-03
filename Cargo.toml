@@ -17,5 +17,9 @@ sha1 = "0.1.1"
 tempdir = "0.3.4"
 zip = { version = "0.1", default-features = false }
 
+[dependencies.rusoto]
+features = ["s3"]
+git = "https://github.com/rusoto/rusoto"
+
 [profile.release]
 debug = true

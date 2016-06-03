@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use cache::disk::DiskCache;
+use cache::s3::S3Cache;
 use compiler::Compiler;
 use sha1;
 use std::env;
+use std::fs::File;
 use std::io::{
     self,
+    Cursor,
     Error,
     ErrorKind,
     Read,
@@ -71,29 +74,77 @@ impl CacheRead {
     }
 }
 
-/// Trait objects can't be bounded by more than one non-builtin trait.
-pub trait WriteSeek : Write + Seek {}
+/// `ZipType` stores concrete `ZipWriter` types for `CacheWrite`.
+///
+/// This is necessary so some cache types can back a `ZipWriter` with
+/// a `Cursor` and then get it back to store the data after adding
+/// all the zip entries.
+pub enum ZipType {
+    /// A `File`.
+    File(ZipWriter<File>),
+    /// A `Cursor`.
+    Cursor(ZipWriter<Cursor<Vec<u8>>>),
+}
 
-impl<T: Write + Seek> WriteSeek for T {}
+/// As per `ZipType`.
+pub enum CacheWriteWriter {
+    File(File),
+    Cursor(Cursor<Vec<u8>>),
+}
+
+impl From<File> for ZipType {
+    fn from(f: File) -> ZipType {
+        ZipType::File(ZipWriter::new(f))
+    }
+}
+
+impl From<Cursor<Vec<u8>>> for ZipType {
+    fn from(c: Cursor<Vec<u8>>) -> ZipType {
+        ZipType::Cursor(ZipWriter::new(c))
+    }
+}
 
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
-    zip: ZipWriter<Box<WriteSeek>>,
+    zip: ZipType,
 }
 
 impl CacheWrite {
     /// Create a new, empty cache entry that writes to `writer`.
-    pub fn new<W: WriteSeek + 'static>(writer: W) -> CacheWrite {
+    pub fn new<W>(writer: W) -> CacheWrite where W: Into<ZipType> {
         CacheWrite {
-            zip: ZipWriter::new(Box::new(writer) as Box<WriteSeek>),
+            zip: writer.into(),
         }
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
     pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> io::Result<()> {
-        try!(self.zip.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
-        try!(io::copy(from, &mut self.zip));
+        // Yeah, this sucks.
+        //TODO: figure something better out here.
+        match &mut self.zip {
+            &mut ZipType::File(ref mut zf) => {
+                try!(zf.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
+                try!(io::copy(from, zf));
+            }
+            &mut ZipType::Cursor(ref mut zc) => {
+                try!(zc.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
+                try!(io::copy(from, zc));
+            }
+        };
         Ok(())
+    }
+
+    /// Finish writing data to the cache entry writer, and return the writer.
+    pub fn finish(self) -> io::Result<CacheWriteWriter> {
+        let CacheWrite { zip } = self;
+        match zip {
+            ZipType::File(mut zf) => {
+                Ok(CacheWriteWriter::File(try!(zf.finish().or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip"))))))
+            }
+            ZipType::Cursor(mut zc) => {
+                Ok(CacheWriteWriter::Cursor(try!(zc.finish().or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip"))))))
+            }
+        }
     }
 }
 
@@ -113,10 +164,22 @@ pub trait Storage : Send + Sync {
 
 /// Get a suitable `Storage` implementation from the environment.
 pub fn storage_from_environment() -> Box<Storage + Send> {
-    let d = env::var_os(&"SCCACHE_DIR")
+    if let (Ok(bucket), Ok(region)) = (env::var("SCCACHE_BUCKET"),
+                                       env::var("SCCACHE_REGION")) {
+        trace!("Trying S3Cache({}, {})", region, bucket);
+        match S3Cache::new(&region, &bucket) {
+            Ok(s) => {
+                trace!("Using S3Cache");
+                return Box::new(s);
+            }
+            Err(e) => warn!("Failed to create S3Cache: {:?}", e),
+        }
+    }
+    let d = env::var_os("SCCACHE_DIR")
         .and_then(|p| Some(PathBuf::from(p)))
         //TODO: better default storage location.
         .unwrap_or(env::temp_dir().join("sccache_cache"));
+    trace!("Using DiskCache({:?})", d);
     Box::new(DiskCache::new(&d))
 }
 
