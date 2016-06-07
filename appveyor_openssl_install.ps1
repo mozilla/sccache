@@ -15,5 +15,6 @@ echo "Installing $installer"
 $env:OPENSSL_INCLUDE_DIR = "c:\OpenSSL-Win64\include"
 $env:OPENSSL_LIB_DIR = "c:\OpenSSL-Win64\lib"
 $env:OPENSSL_LIBS = "ssleay32:libeay32"
+$env:Path += ";c:\OpenSSL-Win64\bin"
 
 echo "Installation of OpenSSL completed"
