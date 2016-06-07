@@ -19,7 +19,8 @@ zip = { version = "0.1", default-features = false }
 
 [dependencies.rusoto]
 features = ["s3"]
-git = "https://github.com/rusoto/rusoto"
+git = "https://github.com/luser/rusoto"
+branch = "update-serde"
 
 [profile.release]
 debug = true
