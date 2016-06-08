@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use cache::{
-    Cache,
     Storage,
     storage_from_environment,
 };
 use compiler::{
     Compiler,
     CompilerArguments,
+    CompileResult,
     ParsedArguments,
     get_compiler_info,
 };
@@ -363,16 +363,16 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     ///
     /// This indicates that the server has finished running a compile,
     /// and contains the process exit status and stdout/stderr.
-    fn send_compile_finished(&mut self, result: Option<(Cache, Output)>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+    fn send_compile_finished(&mut self, result: Option<(CompileResult, Output)>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let mut res = ServerResponse::new();
         let mut finish = CompileFinished::new();
         match result {
-            Some((cached, out)) => {
-                match cached {
-                    Cache::Error => self.stats.cache_errors += 1,
-                    Cache::Hit => self.stats.cache_hits += 1,
-                    Cache::Miss => self.stats.cache_misses += 1,
-                    Cache::CompileFailed => self.stats.compile_fails += 1,
+            Some((compiled, out)) => {
+                match compiled {
+                    CompileResult::Error => self.stats.cache_errors += 1,
+                    CompileResult::CacheHit => self.stats.cache_hits += 1,
+                    CompileResult::CacheMiss => self.stats.cache_misses += 1,
+                    CompileResult::CompileFailed => self.stats.compile_fails += 1,
                 };
                 let Output { status, stdout, stderr } = out;
                 status.code().map(|s| finish.set_retcode(s));
@@ -554,7 +554,7 @@ pub enum TaskResult {
     /// Compiler type detection.
     GetCompilerInfo(String, Option<Compiler>),
     /// Compile finished.
-    Compiled(Option<(Cache, Output)>),
+    Compiled(Option<(CompileResult, Output)>),
     /// Task `panic`ed.
     Panic,
 }

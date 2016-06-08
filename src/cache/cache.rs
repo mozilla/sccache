@@ -35,6 +35,7 @@ use zip::{
 };
 
 /// Result of a cache lookup.
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum Cache {
     /// Error fetching from cache.

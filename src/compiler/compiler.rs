@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use cache::{
-    Cache,
     Storage,
     hash_key,
 };
@@ -129,6 +128,19 @@ pub struct Compiler {
     pub kind: CompilerKind,
 }
 
+/// The result of a compilation or cache retrieval.
+#[derive(Debug, PartialEq)]
+pub enum CompileResult {
+    /// An error made the compilation not possible.
+    Error,
+    /// Result was found in cache.
+    CacheHit,
+    /// Result was not found in cache.
+    CacheMiss,
+    /// Not in cache, but compilation failed.
+    CompileFailed,
+}
+
 impl Compiler {
     /// Create a new `Compiler` of `kind`, with `executable` as the binary.
     ///
@@ -173,7 +185,7 @@ impl Compiler {
         parsed_args
     }
 
-    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cache, process::Output)> {
+    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(CompileResult, process::Output)> {
         if log_enabled!(Trace) {
             let cmd_str = arguments.join(" ");
             trace!("get_cached_or_compile: {}", cmd_str);
@@ -181,7 +193,7 @@ impl Compiler {
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
-            return Ok((Cache::Error, preprocessor_result));
+            return Ok((CompileResult::Error, preprocessor_result));
         }
         trace!("Preprocessor output is {} bytes", preprocessor_result.stdout.len());
 
@@ -202,7 +214,7 @@ impl Compiler {
                 let mut stderr = io::Cursor::new(vec!());
                 entry.get_object("stdout", &mut stdout).unwrap_or(());
                 entry.get_object("stderr", &mut stderr).unwrap_or(());
-                Ok((Cache::Hit,
+                Ok((CompileResult::CacheHit,
                     process::Output {
                         status: exit_status(0),
                         stdout: stdout.into_inner(),
@@ -232,10 +244,10 @@ impl Compiler {
                     }
                     //TODO: do this on a background thread.
                     try!(storage.finish_put(&key, entry));
-                    Ok((Cache::Miss, compiler_result))
+                    Ok((CompileResult::CacheMiss, compiler_result))
                 } else {
                     trace!("Compiled but failed, not storing in cache");
-                    Ok((Cache::CompileFailed, compiler_result))
+                    Ok((CompileResult::CompileFailed, compiler_result))
                 }
 
             })
@@ -360,7 +372,6 @@ pub fn run_input_output<C: RunCommand>(mut command: C, input: Option<Vec<u8>>) -
 #[cfg(test)]
 mod test {
     use super::*;
-    use cache::Cache;
     use cache::disk::DiskCache;
     use mock_command::*;
     use std::fs::{self,File};
@@ -454,7 +465,7 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(Cache::Miss, cached);
+        assert_eq!(CompileResult::CacheMiss, cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -466,7 +477,7 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(Cache::Hit, cached);
+        assert_eq!(CompileResult::CacheHit, cached);
         assert_eq!(exit_status(0), res.status);
         //FIXME: this is broken!
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
