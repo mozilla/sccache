@@ -11,7 +11,7 @@ dependencies = [
  "number_prefix 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "protobuf 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "retry 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusoto 0.13.1 (git+https://github.com/rusoto/rusoto)",
+ "rusoto 0.13.1 (git+https://github.com/luser/rusoto?branch=update-serde)",
  "sha1 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempdir 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "zip 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -517,14 +517,14 @@ dependencies = [
 [[package]]
 name = "rusoto"
 version = "0.13.1"
-source = "git+https://github.com/rusoto/rusoto#3a50b5f0db7d82f444010bdff61c60b78fcfded3"
+source = "git+https://github.com/luser/rusoto?branch=update-serde#ac1620ae0072b544c3c6ea47b804652cf1373f6b"
 dependencies = [
  "chrono 0.2.22 (registry+https://github.com/rust-lang/crates.io-index)",
  "hyper 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "openssl 0.7.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.71 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusoto_codegen 0.1.1 (git+https://github.com/rusoto/rusoto)",
+ "rusoto_codegen 0.1.1 (git+https://github.com/luser/rusoto?branch=update-serde)",
  "rustc-serialize 0.3.19 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.7.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -536,13 +536,13 @@ dependencies = [
 [[package]]
 name = "rusoto_codegen"
 version = "0.1.1"
-source = "git+https://github.com/rusoto/rusoto#3a50b5f0db7d82f444010bdff61c60b78fcfded3"
+source = "git+https://github.com/luser/rusoto?branch=update-serde#ac1620ae0072b544c3c6ea47b804652cf1373f6b"
 dependencies = [
  "Inflector 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.71 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.7.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_codegen 0.7.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_codegen 0.7.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "syntex 0.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -572,7 +572,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "serde_codegen"
-version = "0.7.7"
+version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "aster 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
