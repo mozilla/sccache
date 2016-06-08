@@ -17,6 +17,7 @@ use cache::s3::S3Cache;
 use compiler::Compiler;
 use sha1;
 use std::env;
+use std::fmt;
 use std::fs::File;
 use std::io::{
     self,
@@ -35,17 +36,23 @@ use zip::{
 };
 
 /// Result of a cache lookup.
-#[allow(dead_code)]
-#[derive(Debug, PartialEq)]
 pub enum Cache {
     /// Error fetching from cache.
-    Error,
+    Error(Error),
     /// Result was found in cache.
-    Hit,
+    Hit(CacheRead),
     /// Result was not found in cache.
     Miss,
-    /// Not in cache, but compilation failed.
-    CompileFailed,
+}
+
+impl fmt::Debug for Cache {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &Cache::Error(ref e) => write!(f, "Cache::Error({:?}", e),
+            &Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
+            &Cache::Miss => write!(f, "Cache::Miss"),
+        }
+    }
 }
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
@@ -152,7 +159,13 @@ impl CacheWrite {
 /// An interface to cache storage.
 pub trait Storage : Send + Sync {
     /// Get a cache entry by `key`.
-    fn get(&self, key: &str) -> Option<CacheRead>;
+    ///
+    /// If an error occurs, this method should return a `Cache::Error`.
+    /// If nothing fails but the entry is not found in the cache,
+    /// it should return a `Cache::Miss`.
+    /// If the entry is successfully found in the cache, it should
+    /// return a `Cache::Hit`.
+    fn get(&self, key: &str) -> Cache;
 
     /// Get a cache entry for `key` that can be filled with data.
     fn start_put(&self, key: &str) -> io::Result<CacheWrite>;

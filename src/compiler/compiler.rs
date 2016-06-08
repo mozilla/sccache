@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use cache::{
+    Cache,
     Storage,
     hash_key,
 };
@@ -203,8 +204,8 @@ impl Compiler {
         let outputs = parsed_args.outputs.iter()
             .map(|(key, path)| (key, pwd.join(path)))
             .collect::<HashMap<_, _>>();
-        storage.get(&key)
-            .map(|mut entry| {
+        match storage.get(&key) {
+            Cache::Hit(mut entry) => {
                 debug!("Cache hit!");
                 for (key, path) in outputs.iter() {
                     let mut f = try!(File::create(path));
@@ -220,8 +221,8 @@ impl Compiler {
                         stdout: stdout.into_inner(),
                         stderr: stderr.into_inner(),
                     }))
-            })
-            .unwrap_or_else(move || {
+            },
+            Cache::Miss | Cache::Error(_) => {
                 debug!("Cache miss!");
                 let process::Output { stdout, .. } = preprocessor_result;
                 let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
@@ -249,8 +250,8 @@ impl Compiler {
                     trace!("Compiled but failed, not storing in cache");
                     Ok((CompileResult::CompileFailed, compiler_result))
                 }
-
-            })
+            }
+        }
     }
 }
 

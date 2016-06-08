@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use cache::{
+    Cache,
     CacheRead,
     CacheWrite,
     CacheWriteWriter,
@@ -59,11 +60,24 @@ fn normalize_key(key: &str) -> String {
 }
 
 impl Storage for S3Cache {
-    fn get(&self, key: &str) -> Option<CacheRead> {
+    fn get(&self, key: &str) -> Cache {
         let key = normalize_key(key);
-        self.s3.lock().unwrap().get_object(&self.bucket, &key)
-            .ok()
-            .and_then(|GetObjectOutput { body, .. }| CacheRead::from(io::Cursor::new(body)).ok())
+        match self.s3.lock().unwrap().get_object(&self.bucket, &key) {
+            Ok(GetObjectOutput { body, .. }) => {
+                CacheRead::from(io::Cursor::new(body))
+                    .map(|cache_read| Cache::Hit(cache_read))
+                    // This should only happen if the cached data
+                    // is bad.
+                    .unwrap_or_else(|e| Cache::Error(e))
+            }
+            Err(e) => {
+                // rusoto doesn't provide a way to discern between
+                // 404 and other errors, so just log it and consider
+                // it a cache miss.
+                warn!("Got AWS error: {:?}", e);
+                Cache::Miss
+            }
+        }
     }
 
     fn start_put(&self, _key: &str) -> io::Result<CacheWrite> {

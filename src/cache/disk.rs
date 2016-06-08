@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use cache::{
+    Cache,
     CacheRead,
     CacheWrite,
     Storage,
@@ -44,10 +45,17 @@ fn make_key_path(root: &Path, key: &str) -> PathBuf {
 }
 
 impl Storage for DiskCache {
-    fn get(&self, key: &str) -> Option<CacheRead> {
-        File::open(make_key_path(&self.root, key))
-            .ok()
-            .and_then(|f| CacheRead::from(f).ok())
+    fn get(&self, key: &str) -> Cache {
+        match File::open(make_key_path(&self.root, key))
+            .and_then(|f| CacheRead::from(f)) {
+                Err(e) => match e.kind() {
+                    // If the file doesn't exist it's just a cache miss.
+                    io::ErrorKind::NotFound => Cache::Miss,
+                    // Otherwise propogate the error upward.
+                    _ => Cache::Error(e),
+                },
+                Ok(cache_read) => Cache::Hit(cache_read),
+            }
     }
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
