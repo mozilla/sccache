@@ -1,4 +1,5 @@
 # Install OpenSSL (hopefully not permanent)
+if ($env:target -match "-msvc$") {
 
 $installer = "Win64OpenSSL-1_0_2h.exe"
 $url = "https://slproweb.com/download/$installer"
@@ -18,3 +19,4 @@ $env:OPENSSL_LIBS = "ssleay32:libeay32"
 $env:Path += ";c:\OpenSSL-Win64\bin"
 
 echo "Installation of OpenSSL completed"
+}
