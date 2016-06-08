@@ -116,6 +116,8 @@ struct ServerStats {
     pub cache_hits: u64,
     /// The count of cache misses for handled compile requests.
     pub cache_misses: u64,
+    /// The count of errors reading from cache.
+    pub cache_read_errors: u64,
     /// The count of compilation failures.
     pub compile_fails: u64,
 }
@@ -136,6 +138,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_executed, "Compile requests executed");
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
+        set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
         set_stat!(stats_vec, self.cache_errors, "Cache errors");
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
@@ -371,7 +374,13 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 match compiled {
                     CompileResult::Error => self.stats.cache_errors += 1,
                     CompileResult::CacheHit => self.stats.cache_hits += 1,
-                    CompileResult::CacheMiss => self.stats.cache_misses += 1,
+                    CompileResult::CacheMiss(cache_error) => {
+                        if cache_error {
+                            self.stats.cache_read_errors += 1;
+                        } else {
+                            self.stats.cache_misses += 1;
+                        }
+                    }
                     CompileResult::CompileFailed => self.stats.compile_fails += 1,
                 };
                 let Output { status, stdout, stderr } = out;

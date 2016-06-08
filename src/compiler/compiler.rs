@@ -137,7 +137,9 @@ pub enum CompileResult {
     /// Result was found in cache.
     CacheHit,
     /// Result was not found in cache.
-    CacheMiss,
+    ///
+    /// If the inner value is `true`, there was an error reading a cache entry.
+    CacheMiss(bool),
     /// Not in cache, but compilation failed.
     CompileFailed,
 }
@@ -222,8 +224,15 @@ impl Compiler {
                         stderr: stderr.into_inner(),
                     }))
             },
-            Cache::Miss | Cache::Error(_) => {
-                debug!("Cache miss!");
+            res @ Cache::Miss | res @ Cache::Error(_) => {
+                let cache_error = match res {
+                    Cache::Miss => { debug!("Cache miss!"); false }
+                    Cache::Error(e) => {
+                        debug!("Cache read error: {:?}", e);
+                        true
+                    }
+                    Cache::Hit(_) => false,
+                };
                 let process::Output { stdout, .. } = preprocessor_result;
                 let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
                 if compiler_result.status.success() {
@@ -245,7 +254,8 @@ impl Compiler {
                     }
                     //TODO: do this on a background thread.
                     try!(storage.finish_put(&key, entry));
-                    Ok((CompileResult::CacheMiss, compiler_result))
+
+                    Ok((CompileResult::CacheMiss(cache_error), compiler_result))
                 } else {
                     trace!("Compiled but failed, not storing in cache");
                     Ok((CompileResult::CompileFailed, compiler_result))
@@ -466,7 +476,7 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss, cached);
+        assert_eq!(CompileResult::CacheMiss(false), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
