@@ -16,6 +16,7 @@
 
 use ::compiler::{
     gcc,
+    Cacheable,
     Compiler,
     CompilerArguments,
     ParsedArguments,
@@ -45,7 +46,7 @@ pub fn argument_takes_value(arg: &str) -> bool {
     gcc::ARGS_WITH_VALUE.contains(&arg) || ARGS_WITH_VALUE.contains(&arg)
 }
 
-pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
     trace!("compile");
     // Clang needs a temporary file for compilation, otherwise debug info
     // doesn't have a reference to the input file.
@@ -68,7 +69,8 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     //TODO: clang may fail when compiling preprocessor output with -Werror,
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
-    run_input_output(cmd, None)
+    let output = try!(run_input_output(cmd, None));
+    Ok((Cacheable::Yes, output))
 }
 
 #[cfg(test)]

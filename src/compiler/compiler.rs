@@ -80,7 +80,7 @@ impl CompilerKind {
         }
     }
 
-    pub fn compile<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+    pub fn compile<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
         match self {
             &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
             &CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
@@ -129,6 +129,17 @@ pub struct Compiler {
     pub kind: CompilerKind,
 }
 
+/// Specifics about cache misses.
+#[derive(Debug, PartialEq)]
+pub enum MissType {
+    /// The compilation was not found in the cache, nothing more.
+    Normal,
+    /// There was a cache entry, but an error occurred trying to read it.
+    CacheError,
+    /// The compilation result was determined to be not cacheable.
+    NotCacheable,
+}
+
 /// The result of a compilation or cache retrieval.
 #[derive(Debug, PartialEq)]
 pub enum CompileResult {
@@ -137,11 +148,16 @@ pub enum CompileResult {
     /// Result was found in cache.
     CacheHit,
     /// Result was not found in cache.
-    ///
-    /// If the inner value is `true`, there was an error reading a cache entry.
-    CacheMiss(bool),
+    CacheMiss(MissType),
     /// Not in cache, but compilation failed.
     CompileFailed,
+}
+
+/// Can this result be stored in cache?
+#[derive(Debug, PartialEq)]
+pub enum Cacheable {
+    Yes,
+    No,
 }
 
 impl Compiler {
@@ -226,36 +242,41 @@ impl Compiler {
             },
             res @ Cache::Miss | res @ Cache::Error(_) => {
                 let cache_error = match res {
-                    Cache::Miss => { debug!("Cache miss!"); false }
+                    Cache::Miss => { debug!("Cache miss!"); MissType::Normal }
                     Cache::Error(e) => {
                         debug!("Cache read error: {:?}", e);
-                        true
+                        MissType::CacheError
                     }
-                    Cache::Hit(_) => false,
+                    Cache::Hit(_) => MissType::Normal,
                 };
                 let process::Output { stdout, .. } = preprocessor_result;
-                let compiler_result = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
+                let (cacheable, compiler_result) = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
                 if compiler_result.status.success() {
-                    trace!("Compiled, storing in cache");
-                    let mut entry = try!(storage.start_put(&key));
-                    for (key, path) in outputs.iter() {
-                        let mut f = try!(File::open(&path));
-                        try!(entry.put_object(key, &mut f)
-                             .or_else(|e| {
-                                 error!("Failed to put object `{:?}` in storage: {:?}", path, e);
-                                 Err(e)
-                             }));
-                    }
-                    if !compiler_result.stdout.is_empty() {
-                        try!(entry.put_object("stdout", &mut io::Cursor::new(&compiler_result.stdout)));
-                    }
-                    if !compiler_result.stderr.is_empty() {
-                        try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
-                    }
-                    //TODO: do this on a background thread.
-                    try!(storage.finish_put(&key, entry));
+                    if cacheable == Cacheable::Yes {
+                        trace!("Compiled, storing in cache");
+                        let mut entry = try!(storage.start_put(&key));
+                        for (key, path) in outputs.iter() {
+                            let mut f = try!(File::open(&path));
+                            try!(entry.put_object(key, &mut f)
+                                 .or_else(|e| {
+                                     error!("Failed to put object `{:?}` in storage: {:?}", path, e);
+                                     Err(e)
+                                 }));
+                        }
+                        if !compiler_result.stdout.is_empty() {
+                            try!(entry.put_object("stdout", &mut io::Cursor::new(&compiler_result.stdout)));
+                        }
+                        if !compiler_result.stderr.is_empty() {
+                            try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
+                        }
+                        //TODO: do this on a background thread.
+                        try!(storage.finish_put(&key, entry));
 
-                    Ok((CompileResult::CacheMiss(cache_error), compiler_result))
+                        Ok((CompileResult::CacheMiss(cache_error), compiler_result))
+                    } else {
+                        // Not cacheable
+                        Ok((CompileResult::CacheMiss(MissType::NotCacheable), compiler_result))
+                    }
                 } else {
                     trace!("Compiled but failed, not storing in cache");
                     Ok((CompileResult::CompileFailed, compiler_result))
@@ -476,7 +497,7 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss(false), cached);
+        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());

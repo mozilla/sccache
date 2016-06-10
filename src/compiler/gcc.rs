@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use ::compiler::{
+    Cacheable,
     Compiler,
     CompilerArguments,
     ParsedArguments,
@@ -186,7 +187,7 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
     run_input_output(cmd, None)
 }
 
-pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
     trace!("compile");
     let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
     let mut cmd = creator.new_command_sync(&compiler.executable);
@@ -202,7 +203,8 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
         .args(&["-", "-o", &output.clone()])
         .args(&parsed_args.common_args)
         .current_dir(cwd);
-    run_input_output(cmd, Some(preprocessor_output))
+    let output = try!(run_input_output(cmd, Some(preprocessor_output)));
+    Ok((Cacheable::Yes, output))
 }
 
 #[cfg(test)]
