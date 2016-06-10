@@ -11,7 +11,7 @@ dependencies = [
  "number_prefix 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "protobuf 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "retry 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusoto 0.13.1 (git+https://github.com/luser/rusoto?branch=update-serde)",
+ "rusoto 0.13.1 (git+https://github.com/rusoto/rusoto?branch=feature_mutex_credentials)",
  "sha1 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempdir 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "zip 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -517,14 +517,14 @@ dependencies = [
 [[package]]
 name = "rusoto"
 version = "0.13.1"
-source = "git+https://github.com/luser/rusoto?branch=update-serde#ac1620ae0072b544c3c6ea47b804652cf1373f6b"
+source = "git+https://github.com/rusoto/rusoto?branch=feature_mutex_credentials#9817bbe04749000440210fa14228d52e40478166"
 dependencies = [
  "chrono 0.2.22 (registry+https://github.com/rust-lang/crates.io-index)",
  "hyper 0.8.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "openssl 0.7.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "regex 0.1.71 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusoto_codegen 0.1.1 (git+https://github.com/luser/rusoto?branch=update-serde)",
+ "rusoto_codegen 0.1.1 (git+https://github.com/rusoto/rusoto?branch=feature_mutex_credentials)",
  "rustc-serialize 0.3.19 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 0.7.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "rusoto_codegen"
 version = "0.1.1"
-source = "git+https://github.com/luser/rusoto?branch=update-serde#ac1620ae0072b544c3c6ea47b804652cf1373f6b"
+source = "git+https://github.com/rusoto/rusoto?branch=feature_mutex_credentials#9817bbe04749000440210fa14228d52e40478166"
 dependencies = [
  "Inflector 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 0.1.16 (registry+https://github.com/rust-lang/crates.io-index)",

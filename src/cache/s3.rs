@@ -27,15 +27,11 @@ use std::io::{
     ErrorKind,
 };
 use std::str::FromStr;
-use std::sync::{Arc,Mutex};
 
 /// A cache that stores entries in Amazon S3.
-#[derive(Clone)]
 pub struct S3Cache {
     /// The S3 client.
-    //FIXME: having the whole thing in a Mutex will effectively serialize
-    // uploads/downloads across threads: https://github.com/rusoto/rusoto/issues/277
-    s3: Arc<Mutex<S3Helper<ChainProvider>>>,
+    s3: S3Helper<ChainProvider>,
     /// The S3 region in use.
     region: String,
     /// The S3 bucket in use.
@@ -48,7 +44,7 @@ impl S3Cache {
         let r = try!(Region::from_str(region));
         let s3 = S3Helper::new(ChainProvider::new().unwrap(), r);
         Ok(S3Cache {
-            s3: Arc::new(Mutex::new(s3)),
+            s3: s3,
             region: region.to_owned(),
             bucket: bucket.to_owned(),
         })
@@ -62,7 +58,7 @@ fn normalize_key(key: &str) -> String {
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> Cache {
         let key = normalize_key(key);
-        match self.s3.lock().unwrap().get_object(&self.bucket, &key) {
+        match self.s3.get_object(&self.bucket, &key) {
             Ok(GetObjectOutput { body, .. }) => {
                 CacheRead::from(io::Cursor::new(body))
                     .map(|cache_read| Cache::Hit(cache_read))
@@ -93,7 +89,7 @@ impl Storage for S3Cache {
             CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
             CacheWriteWriter::Cursor(c) => {
                 let data = c.into_inner();
-                try!(self.s3.lock().unwrap().put_object(&self.bucket, &key, &data).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3"))));
+                try!(self.s3.put_object(&self.bucket, &key, &data).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3"))));
                 Ok(())
             }
         }

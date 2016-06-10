@@ -19,8 +19,8 @@ zip = { version = "0.1", default-features = false }
 
 [dependencies.rusoto]
 features = ["s3"]
-git = "https://github.com/luser/rusoto"
-branch = "update-serde"
+git = "https://github.com/rusoto/rusoto"
+branch = "feature_mutex_credentials"
 
 [profile.release]
 debug = true
