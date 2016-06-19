@@ -57,27 +57,42 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
         try!(File::create(&input)
              .and_then(|mut f| f.write_all(&preprocessor_output)))
     }
-    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+    let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
     let mut cmd = creator.new_command_sync(&compiler.executable);
     cmd.arg("-c")
         .arg(&input)
         .arg("-o")
-        .arg(&output)
+        .arg(&out_file)
         .args(&parsed_args.common_args)
         .current_dir(cwd);
 
-    //TODO: clang may fail when compiling preprocessor output with -Werror,
+    // clang may fail when compiling preprocessor output with -Werror,
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
     let output = try!(run_input_output(cmd, None));
-    Ok((Cacheable::Yes, output))
+    if !output.status.success() && parsed_args.common_args.iter().any(|a| a == "-Werror") {
+        let mut cmd = creator.new_command_sync(&compiler.executable);
+        cmd.arg("-c")
+            .arg(&parsed_args.input)
+            .arg("-o")
+            .arg(&out_file)
+            .args(&parsed_args.common_args)
+            .current_dir(cwd);
+        let output = try!(run_input_output(cmd, None));
+        Ok((Cacheable::Yes, output))
+    } else {
+        Ok((Cacheable::Yes, output))
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::collections::HashMap;
+    use mock_command::*;
     use compiler::*;
     use compiler::gcc;
+    use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
         gcc::parse_arguments(arguments, argument_takes_value)
@@ -115,5 +130,50 @@ mod test {
             }
             o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
         }
+    }
+
+    #[test]
+    fn test_compile_simple() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+        };
+        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
+                                     CompilerKind::Clang).unwrap();
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_werror_fails() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: stringvec!("-c", "-o", "foo.o", "-Werror", "foo.c"),
+        };
+        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
+                                     CompilerKind::Clang).unwrap();
+        // First compiler invocation fails.
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // Second compiler invocation succeeds.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, output) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        assert_eq!(exit_status(0), output.status);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
     }
 }
