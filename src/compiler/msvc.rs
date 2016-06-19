@@ -159,7 +159,7 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
 
 pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
     trace!("compile");
-    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+    let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
     // See if this compilation will produce a PDB.
     let cacheable = parsed_args.outputs.get("pdb")
         .map(|pdb| {
@@ -185,7 +185,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     let mut cmd = creator.new_command_sync(&compiler.executable);
     cmd.arg("-c")
         .arg(&input)
-        .arg(&format!("-Fo{}", output))
+        .arg(&format!("-Fo{}", out_file))
         .args(&parsed_args.common_args)
         .current_dir(cwd);
 
@@ -194,14 +194,35 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     }
 
     let output = try!(run_input_output(cmd, None));
-    Ok((cacheable, output))
+    if output.status.success() {
+        Ok((cacheable, output))
+    } else {
+        // Sometimes MSVC can't handle compiling from the preprocessed source,
+        // so just compile from the original input file.
+        let mut cmd = creator.new_command_sync(&compiler.executable);
+        cmd.arg("-c")
+            .arg(&parsed_args.input)
+            .arg(&format!("-Fo{}", out_file))
+            .args(&parsed_args.common_args)
+            .current_dir(cwd);
+
+        if log_enabled!(Trace) {
+            trace!("compile: {:?}", cmd);
+        }
+
+        let output = try!(run_input_output(cmd, None));
+        Ok((cacheable, output))
+    }
 }
 
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::collections::HashMap;
+    use mock_command::*;
     use ::compiler::*;
+    use test::utils::*;
 
     #[test]
     fn test_parse_arguments_simple() {
@@ -311,5 +332,72 @@ mod test {
     fn test_parse_arguments_missing_pdb() {
         assert_eq!(CompilerArguments::CannotCache,
                    parse_arguments(&stringvec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
+    }
+
+    #[test]
+    fn test_compile_simple() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+        };
+        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
+                                     CompilerKind::Msvc).unwrap();
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_not_cacheable_pdb() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let pdb = f.touch("foo.pdb").unwrap();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            outputs: vec![("obj", "foo.obj".to_owned()),
+                          ("pdb", pdb.to_str().unwrap().to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+        };
+        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
+                                     CompilerKind::Msvc).unwrap();
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        assert_eq!(Cacheable::No, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_preprocessed_fails() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+        };
+        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
+                                     CompilerKind::Msvc).unwrap();
+        // First compiler invocation fails.
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // Second compiler invocation succeeds.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
     }
 }
