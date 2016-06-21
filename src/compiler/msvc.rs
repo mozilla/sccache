@@ -25,7 +25,9 @@ use mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{
     self,
@@ -34,8 +36,75 @@ use std::io::{
     Write,
 };
 use std::path::Path;
-use std::process;
+use std::process::{self,Stdio};
+use std::str;
 use tempdir::TempDir;
+
+#[cfg(windows)]
+fn file_exists(filename: &[u8]) -> bool {
+    use kernel32;
+    use std::ffi::CString;
+    use winapi::fileapi::INVALID_FILE_ATTRIBUTES;
+    CString::new(filename).map(|c| {
+        unsafe { kernel32::GetFileAttributesA(c.as_ptr()) !=  INVALID_FILE_ATTRIBUTES }
+    })
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn file_exists(filename: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    Path::new(OsStr::from_bytes(filename)).exists()
+}
+
+pub fn maybe_str(bytes: &[u8]) -> Cow<str> {
+    str::from_utf8(bytes)
+        .map(|s| Cow::Borrowed(s))
+        .unwrap_or(Cow::Owned(format!("{:?}", bytes)))
+}
+
+/// Detect the prefix included in the output of MSVC's -showIncludes output.
+pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut creator: &mut T, exe: U) -> io::Result<Vec<u8>> {
+    let tempdir = try!(TempDir::new("sccache"));
+    let input = tempdir.path().join("test.c");
+    {
+        try!(File::create(&input)
+             .and_then(|mut f| f.write_all(b"#include <stdio.h>\n")))
+    }
+
+    let mut cmd = creator.new_command_sync(&exe);
+    cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul"])
+        .arg(&input)
+        // The MSDN docs say the -showIncludes output goes to stderr,
+        // but that's just not true.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    if log_enabled!(Trace) {
+        trace!("detect_showincludes_prefix: {:?}", cmd);
+    }
+
+    let output = try!(run_input_output(cmd, None));
+    if output.status.success() {
+        let process::Output { stdout, .. } = output;
+        for line in stdout.split(|&b| b == b'\n') {
+            if line.ends_with(b"stdio.h\r") {
+                for (i, c) in line.iter().enumerate().rev() {
+                    if *c == b' ' {
+                        let len = line.len();
+                        // See if the rest of this line is a full pathname.
+                        if file_exists(&line[i+1..len-1]) {
+                            // Everything from the beginning of the line
+                            // to this index is the prefix.
+                            return Ok(line[..i+1].iter().map(|&b| b).collect());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"));
+}
 
 pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     let mut output_arg = None;
@@ -219,10 +288,30 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
 #[cfg(test)]
 mod test {
     use super::*;
+    use env_logger;
     use std::collections::HashMap;
     use mock_command::*;
     use ::compiler::*;
     use test::utils::*;
+
+    #[test]
+    fn test_detect_showincludes_prefix() {
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+        let mut creator = new_creator();
+        let f = TestFixture::new();
+        let srcfile = f.touch("stdio.h").unwrap();
+        let mut s = srcfile.to_str().unwrap();
+        if s.starts_with("\\\\?\\") {
+            s = &s[4..];
+        }
+        let stdout = format!("blah: {}\r\n", s);
+        let stderr = String::from("some\r\nstderr\r\n");
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &stderr)));
+        assert_eq!(&b"blah: "[..], AsRef::<[u8]>::as_ref(&detect_showincludes_prefix(&mut creator, "cl.exe").unwrap()));
+    }
 
     #[test]
     fn test_parse_arguments_simple() {
@@ -346,7 +435,7 @@ mod test {
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
@@ -369,7 +458,7 @@ mod test {
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
@@ -390,7 +479,7 @@ mod test {
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
         // First compiler invocation fails.
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.

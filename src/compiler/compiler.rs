@@ -22,6 +22,7 @@ use compiler::{
     gcc,
     msvc,
 };
+use compiler::msvc::maybe_str;
 use filetime::FileTime;
 use log::LogLevel::Trace;
 use mock_command::{
@@ -49,14 +50,17 @@ use std::thread;
 use tempdir::TempDir;
 
 /// Supported compilers.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CompilerKind {
     /// GCC
     Gcc,
     /// clang
     Clang,
     /// Microsoft Visual C++
-    Msvc,
+    Msvc {
+        /// The prefix used in the output of `-showIncludes`.
+        includes_prefix: Vec<u8>,
+    },
 }
 
 impl CompilerKind {
@@ -66,7 +70,7 @@ impl CompilerKind {
             // accept different sets of arguments.
             &CompilerKind::Gcc => gcc::parse_arguments(arguments, gcc::argument_takes_value),
             &CompilerKind::Clang => gcc::parse_arguments(arguments, clang::argument_takes_value),
-            &CompilerKind::Msvc => msvc::parse_arguments(arguments),
+            &CompilerKind::Msvc { .. } => msvc::parse_arguments(arguments),
         }
     }
 
@@ -76,7 +80,7 @@ impl CompilerKind {
                 // GCC and clang use the same preprocessor invocation.
                 gcc::preprocess(creator, compiler, parsed_args, cwd)
             },
-            &CompilerKind::Msvc => msvc::preprocess(creator, compiler, parsed_args, cwd),
+            &CompilerKind::Msvc { .. } => msvc::preprocess(creator, compiler, parsed_args, cwd),
         }
     }
 
@@ -84,7 +88,7 @@ impl CompilerKind {
         match self {
             &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
             &CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
-            &CompilerKind::Msvc => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
+            &CompilerKind::Msvc { .. } => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
         }
     }
 }
@@ -332,7 +336,11 @@ gcc
                                     return Ok(Some(CompilerKind::Clang));
                                 } else if line == "msvc" {
                                     trace!("Found MSVC");
-                                    return Ok(Some(CompilerKind::Msvc));
+                                    let prefix = try!(msvc::detect_showincludes_prefix(&mut creator, &executable));
+                                    trace!("showIncludes prefix: '{}'", maybe_str(&prefix));
+                                    return Ok(Some(CompilerKind::Msvc {
+                                        includes_prefix: prefix,
+                                    }));
                                 }
                             }
                             Ok(None)
@@ -427,8 +435,19 @@ mod test {
     #[test]
     fn test_detect_compiler_kind_msvc() {
         let creator = new_creator();
+        let f = TestFixture::new();
+        let srcfile = f.touch("stdio.h").unwrap();
+        let mut s = srcfile.to_str().unwrap();
+        if s.starts_with("\\\\?\\") {
+            s = &s[4..];
+        }
+        let prefix = "blah: ";
+        let stdout = format!("{}{}\r\n", prefix, s);
+        // Compiler detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
-        assert_eq!(Some(CompilerKind::Msvc), detect_compiler_kind(creator.clone(), "/foo/bar"));
+        // showincludes prefix detection output
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
+        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix.as_bytes().iter().map(|&b| b).collect() }), detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]

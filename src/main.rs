@@ -15,6 +15,7 @@
 extern crate clap;
 extern crate env_logger;
 extern crate filetime;
+extern crate kernel32;
 #[macro_use] extern crate log;
 extern crate libc;
 extern crate mio;
@@ -24,6 +25,7 @@ extern crate retry;
 extern crate rusoto;
 extern crate sha1;
 extern crate tempdir;
+extern crate winapi;
 extern crate zip;
 
 // To get macros in scope, this has to be first.
