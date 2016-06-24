@@ -509,6 +509,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                                           //TODO: when FnBox is stable, can use that and avoid the clones here.
                                           this.check_compiler(c.clone(), cmd.clone(), cwd.clone(), token, event_loop);
                                       },
+                                      TaskResult::Panic => {
+                                          error!("Compiler detection task panic!");
+                                          this.send_unhandled_compile(token, event_loop);
+                                      },
                                       _ => error!("Unexpected task result!"),
                                   };
                               })

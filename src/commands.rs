@@ -274,10 +274,10 @@ fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, std
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
     if response.has_stdout() {
-        try!(stdout.write(response.get_stdout()));
+        try!(stdout.write_all(response.get_stdout()));
     }
     if response.has_stderr() {
-        try!(stderr.write(response.get_stderr()));
+        try!(stderr.write_all(response.get_stderr()));
     }
     if response.has_retcode() {
         Ok(response.get_retcode())
