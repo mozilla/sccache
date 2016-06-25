@@ -382,7 +382,7 @@ pub fn do_compile<T, U, V, W, X, Y>(creator: T,
 pub fn run_command(cmd : Command) -> i32 {
     match cmd {
         // Actual usage gets printed in `cmdline::parse`.
-        Command::Usage => 1,
+        Command::Usage => 0,
         Command::ShowStats => {
             result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(request_stats).and_then(print_stats),
                              |e| {
