@@ -16,7 +16,9 @@ extern crate clap;
 extern crate env_logger;
 extern crate filetime;
 extern crate kernel32;
-#[macro_use] extern crate log;
+#[macro_use] 
+extern crate log;
+extern crate fern;
 extern crate libc;
 extern crate mio;
 extern crate number_prefix;
@@ -25,6 +27,7 @@ extern crate retry;
 extern crate rusoto;
 extern crate sha1;
 extern crate tempdir;
+extern crate time;
 extern crate winapi;
 extern crate zip;
 
@@ -43,6 +46,18 @@ mod protocol;
 mod server;
 
 fn main() {
-    env_logger::init().unwrap();
+    let logger_config = fern::DispatchConfig {
+        format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
+            format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
+        }),
+        output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache2.log")],
+        level: log::LogLevelFilter::Trace,
+    };
+    if let Err(e) = fern::init_global_logger(logger_config, log::LogLevelFilter::Warn)
+    {
+        panic!("Failed to initialize global logger: {}", e);
+    }
+
     std::process::exit(commands::run_command(cmdline::parse()));
+
 }
