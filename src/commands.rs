@@ -78,6 +78,7 @@ enum CompileResponse {
 }
 
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+#[cfg(not(windows))]
 fn maybe_redirect_stdio(cmd : &mut process::Command) {
     if !match env::var("SCCACHE_NO_DAEMON") {
             Ok(val) => val == "1",
@@ -139,6 +140,7 @@ pub fn which<T: AsRef<OsStr>, U: AsRef<OsStr>, V: AsRef<Path>>(filename: T, os_p
 }
 
 /// Re-execute the current executable as a background server.
+#[cfg(not(windows))]
 fn run_server_process() -> io::Result<()> {
     env::current_exe().and_then(|exe_path| {
         let mut cmd = process::Command::new(exe_path);
@@ -146,6 +148,63 @@ fn run_server_process() -> io::Result<()> {
         cmd.env("SCCACHE_START_SERVER", "1")
             .spawn()
     }).and(Ok(()))
+}
+
+/// Re-execute the current executable as a background server.
+///
+/// `std::process::Command` doesn't expose a way to create a
+/// detatched process on Windows, so we have to roll our own.
+#[cfg(windows)]
+fn run_server_process() -> io::Result<()> {
+    use kernel32;
+    use std::io::Error;
+    use std::os::windows::ffi::OsStrExt;
+    use std::mem;
+    use std::ptr;
+    use winapi::minwindef::{TRUE,FALSE,LPVOID,DWORD};
+    use winapi::processthreadsapi::{PROCESS_INFORMATION,STARTUPINFOW};
+    use winapi::winbase::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
+    env::current_exe().and_then(|exe_path| {
+        let mut exe = OsStr::new(&exe_path)
+            .encode_wide()
+            .chain(Some(0u16))
+            .collect::<Vec<u16>>();
+        // Collect existing env vars + one more into an environment block.
+        let mut envp = {
+            let mut v = vec!();
+            for (key, val) in env::vars_os().chain(Some((OsString::from("SCCACHE_START_SERVER"), OsString::from("1")))) {
+                v.extend(key.encode_wide().chain(Some('=' as u16)).chain(val.encode_wide()).chain(Some(0)));
+            }
+            v.push(0);
+            v
+        };
+        let mut pi = PROCESS_INFORMATION {
+            hProcess: ptr::null_mut(),
+            hThread: ptr::null_mut(),
+            dwProcessId: 0,
+            dwThreadId: 0,
+        };
+        let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+        si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
+        if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
+                                             ptr::null_mut(),
+                                             ptr::null_mut(),
+                                             ptr::null_mut(),
+                                             FALSE,
+                                             CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                                             envp.as_mut_ptr() as LPVOID,
+                                             ptr::null(),
+                                             &mut si,
+                                             &mut pi) == TRUE } {
+            unsafe {
+                kernel32::CloseHandle(pi.hProcess);
+                kernel32::CloseHandle(pi.hThread);
+            }
+            Ok(())
+        } else {
+            Err(Error::last_os_error())
+        }
+    })
 }
 
 /// Convert `res` into a process exit code.
