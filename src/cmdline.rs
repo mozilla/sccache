@@ -64,6 +64,7 @@ fn get_app<'a, 'b>() -> App<'a, 'b> {
 /// Print usage summary and return a `Command::Usage`.
 fn usage() -> Command {
     get_app().print_help().unwrap();
+    println!("");
     Command::Usage
 }
 
