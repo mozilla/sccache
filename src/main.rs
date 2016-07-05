@@ -29,6 +29,7 @@ extern crate sha1;
 extern crate tempdir;
 extern crate time;
 extern crate winapi;
+extern crate which;
 extern crate zip;
 
 // To get macros in scope, this has to be first.

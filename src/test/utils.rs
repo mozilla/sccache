@@ -116,12 +116,12 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 
 #[cfg(not(unix))]
 pub fn mk_bin_contents<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, contents: F) -> io::Result<PathBuf> {
-    create_file(dir, path, contents)
+    create_file(dir,  Path::new(path).with_extension(env::consts::EXE_EXTENSION).to_str().unwrap(), contents)
 }
 
 #[cfg(not(unix))]
 pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
-    touch(dir, path)
+    touch(dir, Path::new(path).with_extension(env::consts::EXE_EXTENSION).to_str().unwrap())
 }
 
 impl TestFixture {
@@ -149,9 +149,6 @@ impl TestFixture {
         touch(self.tempdir.path(), &path)
     }
 
-    pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
-        mk_bin(self.tempdir.path(), &path)
-    }
 }
 
 #[derive(Debug, PartialEq)]

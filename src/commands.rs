@@ -61,10 +61,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{
     Path,
-    PathBuf,
 };
 use std::process;
-
+use which::which_in;
 
 /// The default sccache server port.
 pub const DEFAULT_PORT : u16 = 4226;
@@ -87,55 +86,6 @@ fn maybe_redirect_stdio(cmd : &mut process::Command) {
         cmd.stdin(process::Stdio::null())
             .stdout(process::Stdio::null())
             .stderr(process::Stdio::null());
-    }
-}
-
-/// Return `true` if `path` is executable.
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    CString::new(path.as_os_str().as_bytes()).and_then(|c| {
-        Ok(unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
-    })
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool { true }
-
-//TODO: upstream this all to the `which` crate.
-pub fn which<T: AsRef<OsStr>, U: AsRef<OsStr>, V: AsRef<Path>>(filename: T, os_path: Option<U>, cwd: V) -> Option<OsString> {
-    // Does it have a path separator?
-    let path = Path::new(&filename);
-    if path.components().count() > 1 {
-        if path.is_absolute() {
-            // Already fine.
-            //XXX: should probably use Cow
-            Some(filename.as_ref().to_owned())
-        } else {
-            // Try to make it absolute.
-            let mut new_path = PathBuf::from(cwd.as_ref());
-            new_path.push(path);
-            if new_path.exists() {
-                Some(new_path.into_os_string())
-            } else {
-                // File doesn't exist.
-                None
-            }
-        }
-    } else {
-        // No separator, look it up in `path`.
-        os_path.and_then(|paths| {
-            env::split_paths(&paths)
-                .map(|p| p.join(&path))
-                .skip_while(|p| !(p.exists() && is_executable(p)))
-                .take(1)
-                .next()
-                //TODO: shouldn't need to canonicalize here, but
-                // tests break on Windows otherwise. Make this return
-                // a PathBuf and then the tests can call this.
-                .and_then(|p| p.canonicalize().ok())
-                .map(|p| p.into_os_string())
-        })
     }
 }
 
@@ -429,8 +379,9 @@ pub fn do_compile<T, U, V, W, X, Y>(creator: T,
                                     stdout: &mut U,
                                     stderr: &mut V) -> io::Result<i32>
   where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
-    which(exe, path, &cwd)
-          .ok_or(Error::new(ErrorKind::Other, "Couldn't find exe"))
+    which_in(exe, path, &cwd)
+          .map_err( |x: &'static str| Error::new(ErrorKind::Other, x))
+          .and_then(|p| p.canonicalize())
           .and_then(|exe_path| {
               request_compile(&mut conn, &exe_path, &cmdline, &cwd)
                   .and_then(|res| handle_compile_response(creator, &mut conn, res, exe_path, cmdline, cwd, stdout, stderr))
@@ -477,57 +428,5 @@ pub fn run_command(cmd : Command) -> i32 {
                     1
                 })
         },
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::ffi::OsString;
-    use std::path::Path;
-    use test::utils::*;
-
-    fn _which(f: &TestFixture, path: &str) -> Option<OsString> {
-        which(path, Some(f.paths.clone()), f.tempdir.path())
-    }
-
-    #[test]
-    fn test_which() {
-        let f = TestFixture::new();
-        assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[0].as_os_str())
-    }
-
-    #[test]
-    fn test_which_not_found() {
-        let f = TestFixture::new();
-        assert!(_which(&f, "a").is_none());
-    }
-
-    #[test]
-    fn test_which_second() {
-        let f = TestFixture::new();
-        let b = f.mk_bin("b/another").unwrap();
-        assert_eq!(_which(&f, "another").unwrap(), b.as_os_str());
-    }
-
-    #[test]
-    fn test_which_relative() {
-        let f = TestFixture::new();
-        assert_eq!(Path::new(&_which(&f, "b/bin").unwrap()).canonicalize().unwrap(), f.bins[1].canonicalize().unwrap());
-    }
-
-    #[test]
-    fn test_which_relative_leading_dot() {
-        let f = TestFixture::new();
-        assert_eq!(Path::new(&_which(&f, "./b/bin").unwrap()).canonicalize().unwrap(), f.bins[1].canonicalize().unwrap());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_which_non_executable() {
-        // Shouldn't return non-executable files.
-        let f = TestFixture::new();
-        f.touch("b/another").unwrap().canonicalize().unwrap();
-        assert!(_which(&f, "another").is_none());
     }
 }
