@@ -69,7 +69,7 @@ fn usage() -> Command {
 }
 
 /// Parse the commandline into a `Command` to execute.
-pub fn parse<'a>() -> Command {
+pub fn parse() -> Command {
     let matches = get_app().get_matches();
 
     // The internal start server command is passed in the environment.

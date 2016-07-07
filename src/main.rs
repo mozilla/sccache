@@ -64,10 +64,9 @@ fn init_logging(){
     };
 
     // Set current log level depending on environment variable
-    let log_level = match &*env::var("SCCACHE2_LOG_LEVEL").unwrap_or("warn".to_string()).to_lowercase() {
+    let log_level = match &*env::var("SCCACHE2_LOG_LEVEL").unwrap_or("warn".to_owned()).to_lowercase() {
         "off" => log::LogLevelFilter::Off,
         "error" => log::LogLevelFilter::Error,
-        "warn" => log::LogLevelFilter::Warn,
         "info" => log::LogLevelFilter::Info,
         "debug" => log::LogLevelFilter::Debug,
         "trace" => log::LogLevelFilter::Trace,

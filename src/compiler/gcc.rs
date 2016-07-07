@@ -21,7 +21,6 @@ use ::compiler::{
 };
 //use log::LogLevel::Trace;
 use mock_command::{
-    CommandCreator,
     CommandCreatorSync,
     RunCommand,
 };
@@ -87,7 +86,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
                     // Arguments that take a value.
                     // -MF and -MQ are in this set but are handled separately
                     // because they are also preprocessor options.
-                    a @ _ if argument_takes_value(a) => {
+                    a if argument_takes_value(a) => {
                         common_args.push(arg.clone());
                         if let Some(arg_val) = it.next() {
                             common_args.push(arg_val.clone());
@@ -103,7 +102,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
                     // Can't cache PGO profiled output.
                     "-fprofile-use" => return CompilerArguments::CannotCache,
                     // Can't cache commandlines using a response file.
-                    v @ _ if v.starts_with('@') => return CompilerArguments::CannotCache,
+                    v if v.starts_with('@') => return CompilerArguments::CannotCache,
                     "-M" | "-MM" | "-MD" | "-MMD" => {
                         // If one of the above options is on the command line, we'll
                         // need -MT on the preprocessor command line, whether it's
@@ -112,11 +111,11 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
                         preprocessor_args.push(arg.clone());
                     }
                     // Other options.
-                    v @ _ if v.starts_with('-') && v.len() > 1 => {
+                    v if v.starts_with('-') && v.len() > 1 => {
                         common_args.push(arg.clone());
                     }
                     // Anything else is an input file.
-                    v @ _ => {
+                    v => {
                         if input_arg.is_some() || v == "-" {
                             // Can't cache compilations with multiple inputs
                             // or compilation from stdin.
@@ -139,7 +138,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
             // to explicitly pass its file type.
             match Path::new(i).extension().and_then(|e| e.to_str()) {
                 Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
-                e @ _ => {
+                e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                     return CompilerArguments::CannotCache;
                 }
@@ -195,7 +194,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
         .arg(match parsed_args.extension.as_ref() {
             "c" => "cpp-output",
             "cc" | "cpp" | "cxx" => "c++-cpp-output",
-            e @ _ => {
+            e => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
                 return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
             }

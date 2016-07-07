@@ -32,7 +32,6 @@ use mio::tcp::{
 };
 use mio::util::Slab;
 use mock_command::{
-    CommandCreator,
     CommandCreatorSync,
     ProcessCommandCreator,
 };
@@ -222,19 +221,19 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             }
         };
 
-        match self.conns.insert_with(|token| {
+        if let Some(token) = self.conns.insert_with(|token| 
+        {
             ClientConnection::new(sock, token)
-        }) {
-            Some(token) => {
-                match self.conns[token].register(event_loop) {
-                    Ok(_) => {},
-                    Err(_e) => {
-                        self.conns.remove(token);
-                    }
+        }) 
+        {
+            match self.conns[token].register(event_loop) {
+                Ok(_) => {},
+                Err(_e) => {
+                    self.conns.remove(token);
                 }
-            },
-            None => {},
+            }
         };
+
 
         self.reregister(event_loop);
     }
@@ -746,7 +745,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             None => Err(Error::new(ErrorKind::Other,
                                    "Could not get item from send queue")),
             Some(buf) => {
-                match self.sock.try_write(&buf) {
+                match self.sock.try_write(buf) {
                     Ok(None) => {
                         trace!("try_write wrote no bytes?");
                         // Try again
@@ -772,7 +771,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             match res {
                 Some(_) => self.send_queue.pop()
                     .and(Some(()))
-                    .ok_or(Error::new(ErrorKind::Other,
+                    .ok_or_else(|| Error::new(ErrorKind::Other,
                                       "Could not pop item from send queue")),
                 _ => Ok(()),
             }

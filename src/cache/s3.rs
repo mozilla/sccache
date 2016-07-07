@@ -61,10 +61,10 @@ impl Storage for S3Cache {
         match self.s3.get_object(&self.bucket, &key) {
             Ok(GetObjectOutput { body, .. }) => {
                 CacheRead::from(io::Cursor::new(body))
-                    .map(|cache_read| Cache::Hit(cache_read))
+                    .map(Cache::Hit)
                     // This should only happen if the cached data
                     // is bad.
-                    .unwrap_or_else(|e| Cache::Error(e))
+                    .unwrap_or_else(Cache::Error)
             }
             Err(e) => {
                 // rusoto doesn't provide a way to discern between

@@ -275,9 +275,9 @@ pub enum ChildOrCall {
 
 impl fmt::Debug for ChildOrCall {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &ChildOrCall::Child(ref r) => write!(f, "ChildOrCall::Child({:?}", r),
-            &ChildOrCall::Call(_) => write!(f, "ChildOrCall::Call(...)"),
+        match *self {
+            ChildOrCall::Child(ref r) => write!(f, "ChildOrCall::Child({:?}", r),
+            ChildOrCall::Call(_) => write!(f, "ChildOrCall::Call(...)"),
         }
     }
 }
