@@ -45,7 +45,16 @@ mod mock_command;
 mod protocol;
 mod server;
 
+use std::env;
+
 fn main() {
+    init_logging();
+    std::process::exit(commands::run_command(cmdline::parse()));
+}
+
+
+fn init_logging(){
+
     let logger_config = fern::DispatchConfig {
         format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
             format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
@@ -53,11 +62,20 @@ fn main() {
         output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache2.log")],
         level: log::LogLevelFilter::Trace,
     };
-    if let Err(e) = fern::init_global_logger(logger_config, log::LogLevelFilter::Warn)
+
+    // Set current log level depending on environment variable
+    let log_level = match &*env::var("SCCACHE2_LOG_LEVEL").unwrap_or("warn".to_string()).to_lowercase() {
+        "off" => log::LogLevelFilter::Off,
+        "error" => log::LogLevelFilter::Error,
+        "warn" => log::LogLevelFilter::Warn,
+        "info" => log::LogLevelFilter::Info,
+        "debug" => log::LogLevelFilter::Debug,
+        "trace" => log::LogLevelFilter::Trace,
+        _=> log::LogLevelFilter::Warn,
+    };
+
+    if let Err(e) = fern::init_global_logger(logger_config, log_level)
     {
         panic!("Failed to initialize global logger: {}", e);
     }
-
-    std::process::exit(commands::run_command(cmdline::parse()));
-
 }
