@@ -73,7 +73,7 @@ impl ServerConnection {
         let mut buf = vec![0; len as usize];
         try!(self.reader.read_exact(&mut buf).or_else(|e| Err(ProtobufError::IoError(e))));
         trace!("Done reading");
-        parse_from_bytes::<ServerResponse>(&mut buf)
+        parse_from_bytes::<ServerResponse>(&buf)
     }
 }
 

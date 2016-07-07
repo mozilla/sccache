@@ -47,7 +47,7 @@ fn make_key_path(root: &Path, key: &str) -> PathBuf {
 impl Storage for DiskCache {
     fn get(&self, key: &str) -> Cache {
         match File::open(make_key_path(&self.root, key))
-            .and_then(|f| CacheRead::from(f)) {
+            .and_then(CacheRead::from) {
                 Err(e) => match e.kind() {
                     // If the file doesn't exist it's just a cache miss.
                     io::ErrorKind::NotFound => Cache::Miss,
@@ -60,13 +60,13 @@ impl Storage for DiskCache {
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
         let path = make_key_path(&self.root, key);
-        path.parent().map(|p| fs::create_dir_all(p));
+        path.parent().map(fs::create_dir_all);
         File::create(&path)
             .or_else(|e| {
                 error!("Failed to create cache entry `{:?}`: {:?}", path, e);
                 Err(e)
             })
-            .map(|f| CacheWrite::new(f))
+            .map(CacheWrite::new)
     }
 
     fn finish_put(&self, _key: &str, entry: CacheWrite) -> io::Result<()> {

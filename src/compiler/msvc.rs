@@ -21,7 +21,6 @@ use ::compiler::{
 };
 use log::LogLevel::Trace;
 use mock_command::{
-    CommandCreator,
     CommandCreatorSync,
     RunCommand,
 };
@@ -60,7 +59,7 @@ fn file_exists(filename: &[u8]) -> bool {
 pub fn maybe_str(bytes: &[u8]) -> Cow<str> {
     str::from_utf8(bytes)
         .map(|s| Cow::Borrowed(s))
-        .unwrap_or(Cow::Owned(format!("{:?}", bytes)))
+        .unwrap_or_else(|_| Cow::Owned(format!("{:?}", bytes)))
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
@@ -103,7 +102,7 @@ pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut c
             }
         }
     }
-    return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"));
+    Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
 }
 
 pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
@@ -122,7 +121,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
                 match arg.as_ref() {
                     //TODO: support -dep
                     "-c" => compilation = true,
-                    v @ _ if v.starts_with("-Fo") => {
+                    v if v.starts_with("-Fo") => {
                         output_arg = Some(String::from(&v[3..]));
                     }
                     // Arguments that take a value.
@@ -134,7 +133,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
                     }
                     // Arguments we can't handle.
                     "-showIncludes" => return CompilerArguments::CannotCache,
-                    a @ _ if a.starts_with('@') => return CompilerArguments::CannotCache,
+                    a if a.starts_with('@') => return CompilerArguments::CannotCache,
                     // Arguments we can't handle because they output more files.
                     // TODO: support more multi-file outputs.
                     "-FA" | "-Fa" | "-Fe" | "-Fm" | "-Fp" | "-FR" | "-Fx" => return CompilerArguments::CannotCache,
@@ -142,16 +141,16 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
                         debug_info = true;
                         common_args.push(arg.clone());
                     }
-                    v @ _ if v.starts_with("-Fd") => {
+                    v if v.starts_with("-Fd") => {
                         pdb = Some(String::from(&v[3..]));
                         common_args.push(arg.clone());
                     }
                     // Other options.
-                    v @ _ if v.starts_with('-') && v.len() > 1 => {
+                    v if v.starts_with('-') && v.len() > 1 => {
                         common_args.push(arg.clone());
                     }
                     // Anything else is an input file.
-                    v @ _ => {
+                    v => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
                             return CompilerArguments::CannotCache;
@@ -231,7 +230,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
     // See if this compilation will produce a PDB.
     let cacheable = parsed_args.outputs.get("pdb")
-        .map(|pdb| {
+        .map_or(Cacheable::Yes, |pdb| {
             // If the PDB exists, we don't know if it's shared with another
             // compilation. If it is, we can't cache.
             if Path::new(cwd).join(pdb).exists() {
@@ -239,8 +238,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
             } else {
                 Cacheable::Yes
             }
-        })
-        .unwrap_or(Cacheable::Yes);
+        });
     // MSVC doesn't read anything from stdin, so it needs a temporary file
     // as input.
     let tempdir = try!(TempDir::new("sccache"));
