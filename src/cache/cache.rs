@@ -47,10 +47,10 @@ pub enum Cache {
 
 impl fmt::Debug for Cache {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &Cache::Error(ref e) => write!(f, "Cache::Error({:?}", e),
-            &Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
-            &Cache::Miss => write!(f, "Cache::Miss"),
+        match *self {
+            Cache::Error(ref e) => write!(f, "Cache::Error({:?}", e),
+            Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
+            Cache::Miss => write!(f, "Cache::Miss"),
         }
     }
 }
@@ -225,13 +225,10 @@ pub fn hash_key(compiler: &Compiler, args: &[String], preprocessor_output: &[u8]
     //TODO: should propogate these over from the client.
     // https://github.com/glandium/sccache/issues/5
     for var in CACHED_ENV_VARS.iter() {
-        match env::var(var) {
-            Ok(val) => {
-                m.update(var.as_bytes());
-                m.update(&b"="[..]);
-                m.update(val.as_bytes());
-            }
-            Err(_) => {}
+        if let Ok(val) = env::var(var) {
+            m.update(var.as_bytes());
+            m.update(&b"="[..]);
+            m.update(val.as_bytes());
         }
     }
     m.update(preprocessor_output);

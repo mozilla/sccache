@@ -22,8 +22,7 @@ use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
 

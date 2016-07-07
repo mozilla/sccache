@@ -26,7 +26,6 @@ use filetime::FileTime;
 use log::LogLevel::Trace;
 use mock_command::{
     CommandChild,
-    CommandCreator,
     CommandCreatorSync,
     RunCommand,
     exit_status,
@@ -64,30 +63,30 @@ pub enum CompilerKind {
 
 impl CompilerKind {
     pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
-        match self {
+        match *self {
             // GCC and clang share the same argument parsing logic, but
             // accept different sets of arguments.
-            &CompilerKind::Gcc => gcc::parse_arguments(arguments, gcc::argument_takes_value),
-            &CompilerKind::Clang => gcc::parse_arguments(arguments, clang::argument_takes_value),
-            &CompilerKind::Msvc { .. } => msvc::parse_arguments(arguments),
+            CompilerKind::Gcc => gcc::parse_arguments(arguments, gcc::argument_takes_value),
+            CompilerKind::Clang => gcc::parse_arguments(arguments, clang::argument_takes_value),
+            CompilerKind::Msvc { .. } => msvc::parse_arguments(arguments),
         }
     }
 
     pub fn preprocess<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
-        match self {
-            &CompilerKind::Gcc | &CompilerKind::Clang => {
+        match *self {
+            CompilerKind::Gcc | CompilerKind::Clang => {
                 // GCC and clang use the same preprocessor invocation.
                 gcc::preprocess(creator, compiler, parsed_args, cwd)
             },
-            &CompilerKind::Msvc { ref includes_prefix } => msvc::preprocess(creator, compiler, parsed_args, cwd, includes_prefix),
+            CompilerKind::Msvc { ref includes_prefix } => msvc::preprocess(creator, compiler, parsed_args, cwd, includes_prefix),
         }
     }
 
     pub fn compile<T : CommandCreatorSync>(&self, creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
-        match self {
-            &CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
-            &CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
-            &CompilerKind::Msvc { .. } => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
+        match *self {
+            CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
+            CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
+            CompilerKind::Msvc { .. } => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd),
         }
     }
 }
@@ -230,7 +229,7 @@ impl Compiler {
         match storage.get(&key) {
             Cache::Hit(mut entry) => {
                 debug!("Cache hit!");
-                for (key, path) in outputs.iter() {
+                for (key, path) in &outputs {
                     let mut f = try!(File::create(path));
                     try!(entry.get_object(key, &mut f));
                 }
@@ -260,7 +259,7 @@ impl Compiler {
                     if cacheable == Cacheable::Yes {
                         trace!("Compiled, storing in cache");
                         let mut entry = try!(storage.start_put(&key));
-                        for (key, path) in outputs.iter() {
+                        for (key, path) in &outputs {
                             let mut f = try!(File::open(&path));
                             try!(entry.put_object(key, &mut f)
                                  .or_else(|e| {
@@ -325,7 +324,7 @@ gcc
                 .and_then(|child| child.wait_with_output())
                 .and_then(|output| {
                     str::from_utf8(&output.stdout)
-                        .or(Err(Error::new(ErrorKind::Other, "Failed to parse output")))
+                        .or_else(|_| Err(Error::new(ErrorKind::Other, "Failed to parse output")))
                         .and_then(|stdout| {
                             for line in stdout.lines() {
                                 //TODO: do something smarter here.
@@ -355,9 +354,9 @@ gcc
 
 /// If `executable` is a known compiler, return `Some(Compiler)` containing information about it.
 pub fn get_compiler_info<T : CommandCreatorSync>(creator : T,  executable : &str) -> Option<Compiler> {
-    detect_compiler_kind(creator, &executable)
+    detect_compiler_kind(creator, executable)
         .and_then(|kind| {
-            Compiler::new(&executable, kind)
+            Compiler::new(executable, kind)
                 .or_else(|e| {
                     error!("Failed to create Compiler: {}", e);
                     Err(())
@@ -396,8 +395,8 @@ pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Op
 
     Ok(process::Output {
         status: status,
-        stdout: stdout.unwrap_or(Vec::new()),
-        stderr: stderr.unwrap_or(Vec::new()),
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
     })
 }
 

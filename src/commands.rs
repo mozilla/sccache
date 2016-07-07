@@ -127,7 +127,7 @@ pub fn which<T: AsRef<OsStr>, U: AsRef<OsStr>, V: AsRef<Path>>(filename: T, os_p
         os_path.and_then(|paths| {
             env::split_paths(&paths)
                 .map(|p| p.join(&path))
-                .skip_while(|p| !(p.exists() && is_executable(&p)))
+                .skip_while(|p| !(p.exists() && is_executable(p)))
                 .take(1)
                 .next()
                 //TODO: shouldn't need to canonicalize here, but
@@ -268,7 +268,7 @@ fn print_stats(stats: CacheStats) -> io::Result<()> {
         .map(|s| (s.get_name(), if s.has_count() {
             format!("{}", s.get_count())
         } else if s.has_str() {
-            format!("{}", s.get_str())
+            s.get_str().to_owned()
         } else if s.has_size() {
             match binary_prefix(s.get_size() as f64) {
                 Standalone(bytes) => format!("{} bytes", bytes),
@@ -292,7 +292,7 @@ fn request_compile<W: AsRef<Path>, X: AsRef<OsStr>, Y: AsRef<Path>>(conn: &mut S
     let exe = try!(exe.as_ref().to_str().ok_or(Error::new(ErrorKind::Other, "Bad exe")));
     let cwd = try!(cwd.as_ref().to_str().ok_or(Error::new(ErrorKind::Other, "Bad cwd")));
     let args = args.iter().filter_map(|a| a.as_ref().to_str().map(|s| s.to_owned())).collect::<Vec<_>>();
-    if args.len() == 0 {
+    if args.is_empty() {
         return Err(Error::new(ErrorKind::Other, "Bad commandline"));
     }
     let mut req = ClientRequest::new();
