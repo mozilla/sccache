@@ -25,7 +25,6 @@ use mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -37,34 +36,40 @@ use std::io::{
 };
 use std::path::Path;
 use std::process::{self,Stdio};
-use std::str;
 use tempdir::TempDir;
 
 #[cfg(windows)]
-fn file_exists(filename: &[u8]) -> bool {
+fn from_local_codepage(bytes: Vec<u8>) -> io::Result<String> {
     use kernel32;
-    use std::ffi::CString;
-    use winapi::fileapi::INVALID_FILE_ATTRIBUTES;
-    CString::new(filename).map(|c| {
-        unsafe { kernel32::GetFileAttributesA(c.as_ptr()) !=  INVALID_FILE_ATTRIBUTES }
-    })
-        .unwrap_or(false)
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::ptr;
+    use winapi::winnls::CP_ACP;
+
+    let size = unsafe { kernel32::MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr() as *const i8, -1, ptr::null_mut(), 0) };
+    if size <= 0 {
+        Err(Error::last_os_error())
+    } else {
+        let mut wchars = Vec::with_capacity(size as usize);
+        wchars.resize(size as usize, 0);
+        if unsafe { kernel32::MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr() as *const i8, -1, wchars.as_mut_ptr(), wchars.len() as i32) } <= 0 {
+            Err(Error::last_os_error())
+        } else {
+            let o = OsString::from_wide(&wchars);
+            o.into_string()
+                .or(Err(Error::new(ErrorKind::Other, "Error converting string")))
+        }
+    }
 }
 
 #[cfg(not(windows))]
-fn file_exists(filename: &[u8]) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    Path::new(OsStr::from_bytes(filename)).exists()
-}
-
-pub fn maybe_str(bytes: &[u8]) -> Cow<str> {
-    str::from_utf8(bytes)
-        .map(|s| Cow::Borrowed(s))
-        .unwrap_or(Cow::Owned(format!("{:?}", bytes)))
+fn from_local_codepage(bytes: Vec<u8>) -> io::Result<String> {
+    String::from_utf8(bytes)
+        .or(Err(Error::new(ErrorKind::Other, "Error parsing UTF-8")))
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
-pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut creator: &mut T, exe: U) -> io::Result<Vec<u8>> {
+pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut creator: &mut T, exe: U) -> io::Result<String> {
     let tempdir = try!(TempDir::new("sccache"));
     let input = tempdir.path().join("test.c");
     {
@@ -76,7 +81,7 @@ pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut c
     cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul"])
         .arg(&input)
         // The MSDN docs say the -showIncludes output goes to stderr,
-        // but that's just not true.
+        // but that's not true unless running with -E.
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
@@ -87,16 +92,16 @@ pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut c
     let output = try!(run_input_output(cmd, None));
     if output.status.success() {
         let process::Output { stdout, .. } = output;
-        for line in stdout.split(|&b| b == b'\n') {
-            if line.ends_with(b"stdio.h\r") {
-                for (i, c) in line.iter().enumerate().rev() {
-                    if *c == b' ' {
-                        let len = line.len();
+        let stdout = try!(from_local_codepage(stdout));
+        for line in stdout.lines() {
+            if line.ends_with("stdio.h") {
+                for (i, c) in line.char_indices().rev() {
+                    if c == ' ' {
                         // See if the rest of this line is a full pathname.
-                        if file_exists(&line[i+1..len-1]) {
+                        if Path::new(&line[i+1..]).exists() {
                             // Everything from the beginning of the line
                             // to this index is the prefix.
-                            return Ok(line[..i+1].iter().map(|&b| b).collect());
+                            return Ok(line[..i+1].to_owned());
                         }
                     }
                 }
@@ -113,6 +118,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     let mut compilation = false;
     let mut debug_info = false;
     let mut pdb = None;
+    let mut depfile = None;
 
     //TODO: support arguments that start with / as well.
     let mut it = arguments.iter();
@@ -120,7 +126,6 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
         match it.next() {
             Some(arg) => {
                 match arg.as_ref() {
-                    //TODO: support -dep
                     "-c" => compilation = true,
                     v @ _ if v.starts_with("-Fo") => {
                         output_arg = Some(String::from(&v[3..]));
@@ -131,6 +136,9 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
                         if let Some(arg_val) = it.next() {
                             common_args.push(arg_val.clone());
                         }
+                    }
+                    v @ _ if v.starts_with("-deps") => {
+                        depfile = Some(v[5..].to_owned());
                     }
                     // Arguments we can't handle.
                     "-showIncludes" => return CompilerArguments::CannotCache,
@@ -203,15 +211,14 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     CompilerArguments::Ok(ParsedArguments {
         input: input,
         extension: extension,
+        depfile: depfile,
         outputs: outputs,
         preprocessor_args: vec!(),
         common_args: common_args,
     })
 }
 
-pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
-    trace!("preprocess");
-    //TODO: support depfile by way of -showIncludes
+pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str, _includes_prefix: &String) -> io::Result<process::Output> {
     let mut cmd = creator.new_command_sync(&compiler.executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
@@ -310,13 +317,13 @@ mod test {
         let stdout = format!("blah: {}\r\n", s);
         let stderr = String::from("some\r\nstderr\r\n");
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &stderr)));
-        assert_eq!(&b"blah: "[..], AsRef::<[u8]>::as_ref(&detect_showincludes_prefix(&mut creator, "cl.exe").unwrap()));
+        assert_eq!("blah: ", detect_showincludes_prefix(&mut creator, "cl.exe").unwrap());
     }
 
     #[test]
     fn test_parse_arguments_simple() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -333,7 +340,7 @@ mod test {
     #[test]
     fn test_parse_arguments_extra() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -350,7 +357,7 @@ mod test {
     #[test]
     fn test_parse_arguments_values() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -367,7 +374,7 @@ mod test {
     #[test]
     fn test_parse_arguments_pdb() {
         match parse_arguments(&stringvec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -430,12 +437,13 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
             extension: "c".to_owned(),
+            depfile: None,
             outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
@@ -452,13 +460,14 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
             extension: "c".to_owned(),
+            depfile: None,
             outputs: vec![("obj", "foo.obj".to_owned()),
                           ("pdb", pdb.to_str().unwrap().to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
@@ -474,12 +483,13 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
             extension: "c".to_owned(),
+            depfile: None,
             outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: vec!() }).unwrap();
+                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // First compiler invocation fails.
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.

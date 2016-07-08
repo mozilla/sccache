@@ -170,6 +170,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
     CompilerArguments::Ok(ParsedArguments {
         input: input,
         extension: extension,
+        depfile: None,
         outputs: outputs,
         preprocessor_args: preprocessor_args,
         common_args: common_args,
@@ -219,7 +220,7 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -236,7 +237,7 @@ mod test {
     #[test]
     fn test_parse_arguments_split_dwarf() {
         match _parse_arguments(&stringvec!["-gsplit-dwarf", "-c", "foo.cpp", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cpp", input);
                 assert_eq!("cpp", extension);
@@ -253,7 +254,7 @@ mod test {
     #[test]
     fn test_parse_arguments_extra() {
         match _parse_arguments(&stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cc", input);
                 assert_eq!("cc", extension);
@@ -270,7 +271,7 @@ mod test {
     #[test]
     fn test_parse_arguments_values() {
         match _parse_arguments(&stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cxx", input);
                 assert_eq!("cxx", extension);
@@ -287,7 +288,7 @@ mod test {
     #[test]
     fn test_parse_arguments_preprocessor_args() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -304,7 +305,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -321,7 +322,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -338,7 +339,7 @@ mod test {
     #[test]
     fn test_parse_arguments_dep_target_needed() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);

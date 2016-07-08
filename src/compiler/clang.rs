@@ -101,7 +101,7 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         match _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.c", input);
                 assert_eq!("c", extension);
@@ -118,7 +118,7 @@ mod test {
     #[test]
     fn test_parse_arguments_values() {
         match _parse_arguments(&stringvec!["-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, outputs, preprocessor_args, common_args }) => {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
                 assert!(true, "Parsed ok");
                 assert_eq!("foo.cxx", input);
                 assert_eq!("cxx", extension);
@@ -139,6 +139,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
             extension: "c".to_owned(),
+            depfile: None,
             outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
@@ -160,6 +161,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
             extension: "c".to_owned(),
+            depfile: None,
             outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: stringvec!("-c", "-o", "foo.o", "-Werror", "foo.c"),

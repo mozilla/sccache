@@ -60,7 +60,7 @@ impl Storage for DiskCache {
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
         let path = make_key_path(&self.root, key);
-        path.parent().map(|p| fs::create_dir_all(p));
+        try!(path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "No parent directory?")).and_then(|p| fs::create_dir_all(p)));
         File::create(&path)
             .or_else(|e| {
                 error!("Failed to create cache entry `{:?}`: {:?}", path, e);

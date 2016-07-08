@@ -22,7 +22,6 @@ use compiler::{
     gcc,
     msvc,
 };
-use compiler::msvc::maybe_str;
 use filetime::FileTime;
 use log::LogLevel::Trace;
 use mock_command::{
@@ -59,7 +58,7 @@ pub enum CompilerKind {
     /// Microsoft Visual C++
     Msvc {
         /// The prefix used in the output of `-showIncludes`.
-        includes_prefix: Vec<u8>,
+        includes_prefix: String,
     },
 }
 
@@ -80,7 +79,7 @@ impl CompilerKind {
                 // GCC and clang use the same preprocessor invocation.
                 gcc::preprocess(creator, compiler, parsed_args, cwd)
             },
-            &CompilerKind::Msvc { .. } => msvc::preprocess(creator, compiler, parsed_args, cwd),
+            &CompilerKind::Msvc { ref includes_prefix } => msvc::preprocess(creator, compiler, parsed_args, cwd, includes_prefix),
         }
     }
 
@@ -101,6 +100,8 @@ pub struct ParsedArguments {
     pub input: String,
     /// The file extension of the input source file.
     pub extension: String,
+    /// The file in which to generate dependencies.
+    pub depfile: Option<String>,
     /// Output files, keyed by a simple name, like "obj".
     pub outputs: HashMap<&'static str, String>,
     /// Commandline arguments for the preprocessor.
@@ -337,7 +338,7 @@ gcc
                                 } else if line == "msvc" {
                                     trace!("Found MSVC");
                                     let prefix = try!(msvc::detect_showincludes_prefix(&mut creator, &executable));
-                                    trace!("showIncludes prefix: '{}'", maybe_str(&prefix));
+                                    trace!("showIncludes prefix: '{}'", prefix);
                                     return Ok(Some(CompilerKind::Msvc {
                                         includes_prefix: prefix,
                                     }));
@@ -434,6 +435,11 @@ mod test {
 
     #[test]
     fn test_detect_compiler_kind_msvc() {
+        use env_logger;
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
         let creator = new_creator();
         let f = TestFixture::new();
         let srcfile = f.touch("stdio.h").unwrap();
@@ -441,13 +447,13 @@ mod test {
         if s.starts_with("\\\\?\\") {
             s = &s[4..];
         }
-        let prefix = "blah: ";
+        let prefix = String::from("blah: ");
         let stdout = format!("{}{}\r\n", prefix, s);
         // Compiler detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
         // showincludes prefix detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
-        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix.as_bytes().iter().map(|&b| b).collect() }), detect_compiler_kind(creator.clone(), "/foo/bar"));
+        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix }), detect_compiler_kind(creator.clone(), "/foo/bar"));
     }
 
     #[test]
