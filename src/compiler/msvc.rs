@@ -63,6 +63,7 @@ fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
 
 #[cfg(not(windows))]
 fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
+    use std::str;
     str::from_utf8(bytes)
         .or(Err(Error::new(ErrorKind::Other, "Error parsing UTF-8")))
         .map(|s| s.to_owned())
