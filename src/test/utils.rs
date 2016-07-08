@@ -127,7 +127,7 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 
 impl TestFixture {
     pub fn new() -> TestFixture {
-        let tempdir = TempDir::new("sccache_find_in_path").unwrap();
+        let tempdir = TempDir::new("sccache_test").unwrap();
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         let mut paths = vec!();

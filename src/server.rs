@@ -153,13 +153,8 @@ impl ServerStats {
 }
 
 impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
-    /// Create an `SccacheServer` bound to `port`.
-    fn new(port: u16) -> io::Result<SccacheServer<C>> {
-        SccacheServer::with_storage(port, storage_from_environment())
-    }
-
     /// Create an `SccacheServer` bound to `port`, using `storage` as cache storage.
-    fn with_storage(port: u16, storage: Box<Storage>) -> io::Result<SccacheServer<C>> {
+    fn new(port: u16, storage: Box<Storage>) -> io::Result<SccacheServer<C>> {
         let listener = try!(TcpListener::bind(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port))));
         Ok(SccacheServer {
             sock: listener,
@@ -835,14 +830,14 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
     }
 }
 
-/// Create an sccache server, listening on `port`.
-pub fn create_server<C : CommandCreatorSync + 'static>(port : u16) -> io::Result<(SccacheServer<C>, EventLoop<SccacheServer<C>>)> {
+/// Create an sccache server, listening on `port`, using `storage` as cache storage.
+pub fn create_server<C : CommandCreatorSync + 'static>(port: u16, storage: Box<Storage>) -> io::Result<(SccacheServer<C>, EventLoop<SccacheServer<C>>)> {
     EventLoop::new()
         .or_else(|e| {
             error!("event loop creation failed: {}", e); Err(e)
         })
         .and_then(|event_loop| {
-            SccacheServer::new(port).and_then(|server| Ok((server, event_loop)))
+            SccacheServer::new(port, storage).and_then(|server| Ok((server, event_loop)))
         })
 }
 
@@ -865,7 +860,7 @@ pub fn run_server<C : CommandCreatorSync + 'static>(mut server : SccacheServer<C
 /// requests a shutdown.
 pub fn start_server(port : u16) -> io::Result<()> {
     debug!("start_server");
-    let (server, event_loop) = try!(create_server::<ProcessCommandCreator>(port).or_else(|e| {
+    let (server, event_loop) = try!(create_server::<ProcessCommandCreator>(port, storage_from_environment()).or_else(|e| {
         error!("failed to create server: {}", e);
         Err(e)
     }));

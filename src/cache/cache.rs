@@ -157,7 +157,7 @@ impl CacheWrite {
 }
 
 /// An interface to cache storage.
-pub trait Storage : Send + Sync {
+pub trait Storage: Send + Sync {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.
@@ -177,7 +177,7 @@ pub trait Storage : Send + Sync {
 }
 
 /// Get a suitable `Storage` implementation from the environment.
-pub fn storage_from_environment() -> Box<Storage + Send> {
+pub fn storage_from_environment() -> Box<Storage> {
     if let (Ok(bucket), Ok(region)) = (env::var("SCCACHE_BUCKET"),
                                        env::var("SCCACHE_REGION")) {
         trace!("Trying S3Cache({}, {})", region, bucket);

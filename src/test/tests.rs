@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ::cache::disk::DiskCache;
 use ::client::{
     connect_to_server,
 };
@@ -28,7 +29,7 @@ use ::server::{
     create_server,
     run_server,
 };
-use std::env;
+use std::boxed::Box;
 use std::fs::File;
 use std::io::{
     Cursor,
@@ -49,10 +50,10 @@ use test::utils::*;
 /// * The `JoinHandle` for the server thread.
 fn run_server_thread(cache_dir: &Path) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
     // Create a server on a background thread, get some useful bits from it.
-    env::set_var("SCCACHE_DIR", cache_dir);
     let (tx, rx) = mpsc::channel();
+    let storage = Box::new(DiskCache::new(&cache_dir));
     let handle = thread::spawn(move || {
-        let (server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0).unwrap();
+        let (server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0, storage).unwrap();
         assert!(server.port() > 0);
         let port = server.port();
         let sender = event_loop.channel();
