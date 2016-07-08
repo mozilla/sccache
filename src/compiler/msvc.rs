@@ -24,7 +24,7 @@ use mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{
@@ -38,7 +38,7 @@ use std::process::{self,Stdio};
 use tempdir::TempDir;
 
 #[cfg(windows)]
-fn from_local_codepage(bytes: Vec<u8>) -> io::Result<String> {
+fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
     use kernel32;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
@@ -62,9 +62,10 @@ fn from_local_codepage(bytes: Vec<u8>) -> io::Result<String> {
 }
 
 #[cfg(not(windows))]
-fn from_local_codepage(bytes: Vec<u8>) -> io::Result<String> {
-    String::from_utf8(bytes)
+fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
+    str::from_utf8(bytes)
         .or(Err(Error::new(ErrorKind::Other, "Error parsing UTF-8")))
+        .map(|s| s.to_owned())
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
@@ -90,8 +91,8 @@ pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut c
 
     let output = try!(run_input_output(cmd, None));
     if output.status.success() {
-        let process::Output { stdout, .. } = output;
-        let stdout = try!(from_local_codepage(stdout));
+        let process::Output { stdout: stdout_bytes, .. } = output;
+        let stdout = try!(from_local_codepage(&stdout_bytes));
         for line in stdout.lines() {
             if line.ends_with("stdio.h") {
                 for (i, c) in line.char_indices().rev() {
@@ -217,19 +218,99 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
     })
 }
 
-pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str, _includes_prefix: &String) -> io::Result<process::Output> {
+#[cfg(windows)]
+fn normpath(path: &str) -> String {
+    use kernel32;
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::ptr;
+    use std::os::windows::io::AsRawHandle;
+    File::open(path)
+        .and_then(|f| {
+            let handle = f.as_raw_handle();
+            let size = unsafe { kernel32::GetFinalPathNameByHandleW(handle,
+                                                         ptr::null_mut(),
+                                                         0,
+                                                         0)
+            };
+            if size == 0 {
+                return Err(Error::last_os_error());
+            }
+            let mut wchars = Vec::with_capacity(size as usize);
+            wchars.resize(size as usize, 0);
+            if unsafe { kernel32::GetFinalPathNameByHandleW(handle,
+                                                            wchars.as_mut_ptr(),
+                                                            wchars.len() as u32,
+                                                            0) } == 0 {
+                return Err(Error::last_os_error());
+            }
+            // The return value of GetFinalPathNameByHandleW uses the
+            // '\\?\' prefix.
+            let o = OsString::from_wide(&wchars[4..wchars.len() - 1]);
+            o.into_string()
+                .map(|s| s.replace('\\', "/"))
+                .or(Err(Error::new(ErrorKind::Other, "Error converting string")))
+        })
+        .unwrap_or(path.replace('\\', "/"))
+}
+
+#[cfg(not(windows))]
+fn normpath(path: &str) -> String {
+    path.to_owned()
+}
+
+pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str, includes_prefix: &str) -> io::Result<process::Output> {
     let mut cmd = creator.new_command_sync(&compiler.executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .arg("-nologo")
         .args(&parsed_args.common_args)
         .current_dir(cwd);
+    if parsed_args.depfile.is_some() {
+        cmd.arg("-showIncludes");
+    }
 
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
 
-    run_input_output(cmd, None)
+    let output = try!(run_input_output(cmd, None));
+    if let (Some(ref objfile), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
+        File::create(Path::new(cwd).join(depfile))
+            .and_then(move |mut f| {
+                try!(write!(f, "{}: {} ", objfile, parsed_args.input));
+                let process::Output { status, stdout, stderr: stderr_bytes } = output;
+                let stderr = try!(from_local_codepage(&stderr_bytes));
+                let mut deps = HashSet::new();
+                let mut stderr_bytes = vec!();
+                for line in stderr.lines() {
+                    if line.starts_with(includes_prefix) {
+                        let dep = normpath(line[includes_prefix.len()..].trim());
+                        trace!("included: {}", dep);
+                        if deps.insert(dep.clone()) && !dep.contains(' ') {
+                            try!(write!(f, "{} ", dep));
+                        }
+                    } else {
+                        stderr_bytes.extend_from_slice(line.as_bytes());
+                        stderr_bytes.push(b'\n');
+                    }
+                }
+                try!(writeln!(f, ""));
+                // Write extra rules for each dependency to handle
+                // removed files.
+                try!(writeln!(f, "{}:", parsed_args.input));
+                let mut sorted = deps.into_iter().collect::<Vec<_>>();
+                sorted.sort();
+                for dep in sorted {
+                    if !dep.contains(' ') {
+                        try!(writeln!(f, "{}:", dep));
+                    }
+                }
+                Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
+            })
+    } else {
+        Ok(output)
+    }
 }
 
 pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
