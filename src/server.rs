@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bytes::{
+    Buf,
+    ByteBuf,
+    MutByteBuf,
+};
 use cache::{
     Storage,
     storage_from_environment,
@@ -216,10 +221,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             }
         };
 
-        if let Some(token) = self.conns.insert_with(|token| 
+        if let Some(token) = self.conns.insert_with(|token|
         {
             ClientConnection::new(sock, token)
-        }) 
+        })
         {
             match self.conns[token].register(event_loop) {
                 Ok(_) => {},
@@ -659,10 +664,10 @@ struct ClientConnection<C : CommandCreatorSync + 'static> {
     interest: EventSet,
 
     /// Receive buffer.
-    recv_buf: Vec<u8>,
+    recv_buf: MutByteBuf,
 
     /// Queued messages to send.
-    send_queue: Vec<Vec<u8>>,
+    send_queue: Vec<ByteBuf>,
 
     /// In-progress task.
     task: Option<Task<C>>,
@@ -676,7 +681,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             token: token,
             interest: EventSet::hup(),
             // Arbitrary, should ideally hold a full `ClientRequest`.
-            recv_buf: Vec::with_capacity(2048),
+            recv_buf: ByteBuf::mut_with_capacity(2048),
             send_queue: vec!(),
             task: None,
         }
@@ -687,11 +692,8 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
     /// If a full request was read, return `Ok(Some(ClientRequest))`.
     /// If data was read but not a full request, return `Ok(None)`.
     fn read(&mut self, event_loop : &mut EventLoop<SccacheServer<C>>) -> io::Result<Option<ClientRequest>> {
-        //FIXME: use something from bytes:
-        // http://carllerche.github.io/bytes/bytes/index.html
-        let mut buf : [u8; 2048] = [0; 2048];
         loop {
-            match self.sock.try_read(&mut buf) {
+            match self.sock.try_read_buf(&mut self.recv_buf) {
                 Ok(None) => {
                     // Read all available data.
                     trace!("try_read returned Ok(None)");
@@ -699,7 +701,6 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
                 },
                 Ok(Some(n)) => {
                     trace!("try_read read {} bytes", n);
-                    self.recv_buf.extend_from_slice(&buf[..n])
                 },
                 Err(e) => {
                     error!("Error reading from client socket: {}", e);
@@ -710,9 +711,9 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
 
         try!(self.reregister(event_loop));
 
-        parse_length_delimited_from_bytes::<ClientRequest>(&self.recv_buf)
+        parse_length_delimited_from_bytes::<ClientRequest>(&self.recv_buf.bytes())
             .and_then(|req| {
-                self.recv_buf.drain(..(req.compute_size() as usize));
+                self.recv_buf.clear();
                 Ok(Some(req))
             })
             .or_else(|err| match err {
@@ -734,13 +735,12 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
 
     /// Handle a writable event from the event loop.
     fn write(&mut self, event_loop : &mut EventLoop<SccacheServer<C>>) -> io::Result<()> {
-        //FIXME: use something from bytes.
-        // http://carllerche.github.io/bytes/bytes/index.html
+
         match self.send_queue.first_mut() {
             None => Err(Error::new(ErrorKind::Other,
                                    "Could not get item from send queue")),
             Some(buf) => {
-                match self.sock.try_write(buf) {
+                match self.sock.try_write_buf(buf) {
                     Ok(None) => {
                         trace!("try_write wrote no bytes?");
                         // Try again
@@ -748,10 +748,12 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
                     },
                     Ok(Some(n)) => {
                         trace!("try_write wrote {} bytes", n);
-                        if n == buf.len() {
+                        if !(*buf).has_remaining()
+                        {
                             Ok(Some(()))
-                        } else {
-                            buf.drain(..n);
+                        }
+                        else
+                        {
                             Ok(None)
                         }
                     },
@@ -790,7 +792,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             }
         }));
         trace!("ClientConnection::send: queueing {} bytes", msg.len());
-        self.send_queue.push(msg);
+        self.send_queue.push(ByteBuf::from_slice(&msg));
         self.interest.insert(EventSet::writable());
         self.reregister(event_loop)
     }
