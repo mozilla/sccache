@@ -21,8 +21,6 @@ use cmdline::Command;
 use compiler::{
     run_input_output,
 };
-#[cfg(unix)]
-use libc;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
@@ -47,16 +45,12 @@ use protocol::{
 use server;
 use std::env;
 use std::ffi::{OsStr,OsString};
-#[cfg(unix)]
-use std::ffi::CString;
 use std::io::{
     self,
     Error,
     ErrorKind,
     Write,
 };
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{
