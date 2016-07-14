@@ -18,7 +18,6 @@ use client::connect_with_retry;
 use commands::{
     DEFAULT_PORT,
     request_stats,
-    which,
 };
 use env_logger;
 use log::LogLevel::Trace;
@@ -38,6 +37,8 @@ use std::process::{
 };
 use tempdir::TempDir;
 use test::utils::*;
+use which::which_in;
+
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os="macos")))]
@@ -171,9 +172,12 @@ fn find_compilers() -> Vec<(&'static str, OsString)> {
     let cwd = env::current_dir().unwrap();
     COMPILERS.iter()
         .filter_map(|c| {
-            match which(c, env::var_os("PATH"), &cwd) {
-                Some(full_path) => Some((*c, full_path)),
-                None => None,
+            match which_in(c, env::var_os("PATH"), &cwd) {
+                Ok(full_path) => match full_path.canonicalize() {
+                    Ok(full_path_canon) => Some((*c, full_path_canon.into_os_string())),
+                    Err(_) => None,
+                },
+                Err(_) => None,
             }
         })
         .collect::<Vec<_>>()
