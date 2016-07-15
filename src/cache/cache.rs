@@ -232,7 +232,7 @@ pub fn hash_key(compiler: &Compiler, args: &[String], preprocessor_output: &[u8]
         }
     }
     m.update(preprocessor_output);
-    m.hexdigest()
+    m.digest().to_string()
 }
 
 #[cfg(test)]

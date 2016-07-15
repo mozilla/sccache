@@ -185,7 +185,7 @@ impl Compiler {
         Ok(Compiler {
             executable: executable.to_owned(),
             mtime: FileTime::from_last_modification_time(&attr),
-            digest: m.hexdigest(),
+            digest: m.digest().to_string(),
             kind: kind,
         })
     }

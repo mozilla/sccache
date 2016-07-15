@@ -14,7 +14,7 @@ dependencies = [
  "protobuf 1.0.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "retry 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "rusoto 0.13.1 (git+https://github.com/rusoto/rusoto?branch=feature_mutex_credentials)",
- "sha1 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sha1 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempdir 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "time 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "which 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -64,11 +64,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "bitflags"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "byteorder"
-version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
@@ -606,11 +601,8 @@ dependencies = [
 
 [[package]]
 name = "sha1"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
-]
 
 [[package]]
 name = "slab"
