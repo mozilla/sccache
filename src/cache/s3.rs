@@ -20,7 +20,12 @@ use cache::{
     Storage,
 };
 use rusoto::{DefaultCredentialsProviderSync, Region};
-use rusoto::s3::{S3Helper, GetObjectOutput};
+use rusoto::s3::{
+    CannedAcl,
+    GetObjectOutput,
+    PutObjectRequest,
+    S3Helper,
+};
 use std::io::{
     self,
     Error,
@@ -83,14 +88,25 @@ impl Storage for S3Cache {
     }
 
     fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()> {
-        let key = normalize_key(key);
         let writer = try!(entry.finish());
         match writer {
             // This should never happen.
             CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
             CacheWriteWriter::Cursor(c) => {
                 let data = c.into_inner();
-                try!(self.s3.put_object(&self.bucket, &key, &data).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3"))));
+                let mut request = PutObjectRequest {
+                    key: normalize_key(key),
+                    bucket: self.bucket.clone(),
+                    body: Some(&data),
+                    storage_class: Some(String::from("REDUCED_REDUNDANCY")),
+                    acl: Some(CannedAcl::PublicRead),
+                    // XXX: put_object_request doesn't handle cache_control
+                    // https://github.com/rusoto/rusoto/issues/303
+                    // two weeks
+                    cache_control: Some(String::from("max-age=1296000")),
+                    .. Default::default()
+                };
+                try!(self.s3.put_object_with_request(&mut request).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3"))));
                 Ok(())
             }
         }
