@@ -19,7 +19,7 @@ use cache::{
     CacheWriteWriter,
     Storage,
 };
-use rusoto::{ChainProvider, Region, ParseRegionError};
+use rusoto::{DefaultCredentialsProviderSync, Region};
 use rusoto::s3::{S3Helper, GetObjectOutput};
 use std::io::{
     self,
@@ -31,7 +31,7 @@ use std::str::FromStr;
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
     /// The S3 client.
-    s3: S3Helper<ChainProvider>,
+    s3: S3Helper<DefaultCredentialsProviderSync>,
     /// The S3 region in use.
     region: String,
     /// The S3 bucket in use.
@@ -40,9 +40,10 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` in AWS region `region` (i.e. 'us-east-1'), storing data in `bucket`.
-    pub fn new(region: &str, bucket: &str) -> Result<S3Cache, ParseRegionError> {
-        let r = try!(Region::from_str(region));
-        let s3 = S3Helper::new(ChainProvider::new().unwrap(), r);
+    pub fn new(region: &str, bucket: &str) -> io::Result<S3Cache> {
+        let r = try!(Region::from_str(region).or_else(|e| Err(Error::new(ErrorKind::Other, e))));
+        let provider = try!(DefaultCredentialsProviderSync::new().or_else(|e| Err(Error::new(ErrorKind::Other, e))));
+        let s3 = S3Helper::new(provider, r);
         Ok(S3Cache {
             s3: s3,
             region: region.to_owned(),

@@ -14,6 +14,7 @@ mio = "0.5"
 number_prefix = "0.2.5"
 protobuf = "1.0.18"
 retry = "0.4.0"
+rusoto = { "version" = "0.15.2", "features" = ["s3"] }
 sha1 = "0.2.0"
 tempdir = "0.3.4"
 time = "0.1.35"
@@ -21,11 +22,6 @@ which = "0.2.0"
 winapi = "0.2"
 kernel32-sys = "0.2.2"
 zip = { version = "0.1", default-features = false }
-
-[dependencies.rusoto]
-features = ["s3"]
-git = "https://github.com/rusoto/rusoto"
-branch = "feature_mutex_credentials"
 
 [profile.release]
 debug = true
