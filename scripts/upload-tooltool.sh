@@ -11,7 +11,7 @@ for d in "$1"/*; do
     pushd $d
     chmod -x sccache2.tar.*
     rm -f releng.manifest
-    python "$tooltool" add -v --visibility=public -m releng.manifest sccache2.tar.*
+    python "$tooltool" add -v --visibility=public --unpack -m releng.manifest sccache2.tar.*
     python "$tooltool" upload -v -m releng.manifest  --message "Build of sccache2 from revision $(cat REV)" --authentication-file ~/tooltool-upload-token
     popd
 done
