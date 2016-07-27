@@ -10,9 +10,10 @@ import sys
 import tooltool
 
 PLATFORM_MANIFESTS = {
-    'Linux': ['linux32', 'linux64'],
-    'Darwin': ['macosx64'],
-    'MINGW32_NT-6.2': ['win32', 'win64'],
+    'Linux': ['browser/config/tooltool-manifests/linux32/*.manifest', 'browser/config/tooltool-manifests/linux64/*.manifest', 'browser/config/tooltool-manifests/macosx64/cross-releng.manifest', 'mobile/android/config/tooltool-manifests/*/*.manifest'],
+    # Don't include cross-releng.manifest here.
+    'Darwin': ['browser/config/tooltool-manifests/macosx64/asan.manifest', 'browser/config/tooltool-manifests/macosx64/clang.manifest', 'browser/config/tooltool-manifests/macosx64/releng.manifest'],
+    'MINGW32_NT-6.2': ['browser/config/tooltool-manifests/win32/*.manifest', 'browser/config/tooltool-manifests/win64/*.manifest'],
 }
 
 def indices(s, which):
@@ -40,8 +41,8 @@ def update_tooltool_manifests(build_dir, gecko_dir):
     system = os.path.basename(build_dir)
     new_manifest_file = os.path.join(build_dir, 'releng.manifest')
     manifest = tooltool.open_manifest(new_manifest_file)
-    for platform in PLATFORM_MANIFESTS[system]:
-        for platform_manifest_file in glob.glob(os.path.join(gecko_dir, 'browser/config/tooltool-manifests', platform, '*.manifest')):
+    for manifest_glob in PLATFORM_MANIFESTS[system]:
+        for platform_manifest_file in glob.glob(os.path.join(gecko_dir, manifest_glob)):
             print(platform_manifest_file)
             platform_manifest = tooltool.open_manifest(platform_manifest_file)
             for i, f in enumerate(platform_manifest.file_records):
