@@ -25,3 +25,6 @@ zip = { version = "0.1", default-features = false }
 
 [profile.release]
 debug = true
+
+[replace]
+"which:0.2.0" = { git = "https://github.com/luser/which-rs", branch = "windows-extension-case" }

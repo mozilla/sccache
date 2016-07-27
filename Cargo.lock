@@ -861,10 +861,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "which"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/luser/which-rs?branch=windows-extension-case#290370aaa7393415886b824080c9c86a62d45d4e"
 dependencies = [
  "libc 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "which"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+replace = "which 0.2.0 (git+https://github.com/luser/which-rs?branch=windows-extension-case)"
 
 [[package]]
 name = "winapi"
