@@ -86,6 +86,7 @@ fn maybe_redirect_stdio(cmd : &mut process::Command) {
 /// Re-execute the current executable as a background server.
 #[cfg(not(windows))]
 fn run_server_process() -> io::Result<()> {
+    trace!("run_server_process");
     env::current_exe().and_then(|exe_path| {
         let mut cmd = process::Command::new(exe_path);
         maybe_redirect_stdio(&mut cmd);
@@ -108,6 +109,7 @@ fn run_server_process() -> io::Result<()> {
     use winapi::minwindef::{TRUE,FALSE,LPVOID,DWORD};
     use winapi::processthreadsapi::{PROCESS_INFORMATION,STARTUPINFOW};
     use winapi::winbase::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
+    trace!("run_server_process");
     env::current_exe().and_then(|exe_path| {
         let mut exe = OsStr::new(&exe_path)
             .encode_wide()
@@ -164,7 +166,8 @@ fn result_exit_code<T : FnOnce(io::Error)>(res : io::Result<()>,
 }
 
 /// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
-fn connect_or_start_server(port : u16) -> io::Result<ServerConnection> {
+fn connect_or_start_server(port: u16) -> io::Result<ServerConnection> {
+    trace!("connect_or_start_server({})", port);
     connect_to_server(port).or_else(|e| {
         //FIXME: this can sometimes hit a connection timed out?
         if e.kind() == io::ErrorKind::ConnectionRefused {
@@ -273,6 +276,7 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
 
 /// Handle `response`, the output from running a compile on the server. Return the compiler exit status.
 fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, stdout : &mut T, stderr : &mut U) -> io::Result<i32> {
+    trace!("handle_compile_finished");
     // It might be nice if the server sent stdout/stderr as the process
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
@@ -283,7 +287,9 @@ fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, std
         try!(stderr.write_all(response.get_stderr()));
     }
     if response.has_retcode() {
-        Ok(response.get_retcode())
+        let ret = response.get_retcode();
+        trace!("compiler exited with status {}", ret);
+        Ok(ret)
     } else if response.has_signal() {
         println!("Compiler killed by signal {}", response.get_signal());
         Ok(-2)
@@ -321,6 +327,7 @@ fn handle_compile_response<T, U, V, W, X, Y>(mut creator: T,
                 })
                 .and_then(|mut res| {
                     if res.has_compile_finished() {
+                        trace!("Server sent CompileFinished");
                         handle_compile_finished(res.take_compile_finished(),
                                                 stdout, stderr)
                     } else {
@@ -373,6 +380,7 @@ pub fn do_compile<T, U, V, W, X, Y>(creator: T,
                                     stdout: &mut U,
                                     stderr: &mut V) -> io::Result<i32>
   where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
+      trace!("do_compile");
     which_in(exe, path, &cwd)
           .map_err( |x: &'static str| Error::new(ErrorKind::Other, x))
           .and_then(|p| p.canonicalize())
@@ -388,22 +396,26 @@ pub fn run_command(cmd : Command) -> i32 {
         // Actual usage gets printed in `cmdline::parse`.
         Command::Usage => 0,
         Command::ShowStats => {
+            trace!("Command::ShowStats");
             result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(request_stats).and_then(print_stats),
                              |e| {
                                  println!("Couldn't get stats from server: {}", e);
                              })
         },
         Command::InternalStartServer => {
+            trace!("Command::InternalStartServer");
             // Can't report failure here, we're already daemonized.
             result_exit_code(server::start_server(DEFAULT_PORT), |_| {})
         },
         Command::StartServer => {
+            trace!("Command::StartServer");
             println!("Starting sccache server...");
             result_exit_code(run_server_process(), |e| {
                 println!("failed to spawn server: {}", e);
             })
         },
         Command::StopServer => {
+            trace!("Command::StopServer");
             println!("Stopping sccache server...");
             result_exit_code(connect_to_server(DEFAULT_PORT).and_then(request_shutdown).and_then(print_stats),
                              |_e| {

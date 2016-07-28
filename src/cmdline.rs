@@ -70,6 +70,7 @@ fn usage() -> Command {
 
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Command {
+    trace!("parse");
     let matches = get_app().get_matches();
 
     // The internal start server command is passed in the environment.
@@ -108,12 +109,6 @@ pub fn parse() -> Command {
         if let Ok(cwd) = env::current_dir() {
             if let Some(exe) = args.next() {
                 let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
-                /*
-                if log_enabled!(Trace) {
-                    let cmd_str = cmdline.join(" ");
-                    trace!("parse: `{}`", cmd_str);
-                }
-                 */
                 Command::Compile {
                     exe: exe.to_owned(),
                     cmdline: cmdline,

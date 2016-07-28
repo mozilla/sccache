@@ -415,12 +415,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     fn check_compiler(&mut self, compiler: Option<Compiler>, cmd: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         match compiler {
             None => {
-                trace!("check_compiler: Unsupported compiler");
+                debug!("check_compiler: Unsupported compiler");
                 self.stats.requests_unsupported_compiler += 1;
                 self.send_unhandled_compile(token, event_loop);
             }
             Some(c) => {
-                trace!("check_compiler: Supported compiler");
+                debug!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
                 match c.parse_arguments(&cmd) {

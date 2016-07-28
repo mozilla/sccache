@@ -23,7 +23,7 @@ use compiler::{
     msvc,
 };
 use filetime::FileTime;
-use log::LogLevel::Trace;
+use log::LogLevel::{Debug,Trace};
 use mock_command::{
     CommandChild,
     CommandCreatorSync,
@@ -195,23 +195,23 @@ impl Compiler {
     /// Not all compiler options can be cached, so this tests the set of
     /// options for each compiler.
     pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
-        if log_enabled!(Trace) {
+        if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
-            trace!("parse_arguments: `{}`", cmd_str);
+            debug!("parse_arguments: `{}`", cmd_str);
         }
         let parsed_args = self.kind.parse_arguments(arguments);
         match parsed_args {
-            CompilerArguments::Ok(_) => trace!("parse_arguments: Ok"),
-            CompilerArguments::CannotCache => trace!("parse_arguments: CannotCache"),
-            CompilerArguments::NotCompilation => trace!("parse_arguments: NotCompilation"),
+            CompilerArguments::Ok(_) => debug!("parse_arguments: Ok"),
+            CompilerArguments::CannotCache => debug!("parse_arguments: CannotCache"),
+            CompilerArguments::NotCompilation => debug!("parse_arguments: NotCompilation"),
         };
         parsed_args
     }
 
     pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(CompileResult, process::Output)> {
-        if log_enabled!(Trace) {
+        if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
-            trace!("get_cached_or_compile: {}", cmd_str);
+            debug!("get_cached_or_compile: {}", cmd_str);
         }
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
         // If the preprocessor failed, just return that result.
@@ -257,7 +257,7 @@ impl Compiler {
                 let (cacheable, compiler_result) = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
                 if compiler_result.status.success() {
                     if cacheable == Cacheable::Yes {
-                        trace!("Compiled, storing in cache");
+                        debug!("Compiled, storing in cache");
                         let mut entry = try!(storage.start_put(&key));
                         for (key, path) in &outputs {
                             let mut f = try!(File::open(&path));
@@ -279,10 +279,11 @@ impl Compiler {
                         Ok((CompileResult::CacheMiss(cache_error), compiler_result))
                     } else {
                         // Not cacheable
+                        debug!("Compiled but not cacheable");
                         Ok((CompileResult::CacheMiss(MissType::NotCacheable), compiler_result))
                     }
                 } else {
-                    trace!("Compiled but failed, not storing in cache");
+                    debug!("Compiled but failed, not storing in cache");
                     Ok((CompileResult::CompileFailed, compiler_result))
                 }
             }
@@ -329,13 +330,13 @@ gcc
                             for line in stdout.lines() {
                                 //TODO: do something smarter here.
                                 if line == "gcc" {
-                                    trace!("Found GCC");
+                                    debug!("Found GCC");
                                     return Ok(Some(CompilerKind::Gcc));
                                 } else if line == "clang" {
-                                    trace!("Found clang");
+                                    debug!("Found clang");
                                     return Ok(Some(CompilerKind::Clang));
                                 } else if line == "msvc" {
-                                    trace!("Found MSVC");
+                                    debug!("Found MSVC");
                                     let prefix = try!(msvc::detect_showincludes_prefix(&mut creator, &executable));
                                     trace!("showIncludes prefix: '{}'", prefix);
                                     return Ok(Some(CompilerKind::Msvc {

@@ -78,7 +78,8 @@ impl ServerConnection {
 }
 
 /// Establish a TCP connection to an sccache server listening on `port`.
-pub fn connect_to_server(port : u16) -> io::Result<ServerConnection> {
+pub fn connect_to_server(port: u16) -> io::Result<ServerConnection> {
+    trace!("connect_to_server({})", port);
     let stream = try!(TcpStream::connect(("127.0.0.1", port)));
     ServerConnection::new(stream)
 }
@@ -86,7 +87,8 @@ pub fn connect_to_server(port : u16) -> io::Result<ServerConnection> {
 /// Attempt to establish a TCP connection to an sccache server listening on `port`.
 ///
 /// If the connection fails, retry a few times.
-pub fn connect_with_retry(port : u16) -> io::Result<ServerConnection> {
+pub fn connect_with_retry(port: u16) -> io::Result<ServerConnection> {
+    trace!("connect_with_retry({})", port);
     // TODOs:
     // * Pass the server Child in here, so we can stop retrying
     //   if the process exited.

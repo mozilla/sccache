@@ -55,27 +55,31 @@ fn main() {
 
 
 fn init_logging(){
+    match env::var("RUST_LOG")
+        .or(Err(()))
+        .and_then(|_| env_logger::init().or(Err(())))
+        .or_else(|_| {
+            let logger_config = fern::DispatchConfig {
+                format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
+                    format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
+                }),
+                output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache2.log")],
+                level: log::LogLevelFilter::Trace,
+            };
 
-    let logger_config = fern::DispatchConfig {
-        format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
-            format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
-        }),
-        output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache2.log")],
-        level: log::LogLevelFilter::Trace,
-    };
+            // Set current log level depending on environment variable
+            let log_level = match &*env::var("SCCACHE2_LOG_LEVEL").unwrap_or("warn".to_owned()).to_lowercase() {
+                "off" => log::LogLevelFilter::Off,
+                "error" => log::LogLevelFilter::Error,
+                "info" => log::LogLevelFilter::Info,
+                "debug" => log::LogLevelFilter::Debug,
+                "trace" => log::LogLevelFilter::Trace,
+                _=> log::LogLevelFilter::Warn,
+            };
 
-    // Set current log level depending on environment variable
-    let log_level = match &*env::var("SCCACHE2_LOG_LEVEL").unwrap_or("warn".to_owned()).to_lowercase() {
-        "off" => log::LogLevelFilter::Off,
-        "error" => log::LogLevelFilter::Error,
-        "info" => log::LogLevelFilter::Info,
-        "debug" => log::LogLevelFilter::Debug,
-        "trace" => log::LogLevelFilter::Trace,
-        _=> log::LogLevelFilter::Warn,
-    };
-
-    if let Err(e) = fern::init_global_logger(logger_config, log_level)
-    {
-        panic!("Failed to initialize global logger: {}", e);
-    }
+            fern::init_global_logger(logger_config, log_level).or(Err(()))
+        }) {
+            Ok(_) => {},
+            Err(_) => panic!("Failed to initialize logging"),
+        }
 }
