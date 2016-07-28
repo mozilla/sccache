@@ -17,6 +17,7 @@ mkdir -p "$destdir"
 tmpdir=$(mktemp -d)
 stagedir=$tmpdir/sccache2
 mkdir $stagedir
+cargo clean
 case $system in
     MINGW*)
         cargo build --release && cargo test --release
@@ -32,6 +33,7 @@ case $system in
         compress=xz
         ;;
     Darwin)
+        export MACOSX_DEPLOYMENT_TARGET=10.7
         cargo build --release && cargo test --release
         cp target/release/sccache "$stagedir"
         strip "$stagedir/sccache"
