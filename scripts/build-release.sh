@@ -33,7 +33,7 @@ case $system in
         compress=xz
         ;;
     Darwin)
-        export MACOSX_DEPLOYMENT_TARGET=10.7
+        export MACOSX_DEPLOYMENT_TARGET=10.7 OPENSSL_STATIC=1
         cargo build --release && cargo test --release
         cp target/release/sccache "$stagedir"
         strip "$stagedir/sccache"
