@@ -17,9 +17,9 @@ mkdir -p "$destdir"
 tmpdir=$(mktemp -d)
 stagedir=$tmpdir/sccache2
 mkdir $stagedir
-cargo clean
 case $system in
     MINGW*)
+        rm -rf target/release
         cargo build --release && cargo test --release
         cp "${OPENSSL_LIB_DIR}/../"{ssleay32,libeay32}.dll "$stagedir"
         cp target/release/sccache.exe "$stagedir"
@@ -27,12 +27,14 @@ case $system in
         ;;
     Linux)
         # Build using rust-musl-builder
+        rm -rf target/x86_64-unknown-linux-musl/release
         docker run --rm -it -v "$(pwd)":/home/rust/src ekidd/rust-musl-builder sh -c "cargo build --release && cargo test --release"
         cp target/x86_64-unknown-linux-musl/release/sccache "$stagedir"
         strip "$stagedir/sccache"
         compress=xz
         ;;
     Darwin)
+        rm -rf target/release
         export MACOSX_DEPLOYMENT_TARGET=10.7 OPENSSL_STATIC=1
         cargo build --release && cargo test --release
         cp target/release/sccache "$stagedir"
