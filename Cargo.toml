@@ -14,7 +14,7 @@ mio = "0.5"
 number_prefix = "0.2.5"
 protobuf = "1.0.18"
 retry = "0.4.0"
-rusoto = { "version" = "0.15.3", "features" = ["s3"] }
+rusoto = { "git" = "https://github.com/rusoto/rusoto", "features" = ["s3"] }
 sha1 = "0.2.0"
 tempdir = "0.3.4"
 time = "0.1.35"
@@ -25,6 +25,3 @@ zip = { version = "0.1", default-features = false }
 
 [profile.release]
 debug = true
-
-[replace]
-"rusoto:0.15.3" = { git = "https://github.com/luser/rusoto", branch = "debug-log-binary-data" }
