@@ -7,9 +7,6 @@ rust:
 os:
   - linux
   - osx
-osx_image: xcode7.1
 matrix:
   allow_failures:
     - rust: nightly
-    #XXX: rusoto build fails in Travis on OS X currently.
-    - os: osx

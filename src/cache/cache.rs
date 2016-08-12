@@ -178,10 +178,9 @@ pub trait Storage: Send + Sync {
 
 /// Get a suitable `Storage` implementation from the environment.
 pub fn storage_from_environment() -> Box<Storage> {
-    if let (Ok(bucket), Ok(region)) = (env::var("SCCACHE_BUCKET"),
-                                       env::var("SCCACHE_REGION")) {
-        trace!("Trying S3Cache({}, {})", region, bucket);
-        match S3Cache::new(&region, &bucket) {
+    if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
+        trace!("Trying S3Cache({})", bucket);
+        match S3Cache::new(&bucket) {
             Ok(s) => {
                 trace!("Using S3Cache");
                 return Box::new(s);

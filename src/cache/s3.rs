@@ -19,40 +19,35 @@ use cache::{
     CacheWriteWriter,
     Storage,
 };
-use rusoto::{DefaultCredentialsProviderSync, Region};
-use rusoto::s3::{
-    CannedAcl,
-    GetObjectOutput,
-    PutObjectRequest,
-    S3Helper,
+use simples3::{
+    Bucket,
+    DefaultCredentialsProviderSync,
+    ProvideAwsCredentials,
+    Ssl,
 };
 use std::io::{
     self,
     Error,
     ErrorKind,
 };
-use std::str::FromStr;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
-    /// The S3 client.
-    s3: S3Helper<DefaultCredentialsProviderSync>,
-    /// The S3 region in use.
-    region: String,
-    /// The S3 bucket in use.
-    bucket: String,
+    /// The S3 bucket.
+    bucket: Bucket,
+    /// Credentials provider.
+    provider: Option<DefaultCredentialsProviderSync>,
 }
 
 impl S3Cache {
-    /// Create a new `S3Cache` in AWS region `region` (i.e. 'us-east-1'), storing data in `bucket`.
-    pub fn new(region: &str, bucket: &str) -> io::Result<S3Cache> {
-        let r = try!(Region::from_str(region).or_else(|e| Err(Error::new(ErrorKind::Other, e))));
-        let provider = try!(DefaultCredentialsProviderSync::new().or_else(|e| Err(Error::new(ErrorKind::Other, e))));
-        let s3 = S3Helper::new(provider, r);
+    /// Create a new `S3Cache` storing data in `bucket`.
+    pub fn new(bucket: &str) -> io::Result<S3Cache> {
+        let provider = DefaultCredentialsProviderSync::new().ok();
+        //TODO: configurable SSL
+        let bucket = Bucket::new(bucket, Ssl::No);
         Ok(S3Cache {
-            s3: s3,
-            region: region.to_owned(),
-            bucket: bucket.to_owned(),
+            bucket: bucket,
+            provider: provider,
         })
     }
 }
@@ -64,18 +59,15 @@ fn normalize_key(key: &str) -> String {
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> Cache {
         let key = normalize_key(key);
-        match self.s3.get_object(&self.bucket, &key) {
-            Ok(GetObjectOutput { body, .. }) => {
-                CacheRead::from(io::Cursor::new(body))
+        match self.bucket.get(&key) {
+            Ok(data) => {
+                CacheRead::from(io::Cursor::new(data))
                     .map(Cache::Hit)
                     // This should only happen if the cached data
                     // is bad.
                     .unwrap_or_else(Cache::Error)
             }
             Err(e) => {
-                // rusoto doesn't provide a way to discern between
-                // 404 and other errors, so just log it and consider
-                // it a cache miss.
                 warn!("Got AWS error: {:?}", e);
                 Cache::Miss
             }
@@ -93,26 +85,20 @@ impl Storage for S3Cache {
             // This should never happen.
             CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
             CacheWriteWriter::Cursor(c) => {
-                let data = c.into_inner();
-                let mut request = PutObjectRequest {
-                    key: normalize_key(key),
-                    bucket: self.bucket.clone(),
-                    body: Some(&data),
-                    storage_class: Some(String::from("REDUCED_REDUNDANCY")),
-                    acl: Some(CannedAcl::PublicRead),
-                    // XXX: put_object_request doesn't handle cache_control
-                    // https://github.com/rusoto/rusoto/issues/303
-                    // two weeks
-                    cache_control: Some(String::from("max-age=1296000")),
-                    .. Default::default()
-                };
-                try!(self.s3.put_object_with_request(&mut request).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3"))));
-                Ok(())
+                self.provider
+                    .as_ref()
+                    .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
+                    .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
+                    .and_then(|credentials| {
+                        let data = c.into_inner();
+                        let key = normalize_key(key);
+                        self.bucket.put(&key, &data, &credentials).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3")))
+                    })
             }
         }
     }
 
     fn get_location(&self) -> String {
-        format!("S3, region: {}, bucket: {}", self.region, self.bucket)
+        format!("S3, bucket: {}", self.bucket)
     }
 }

@@ -46,6 +46,7 @@ fn make_key_path(root: &Path, key: &str) -> PathBuf {
 
 impl Storage for DiskCache {
     fn get(&self, key: &str) -> Cache {
+        trace!("DiskCache::get({})", key);
         match File::open(make_key_path(&self.root, key))
             .and_then(CacheRead::from) {
                 Err(e) => match e.kind() {
@@ -59,6 +60,7 @@ impl Storage for DiskCache {
     }
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
+        trace!("DiskCache::start_put({})", key);
         let path = make_key_path(&self.root, key);
         try!(path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "No parent directory?")).and_then(fs::create_dir_all));
         File::create(&path)
@@ -69,7 +71,8 @@ impl Storage for DiskCache {
             .map(CacheWrite::new)
     }
 
-    fn finish_put(&self, _key: &str, entry: CacheWrite) -> io::Result<()> {
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()> {
+        trace!("DiskCache::finish_put({})", key);
         // Dropping the ZipWriter is enough to finish it.
         drop(entry);
         Ok(())

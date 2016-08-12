@@ -12,19 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate chrono;
 extern crate clap;
+extern crate crypto;
 extern crate env_logger;
 extern crate filetime;
+extern crate hyper;
 extern crate kernel32;
-#[macro_use] 
+#[macro_use]
 extern crate log;
 extern crate fern;
 extern crate libc;
 extern crate mio;
 extern crate number_prefix;
 extern crate protobuf;
+extern crate regex;
 extern crate retry;
-extern crate rusoto;
+extern crate rustc_serialize;
+extern crate serde_json;
 extern crate sha1;
 extern crate tempdir;
 extern crate time;
@@ -45,6 +50,7 @@ mod compiler;
 mod mock_command;
 mod protocol;
 mod server;
+mod simples3;
 
 use std::env;
 
