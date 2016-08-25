@@ -104,13 +104,17 @@ impl Bucket {
         let date = time::now().rfc822z().to_string();
         let mut headers = header::Headers::new();
         let mut canonical_headers = String::new();
+        let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
-        for (header, value) in vec![
-            ("x-amz-acl", "public-read"),
-            ("x-amz-storage-class", "REDUCED_REDUNDANCY"),
+        for (header, maybe_value) in vec![
+            ("x-amz-acl", Some("public-read")),
+            ("x-amz-security-token", token),
+            ("x-amz-storage-class", Some("REDUCED_REDUNDANCY")),
             ] {
-            headers.set_raw(header, vec!(value.as_bytes().to_vec()));
-            canonical_headers.push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
+            if let Some(ref value) = maybe_value {
+                headers.set_raw(header, vec!(value.as_bytes().to_vec()));
+                canonical_headers.push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
+            }
         }
         let auth = self.auth("PUT", &date, key, "", &canonical_headers, content_type, creds);
         headers.set_raw("Date", vec!(date.into_bytes()));
