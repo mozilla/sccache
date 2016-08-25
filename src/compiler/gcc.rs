@@ -19,7 +19,7 @@ use ::compiler::{
     ParsedArguments,
     run_input_output,
 };
-//use log::LogLevel::Trace;
+use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
     RunCommand,
@@ -184,6 +184,9 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .current_dir(cwd);
+    if log_enabled!(Trace) {
+        trace!("preprocess: {:?}", cmd);
+    }
     run_input_output(cmd, None)
 }
 
