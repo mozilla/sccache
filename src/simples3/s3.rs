@@ -82,6 +82,7 @@ impl Bucket {
 
     pub fn get(&self, key: &str) -> Result<Vec<u8>, S3Error> {
         let url = format!("{}{}", self.base_url, key);
+        debug!("GET {}", url);
         match self.client.get(&url).send() {
             Err(e) => Err(S3Error::HyperError(e)),
             Ok(mut res) => {
@@ -125,7 +126,7 @@ impl Bucket {
                 ]));
         headers.set_raw("Authorization", vec!(auth.into_bytes()));
         let url = format!("{}{}", self.base_url, key);
-        println!("PUT {}", url);
+        debug!("PUT {}", url);
 
         match self.client.put(&url)
             .body(content)

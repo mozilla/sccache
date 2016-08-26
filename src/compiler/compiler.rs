@@ -274,6 +274,7 @@ impl Compiler {
                             try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
                         }
                         //TODO: do this on a background thread.
+                        //XXX: don't fail on cache storage failure!
                         try!(storage.finish_put(&key, entry));
 
                         Ok((CompileResult::CacheMiss(cache_error), compiler_result))
