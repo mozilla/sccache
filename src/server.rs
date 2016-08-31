@@ -17,6 +17,7 @@ use cache::{
     storage_from_environment,
 };
 use compiler::{
+    CacheControl,
     Compiler,
     CompilerArguments,
     CompileResult,
@@ -54,6 +55,7 @@ use protocol::{
     UnknownCommand,
 };
 use std::collections::HashMap;
+use std::env;
 use std::fs::metadata;
 use std::io::{self,Error,ErrorKind};
 use std::net::{SocketAddr, SocketAddrV4};
@@ -99,6 +101,11 @@ pub struct SccacheServer<C: CommandCreatorSync + 'static> {
     /// A cache of known compiler info.
     compilers: HashMap<String, Option<Compiler>>,
 
+    /// True if all compiles should be forced, ignoring existing cache entries.
+    ///
+    /// This can be controlled with the `SCCACHE_RECACHE` environment variable.
+    force_recache: bool,
+
     /// An object for creating commands.
     ///
     /// This is mostly useful for unit testing, where we
@@ -127,6 +134,8 @@ struct ServerStats {
     pub cache_misses: u64,
     /// The count of compilations which were successful but couldn't be cached.
     pub non_cacheable_compilations: u64,
+    /// The count of compilations which forcibly ignored the cache.
+    pub forced_recaches: u64,
     /// The count of errors reading from cache.
     pub cache_read_errors: u64,
     /// The count of errors writing to cache.
@@ -151,6 +160,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_executed, "Compile requests executed");
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
+        set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
@@ -177,6 +187,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             timeout: None,
             compilers: HashMap::new(),
+            force_recache: env::var("SCCACHE2_RECACHE").is_ok(),
             creator: C::new(),
         })
     }
@@ -192,6 +203,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     #[allow(dead_code)]
     pub fn set_idle_timeout(&mut self, timeout: u64) {
         self.idle_timeout = timeout;
+    }
+
+    /// Set the `force_recache` setting.
+    #[allow(dead_code)]
+    pub fn set_force_recache(&mut self, force_recache: bool) {
+        self.force_recache = force_recache;
     }
 
     /// Return a clone of the object implementing `CommandCreatorSync` that this server uses to create processes.
@@ -242,10 +259,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             }
         };
 
-        if let Some(token) = self.conns.insert_with(|token| 
+        if let Some(token) = self.conns.insert_with(|token|
         {
             ClientConnection::new(sock, token)
-        }) 
+        })
         {
             match self.conns[token].register(event_loop) {
                 Ok(_) => {},
@@ -413,6 +430,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                                 self.stats.cache_misses += 1;
                                 self.stats.non_cacheable_compilations += 1;
                             }
+                            MissType::ForcedRecache => {
+                                self.stats.cache_misses += 1;
+                                self.stats.forced_recaches += 1;
+                            }
                         }
                     }
                     CompileResult::CompileFailed => self.stats.compile_fails += 1,
@@ -482,13 +503,18 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     fn start_compile_task(&mut self, compiler: Compiler, parsed_arguments: ParsedArguments, arguments: Vec<String>, cwd: String, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
         let creator = self.creator.clone();
         let storage = self.storage.clone();
+        let cache_control = if self.force_recache {
+            CacheControl::ForceRecache
+        } else {
+            CacheControl::Default
+        };
         self.run_task(token, event_loop,
                       // Task, runs on a background thread.
                       move || {
                           let parsed_args = parsed_arguments;
                           let args = arguments;
                           let c = cwd;
-                          let res = compiler.get_cached_or_compile(creator, storage.as_ref().as_ref(), &args, &parsed_args, &c);
+                          let res = compiler.get_cached_or_compile(creator, storage.as_ref().as_ref(), &args, &parsed_args, &c, cache_control);
                           TaskResult::Compiled(res.ok())
                       },
                       // Callback, runs on the event loop thread.

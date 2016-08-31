@@ -155,6 +155,8 @@ pub enum MissType {
     CacheReadWriteErrors,
     /// The compilation result was determined to be not cacheable.
     NotCacheable,
+    /// Cache lookup was overridden, recompilation was forced.
+    ForcedRecache,
 }
 
 /// The result of a compilation or cache retrieval.
@@ -175,6 +177,15 @@ pub enum CompileResult {
 pub enum Cacheable {
     Yes,
     No,
+}
+
+/// Control of caching behavior.
+#[derive(Debug, PartialEq)]
+pub enum CacheControl {
+    /// Default caching behavior.
+    Default,
+    /// Ignore existing cache entries, force recompilation.
+    ForceRecache,
 }
 
 impl Compiler {
@@ -221,7 +232,8 @@ impl Compiler {
         parsed_args
     }
 
-    pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(CompileResult, process::Output)> {
+    /// Look up a cached compile result in `storage`. If not found, run the compile and store the result.
+    pub fn get_cached_or_compile<T: CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str, cache_control: CacheControl) -> io::Result<(CompileResult, process::Output)> {
         let out_file = parsed_args.output_file();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
@@ -240,7 +252,13 @@ impl Compiler {
         let outputs = parsed_args.outputs.iter()
             .map(|(key, path)| (key, pwd.join(path)))
             .collect::<HashMap<_, _>>();
-        match storage.get(&key) {
+        // If `ForceRecache` is enabled, we won't check the cache.
+        let cache_status = if cache_control == CacheControl::ForceRecache {
+            Cache::Recache
+        } else {
+            storage.get(&key)
+        };
+        match cache_status {
             Cache::Hit(mut entry) => {
                 debug!("[{}]: Cache hit!", out_file);
                 for (key, path) in &outputs {
@@ -258,9 +276,11 @@ impl Compiler {
                         stderr: stderr.into_inner(),
                     }))
             },
-            res @ Cache::Miss | res @ Cache::Error(_) => {
+
+            res @ Cache::Miss | res @ Cache::Recache | res @ Cache::Error(_) => {
                 let miss_type = match res {
                     Cache::Miss => { debug!("[{}]: Cache miss!", out_file); MissType::Normal }
+                    Cache::Recache => { debug!("[{}]: Cache recache!", out_file); MissType::ForcedRecache }
                     Cache::Error(e) => {
                         debug!("[{}]: Cache read error: {:?}", out_file, e);
                         //TODO: store the error in CacheReadError in some way
@@ -549,7 +569,7 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
@@ -561,7 +581,7 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit, cached);
@@ -606,7 +626,7 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
@@ -618,12 +638,68 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit, cached);
         assert_eq!(exit_status(0), res.status);
-        //FIXME: this is broken!
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    fn test_compiler_get_cached_or_compile_force_recache() {
+        use env_logger;
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let storage = DiskCache::new(&f.tempdir.path());
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(creator.clone(),
+                                  f.bins[0].to_str().unwrap()).unwrap();
+        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
+        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        // The compiler should be invoked twice, since we're forcing
+        // recaching.
+        let obj = f.tempdir.path().join("foo.o");
+        for _ in 0..2 {
+            // The preprocessor invocation.
+            next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+            // The compiler invocation.
+            let o = obj.clone();
+            next_command_calls(&creator, move || {
+                // Pretend to compile something.
+                match File::create(&o)
+                    .and_then(|mut f| f.write_all(b"file contents")) {
+                        Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
+                        Err(e) => Err(e),
+                    }
+            });
+        }
+        let cwd = f.tempdir.path().to_str().unwrap();
+        let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match c.parse_arguments(&arguments) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        // Now compile again, but force recaching.
+        fs::remove_file(&obj).unwrap();
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::ForceRecache).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        assert_eq!(CompileResult::CacheMiss(MissType::ForcedRecache), cached);
+        assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
