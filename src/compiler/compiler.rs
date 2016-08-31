@@ -32,6 +32,7 @@ use mock_command::{
 };
 use sha1;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io::prelude::*;
@@ -226,7 +227,11 @@ impl Compiler {
         let outputs = parsed_args.outputs.iter()
             .map(|(key, path)| (key, pwd.join(path)))
             .collect::<HashMap<_, _>>();
-        match storage.get(&key) {
+        let cache_status = match env::var("SCCACHE2_RECACHE"){
+            Ok(_) => Cache::ReCache,
+            Err(_) => storage.get(&key)
+        };
+        match cache_status {
             Cache::Hit(mut entry) => {
                 debug!("Cache hit!");
                 for (key, path) in &outputs {
@@ -244,9 +249,10 @@ impl Compiler {
                         stderr: stderr.into_inner(),
                     }))
             },
-            res @ Cache::Miss | res @ Cache::Error(_) => {
+            res @ Cache::Miss | res @ Cache::ReCache | res @ Cache::Error(_) => {
                 let cache_error = match res {
                     Cache::Miss => { debug!("Cache miss!"); MissType::Normal }
+                    Cache::ReCache => { debug!("Cache recache!"); MissType::Normal }
                     Cache::Error(e) => {
                         debug!("Cache read error: {:?}", e);
                         MissType::CacheError

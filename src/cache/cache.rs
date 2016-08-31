@@ -43,6 +43,8 @@ pub enum Cache {
     Hit(CacheRead),
     /// Result was not found in cache.
     Miss,
+    /// Enviroment variable for recaching has been set
+    ReCache,
 }
 
 impl fmt::Debug for Cache {
@@ -51,6 +53,7 @@ impl fmt::Debug for Cache {
             Cache::Error(ref e) => write!(f, "Cache::Error({:?}", e),
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
+            Cache::ReCache => write!(f, "Cache::ReCache"),
         }
     }
 }
