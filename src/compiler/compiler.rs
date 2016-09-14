@@ -139,7 +139,13 @@ pub enum MissType {
     /// The compilation was not found in the cache, nothing more.
     Normal,
     /// There was a cache entry, but an error occurred trying to read it.
-    CacheError,
+    CacheReadError,
+    /// The compilation was not found in the cache, and also an error occurred
+    /// trying to write the new entry.
+    CacheWriteError,
+    /// There was a cache entry, but an error occurred trying to read it, and
+    /// also an error occurred trying to write the new entry.
+    CacheReadWriteErrors,
     /// The compilation result was determined to be not cacheable.
     NotCacheable,
 }
@@ -245,11 +251,12 @@ impl Compiler {
                     }))
             },
             res @ Cache::Miss | res @ Cache::Error(_) => {
-                let cache_error = match res {
+                let miss_type = match res {
                     Cache::Miss => { debug!("Cache miss!"); MissType::Normal }
                     Cache::Error(e) => {
                         debug!("Cache read error: {:?}", e);
-                        MissType::CacheError
+                        //TODO: store the error in CacheReadError in some way
+                        MissType::CacheReadError
                     }
                     Cache::Hit(_) => MissType::Normal,
                 };
@@ -273,11 +280,25 @@ impl Compiler {
                         if !compiler_result.stderr.is_empty() {
                             try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
                         }
+                        // Try to finish storing the newly-written cache
+                        // entry. This could fail for various reasons.
                         //TODO: do this on a background thread.
-                        //XXX: don't fail on cache storage failure!
-                        try!(storage.finish_put(&key, entry));
-
-                        Ok((CompileResult::CacheMiss(cache_error), compiler_result))
+                        let put_res = storage.finish_put(&key, entry);
+                        let miss_type = match (miss_type, put_res) {
+                            (o @ _, Ok(_)) => {
+                                debug!("Stored in cache successfully!");
+                                o
+                            }
+                            (o @ _, Err(e)) => {
+                                debug!("Cache write error: {:?}", e);
+                                match o {
+                                    MissType::Normal => MissType::CacheWriteError,
+                                    MissType::CacheReadError => MissType::CacheReadWriteErrors,
+                                    _ => unreachable!("How did we get here?"),
+                                }
+                            }
+                        };
+                        Ok((CompileResult::CacheMiss(miss_type), compiler_result))
                     } else {
                         // Not cacheable
                         debug!("Compiled but not cacheable");
@@ -487,6 +508,63 @@ mod test {
 
     #[test]
     fn test_compiler_get_cached_or_compile_uncached() {
+        use env_logger;
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let storage = DiskCache::new(&f.tempdir.path());
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(creator.clone(),
+                                  f.bins[0].to_str().unwrap()).unwrap();
+        // The preprocessor invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+        // The compiler invocation.
+        const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
+        const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
+        let obj = f.tempdir.path().join("foo.o");
+        let o = obj.clone();
+        next_command_calls(&creator, move || {
+            // Pretend to compile something.
+            match File::create(&o)
+                .and_then(|mut f| f.write_all(b"file contents")) {
+                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
+                    Err(e) => Err(e),
+                }
+        });
+        let cwd = f.tempdir.path().to_str().unwrap();
+        let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match c.parse_arguments(&arguments) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        // Now compile again, which should be a cache hit.
+        fs::remove_file(&obj).unwrap();
+        // The preprocessor invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+        // There should be no actual compiler invocation.
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd).unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        assert_eq!(CompileResult::CacheHit, cached);
+        assert_eq!(exit_status(0), res.status);
+        //FIXME: this is broken!
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    fn test_compiler_get_cached_or_compile_cached() {
         use env_logger;
         match env_logger::init() {
             Ok(_) => {},

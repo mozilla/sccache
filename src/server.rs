@@ -120,6 +120,8 @@ struct ServerStats {
     pub non_cacheable_compilations: u64,
     /// The count of errors reading from cache.
     pub cache_read_errors: u64,
+    /// The count of errors writing to cache.
+    pub cache_write_errors: u64,
     /// The count of compilation failures.
     pub compile_fails: u64,
 }
@@ -141,6 +143,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
+        set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
         set_stat!(stats_vec, self.cache_errors, "Cache errors");
         set_stat!(stats_vec, self.non_cacheable_compilations, "Successful compilations which could not be cached");
@@ -375,7 +378,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                     CompileResult::CacheMiss(miss_type) => {
                         match miss_type {
                             MissType::Normal => self.stats.cache_misses += 1,
-                            MissType::CacheError => self.stats.cache_read_errors += 1,
+                            MissType::CacheReadError => self.stats.cache_read_errors += 1,
+                            MissType::CacheWriteError => self.stats.cache_write_errors += 1,
+                            MissType::CacheReadWriteErrors => {
+                                self.stats.cache_read_errors += 1;
+                                self.stats.cache_write_errors += 1;
+                            }
                             MissType::NotCacheable => {
                                 self.stats.cache_misses += 1;
                                 self.stats.non_cacheable_compilations += 1;
