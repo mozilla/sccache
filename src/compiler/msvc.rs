@@ -272,7 +272,7 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
     }
 
     if log_enabled!(Trace) {
-        trace!("preprocess: {:?}", cmd);
+        debug!("preprocess: {:?}", cmd);
     }
 
     let output = try!(run_input_output(cmd, None));

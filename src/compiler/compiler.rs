@@ -227,7 +227,7 @@ impl Compiler {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
-        let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
+        let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd).map_err(|e| { debug!("[{}]: preprocessor failed: {:?}", out_file, e); e }));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
             return Ok((CompileResult::Error, preprocessor_result));
