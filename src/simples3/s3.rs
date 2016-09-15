@@ -132,11 +132,16 @@ impl Bucket {
             .body(content)
             .headers(headers)
             .send() {
-                Err(e) => Err(S3Error::HyperError(e)),
+                Err(e) => {
+                    trace!("PUT failed with error: {:?}", e);
+                    Err(S3Error::HyperError(e))
+                }
                 Ok(res) => {
                     if res.status.class() == hyper::status::StatusClass::Success {
+                        trace!("PUT succeeded");
                         Ok(())
                     } else {
+                        trace!("PUT failed with HTTP status: {}", res.status);
                         Err(S3Error::BadHTTPStatus(res.status))
                     }
                 }

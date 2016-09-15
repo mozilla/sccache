@@ -92,7 +92,7 @@ impl Storage for S3Cache {
                     .and_then(|credentials| {
                         let data = c.into_inner();
                         let key = normalize_key(key);
-                        self.bucket.put(&key, &data, &credentials).or(Err(Error::new(ErrorKind::Other, "Error putting cache entry to S3")))
+                        self.bucket.put(&key, &data, &credentials).map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
                     })
             }
         }

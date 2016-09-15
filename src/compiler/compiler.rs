@@ -31,6 +31,7 @@ use mock_command::{
     exit_status,
 };
 use sha1;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self,File};
@@ -107,6 +108,12 @@ pub struct ParsedArguments {
     pub preprocessor_args: Vec<String>,
     /// Commandline arguments for the preprocessor or the compiler.
     pub common_args: Vec<String>,
+}
+
+impl ParsedArguments {
+    pub fn output_file(&self) -> Cow<str> {
+        self.outputs.get("obj").and_then(|o| Path::new(o).file_name().map(|f| f.to_string_lossy())).unwrap_or(Cow::Borrowed("Unknown filename"))
+    }
 }
 
 /// Possible results of parsing compiler arguments.
@@ -215,26 +222,27 @@ impl Compiler {
     }
 
     pub fn get_cached_or_compile<T : CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(CompileResult, process::Output)> {
+        let out_file = parsed_args.output_file();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
-            debug!("get_cached_or_compile: {}", cmd_str);
+            debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
             return Ok((CompileResult::Error, preprocessor_result));
         }
-        trace!("Preprocessor output is {} bytes", preprocessor_result.stdout.len());
+        trace!("[{}]: Preprocessor output is {} bytes", out_file, preprocessor_result.stdout.len());
 
         let key = hash_key(self, arguments, &preprocessor_result.stdout);
-        trace!("Hash key: {}", key);
+        trace!("[{}]: Hash key: {}", out_file, key);
         let pwd = Path::new(cwd);
         let outputs = parsed_args.outputs.iter()
             .map(|(key, path)| (key, pwd.join(path)))
             .collect::<HashMap<_, _>>();
         match storage.get(&key) {
             Cache::Hit(mut entry) => {
-                debug!("Cache hit!");
+                debug!("[{}]: Cache hit!", out_file);
                 for (key, path) in &outputs {
                     let mut f = try!(File::create(path));
                     try!(entry.get_object(key, &mut f));
@@ -252,9 +260,9 @@ impl Compiler {
             },
             res @ Cache::Miss | res @ Cache::Error(_) => {
                 let miss_type = match res {
-                    Cache::Miss => { debug!("Cache miss!"); MissType::Normal }
+                    Cache::Miss => { debug!("[{}]: Cache miss!", out_file); MissType::Normal }
                     Cache::Error(e) => {
-                        debug!("Cache read error: {:?}", e);
+                        debug!("[{}]: Cache read error: {:?}", out_file, e);
                         //TODO: store the error in CacheReadError in some way
                         MissType::CacheReadError
                     }
@@ -264,13 +272,13 @@ impl Compiler {
                 let (cacheable, compiler_result) = try!(self.kind.compile(creator, self, stdout, parsed_args, cwd));
                 if compiler_result.status.success() {
                     if cacheable == Cacheable::Yes {
-                        debug!("Compiled, storing in cache");
+                        debug!("[{}]: Compiled, storing in cache", out_file);
                         let mut entry = try!(storage.start_put(&key));
                         for (key, path) in &outputs {
                             let mut f = try!(File::open(&path));
                             try!(entry.put_object(key, &mut f)
                                  .or_else(|e| {
-                                     error!("Failed to put object `{:?}` in storage: {:?}", path, e);
+                                     error!("[{}]: Failed to put object `{:?}` in storage: {:?}", out_file, path, e);
                                      Err(e)
                                  }));
                         }
@@ -286,11 +294,11 @@ impl Compiler {
                         let put_res = storage.finish_put(&key, entry);
                         let miss_type = match (miss_type, put_res) {
                             (o @ _, Ok(_)) => {
-                                debug!("Stored in cache successfully!");
+                                debug!("[{}]: Stored in cache successfully!", out_file);
                                 o
                             }
                             (o @ _, Err(e)) => {
-                                debug!("Cache write error: {:?}", e);
+                                debug!("[{}]: Cache write error: {:?}", out_file, e);
                                 match o {
                                     MissType::Normal => MissType::CacheWriteError,
                                     MissType::CacheReadError => MissType::CacheReadWriteErrors,
@@ -301,11 +309,11 @@ impl Compiler {
                         Ok((CompileResult::CacheMiss(miss_type), compiler_result))
                     } else {
                         // Not cacheable
-                        debug!("Compiled but not cacheable");
+                        debug!("[{}]: Compiled but not cacheable", out_file);
                         Ok((CompileResult::CacheMiss(MissType::NotCacheable), compiler_result))
                     }
                 } else {
-                    debug!("Compiled but failed, not storing in cache");
+                    debug!("[{}]: Compiled but failed, not storing in cache", out_file);
                     Ok((CompileResult::CompileFailed, compiler_result))
                 }
             }

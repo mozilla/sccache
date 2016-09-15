@@ -393,7 +393,10 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                     CompileResult::CompileFailed => self.stats.compile_fails += 1,
                 };
                 let Output { status, stdout, stderr } = out;
-                status.code().map(|s| finish.set_retcode(s));
+                status.code()
+                    .map_or_else(
+                        || trace!("CompileFinished missing retcode"),
+                        |s| { trace!("CompileFinished retcode: {}", s); finish.set_retcode(s) });
                 //TODO: sort out getting signal return on Unix
                 finish.set_stdout(stdout);
                 finish.set_stderr(stderr);
