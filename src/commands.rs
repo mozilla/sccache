@@ -21,6 +21,7 @@ use cmdline::Command;
 use compiler::{
     run_input_output,
 };
+use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
@@ -341,6 +342,9 @@ fn handle_compile_response<T, U, V, W, X, Y>(mut creator: T,
             let mut cmd = creator.new_command_sync(exe.as_ref());
             cmd.args(&cmdline)
                 .current_dir(cwd.as_ref());
+            if log_enabled!(Trace) {
+                trace!("running command: {:?}", cmd);
+            }
             run_input_output(cmd, None)
                 .and_then(|output| {
                     if !output.stdout.is_empty() {
@@ -383,7 +387,6 @@ pub fn do_compile<T, U, V, W, X, Y>(creator: T,
       trace!("do_compile");
     which_in(exe, path, &cwd)
           .map_err( |x: &'static str| Error::new(ErrorKind::Other, x))
-          .and_then(|p| p.canonicalize())
           .and_then(|exe_path| {
               request_compile(&mut conn, &exe_path, &cmdline, &cwd)
                   .and_then(|res| handle_compile_response(creator, &mut conn, res, exe_path, cmdline, cwd, stdout, stderr))
