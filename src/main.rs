@@ -19,6 +19,7 @@ extern crate env_logger;
 extern crate filetime;
 extern crate hyper;
 extern crate kernel32;
+extern crate local_encoding;
 #[macro_use]
 extern crate log;
 extern crate fern;

@@ -19,6 +19,7 @@ use ::compiler::{
     ParsedArguments,
     run_input_output,
 };
+use local_encoding::{Encoding, Encoder};
 use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
@@ -37,41 +38,8 @@ use std::path::Path;
 use std::process::{self,Stdio};
 use tempdir::TempDir;
 
-#[cfg(windows)]
 fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
-    use kernel32;
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-    use std::ptr;
-    use winapi::winnls::CP_ACP;
-
-    if bytes.len() == 0 {
-        return Ok(String::new());
-    }
-
-    let size = unsafe { kernel32::MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr() as *const i8, -1, ptr::null_mut(), 0) };
-    if size <= 0 {
-        Err(Error::last_os_error())
-    } else {
-        let mut wchars = Vec::with_capacity(size as usize);
-        wchars.resize(size as usize, 0);
-        if unsafe { kernel32::MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr() as *const i8, -1, wchars.as_mut_ptr(), wchars.len() as i32) } <= 0 {
-            debug!("MultiByteToWideChar failed: bytes.len(): {}, wchars.len(): {}", bytes.len(), wchars.len());
-            Err(Error::last_os_error())
-        } else {
-            let o = OsString::from_wide(&wchars);
-            o.into_string()
-                .or(Err(Error::new(ErrorKind::Other, "Error converting string")))
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
-    use std::str;
-    str::from_utf8(bytes)
-        .or(Err(Error::new(ErrorKind::Other, "Error parsing UTF-8")))
-        .map(|s| s.to_owned())
+    Encoding::OEM.to_string(bytes)
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
