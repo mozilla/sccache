@@ -70,7 +70,7 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
     let output = try!(run_input_output(cmd, None));
-    if !output.status.success() && parsed_args.common_args.iter().any(|a| a == "-Werror") {
+    if !output.status.success() && parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
         let mut cmd = creator.new_command_sync(&compiler.executable);
         cmd.arg("-c")
             .arg(&parsed_args.input)
@@ -164,7 +164,7 @@ mod test {
             depfile: None,
             outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
-            common_args: stringvec!("-c", "-o", "foo.o", "-Werror", "foo.c"),
+            common_args: stringvec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
         };
         let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
                                      CompilerKind::Clang).unwrap();
