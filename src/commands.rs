@@ -169,17 +169,18 @@ fn result_exit_code<T : FnOnce(io::Error)>(res : io::Result<()>,
 /// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
 fn connect_or_start_server(port: u16) -> io::Result<ServerConnection> {
     trace!("connect_or_start_server({})", port);
-    connect_to_server(port).or_else(|e| {
-        //FIXME: this can sometimes hit a connection timed out?
-        if e.kind() == io::ErrorKind::ConnectionRefused {
-            // If the connection was refused we probably need to start
-            // the server.
-            run_server_process().and_then(|()| connect_with_retry(port))
-        } else {
-            debug!("Error: {}", e);
-            Err(e)
-        }
-    })
+    connect_to_server(port).or_else(|e|
+        match e.kind() {
+            io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut => {
+                // If the connection was refused we probably need to start
+                // the server.
+                run_server_process().and_then(|()| connect_with_retry(port))
+            }
+            _ => {
+                debug!("Error: {}", e);
+                Err(e)
+            }
+        })
 }
 
 /// Send a `GetStats` request to the server, and return the `CacheStats` request if successful.
