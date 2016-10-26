@@ -317,7 +317,9 @@ impl ProvideAwsCredentials for IamProvider {
 		// TODO: backoff and retry on failure.
         let mut address : String = "http://169.254.169.254/latest/meta-data/iam/security-credentials".to_string();
         let mut client = Client::new();
-        client.set_read_timeout(Some(StdDuration::from_secs(15)));
+        //XXX: this is crappy, but this blocks on non-EC2 machines like
+        // our mac builders.
+        client.set_read_timeout(Some(StdDuration::from_secs(2)));
         let mut response;
         match client.get(&address)
             .header(Connection::close()).send() {
