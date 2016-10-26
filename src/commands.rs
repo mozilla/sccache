@@ -71,30 +71,34 @@ enum CompileResponse {
     UnhandledCompile(UnhandledCompile),
 }
 
-/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
-#[cfg(not(windows))]
-fn maybe_redirect_stdio(cmd : &mut process::Command) {
-    if !match env::var("SCCACHE_NO_DAEMON") {
-            Ok(val) => val == "1",
-            Err(_) => false,
-    } {
-        cmd.stdin(process::Stdio::null())
-            .stdout(process::Stdio::null())
-            .stderr(process::Stdio::null());
-    }
-}
-
 /// Re-execute the current executable as a background server.
 #[cfg(not(windows))]
 fn run_server_process() -> io::Result<()> {
     trace!("run_server_process");
     env::current_exe().and_then(|exe_path| {
-        let mut cmd = process::Command::new(exe_path);
-        maybe_redirect_stdio(&mut cmd);
-        cmd.env("SCCACHE_START_SERVER", "1")
+        process::Command::new(exe_path)
+            .env("SCCACHE_START_SERVER", "1")
             .spawn()
     }).and(Ok(()))
 }
+
+/// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
+#[cfg(not(windows))]
+fn daemonize() -> io::Result<()> {
+    use daemonize::Daemonize;
+    if match env::var("SCCACHE_NO_DAEMON") {
+            Ok(val) => val == "1",
+            Err(_) => false,
+    } {
+        Ok(())
+    } else {
+        Daemonize::new().start().or(Err(Error::new(ErrorKind::Other, "Failed to daemonize")))
+    }
+}
+
+/// This is a no-op on Windows.
+#[cfg(windows)]
+fn daemonize() -> Result<()> { Ok(()) }
 
 /// Re-execute the current executable as a background server.
 ///
@@ -409,7 +413,7 @@ pub fn run_command(cmd : Command) -> i32 {
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
             // Can't report failure here, we're already daemonized.
-            result_exit_code(server::start_server(DEFAULT_PORT), |_| {})
+            result_exit_code(daemonize().and_then(|_| server::start_server(DEFAULT_PORT)), |_| {})
         },
         Command::StartServer => {
             trace!("Command::StartServer");

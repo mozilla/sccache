@@ -15,6 +15,8 @@
 extern crate chrono;
 extern crate clap;
 extern crate crypto;
+#[cfg(unix)]
+extern crate daemonize;
 extern crate env_logger;
 extern crate filetime;
 extern crate hyper;

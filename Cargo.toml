@@ -29,5 +29,8 @@ winapi = "0.2"
 kernel32-sys = "0.2.2"
 zip = { version = "0.1", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+daemonize = "0.2.3"
+
 [profile.release]
 debug = true
