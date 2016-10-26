@@ -98,7 +98,7 @@ fn daemonize() -> io::Result<()> {
 
 /// This is a no-op on Windows.
 #[cfg(windows)]
-fn daemonize() -> Result<()> { Ok(()) }
+fn daemonize() -> io::Result<()> { Ok(()) }
 
 /// Re-execute the current executable as a background server.
 ///
