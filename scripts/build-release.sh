@@ -18,7 +18,6 @@ case $system in
 	system=Windows
         rm -rf target/release
         cargo build --release && cargo test --release
-        cp "${OPENSSL_LIB_DIR}/../"{ssleay32,libeay32}.dll "$stagedir"
         cp target/release/sccache.exe "$stagedir"
         compress=bz2
         ;;
