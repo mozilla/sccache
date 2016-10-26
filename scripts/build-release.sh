@@ -9,16 +9,13 @@ fi
 
 pushd "$(dirname $0)/.."
 system=$(uname -s)
-destdir="$1/$system"
-if test -d "$destdir"; then
-    rm -rf "$destdir"
-fi
-mkdir -p "$destdir"
+
 tmpdir=$(mktemp -d)
 stagedir=$tmpdir/sccache2
 mkdir $stagedir
 case $system in
-    MINGW*)
+    MINGW*|MSYS_NT*)
+	system=Windows
         rm -rf target/release
         cargo build --release && cargo test --release
         cp "${OPENSSL_LIB_DIR}/../"{ssleay32,libeay32}.dll "$stagedir"
@@ -60,6 +57,11 @@ case ${compress} in
         ;;
 esac
 
+destdir="$1/$system"
+if test -d "$destdir"; then
+    rm -rf "$destdir"
+fi
+mkdir -p "$destdir"
 git rev-parse HEAD > "$destdir/REV"
 cd "$tmpdir"
 tar c${cflag}vf sccache2.tar.${compress} sccache2
