@@ -20,11 +20,15 @@ use cache::{
     Storage,
 };
 use simples3::{
+    AutoRefreshingProviderSync,
     Bucket,
+    ChainProvider,
     DefaultCredentialsProviderSync,
+    ProfileProvider,
     ProvideAwsCredentials,
     Ssl,
 };
+use std::env;
 use std::io::{
     self,
     Error,
@@ -42,7 +46,10 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     pub fn new(bucket: &str) -> io::Result<S3Cache> {
-        let provider = DefaultCredentialsProviderSync::new().ok();
+        //TODO: this is hacky, this is where our mac builders store their
+        // credentials. Maybe fetch this from a configuration file when
+        // we have one?
+        let provider = env::home_dir().and_then(|home| AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_provider(ProfileProvider::with_configuration(home.join(".boto"), "Credentials"))).ok());
         //TODO: configurable SSL
         let bucket = Bucket::new(bucket, Ssl::No);
         Ok(S3Cache {
