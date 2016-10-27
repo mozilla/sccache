@@ -61,6 +61,9 @@ use std::process::Output;
 use std::sync::Arc;
 use std::thread;
 
+/// If the server is idle for this many milliseconds, shut down.
+const DEFAULT_IDLE_TIMEOUT: u64 = 600000;
+
 /// A background task.
 struct Task<C : CommandCreatorSync + 'static> {
     /// A callback to call when the task finishes.
@@ -86,6 +89,12 @@ pub struct SccacheServer<C: CommandCreatorSync + 'static> {
 
     /// True if the server is actively shutting down.
     shutting_down: bool,
+
+    /// After this number of milliseconds with no client requests, shut down.
+    idle_timeout: u64,
+
+    /// A `Timeout` handle for the server idle shutdown timeout.
+    timeout: Option<Timeout>,
 
     /// A cache of known compiler info.
     compilers: HashMap<String, Option<Compiler>>,
@@ -165,6 +174,8 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             storage: Arc::new(storage),
             stats: ServerStats::default(),
             shutting_down: false,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            timeout: None,
             compilers: HashMap::new(),
             creator: C::new(),
         })
@@ -173,6 +184,15 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// Get the port on which this server is listening for connections.
     #[allow(dead_code)]
     pub fn port(&self) -> u16 { self.sock.local_addr().unwrap().port() }
+
+    /// Set the idle shutdown timeout, in milliseconds.
+    ///
+    /// Note: Does not clear a pending shutdown timer! Intended for use
+    /// in tests, where it will be called before `run_server`.
+    #[allow(dead_code)]
+    pub fn set_idle_timeout(&mut self, timeout: u64) {
+        self.idle_timeout = timeout;
+    }
 
     /// Return a clone of the object implementing `CommandCreatorSync` that this server uses to create processes.
     ///
@@ -184,13 +204,16 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     }
 
     /// Register Server with the event loop.
-    fn register(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>) -> io::Result<()> {
+    fn register(&mut self, mut event_loop: &mut EventLoop<SccacheServer<C>>) -> io::Result<()> {
         event_loop.register(
             &self.sock,
             self.token,
             EventSet::readable(),
             PollOpt::edge() | PollOpt::oneshot()
-        )
+        ).and_then(|_| {
+            self.reset_idle_timer(&mut event_loop);
+            Ok(())
+        })
     }
 
     /// Re-register Server with the event loop.
@@ -254,6 +277,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     fn check_shutdown(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>) {
         if self.shutting_down && self.conns.is_empty() {
             // All done.
+            trace!("check_shutdown: shutting down");
             event_loop.shutdown();
         }
     }
@@ -263,6 +287,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
     /// The server will stop accepting incoming requests, and shut down
     /// after it finishes processing any in-progress requests.
     fn initiate_shutdown(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>) {
+        trace!("initiate_shutdown");
         if !self.shutting_down {
             self.shutting_down = true;
         }
@@ -539,9 +564,18 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         stats
     }
 
+    /// Reset the server timeout on client activity.
+    fn reset_idle_timer(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>) {
+        if let Some(timeout) = self.timeout {
+            event_loop.clear_timeout(timeout);
+        }
+        self.timeout = event_loop.timeout_ms((), self.idle_timeout).ok();
+    }
+
     /// Handle one request from a client and possibly send a response.
-    fn handle_request(&mut self, token: Token, mut req: ClientRequest, event_loop: &mut EventLoop<SccacheServer<C>>) {
+    fn handle_request(&mut self, token: Token, mut req: ClientRequest, mut event_loop: &mut EventLoop<SccacheServer<C>>) {
         trace!("handle_request");
+        self.reset_idle_timer(&mut event_loop);
         if req.has_compile() {
             // This may need to do some work before even
             // sending the initial response.
@@ -656,9 +690,16 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
             }
         }
     }
+
+    /// Handle the server no-activity timeout.
+    fn timeout(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>, _timeout: ()) {
+        info!("Hit server idle timeout, shutting down");
+        self.timeout = None;
+        self.initiate_shutdown(event_loop);
+    }
 }
 
-/// A connetion to a single sccache client.
+/// A connection to a single sccache client.
 struct ClientConnection<C : CommandCreatorSync + 'static> {
     /// Client's socket.
     sock: TcpStream,

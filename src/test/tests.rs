@@ -40,6 +40,13 @@ use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 use test::utils::*;
 
+/// Options for running the server in tests.
+#[derive(Default)]
+struct ServerOptions {
+    /// The server's idle shutdown timeout.
+    idle_timeout: Option<u64>,
+}
+
 /// Run a server on a background thread, and return a tuple of useful things.
 ///
 /// * The port on which the server is listening.
@@ -48,13 +55,19 @@ use test::utils::*;
 /// * An `Arc`-and-`Mutex`-wrapped `MockCommandCreator` which the server will
 ///   use for all process creation.
 /// * The `JoinHandle` for the server thread.
-fn run_server_thread(cache_dir: &Path) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
+fn run_server_thread<T: Into<Option<ServerOptions>> + Send + 'static>(cache_dir: &Path, options: T) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
     let storage = Box::new(DiskCache::new(&cache_dir));
     let handle = thread::spawn(move || {
-        let (server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0, storage).unwrap();
+        let (mut server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0, storage).unwrap();
         assert!(server.port() > 0);
+        let options = options.into();
+        if let Some(options) = options {
+            if let Some(timeout) = options.idle_timeout {
+                 server.set_idle_timeout(timeout);
+            }
+        }
         let port = server.port();
         let sender = event_loop.channel();
         let creator = server.command_creator();
@@ -68,7 +81,7 @@ fn run_server_thread(cache_dir: &Path) -> (u16, Sender<ServerMessage>, Arc<Mutex
 #[test]
 fn test_server_shutdown() {
     let f = TestFixture::new();
-    let (port, _, _, child) = run_server_thread(&f.tempdir.path());
+    let (port, _, _, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it to shut down
@@ -78,9 +91,21 @@ fn test_server_shutdown() {
 }
 
 #[test]
+fn test_server_idle_timeout() {
+    let f = TestFixture::new();
+    // Set a ridiculously low idle timeout.
+    let (_, _, _, child) = run_server_thread(&f.tempdir.path(), ServerOptions { idle_timeout: Some(1)});
+    // Don't connect to it.
+    // Ensure that it shuts down.
+    // It would be nice to have an explicit timeout here so we don't hang
+    // if something breaks...
+    child.join().unwrap();
+}
+
+#[test]
 fn test_server_stats() {
     let f = TestFixture::new();
-    let (port, sender, _, child) = run_server_thread(&f.tempdir.path());
+    let (port, sender, _, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
@@ -95,7 +120,7 @@ fn test_server_stats() {
 #[test]
 fn test_server_unsupported_compiler() {
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path());
+    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     {
@@ -139,7 +164,7 @@ fn test_server_compile() {
         Err(_) => {},
     }
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path());
+    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     const PREPROCESSOR_STDOUT : &'static [u8] = b"preprocessor stdout";
     const PREPROCESSOR_STDERR : &'static [u8] = b"preprocessor stderr";
