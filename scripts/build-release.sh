@@ -24,7 +24,7 @@ case $system in
     Linux)
         # Build using rust-musl-builder
         rm -rf target/x86_64-unknown-linux-musl/release
-        docker run --rm -it -v "$(pwd)":/home/rust/src luser/rust-musl-builder sh -c "cargo build --release && cargo test --release"
+        docker run --rm -it -v "$(pwd)":/home/rust/src -v ~/.cargo/git:/home/rust/.cargo/git -v ~/.cargo/registry:/home/rust/.cargo/registry luser/rust-musl-builder sh -c "cargo build --release && cargo test --release"
         cp target/x86_64-unknown-linux-musl/release/sccache "$stagedir"
         strip "$stagedir/sccache"
         compress=xz
