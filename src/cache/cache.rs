@@ -15,6 +15,7 @@
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
 use compiler::Compiler;
+use futures;
 use sha1;
 use std::env;
 use std::fmt;
@@ -29,6 +30,7 @@ use std::io::{
     Write,
 };
 use std::path::PathBuf;
+use std::time::Duration;
 use zip::{
     CompressionMethod,
     ZipArchive,
@@ -115,6 +117,12 @@ impl From<Cursor<Vec<u8>>> for ZipType {
     }
 }
 
+/// Result of writing to cache storage.
+pub type CacheWriteResult = Result<Duration, String>;
+
+/// A `Future` that may provide a `CacheWriteResult`.
+pub type CacheWriteFuture = futures::BoxFuture<CacheWriteResult, futures::Canceled>;
+
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
     zip: ZipType,
@@ -173,7 +181,10 @@ pub trait Storage: Send + Sync {
     /// Get a cache entry for `key` that can be filled with data.
     fn start_put(&self, key: &str) -> io::Result<CacheWrite>;
     /// Put `entry` in the cache under `key`.
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()>;
+    ///
+    /// Returns a `Future` that will provide the result or error
+    /// when the put is finished.
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture;
 
     /// Get the storage location.
     fn get_location(&self) -> String;

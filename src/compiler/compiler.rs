@@ -23,6 +23,7 @@ use compiler::{
     msvc,
 };
 use filetime::FileTime;
+use futures::{self,Future};
 use log::LogLevel::{Debug,Trace};
 use mock_command::{
     CommandChild,
@@ -34,6 +35,7 @@ use sha1;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::{self,File};
 use std::io::prelude::*;
 use std::io::{
@@ -46,6 +48,7 @@ use std::path::Path;
 use std::process::{self,Stdio};
 use std::str;
 use std::thread;
+use std::time::Duration;
 use tempdir::TempDir;
 
 /// Supported compilers.
@@ -147,29 +150,65 @@ pub enum MissType {
     Normal,
     /// There was a cache entry, but an error occurred trying to read it.
     CacheReadError,
-    /// The compilation was not found in the cache, and also an error occurred
-    /// trying to write the new entry.
-    CacheWriteError,
-    /// There was a cache entry, but an error occurred trying to read it, and
-    /// also an error occurred trying to write the new entry.
-    CacheReadWriteErrors,
-    /// The compilation result was determined to be not cacheable.
-    NotCacheable,
     /// Cache lookup was overridden, recompilation was forced.
     ForcedRecache,
 }
 
+/// Information about a successful cache write.
+pub struct CacheWriteInfo {
+    pub object_file: String,
+    pub duration: Duration,
+}
+
+/// Result of writing to cache storage.
+pub type CacheWriteResult = Result<CacheWriteInfo, String>;
+
+/// A `Future` that may provide a `CacheWriteResult`.
+pub type CacheWriteFuture = futures::BoxFuture<CacheWriteResult, futures::Canceled>;
+
 /// The result of a compilation or cache retrieval.
-#[derive(Debug, PartialEq)]
 pub enum CompileResult {
     /// An error made the compilation not possible.
     Error,
     /// Result was found in cache.
     CacheHit,
     /// Result was not found in cache.
-    CacheMiss(MissType),
+    ///
+    /// The `CacheWriteFuture` will resolve when the result is finished
+    /// being stored in the cache.
+    CacheMiss(MissType, CacheWriteFuture),
+    /// Not in cache, but the compilation result was determined to be not cacheable.
+    NotCacheable,
     /// Not in cache, but compilation failed.
     CompileFailed,
+}
+
+
+/// Can't derive(Debug) because of `CacheWriteFuture`.
+impl fmt::Debug for CompileResult {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &CompileResult::Error => write!(f, "CompileResult::Error"),
+            &CompileResult::CacheHit => write!(f, "CompileResult::CacheHit"),
+            &CompileResult::CacheMiss(ref m, _) => write!(f, "CompileResult::CacheMiss({:?}, _)", m),
+            &CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
+            &CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
+        }
+    }
+}
+
+/// Can't use derive(PartialEq) because of the `CacheWriteFuture`.
+impl PartialEq<CompileResult> for CompileResult {
+    fn eq(&self, other: &CompileResult) -> bool {
+        match (self, other) {
+            (&CompileResult::Error, &CompileResult::Error) => true,
+            (&CompileResult::CacheHit, &CompileResult::CacheHit) => true,
+            (&CompileResult::CacheMiss(ref m, _), &CompileResult::CacheMiss(ref n, _)) => m == n,
+            (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
+            (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Can this result be stored in cache?
@@ -309,28 +348,24 @@ impl Compiler {
                             try!(entry.put_object("stderr", &mut io::Cursor::new(&compiler_result.stderr)));
                         }
                         // Try to finish storing the newly-written cache
-                        // entry. This could fail for various reasons.
-                        //TODO: do this on a background thread.
-                        let put_res = storage.finish_put(&key, entry);
-                        let miss_type = match (miss_type, put_res) {
-                            (o @ _, Ok(_)) => {
-                                debug!("[{}]: Stored in cache successfully!", out_file);
-                                o
-                            }
-                            (o @ _, Err(e)) => {
-                                debug!("[{}]: Cache write error: {:?}", out_file, e);
-                                match o {
-                                    MissType::Normal => MissType::CacheWriteError,
-                                    MissType::CacheReadError => MissType::CacheReadWriteErrors,
-                                    _ => unreachable!("How did we get here?"),
+                        // entry. We'll get the result back elsewhere.
+                        let out_file = out_file.into_owned();
+                        let future = storage.finish_put(&key, entry)
+                            .map(move |res| {
+                                match res {
+                                    Ok(_) => debug!("[{}]: Stored in cache successfully!", out_file),
+                                    Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_file, e),
                                 }
-                            }
-                        };
-                        Ok((CompileResult::CacheMiss(miss_type), compiler_result))
+                                res.map(|duration| CacheWriteInfo {
+                                    object_file: out_file,
+                                    duration: duration,
+                                })
+                            }).boxed();
+                        Ok((CompileResult::CacheMiss(miss_type, future), compiler_result))
                     } else {
                         // Not cacheable
                         debug!("[{}]: Compiled but not cacheable", out_file);
-                        Ok((CompileResult::CacheMiss(MissType::NotCacheable), compiler_result))
+                        Ok((CompileResult::NotCacheable, compiler_result))
                     }
                 } else {
                     debug!("[{}]: Compiled but failed, not storing in cache", out_file);
@@ -572,7 +607,10 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
+        assert!(match cached {
+            CompileResult::CacheMiss(MissType::Normal, _) => true,
+            _ => false,
+        });
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -629,7 +667,10 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
+        assert!(match cached {
+            CompileResult::CacheMiss(MissType::Normal, _) => true,
+            _ => false,
+        });
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -689,7 +730,10 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss(MissType::Normal), cached);
+        assert!(match cached {
+            CompileResult::CacheMiss(MissType::Normal, _) => true,
+            _ => false,
+        });
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -698,7 +742,10 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::ForceRecache).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert_eq!(CompileResult::CacheMiss(MissType::ForcedRecache), cached);
+        assert!(match cached {
+            CompileResult::CacheMiss(MissType::ForcedRecache, _) => true,
+            _ => false,
+        });
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());

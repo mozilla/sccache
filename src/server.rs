@@ -18,6 +18,8 @@ use cache::{
 };
 use compiler::{
     CacheControl,
+    CacheWriteFuture,
+    CacheWriteResult,
     Compiler,
     CompilerArguments,
     CompileResult,
@@ -26,6 +28,7 @@ use compiler::{
     get_compiler_info,
 };
 use filetime::FileTime;
+use futures::Future;
 use mio::*;
 use mio::tcp::{
     TcpListener,
@@ -56,12 +59,14 @@ use protocol::{
 };
 use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::fs::metadata;
-use std::io::{self,Error,ErrorKind};
+use std::io::{self,ErrorKind};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::process::Output;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 /// If the server is idle for this many milliseconds, shut down.
 const DEFAULT_IDLE_TIMEOUT: u64 = 600000;
@@ -140,6 +145,12 @@ struct ServerStats {
     pub cache_read_errors: u64,
     /// The count of errors writing to cache.
     pub cache_write_errors: u64,
+    /// The number of successful cache writes.
+    pub cache_writes: u32,
+    /// The total seconds spent writing cache entries.
+    pub cache_write_duration_s: u64,
+    /// The total nanoseconds spent writing cache entries.
+    pub cache_write_duration_ns: u32,
     /// The count of compilation failures.
     pub compile_fails: u64,
 }
@@ -169,6 +180,16 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
         set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
         set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
+        // Set this as a string so we can view subsecond values.
+        let mut stat = CacheStatistic::new();
+        stat.set_name(String::from("Average cache write"));
+        if self.cache_writes > 0 {
+            let avg_write_duration = Duration::new(self.cache_write_duration_s, self.cache_write_duration_ns) / self.cache_writes;
+            stat.set_str(format!("{}.{:03}s", avg_write_duration.as_secs(), avg_write_duration.subsec_nanos() / 1000));
+        } else {
+            stat.set_str(String::from("0s"));
+        }
+        stats_vec.push(stat);
         stats_vec
     }
 }
@@ -405,11 +426,24 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         };
     }
 
+    fn await_cache_write(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>, future: CacheWriteFuture) {
+        // This would be much nicer if we rewrote the whole server
+        // event loop to use futures!
+        let sender = event_loop.channel();
+        //TODO: should really keep track of these somewhere...
+        thread::spawn(move || {
+            sender.send(ServerMessage::CacheWriteDone(match future.wait() {
+                Err(e) => Err(e.description().to_owned()),
+                Ok(res) => res,
+            })).unwrap();
+        });
+    }
+
     /// Send a `CompileFinished` response to the client at `token`.
     ///
     /// This indicates that the server has finished running a compile,
     /// and contains the process exit status and stdout/stderr.
-    fn send_compile_finished(&mut self, result: Option<(CompileResult, Output)>, token: Token, event_loop: &mut EventLoop<SccacheServer<C>>) {
+    fn send_compile_finished(&mut self, result: Option<(CompileResult, Output)>, token: Token, mut event_loop: &mut EventLoop<SccacheServer<C>>) {
         let mut res = ServerResponse::new();
         let mut finish = CompileFinished::new();
         match result {
@@ -417,24 +451,20 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 match compiled {
                     CompileResult::Error => self.stats.cache_errors += 1,
                     CompileResult::CacheHit => self.stats.cache_hits += 1,
-                    CompileResult::CacheMiss(miss_type) => {
+                    CompileResult::CacheMiss(miss_type, future) => {
                         match miss_type {
                             MissType::Normal => self.stats.cache_misses += 1,
                             MissType::CacheReadError => self.stats.cache_read_errors += 1,
-                            MissType::CacheWriteError => self.stats.cache_write_errors += 1,
-                            MissType::CacheReadWriteErrors => {
-                                self.stats.cache_read_errors += 1;
-                                self.stats.cache_write_errors += 1;
-                            }
-                            MissType::NotCacheable => {
-                                self.stats.cache_misses += 1;
-                                self.stats.non_cacheable_compilations += 1;
-                            }
                             MissType::ForcedRecache => {
                                 self.stats.cache_misses += 1;
                                 self.stats.forced_recaches += 1;
                             }
                         }
+                        self.await_cache_write(&mut event_loop, future)
+                    }
+                    CompileResult::NotCacheable => {
+                        self.stats.cache_misses += 1;
+                        self.stats.non_cacheable_compilations += 1;
                     }
                     CompileResult::CompileFailed => self.stats.compile_fails += 1,
                 };
@@ -651,6 +681,8 @@ pub enum ServerMessage {
     Shutdown,
     /// Background task completed.
     TaskDone { res: TaskResult, token: Token },
+    /// Background cache write completed.
+    CacheWriteDone(CacheWriteResult),
 }
 
 impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
@@ -674,6 +706,21 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
                             //FIXME: should probably hang up on client here.
                             error!("Client missing task: {:?}", token);
                         }
+                    }
+                }
+            }
+            ServerMessage::CacheWriteDone(res) => {
+                match res {
+                    Err(e) => {
+                        debug!("Error executing cache write: {}", e);
+                        self.stats.cache_write_errors += 1;
+                    }
+                    //TODO: save cache stats!
+                    Ok(info) => {
+                        debug!("[{}]: Cache write finished in {}.{:03}s", info.object_file, info.duration.as_secs(), info.duration.subsec_nanos() / 1000);
+                        self.stats.cache_writes += 1;
+                        self.stats.cache_write_duration_s += info.duration.as_secs();
+                        self.stats.cache_write_duration_ns += info.duration.subsec_nanos();
                     }
                 }
             }
@@ -802,11 +849,11 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
                     if s == "truncated message" {
                         Ok(None)
                     } else {
-                        Err(Error::new(ErrorKind::Other, s))
+                        Err(io::Error::new(ErrorKind::Other, s))
                     }
                 },
                 ProtobufError::IoError(ioe) => Err(ioe),
-                ProtobufError::MessageNotInitialized { message } => Err(Error::new(ErrorKind::Other, message)),
+                ProtobufError::MessageNotInitialized { message } => Err(io::Error::new(ErrorKind::Other, message)),
             })
     }
 
@@ -815,7 +862,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
         //FIXME: use something from bytes.
         // http://carllerche.github.io/bytes/bytes/index.html
         match self.send_queue.first_mut() {
-            None => Err(Error::new(ErrorKind::Other,
+            None => Err(io::Error::new(ErrorKind::Other,
                                    "Could not get item from send queue")),
             Some(buf) => {
                 match self.sock.try_write(buf) {
@@ -844,7 +891,7 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             match res {
                 Some(_) => self.send_queue.pop()
                     .and(Some(()))
-                    .ok_or_else(|| Error::new(ErrorKind::Other,
+                    .ok_or_else(|| io::Error::new(ErrorKind::Other,
                                       "Could not pop item from send queue")),
                 _ => Ok(()),
             }
@@ -863,8 +910,8 @@ impl<C : CommandCreatorSync + 'static> ClientConnection<C> {
             error!("Error serializing message: {:?}", err);
             match err {
                 ProtobufError::IoError(ioe) => Err(ioe),
-                ProtobufError::WireError(s) => Err(Error::new(ErrorKind::Other, s)),
-                ProtobufError::MessageNotInitialized { message } => Err(Error::new(ErrorKind::Other, message)),
+                ProtobufError::WireError(s) => Err(io::Error::new(ErrorKind::Other, s)),
+                ProtobufError::MessageNotInitialized { message } => Err(io::Error::new(ErrorKind::Other, message)),
             }
         }));
         trace!("ClientConnection::send: queueing {} bytes", msg.len());

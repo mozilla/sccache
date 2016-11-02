@@ -16,12 +16,15 @@ use cache::{
     Cache,
     CacheRead,
     CacheWrite,
+    CacheWriteFuture,
     Storage,
 };
+use futures::{self,Future};
 use std::ffi::OsStr;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
+use std::time::Instant;
 
 /// A cache that stores entries at local disk paths.
 #[derive(Clone)]
@@ -71,11 +74,14 @@ impl Storage for DiskCache {
             .map(CacheWrite::new)
     }
 
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()> {
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
+        // There's not much point in trying to do this on a background
+        // thread, since most of the disk I/O should be done already.
         trace!("DiskCache::finish_put({})", key);
+        let start = Instant::now();
         // Dropping the ZipWriter is enough to finish it.
         drop(entry);
-        Ok(())
+        futures::finished(Ok(start.elapsed())).boxed()
     }
 
     fn get_location(&self) -> String {

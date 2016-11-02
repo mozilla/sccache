@@ -19,6 +19,7 @@ extern crate crypto;
 extern crate daemonize;
 extern crate env_logger;
 extern crate filetime;
+extern crate futures;
 extern crate hyper;
 extern crate kernel32;
 extern crate local_encoding;

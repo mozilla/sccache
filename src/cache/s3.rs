@@ -16,9 +16,11 @@ use cache::{
     Cache,
     CacheRead,
     CacheWrite,
+    CacheWriteFuture,
     CacheWriteWriter,
     Storage,
 };
+use futures::{self,Future};
 use simples3::{
     AutoRefreshingProviderSync,
     Bucket,
@@ -34,13 +36,17 @@ use std::io::{
     Error,
     ErrorKind,
 };
+use std::sync::Arc;
+use std::thread;
+use std::time::Instant;
 
 /// A cache that stores entries in Amazon S3.
+#[derive(Clone)]
 pub struct S3Cache {
     /// The S3 bucket.
-    bucket: Bucket,
+    bucket: Arc<Bucket>,
     /// Credentials provider.
-    provider: Option<DefaultCredentialsProviderSync>,
+    provider: Option<Arc<DefaultCredentialsProviderSync>>,
 }
 
 impl S3Cache {
@@ -49,9 +55,9 @@ impl S3Cache {
         //TODO: this is hacky, this is where our mac builders store their
         // credentials. Maybe fetch this from a configuration file when
         // we have one?
-        let provider = env::home_dir().and_then(|home| AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_provider(ProfileProvider::with_configuration(home.join(".boto"), "Credentials"))).ok());
+        let provider = env::home_dir().and_then(|home| AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_provider(ProfileProvider::with_configuration(home.join(".boto"), "Credentials"))).ok().map(Arc::new));
         //TODO: configurable SSL
-        let bucket = Bucket::new(bucket, Ssl::No);
+        let bucket = Arc::new(Bucket::new(bucket, Ssl::No));
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
@@ -86,23 +92,34 @@ impl Storage for S3Cache {
         Ok(CacheWrite::new(io::Cursor::new(vec!())))
     }
 
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> io::Result<()> {
-        let writer = try!(entry.finish());
-        match writer {
-            // This should never happen.
-            CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
-            CacheWriteWriter::Cursor(c) => {
-                self.provider
-                    .as_ref()
-                    .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
-                    .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
-                    .and_then(|credentials| {
-                        let data = c.into_inner();
-                        let key = normalize_key(key);
-                        self.bucket.put(&key, &data, &credentials).map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
-                    })
-            }
-        }
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
+        let (complete, promise) = futures::oneshot();
+        let this = self.clone();
+        let key = key.to_owned();
+        thread::spawn(move || {
+            let start = Instant::now();
+            complete.complete(entry.finish()
+                              .and_then(|writer| {
+                                  match writer {
+                                      // This should never happen.
+                                      CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
+                                      CacheWriteWriter::Cursor(c) => {
+                                          this.provider
+                                              .as_ref()
+                                              .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
+                                              .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
+                                              .and_then(|credentials| {
+                                                  let data = c.into_inner();
+                                                  let key = normalize_key(&key);
+                                                  this.bucket.put(&key, &data, &credentials)
+                                                      .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
+                                              })
+                                              .map(|_| start.elapsed())
+                                      }
+                                  }
+                              }).map_err(|e| format!("{}", e)));
+        });
+        promise.boxed()
     }
 
     fn get_location(&self) -> String {
