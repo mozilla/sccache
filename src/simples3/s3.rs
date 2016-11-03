@@ -108,7 +108,6 @@ impl Bucket {
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
         for (header, maybe_value) in vec![
-            ("x-amz-acl", Some("public-read")),
             ("x-amz-security-token", token),
             ("x-amz-storage-class", Some("REDUCED_REDUNDANCY")),
             ] {
