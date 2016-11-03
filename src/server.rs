@@ -208,7 +208,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             timeout: None,
             compilers: HashMap::new(),
-            force_recache: env::var("SCCACHE2_RECACHE").is_ok(),
+            force_recache: env::var("SCCACHE_RECACHE").is_ok(),
             creator: C::new(),
         })
     }
