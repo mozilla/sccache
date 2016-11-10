@@ -484,20 +484,22 @@ impl DefaultCredentialsProviderSync {
 /// If the sources are exhausted without finding credentials, an error is returned.
 #[derive(Debug, Clone)]
 pub struct ChainProvider {
-    profile_provider: Option<ProfileProvider>,
+    profile_providers: Vec<ProfileProvider>,
 }
 
 impl ProvideAwsCredentials for ChainProvider {
     fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
 
 	EnvironmentProvider.credentials()
+            .map(|c| { debug!("Using AWS credentials from environment"); c })
 		.or_else(|_| {
-            match self.profile_provider {
-                Some(ref provider) => provider.credentials(),
-                None => Err(CredentialsError::new(""))
-            }
-        })
-		.or_else(|_| IamProvider.credentials())
+                    self.profile_providers.iter()
+                        .filter_map(|provider| provider.credentials().ok().map(|c| { debug!("Using AWS credentials from {}, profile {}", provider.file_path().to_string_lossy(), provider.profile()); c }))
+                        .next()
+                        .map(|creds| Ok(creds))
+                        .unwrap_or(Err(CredentialsError::new("")))
+                })
+		.or_else(|_| IamProvider.credentials().map(|c| { debug!("Using AWS credentials from IAM"); c }))
 		.or_else(|_| Err(CredentialsError::new("Couldn't find AWS credentials in environment, credentials file, or IAM role.")))
     }
 }
@@ -506,15 +508,15 @@ impl ChainProvider {
     /// Create a new `ChainProvider` using a `ProfileProvider` with the default settings.
     pub fn new() -> ChainProvider {
         ChainProvider {
-            profile_provider: ProfileProvider::new().ok(),
+            profile_providers: ProfileProvider::new().into_iter().collect(),
         }
     }
 
-    /// Create a new `ChainProvider` using the provided `ProfileProvider`.
-    pub fn with_profile_provider(profile_provider: ProfileProvider)
+    /// Create a new `ChainProvider` using the provided `ProfileProvider`s.
+    pub fn with_profile_providers(profile_providers: Vec<ProfileProvider>)
     -> ChainProvider {
         ChainProvider {
-            profile_provider: Some(profile_provider),
+            profile_providers: profile_providers,
         }
     }
 }

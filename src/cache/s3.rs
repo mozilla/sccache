@@ -52,10 +52,15 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     pub fn new(bucket: &str) -> io::Result<S3Cache> {
-        //TODO: this is hacky, this is where our mac builders store their
-        // credentials. Maybe fetch this from a configuration file when
-        // we have one?
-        let provider = env::home_dir().and_then(|home| AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_provider(ProfileProvider::with_configuration(home.join(".boto"), "Credentials"))).ok().map(Arc::new));
+        let home = try!(env::home_dir().ok_or(Error::new(ErrorKind::Other, "Couldn't find home directory")));
+        let profile_providers = vec![
+            ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
+            //TODO: this is hacky, this is where our mac builders store their
+            // credentials. We should either match what boto does more directly
+            // or make those builders put their credentials in ~/.aws/credentials
+            ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
+            ];
+        let provider = AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_providers(profile_providers)).ok().map(Arc::new);
         //TODO: configurable SSL
         let bucket = Arc::new(Bucket::new(bucket, Ssl::No));
         Ok(S3Cache {
