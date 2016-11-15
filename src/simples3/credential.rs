@@ -313,9 +313,8 @@ pub struct IamProvider;
 
 impl ProvideAwsCredentials for IamProvider {
     fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
-	
-		// TODO: backoff and retry on failure.
-        let mut address : String = "http://169.254.169.254/latest/meta-data/iam/security-credentials".to_string();
+        let mut address = var("AWS_IAM_CREDENTIALS_URL").unwrap_or("http://169.254.169.254/latest/meta-data/iam/security-credentials".to_string());
+        debug!("Attempting to fetch credentials from {}", address);
         let mut client = Client::new();
         //XXX: this is crappy, but this blocks on non-EC2 machines like
         // our mac builders.
