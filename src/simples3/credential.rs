@@ -313,70 +313,81 @@ pub struct IamProvider;
 
 impl ProvideAwsCredentials for IamProvider {
     fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
-        let mut address = var("AWS_IAM_CREDENTIALS_URL").unwrap_or("http://169.254.169.254/latest/meta-data/iam/security-credentials".to_string());
-        debug!("Attempting to fetch credentials from {}", address);
         let mut client = Client::new();
         //XXX: this is crappy, but this blocks on non-EC2 machines like
         // our mac builders.
         client.set_read_timeout(Some(StdDuration::from_secs(2)));
-        let mut response;
-        match client.get(&address)
-            .header(Connection::close()).send() {
-                Err(_) => return Err(CredentialsError::new("Couldn't connect to metadata service")), // add Why?
-                Ok(received_response) => response = received_response
-            };
+        var("AWS_IAM_CREDENTIALS_URL")
+            .or_else(|_| {
+                // First get the IAM role
+                let mut address = "http://169.254.169.254/latest/meta-data/iam/security-credentials".to_string();
+                let mut response;
+                match client.get(&address)
+                    .header(Connection::close()).send() {
+                        Err(_) => return Err(CredentialsError::new("Couldn't connect to metadata service")), // add Why?
+                        Ok(received_response) => response = received_response
+                    };
 
-        let mut body = String::new();
-        if let Err(_) = response.read_to_string(&mut body) {
-			return Err(CredentialsError::new("Didn't get a parsable response body from metadata service"));
-        }
+                let mut body = String::new();
+                if let Err(_) = response.read_to_string(&mut body) {
+		    return Err(CredentialsError::new("Didn't get a parsable response body from metadata service"));
+                }
 
-        address.push_str("/");
-        address.push_str(&body);
-        body = String::new();
-        match client.get(&address)
-            .header(Connection::close()).send() {
-                Err(_) => return Err(CredentialsError::new("Didn't get a parseable response body from instance role details")),
-                Ok(received_response) => response = received_response
-            };
+                address.push_str("/");
+                address.push_str(&body);
+                Ok(address)
+            })
+            .and_then(|address| {
+                debug!("Attempting to fetch credentials from {}", address);
+                let mut body = String::new();
+                client.get(&address)
+                    .header(Connection::close()).send()
+                    .or(Err(CredentialsError::new("Didn't get a parseable response body from instance role details")))
+                    .and_then(|mut response| {
 
-        if let Err(_) = response.read_to_string(&mut body) {
-            return Err(CredentialsError::new("Had issues with reading iam role response: {}"));
-        }
+                        if let Err(_) = response.read_to_string(&mut body) {
+                            return Err(CredentialsError::new("Had issues with reading iam role response: {}"));
+                        }
 
-        let json_object: Value;
-        match from_str(&body) {
-            Err(_) => return Err(CredentialsError::new("Couldn't parse metadata response body.")),
-            Ok(val) => json_object = val
-        };
+                        let json_object: Value;
+                        match from_str(&body) {
+                            Err(_) => return Err(CredentialsError::new("Couldn't parse metadata response body.")),
+                            Ok(val) => json_object = val
+                        };
 
-        let access_key;
-        match json_object.find("AccessKeyId") {
-            None => return Err(CredentialsError::new("Couldn't find AccessKeyId in response.")),
-            Some(val) => access_key = val.as_str().expect("AccessKeyId value was not a string").to_owned().replace("\"", "")
-        };
+                        let access_key;
+                        match json_object.find("AccessKeyId") {
+                            None => return Err(CredentialsError::new("Couldn't find AccessKeyId in response.")),
+                            Some(val) => access_key = val.as_str().expect("AccessKeyId value was not a string").to_owned().replace("\"", "")
+                        };
 
-        let secret_key;
-        match json_object.find("SecretAccessKey") {
-            None => return Err(CredentialsError::new("Couldn't find SecretAccessKey in response.")),
-            Some(val) => secret_key = val.as_str().expect("SecretAccessKey value was not a string").to_owned().replace("\"", "")
-        };
+                        let secret_key;
+                        match json_object.find("SecretAccessKey") {
+                            None => return Err(CredentialsError::new("Couldn't find SecretAccessKey in response.")),
+                            Some(val) => secret_key = val.as_str().expect("SecretAccessKey value was not a string").to_owned().replace("\"", "")
+                        };
 
-        let expiration;
-        match json_object.find("Expiration") {
-            None => return Err(CredentialsError::new("Couldn't find Expiration in response.")),
-            Some(val) => expiration = val.as_str().expect("Expiration value was not a string").to_owned().replace("\"", "")
-        };
+                        let expiration;
+                        match json_object.find("Expiration") {
+                            None => return Err(CredentialsError::new("Couldn't find Expiration in response.")),
+                            Some(val) => expiration = val.as_str().expect("Expiration value was not a string").to_owned().replace("\"", "")
+                        };
 
-        let expiration_time = try!(expiration.parse());
+                        let expiration_time = try!(expiration.parse());
 
-        let token_from_response;
-        match json_object.find("Token") {
-            None => return Err(CredentialsError::new("Couldn't find Token in response.")),
-            Some(val) => token_from_response = val.as_str().expect("Token value was not a string").to_owned().replace("\"", "")
-        };
+                        let token_from_response;
+                        match json_object.find("Token") {
+                            None => return Err(CredentialsError::new("Couldn't find Token in response.")),
+                            Some(val) => token_from_response = val.as_str().expect("Token value was not a string").to_owned().replace("\"", "")
+                        };
 
-        Ok(AwsCredentials::new(access_key, secret_key, Some(token_from_response), expiration_time))
+                        Ok(AwsCredentials::new(access_key, secret_key, Some(token_from_response), expiration_time))
+                    })
+            })
+            .or_else(|e| {
+                warn!("Failed to fetch IAM credentials: {}", e);
+                Err(e)
+            })
 
     }
 }
