@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate app_dirs;
 extern crate chrono;
 extern crate clap;
 extern crate crypto;

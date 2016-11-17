@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
 [dependencies]
+app_dirs = "1.1.1"
 chrono = "0.2.25"
 clap = "2.3.0"
 env_logger = "0.3.3"

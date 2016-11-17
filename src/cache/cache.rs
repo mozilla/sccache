@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use app_dirs::{
+    AppDataType,
+    AppInfo,
+    app_dir,
+};
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
 use compiler::Compiler;
@@ -35,6 +40,12 @@ use zip::{
     CompressionMethod,
     ZipArchive,
     ZipWriter,
+};
+
+//TODO: might need to put this somewhere more central
+const APP_INFO: AppInfo = AppInfo {
+    name: "sccache",
+    author: "Mozilla",
 };
 
 /// Result of a cache lookup.
@@ -203,8 +214,9 @@ pub fn storage_from_environment() -> Box<Storage> {
         }
     }
     let d = env::var_os("SCCACHE_DIR")
-        .and_then(|p| Some(PathBuf::from(p)))
-        //TODO: better default storage location.
+        .map(|p| PathBuf::from(p))
+        .or_else(|| app_dir(AppDataType::UserCache, &APP_INFO, "").ok())
+        // Fall back to something, even if it's not very good.
         .unwrap_or(env::temp_dir().join("sccache_cache"));
     trace!("Using DiskCache({:?})", d);
     Box::new(DiskCache::new(&d))
