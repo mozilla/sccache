@@ -25,11 +25,8 @@ def indices(s, which):
         yield i
         i += 1
 
-def rewrite_manifest_entry(manifest_file, manifest, index):
+def rewrite_manifest_entry(manifest_file, new_data, index):
     old_data = open(manifest_file, 'rb').read()
-    b = io.BytesIO()
-    manifest.dump(b)
-    new_data = b.getvalue().strip(' \n[]')
     start = list(indices(old_data, '{'))[index]
     end = old_data.index('}', start)
     with open(manifest_file, 'wb') as f:
@@ -40,7 +37,11 @@ def rewrite_manifest_entry(manifest_file, manifest, index):
 def update_tooltool_manifests(build_dir, gecko_dir):
     system = os.path.basename(build_dir)
     new_manifest_file = os.path.join(build_dir, 'releng.manifest')
+    rev = open(os.path.join(build_dir, 'REV'), 'rb').read().strip()
     manifest = tooltool.open_manifest(new_manifest_file)
+    b = io.BytesIO()
+    manifest.dump(b)
+    new_data = '\n'.join(['{', '"version": "sccache rev %s",' % rev] + b.getvalue().strip(' \n[]').splitlines()[1:])
     for manifest_glob in PLATFORM_MANIFESTS[system]:
         for platform_manifest_file in glob.glob(os.path.join(gecko_dir, manifest_glob)):
             print(platform_manifest_file)
@@ -48,7 +49,7 @@ def update_tooltool_manifests(build_dir, gecko_dir):
             for i, f in enumerate(platform_manifest.file_records):
                 if f.filename.startswith('sccache'):
                     platform_manifest.file_records[i] = manifest.file_records[0]
-                    rewrite_manifest_entry(platform_manifest_file, manifest, i)
+                    rewrite_manifest_entry(platform_manifest_file, new_data, i)
                     break
 def main():
     if len(sys.argv) < 3:
