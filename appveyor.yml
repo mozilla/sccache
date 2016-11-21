@@ -1,0 +1,127 @@
+## Operating System (VM environment) ##
+
+# Rust needs at least Visual Studio 2013 Appveyor OS for MSVC targets.
+os: Visual Studio 2015
+
+## Build Matrix ##
+
+# This configuration will setup a build for each channel & target combination (12 windows
+# combinations in all).
+#
+# There are 3 channels: stable, beta, and nightly.
+#
+# The values for target are the set of windows Rust build targets. Each value is of the form
+#
+# ARCH-pc-windows-TOOLCHAIN
+#
+# Where ARCH is the target architecture, either x86_64 or i686, and TOOLCHAIN is the linker
+# toolchain to use, either msvc or gnu. See https://www.rust-lang.org/downloads.html#win-foot for
+# a description of the toolchain differences.
+#
+# Comment out channel/target combos you do not wish to build in CI.
+environment:
+  matrix:
+
+### MSVC Toolchains ###
+
+  # Stable 64-bit MSVC
+    - channel: stable
+      target: x86_64-pc-windows-msvc
+  # Stable 32-bit MSVC
+    # - channel: stable
+    #   target: i686-pc-windows-msvc
+  # Beta 64-bit MSVC
+    - channel: beta
+      target: x86_64-pc-windows-msvc
+  # Beta 32-bit MSVC
+    # - channel: beta
+    #   target: i686-pc-windows-msvc
+  # Nightly 64-bit MSVC
+    - channel: nightly
+      target: x86_64-pc-windows-msvc
+  # Nightly 32-bit MSVC
+    # - channel: nightly
+    #   target: i686-pc-windows-msvc
+
+### GNU Toolchains ###
+#TODO: figure out how to get mingw64 working on appveyor
+#TODO: get OpenSSL working for mingw builds
+  # Stable 64-bit GNU
+  #   - channel: stable
+  #     target: x86_64-pc-windows-gnu
+  # Stable 32-bit GNU
+  #  - channel: stable
+  #    target: i686-pc-windows-gnu
+  # Beta 64-bit GNU
+  #  - channel: beta
+  #    target: x86_64-pc-windows-gnu
+  # Beta 32-bit GNU
+  #  - channel: beta
+  #    target: i686-pc-windows-gnu
+  # Nightly 64-bit GNU
+  #   - channel: nightly
+  #     target: x86_64-pc-windows-gnu
+  # Nightly 32-bit GNU
+  #  - channel: nightly
+  #    target: i686-pc-windows-gnu
+
+### Allowed failures ###
+
+# See Appveyor documentation for specific details. In short, place any channel or targets you wish
+# to allow build failures on (usually nightly at least is a wise choice). This will prevent a build
+# or test failure in the matching channels/targets from failing the entire build.
+matrix:
+  allow_failures:
+    - channel: nightly
+
+# If you only care about stable channel build failures, uncomment the following line:
+    #- channel: beta
+
+# 32-bit MSVC isn't stablized yet, so you may optionally allow failures there (uncomment line):
+    #- target: i686-pc-windows-msvc
+
+## Install Script ##
+
+# This is the most important part of the Appveyor configuration. This installs the version of Rust
+# specified by the 'channel' and 'target' environment variables from the build matrix. By default,
+# Rust will be installed to C:\Rust for easy usage, but this path can be overridden by setting the
+# RUST_INSTALL_DIR environment variable. The URL to download rust distributions defaults to
+# https://static.rust-lang.org/dist/ but can overridden by setting the RUST_DOWNLOAD_URL environment
+# variable.
+#
+# For simple configurations, instead of using the build matrix, you can override the channel and
+# target environment variables with the -channel and -target script arguments.
+#
+# If no channel or target arguments or environment variables are specified, will default to stable
+# channel and x86_64-pc-windows-msvc target.
+#
+# The file appveyor_rust_install.ps1 must exist in the root directory of the repository.
+install:
+- ps: .\appveyor_rust_install.ps1
+- ps: .\appveyor_openssl_install.ps1
+
+# Alternative install command for simple configurations without build matrix (uncomment line and
+# comment above line):
+#- ps: .\appveyor_rust_install.ps1 -channel stable -target x86_64-pc-windows-msvc
+
+## Build Script ##
+
+# Uses 'cargo build' to build. Alternatively, the project may call rustc directly or perform other
+# build commands. Rust will automatically be placed in the PATH environment variable.
+build_script:
+- cmd: cargo build --verbose
+
+## Build Script ##
+
+# Uses 'cargo test' to run tests. Alternatively, the project may call compiled programs directly or
+# perform other testing commands. Rust will automatically be placed in the PATH environment
+# variable.
+test_script:
+- cmd: cargo test --verbose
+
+# Only build against the branches that will have pull requests built against them (master).
+# Otherwise creating feature branches on this repository and a pull requests against them will
+# cause each commit to be tested twice, once for the branch and once for the pull request.
+branches:
+  only:
+    - master

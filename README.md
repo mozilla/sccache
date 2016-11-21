@@ -1,9 +1,11 @@
+[![Build Status](https://travis-ci.org/mozilla/sccache.svg?branch=master)](https://travis-ci.org/mozilla/sccache) [![Build status](https://ci.appveyor.com/api/projects/status/h4yqo430634pmfmt?svg=true)](https://ci.appveyor.com/project/luser/sccache2)
+
 sccache - Shared Compilation Cache
 ==================================
 
-Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API.
+Sccache is a [ccache](https://ccache.samba.org/)-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API.
 
-It works as a client-server. The client spawns a server if one is not running already, and sends the wrapped command line as a request to the server, which then does the work and returns stdout/stderr for the job.  The client-server model allows the server to be more efficient in its handling of the remote storage.  
+It works as a client-server. The client spawns a server if one is not running already, and sends the wrapped command line as a request to the server, which then does the work and returns stdout/stderr for the job.  The client-server model allows the server to be more efficient in its handling of the remote storage.
 
 Sccache can also be used with local storage instead of remote.
 
@@ -11,7 +13,7 @@ Sccache can also be used with local storage instead of remote.
 Requirements
 ------------
 
-Sccache is a python 2.7 program. Remote storage requires the boto library. Optionally, it can use dnspython.
+Sccache is a Rust program.
 
 
 Usage
@@ -26,7 +28,7 @@ Only SCCACHE_DIR will be used if both are set. Those variables are only taken in
 
 Running sccache is like running ccache: wrap your compilation commands with it, like so:
 
-> $ sccache.py gcc -o foo.o -c foo.c
+> $ sccache gcc -o foo.o -c foo.c
 
 Sccache (tries to) support gcc, clang and MSVC.
 
