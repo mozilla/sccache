@@ -99,6 +99,9 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
                         }
                     }
                     "-MT" => dep_target = it.next(),
+                    // Can't cache Clang modules.
+                    "-fcxx-modules" => return CompilerArguments::CannotCache,
+                    "-fmodules" => return CompilerArguments::CannotCache,
                     // Can't cache PGO profiled output.
                     "-fprofile-use" => return CompilerArguments::CannotCache,
                     // Can't cache commandlines using a response file.
@@ -371,6 +374,14 @@ mod test {
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(CompilerArguments::CannotCache,
                    _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"]));
+    }
+
+    #[test]
+    fn test_parse_arguments_clangmodules() {
+        assert_eq!(CompilerArguments::CannotCache,
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
+        assert_eq!(CompilerArguments::CannotCache,
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
     }
 
     #[test]
