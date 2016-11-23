@@ -19,6 +19,7 @@ use app_dirs::{
 };
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
+use cache::swift::SwiftCache;
 use compiler::Compiler;
 use futures;
 use sha1;
@@ -211,6 +212,15 @@ pub fn storage_from_environment() -> Box<Storage> {
                 return Box::new(s);
             }
             Err(e) => warn!("Failed to create S3Cache: {:?}", e),
+        }
+    } else if let Ok(swift_url) = env::var("SCCACHE_SWIFT") {
+        trace!("Trying SwiftCache({})", swift_url);
+        match SwiftCache::new(&swift_url) {
+            Ok(s) => {
+                trace!("Using SwiftCache");
+                return Box::new(s);
+            }
+            Err(e) => warn!("Failed to create SwiftCache: {:?}", e),
         }
     }
     let d = env::var_os("SCCACHE_DIR")
