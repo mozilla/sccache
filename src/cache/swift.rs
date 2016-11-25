@@ -63,10 +63,10 @@ impl Storage for SwiftCache {
         let r = self.swift.get_object(format!("/{}/{}", self.swift_url, key));
         match r.run_request() {
             Ok(mut resp) => {
-                let mut data = String::new();
-                match resp.read_to_string(&mut data) {
+                let mut body = Vec::new();
+                match resp.read_to_end(&mut body) {
                     Ok(_) => {
-                        CacheRead::from(io::Cursor::new(data))
+                        CacheRead::from(io::Cursor::new(body))
                             .map(Cache::Hit)
                             .unwrap_or_else(Cache::Error)
                     }
