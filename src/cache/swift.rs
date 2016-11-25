@@ -13,6 +13,7 @@ use rust_swiftclient::auth::sessions::KeystoneAuthV2;
 use rust_swiftclient::auth::request::{
     RunSwiftRequest, SwiftConnection
 };
+use hyper::status::StatusCode;
 
 use std::env;
 use std::io::{
@@ -30,6 +31,7 @@ use std::time::Instant;
 pub struct SwiftCache {
     /// Authentication provider
     swift: Arc<SwiftConnection<KeystoneAuthV2>>,
+    // TODO rename to container
     swift_url: String
 }
 
@@ -58,7 +60,7 @@ impl SwiftCache {
 
 impl Storage for SwiftCache {
     fn get(&self, key: &str) -> Cache {
-        let r = self.swift.get_object(String::from(key));
+        let r = self.swift.get_object(format!("/{}/{}", self.swift_url, key));
         match r.run_request() {
             Ok(mut resp) => {
                 let mut data = String::new();
@@ -89,7 +91,7 @@ impl Storage for SwiftCache {
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
         let (complete, promise) = futures::oneshot();
         let swift = self.swift.clone();
-        let key = key.to_owned();
+        let path = format!("/{}/{}", self.swift_url, key);
         thread::spawn(move || {
             let start = Instant::now();
             complete.complete(
@@ -99,10 +101,13 @@ impl Storage for SwiftCache {
                         CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
                         CacheWriteWriter::Cursor(c) => {
                             let data = c.into_inner();
-                            let r = swift.put_object(String::from(key), data);
+                            let r = swift.put_object(path, data);
                             match r.run_request() {
-                                Ok(_) => {
-                                    Ok(start.elapsed())
+                                Ok(resp) => {
+                                    match resp.status {
+                                        StatusCode::Created => Ok(start.elapsed()),
+                                        _ => Err(Error::new(ErrorKind::Other, format!("Unexpected http response code: {:?}", resp.status))),
+                                    }
                                 }
                                 Err(e) => {
                                     Err(Error::new(ErrorKind::Other, format!("Error putting cache entry to swift: {:?}", e)))
