@@ -32,7 +32,7 @@ pub struct SwiftCache {
     /// Authentication provider
     swift: Arc<SwiftConnection<KeystoneAuthV2>>,
     // TODO rename to container
-    swift_url: String
+    swift_container: String
 }
 
 fn get_env_var(name: &str) -> String {
@@ -43,7 +43,7 @@ fn get_env_var(name: &str) -> String {
 }
 
 impl SwiftCache {
-    pub fn new(swift_url: &str) -> io::Result<SwiftCache> {
+    pub fn new(swift_container: &str) -> io::Result<SwiftCache> {
         let auth_url = get_env_var("OS_AUTH_URL");
         let tenant_id = get_env_var("OS_TENANT_ID");
         let username = get_env_var("OS_USERNAME");
@@ -53,14 +53,14 @@ impl SwiftCache {
         let ksauth = KeystoneAuthV2::new(username, password, tenant_id, auth_url, region);
         Ok(SwiftCache {
             swift: Arc::new(SwiftConnection::new(ksauth)),
-            swift_url: String::from(swift_url),
+            swift_container: String::from(swift_container),
         })
     }
 }
 
 impl Storage for SwiftCache {
     fn get(&self, key: &str) -> Cache {
-        let r = self.swift.get_object(format!("/{}/{}", self.swift_url, key));
+        let r = self.swift.get_object(format!("/{}/{}", self.swift_container, key));
         match r.run_request() {
             Ok(mut resp) => {
                 let mut body = Vec::new();
@@ -91,7 +91,7 @@ impl Storage for SwiftCache {
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
         let (complete, promise) = futures::oneshot();
         let swift = self.swift.clone();
-        let path = format!("/{}/{}", self.swift_url, key);
+        let path = format!("/{}/{}", self.swift_container, key);
         thread::spawn(move || {
             let start = Instant::now();
             complete.complete(
@@ -121,6 +121,6 @@ impl Storage for SwiftCache {
     }
 
     fn get_location(&self) -> String {
-        format!("Swift, url: {}", self.swift_url)
+        format!("Swift, url: {}", self.swift_container)
     }
 }

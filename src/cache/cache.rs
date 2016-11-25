@@ -213,9 +213,9 @@ pub fn storage_from_environment() -> Box<Storage> {
             }
             Err(e) => warn!("Failed to create S3Cache: {:?}", e),
         }
-    } else if let Ok(swift_url) = env::var("SCCACHE_SWIFT") {
-        trace!("Trying SwiftCache({})", swift_url);
-        match SwiftCache::new(&swift_url) {
+    } else if let Ok(swift_container) = env::var("SCCACHE_SWIFT") {
+        trace!("Trying SwiftCache({})", swift_container);
+        match SwiftCache::new(&swift_container) {
             Ok(s) => {
                 trace!("Using SwiftCache");
                 return Box::new(s);
