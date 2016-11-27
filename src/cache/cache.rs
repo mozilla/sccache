@@ -182,8 +182,16 @@ fn parse_size(val: &str) -> Option<usize> {
 /// Get a suitable `Storage` implementation from the environment.
 pub fn storage_from_environment() -> Box<Storage> {
     if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
-        trace!("Trying S3Cache({})", bucket);
-        match S3Cache::new(&bucket) {
+        let endpoint = match env::var("SCCACHE_ENDPOINT") {
+            Ok(endpoint) => format!("{}/{}", endpoint, bucket),
+            _ => match env::var("SCCACHE_REGION") {
+                Ok(ref region) if region != "us-east-1" =>
+                    format!("{}.s3-{}.amazonaws.com", bucket, region),
+                _ => String::from("s3.amazonaws.com"),
+            },
+        };
+        debug!("Trying S3Cache({})", endpoint);
+        match S3Cache::new(&bucket, &endpoint) {
             Ok(s) => {
                 trace!("Using S3Cache");
                 return Box::new(s);

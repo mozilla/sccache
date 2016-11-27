@@ -50,7 +50,7 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str) -> io::Result<S3Cache> {
+    pub fn new(bucket: &str, endpoint: &str) -> io::Result<S3Cache> {
         let home = try!(env::home_dir().ok_or(Error::new(ErrorKind::Other, "Couldn't find home directory")));
         let profile_providers = vec![
             ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
@@ -61,7 +61,7 @@ impl S3Cache {
             ];
         let provider = AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_providers(profile_providers)).ok().map(Arc::new);
         //TODO: configurable SSL
-        let bucket = Arc::new(Bucket::new(bucket, Ssl::No));
+        let bucket = Arc::new(Bucket::new(bucket, endpoint, Ssl::No));
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
