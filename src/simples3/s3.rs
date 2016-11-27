@@ -26,17 +26,13 @@ pub enum Ssl {
     No,
 }
 
-fn base_url(bucket_name: &str, ssl: Ssl, region: Option<&str>) -> String {
-    format!("{}://{}.s3{}.amazonaws.com/",
+fn base_url(endpoint: &str, ssl: Ssl) -> String {
+    format!("{}://{}/",
             match ssl {
                 Ssl::Yes => "https",
                 Ssl::No => "http",
             },
-            bucket_name,
-            match region {
-                Some(ref r) => format!("-{}", r),
-                None => String::new(),
-            })
+            endpoint)
 }
 
 fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
@@ -71,8 +67,8 @@ pub enum S3Error {
 }
 
 impl Bucket {
-    pub fn new(name: &str, ssl: Ssl) -> Bucket {
-        let base_url = base_url(&name, ssl, None);
+    pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Bucket {
+        let base_url = base_url(&endpoint, ssl);
         Bucket {
             name: name.to_owned(),
             base_url: base_url,
