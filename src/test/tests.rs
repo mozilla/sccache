@@ -38,6 +38,7 @@ use std::io::{
 use std::path::Path;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
+use std::usize;
 use test::utils::*;
 
 /// Options for running the server in tests.
@@ -45,6 +46,8 @@ use test::utils::*;
 struct ServerOptions {
     /// The server's idle shutdown timeout.
     idle_timeout: Option<u64>,
+    /// The maximum size of the disk cache.
+    cache_size: Option<usize>,
 }
 
 /// Run a server on a background thread, and return a tuple of useful things.
@@ -56,13 +59,13 @@ struct ServerOptions {
 ///   use for all process creation.
 /// * The `JoinHandle` for the server thread.
 fn run_server_thread<T: Into<Option<ServerOptions>> + Send + 'static>(cache_dir: &Path, options: T) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
+    let options = options.into();
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
-    let storage = Box::new(DiskCache::new(&cache_dir));
+    let storage = Box::new(DiskCache::new(&cache_dir, options.as_ref().and_then(|o| o.cache_size.as_ref()).map(|s| *s).unwrap_or(usize::MAX)));
     let handle = thread::spawn(move || {
         let (mut server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0, storage).unwrap();
         assert!(server.port() > 0);
-        let options = options.into();
         if let Some(options) = options {
             if let Some(timeout) = options.idle_timeout {
                  server.set_idle_timeout(timeout);
@@ -94,7 +97,7 @@ fn test_server_shutdown() {
 fn test_server_idle_timeout() {
     let f = TestFixture::new();
     // Set a ridiculously low idle timeout.
-    let (_, _, _, child) = run_server_thread(&f.tempdir.path(), ServerOptions { idle_timeout: Some(1)});
+    let (_, _, _, child) = run_server_thread(&f.tempdir.path(), ServerOptions { idle_timeout: Some(1), .. Default::default() });
     // Don't connect to it.
     // Ensure that it shuts down.
     // It would be nice to have an explicit timeout here so we don't hang

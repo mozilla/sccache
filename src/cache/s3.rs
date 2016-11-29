@@ -17,7 +17,6 @@ use cache::{
     CacheRead,
     CacheWrite,
     CacheWriteFuture,
-    CacheWriteWriter,
     Storage,
 };
 use futures::{self,Future};
@@ -94,7 +93,7 @@ impl Storage for S3Cache {
 
     fn start_put(&self, _key: &str) -> io::Result<CacheWrite> {
         // Just hand back an in-memory buffer.
-        Ok(CacheWrite::new(io::Cursor::new(vec!())))
+        Ok(CacheWrite::new())
     }
 
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
@@ -104,30 +103,26 @@ impl Storage for S3Cache {
         thread::spawn(move || {
             let start = Instant::now();
             complete.complete(entry.finish()
-                              .and_then(|writer| {
-                                  match writer {
-                                      // This should never happen.
-                                      CacheWriteWriter::File(_) => Err(Error::new(ErrorKind::Other, "Bad CacheWrite?")),
-                                      CacheWriteWriter::Cursor(c) => {
-                                          this.provider
-                                              .as_ref()
-                                              .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
-                                              .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
-                                              .and_then(|credentials| {
-                                                  let data = c.into_inner();
-                                                  let key = normalize_key(&key);
-                                                  this.bucket.put(&key, &data, &credentials)
-                                                      .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
-                                              })
-                                              .map(|_| start.elapsed())
-                                      }
-                                  }
+                              .and_then(|data| {
+                                  this.provider
+                                      .as_ref()
+                                      .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
+                                      .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
+                                      .and_then(|credentials| {
+                                          let key = normalize_key(&key);
+                                          this.bucket.put(&key, &data, &credentials)
+                                              .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
+                                      })
+                                      .map(|_| start.elapsed())
                               }).map_err(|e| format!("{}", e)));
         });
         promise.boxed()
     }
 
-    fn get_location(&self) -> String {
+    fn location(&self) -> String {
         format!("S3, bucket: {}", self.bucket)
     }
+
+    fn current_size(&self) -> Option<usize> { None }
+    fn max_size(&self) -> Option<usize> { None }
 }

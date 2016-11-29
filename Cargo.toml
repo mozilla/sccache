@@ -15,6 +15,7 @@ hyper = { version = "0.9.10", default-features = false }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
+lru-disk-cache = { path = "lru-disk-cache" }
 mio = "0.5"
 number_prefix = "0.2.5"
 protobuf = "1.0.18"
@@ -36,3 +37,5 @@ daemonize = "0.2.3"
 
 [profile.release]
 debug = true
+
+[workspace]

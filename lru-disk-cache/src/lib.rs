@@ -135,6 +135,12 @@ impl LruDiskCache {
     /// Return the current size of all the files in the cache.
     pub fn size(&self) -> usize { self.lru.size() }
 
+    /// Return the maximum size of the cache.
+    pub fn capacity(&self) -> usize { self.lru.capacity() }
+
+    /// Return the path in which the cache is stored.
+    pub fn path(&self) -> &Path { self.root.as_path() }
+
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
         try!(fs::create_dir_all(&self.root));

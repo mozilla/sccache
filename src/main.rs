@@ -26,6 +26,7 @@ extern crate kernel32;
 extern crate local_encoding;
 #[macro_use]
 extern crate log;
+extern crate lru_disk_cache;
 extern crate fern;
 extern crate libc;
 extern crate mio;

@@ -613,8 +613,18 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
 
         let mut stat = CacheStatistic::new();
         stat.set_name(String::from("Cache location"));
-        stat.set_str(self.storage.get_location());
+        stat.set_str(self.storage.location());
         stats_vec.insert(0, stat);
+
+        for &(s, v) in [("Cache size", self.storage.current_size()),
+                       ("Max cache size", self.storage.max_size())].iter() {
+            v.map(|val| {
+                let mut stat = CacheStatistic::new();
+                stat.set_name(String::from(s));
+                stat.set_size(val as u64);
+                stats_vec.insert(0, stat);
+            });
+        }
 
         stats.set_stats(RepeatedField::from_vec(stats_vec));
         stats
