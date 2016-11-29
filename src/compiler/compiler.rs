@@ -502,6 +502,7 @@ mod test {
     use mock_command::*;
     use std::fs::{self,File};
     use std::io::Write;
+    use std::usize;
     use test::utils::*;
 
     #[test]
@@ -578,7 +579,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path());
+        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -638,7 +639,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path());
+        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -697,7 +698,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path());
+        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),

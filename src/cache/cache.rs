@@ -21,13 +21,12 @@ use cache::disk::DiskCache;
 use cache::s3::S3Cache;
 use compiler::Compiler;
 use futures;
+use regex::Regex;
 use sha1;
 use std::env;
 use std::fmt;
-use std::fs::File;
 use std::io::{
     self,
-    Cursor,
     Error,
     ErrorKind,
     Read,
@@ -35,6 +34,7 @@ use std::io::{
     Write,
 };
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 use zip::{
     CompressionMethod,
@@ -47,6 +47,8 @@ const APP_INFO: AppInfo = AppInfo {
     name: "sccache",
     author: "Mozilla",
 };
+
+const TEN_GIGS: usize = 10 * 1024 * 1024 * 1024;
 
 /// Result of a cache lookup.
 pub enum Cache {
@@ -98,36 +100,6 @@ impl CacheRead {
     }
 }
 
-/// `ZipType` stores concrete `ZipWriter` types for `CacheWrite`.
-///
-/// This is necessary so some cache types can back a `ZipWriter` with
-/// a `Cursor` and then get it back to store the data after adding
-/// all the zip entries.
-pub enum ZipType {
-    /// A `File`.
-    File(ZipWriter<File>),
-    /// A `Cursor`.
-    Cursor(ZipWriter<Cursor<Vec<u8>>>),
-}
-
-/// As per `ZipType`.
-pub enum CacheWriteWriter {
-    File(File),
-    Cursor(Cursor<Vec<u8>>),
-}
-
-impl From<File> for ZipType {
-    fn from(f: File) -> ZipType {
-        ZipType::File(ZipWriter::new(f))
-    }
-}
-
-impl From<Cursor<Vec<u8>>> for ZipType {
-    fn from(c: Cursor<Vec<u8>>) -> ZipType {
-        ZipType::Cursor(ZipWriter::new(c))
-    }
-}
-
 /// Result of writing to cache storage.
 pub type CacheWriteResult = Result<Duration, String>;
 
@@ -136,45 +108,30 @@ pub type CacheWriteFuture = futures::BoxFuture<CacheWriteResult, futures::Cancel
 
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
-    zip: ZipType,
+    zip: ZipWriter<io::Cursor<Vec<u8>>>,
 }
 
 impl CacheWrite {
-    /// Create a new, empty cache entry that writes to `writer`.
-    pub fn new<W>(writer: W) -> CacheWrite where W: Into<ZipType> {
+    /// Create a new, empty cache entry.
+    pub fn new() -> CacheWrite {
         CacheWrite {
-            zip: writer.into(),
+            zip: ZipWriter::new(io::Cursor::new(vec!())),
         }
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
     pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> io::Result<()> {
-        // Yeah, this sucks.
-        //TODO: figure something better out here.
-        match &mut self.zip {
-            &mut ZipType::File(ref mut zf) => {
-                try!(zf.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
-                try!(io::copy(from, zf));
-            }
-            &mut ZipType::Cursor(ref mut zc) => {
-                try!(zc.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
-                try!(io::copy(from, zc));
-            }
-        };
+        try!(self.zip.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
+        try!(io::copy(from, &mut self.zip));
         Ok(())
     }
 
-    /// Finish writing data to the cache entry writer, and return the writer.
-    pub fn finish(self) -> io::Result<CacheWriteWriter> {
-        let CacheWrite { zip } = self;
-        match zip {
-            ZipType::File(mut zf) => {
-                Ok(CacheWriteWriter::File(try!(zf.finish().or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip"))))))
-            }
-            ZipType::Cursor(mut zc) => {
-                Ok(CacheWriteWriter::Cursor(try!(zc.finish().or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip"))))))
-            }
-        }
+    /// Finish writing data to the cache entry writer, and return the data.
+    pub fn finish(self) -> io::Result<Vec<u8>> {
+        let CacheWrite { mut zip } = self;
+        zip.finish()
+            .or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip")))
+            .map(|cur| cur.into_inner())
     }
 }
 
@@ -198,7 +155,28 @@ pub trait Storage: Send + Sync {
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture;
 
     /// Get the storage location.
-    fn get_location(&self) -> String;
+    fn location(&self) -> String;
+
+    /// Get the current storage usage, if applicable.
+    fn current_size(&self) -> Option<usize>;
+
+    /// Get the maximum storage size, if applicable.
+    fn max_size(&self) -> Option<usize>;
+}
+
+fn parse_size(val: &str) -> Option<usize> {
+    let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
+    re.captures(val)
+        .and_then(|caps| caps.at(1).and_then(|size| usize::from_str(size).ok()).and_then(|size| Some((size, caps.at(2)))))
+        .and_then(|(size, suffix)| {
+            match suffix {
+                Some("K") => Some(1024 * size),
+                Some("M") => Some(1024 * 1024 * size),
+                Some("G") => Some(1024 * 1024 * 1024 * size),
+                Some("T") => Some(1024 * 1024 * 1024 * 1024 * size),
+                _ => None,
+            }
+        })
 }
 
 /// Get a suitable `Storage` implementation from the environment.
@@ -219,7 +197,12 @@ pub fn storage_from_environment() -> Box<Storage> {
         // Fall back to something, even if it's not very good.
         .unwrap_or(env::temp_dir().join("sccache_cache"));
     trace!("Using DiskCache({:?})", d);
-    Box::new(DiskCache::new(&d))
+    let cache_size = env::var("SCCACHE_CACHE_SIZE")
+        .ok()
+        .and_then(|v| parse_size(&v))
+        .unwrap_or(TEN_GIGS);
+    trace!("DiskCache size: {}", cache_size);
+    Box::new(DiskCache::new(&d, cache_size))
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
@@ -257,6 +240,17 @@ pub fn hash_key(compiler: &Compiler, args: &[String], preprocessor_output: &[u8]
     }
     m.update(preprocessor_output);
     m.digest().to_string()
+}
+
+
+#[test]
+fn test_parse_size() {
+    assert_eq!(None, parse_size(""));
+    assert_eq!(None, parse_size("100"));
+    assert_eq!(Some(2048), parse_size("2K"));
+    assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
+    assert_eq!(Some(TEN_GIGS), parse_size("10G"));
+    assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
 }
 
 #[cfg(test)]

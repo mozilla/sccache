@@ -20,71 +20,82 @@ use cache::{
     Storage,
 };
 use futures::{self,Future};
+use lru_disk_cache::LruDiskCache;
+use lru_disk_cache::Error as LruError;
 use std::ffi::OsStr;
-use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Instant;
 
 /// A cache that stores entries at local disk paths.
 #[derive(Clone)]
 pub struct DiskCache {
-    /// The root directory of the cache.
-    root: PathBuf,
+    /// `LruDiskCache` does all the real work here.
+    lru: Arc<Mutex<LruDiskCache>>,
 }
 
 impl DiskCache {
-    /// Create a new `DiskCache` rooted at `root`.
-    pub fn new<T: AsRef<OsStr>>(root: &T) -> DiskCache {
+    /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
+    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: usize) -> DiskCache {
         DiskCache {
-            root: PathBuf::from(root),
+            //TODO: change this function to return a Result
+            lru: Arc::new(Mutex::new(LruDiskCache::new(root, max_size).expect("Couldn't instantiate disk cache!"))),
         }
     }
 }
 
 /// Make a path to the cache entry with key `key`.
-fn make_key_path(root: &Path, key: &str) -> PathBuf {
-    root.join(&key[0..1]).join(&key[1..2]).join(key)
+fn make_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
 impl Storage for DiskCache {
     fn get(&self, key: &str) -> Cache {
         trace!("DiskCache::get({})", key);
-        match File::open(make_key_path(&self.root, key))
-            .and_then(CacheRead::from) {
-                Err(e) => match e.kind() {
-                    // If the file doesn't exist it's just a cache miss.
-                    io::ErrorKind::NotFound => Cache::Miss,
-                    // Otherwise propogate the error upward.
-                    _ => Cache::Error(e),
-                },
-                Ok(cache_read) => Cache::Hit(cache_read),
+        match self.lru.lock().unwrap().get(make_key_path(key)) {
+            Err(LruError::FileNotInCache) => Cache::Miss,
+            Err(LruError::Io(e)) => Cache::Error(e),
+            Ok(f) => {
+                match CacheRead::from(f) {
+                    Err(e) => Cache::Error(e),
+                    Ok(cache_read) => Cache::Hit(cache_read),
+                }
             }
+            Err(_) => panic!("Unexpected error!"),
+        }
     }
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
         trace!("DiskCache::start_put({})", key);
-        let path = make_key_path(&self.root, key);
-        try!(path.parent().ok_or(io::Error::new(io::ErrorKind::Other, "No parent directory?")).and_then(fs::create_dir_all));
-        File::create(&path)
-            .or_else(|e| {
-                error!("Failed to create cache entry `{:?}`: {:?}", path, e);
-                Err(e)
-            })
-            .map(CacheWrite::new)
+        Ok(CacheWrite::new())
     }
 
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
-        // There's not much point in trying to do this on a background
-        // thread, since most of the disk I/O should be done already.
+        // We should probably do this on a background thread if we're going to buffer
+        // everything in memory...
         trace!("DiskCache::finish_put({})", key);
-        let start = Instant::now();
-        // Dropping the ZipWriter is enough to finish it.
-        drop(entry);
-        futures::finished(Ok(start.elapsed())).boxed()
+        let (complete, promise) = futures::oneshot();
+        let lru = self.lru.clone();
+        let key = make_key_path(key);
+        thread::spawn(move || {
+            let start = Instant::now();
+            complete.complete(entry.finish()
+                              .map_err(|e| format!("{}", e))
+                              .and_then(|v| {
+                                  lru.lock().unwrap().insert_bytes(key, &v)
+                                      .map(|_| start.elapsed())
+                                      .map_err(|e| format!("{}", e))
+                              }));
+        });
+        promise.boxed()
     }
 
-    fn get_location(&self) -> String {
-        format!("Local disk: {:?}", self.root)
+    fn location(&self) -> String {
+        format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
+
+    fn current_size(&self) -> Option<usize> { Some(self.lru.lock().unwrap().size()) }
+    fn max_size(&self) -> Option<usize> { Some(self.lru.lock().unwrap().capacity()) }
 }
