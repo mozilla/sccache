@@ -191,11 +191,17 @@ fn test_sccache_command() {
         Err(_) => {},
     }
     let tempdir = TempDir::new("sccache_system_test").unwrap();
-    let sccache = env::current_exe().unwrap().parent().unwrap().join("sccache").with_extension(env::consts::EXE_EXTENSION);
-    match fs::metadata(&sccache) {
-        Ok(_) => {},
-        Err(_) => panic!("Error: sccache binary not found at `{:?}. Do you need to run `cargo build`?", sccache),
-    }
+    // Older versions of cargo put the test binary next to the sccache binary.
+    // Newer versions put it in the deps/ subdirectory.
+    let exe = env::current_exe().unwrap();
+    let this_dir = exe.parent().unwrap();
+    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
+    let sccache = dirs
+        .iter()
+        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
+        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
+        .next()
+        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs));
     let compilers = find_compilers();
     if compilers.is_empty() {
         assert!(true, "No compilers found, skipping test");
