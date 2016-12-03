@@ -1,0 +1,14 @@
+[package]
+name = "lru-disk-cache"
+version = "0.1.0"
+authors = ["Ted Mielczarek <ted@mielczarek.org>"]
+
+[dependencies]
+env_logger = "0.3.3"
+libc = "0.2.10"
+log = "0.3.6"
+lru-cache = { git = "https://github.com/luser/lru-cache", branch = "cache-meter-trait" }
+walkdir = "1"
+
+[dev-dependencies]
+tempdir = "0.3.4"
