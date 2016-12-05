@@ -13,8 +13,17 @@ Sccache can also be used with local storage instead of remote.
 Requirements
 ------------
 
-Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very portable, see [scripts/build-release.sh](blob/master/scripts/build-release.sh).
+Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`).
 
+We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very portable, see [scripts/build-release.sh](scripts/build-release.sh).
+
+## Build
+
+> $ cargo build [--release]
+
+## Installation
+
+> $ cargo install
 
 Usage
 -----
