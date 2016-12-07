@@ -1,5 +1,5 @@
 extern crate env_logger;
-extern crate libc;
+extern crate filetime;
 #[macro_use]
 extern crate log;
 extern crate lru_cache;
@@ -19,11 +19,10 @@ use std::fmt;
 use std::fs::{self,File};
 use std::io;
 use std::hash::BuildHasher;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path,PathBuf};
-use std::ptr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use libc::futimes;
+use filetime::{FileTime, set_file_times};
 use lru_cache::{LruCache,Meter};
 use walkdir::WalkDir;
 
@@ -113,6 +112,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub trait ReadSeek: Read + Seek {}
 
 impl<T: Read + Seek> ReadSeek for T {}
+
+fn filetime_now() -> FileTime {
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    FileTime::from_seconds_since_1970(d.as_secs(), d.subsec_nanos())
+}
 
 impl LruDiskCache {
     /// Create an `LruDiskCache` that stores files in `path`, limited to `size` bytes.
@@ -232,9 +236,9 @@ impl LruDiskCache {
         self.lru.get(key.as_ref())
             .ok_or(Error::FileNotInCache)
             .and_then(|&(ref path, _)| {
-                let f = try!(File::open(path));
-                assert_eq!(0, unsafe { futimes(f.as_raw_fd(), ptr::null_mut()) });
-                Ok(Box::new(f) as Box<ReadSeek>)
+                let t = filetime_now();
+                try!(set_file_times(path, t, t));
+                Ok(Box::new(try!(File::open(path))) as Box<ReadSeek>)
             })
     }
 }
@@ -243,10 +247,9 @@ impl LruDiskCache {
 mod tests {
     use super::{LruDiskCache, Error};
 
-    use libc::{fstat, futimes, stat, timeval, time_t};
+    use filetime::{FileTime, set_file_times};
     use std::fs::{self,File};
     use std::io::{self, Read, Write};
-    use std::mem;
     use std::path::{Path,PathBuf};
     use tempdir::TempDir;
 
@@ -265,18 +268,10 @@ mod tests {
 
     /// Set the last modified time of `path` backwards by `seconds` seconds.
     fn set_mtime_back<T: AsRef<Path>>(path: T, seconds: usize) {
-        use std::os::unix::io::AsRawFd;
-        //TODO: use a crate to make this work on non-unix
-        let f = File::open(path).unwrap();
-        let fd = f.as_raw_fd();
-        let mut s: stat = unsafe { mem::zeroed() };
-        assert_eq!(0, unsafe { fstat(fd, &mut s as *mut stat) });
-        let tm = timeval {
-            tv_sec: s.st_mtime - seconds as time_t,
-            tv_usec: 0,
-        };
-        let times = vec![tm.clone(), tm];
-        assert_eq!(0, unsafe { futimes(fd, times.as_ptr()) });
+        let m = fs::metadata(path.as_ref()).unwrap();
+        let t = FileTime::from_last_modification_time(&m);
+        let t = FileTime::from_seconds_since_1970(t.seconds() - seconds as u64, t.nanoseconds());
+        set_file_times(path, t, t).unwrap();
     }
 
     fn read_all<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
