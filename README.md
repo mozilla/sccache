@@ -43,7 +43,7 @@ Running `sccache --show-stats` will print a summary of cache statistics.
 Storage Options
 ---------------
 
-sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, `~/Library/Caches/sccache` on OS X. See [Known Caveats](#known-caveats) before using local disk cache!
+sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, `~/Library/Caches/sccache` on OS X.
 
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
 
@@ -58,5 +58,4 @@ Known caveats
 * Sccache doesn't try to be smart about the command line arguments it uses when computing a key for a given compilation result (like skipping preprocessor-specific arguments)
 * It doesn't support all kinds of compiler flags, and is certainly broken with a few of them. Really only the flags used during Firefox builds have been tested.
 * It doesn't support ccache's direct mode.
-* [Local storage mode doesn't do any kind of cleanup](https://github.com/mozilla/sccache/issues/29). The cache will keep growing indefinitely.
 * [It doesn't support an option like `CCACHE_BASEDIR`](https://github.com/mozilla/sccache/issues/35).
