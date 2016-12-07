@@ -263,7 +263,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "lru-cache"
 version = "0.1.0"
-source = "git+https://github.com/luser/lru-cache?branch=cache-meter-trait#db3260dadfa4c7845b589d91ebc5df89edebfde7"
+source = "git+https://github.com/luser/lru-cache?branch=non-mut-get#94ac965a95fae83359ee23e78beeca32cc6bb5b2"
 dependencies = [
  "linked-hash-map 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -275,7 +275,7 @@ dependencies = [
  "env_logger 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "filetime 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "lru-cache 0.1.0 (git+https://github.com/luser/lru-cache?branch=cache-meter-trait)",
+ "lru-cache 0.1.0 (git+https://github.com/luser/lru-cache?branch=non-mut-get)",
  "tempdir 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "walkdir 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -779,7 +779,7 @@ dependencies = [
 "checksum linked-hash-map 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "bda158e0dabeb97ee8a401f4d17e479d6b891a14de0bba79d5cc2d4d325b5e48"
 "checksum local-encoding 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "e1ceb20f39ff7ae42f3ff9795f3986b1daad821caaa1e1732a0944103a5a1a66"
 "checksum log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)" = "ab83497bf8bf4ed2a74259c1c802351fcd67a65baa86394b6ba73c36f4838054"
-"checksum lru-cache 0.1.0 (git+https://github.com/luser/lru-cache?branch=cache-meter-trait)" = "<none>"
+"checksum lru-cache 0.1.0 (git+https://github.com/luser/lru-cache?branch=non-mut-get)" = "<none>"
 "checksum matches 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "15305656809ce5a4805b1ff2946892810992197ce1270ff79baded852187942e"
 "checksum memchr 0.1.11 (registry+https://github.com/rust-lang/crates.io-index)" = "d8b629fb514376c675b98c1421e80b151d3817ac42d7c667717d282761418d20"
 "checksum mime 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "cf93a79c700c9df8227ec6a4f0f27a8948373c079312bac24549d944cef85f64"
