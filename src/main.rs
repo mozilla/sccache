@@ -34,6 +34,7 @@ extern crate protobuf;
 extern crate regex;
 extern crate retry;
 extern crate rustc_serialize;
+extern crate rust_swiftclient;
 extern crate serde_json;
 extern crate sha1;
 extern crate tempdir;

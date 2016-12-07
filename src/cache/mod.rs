@@ -15,5 +15,6 @@
 pub mod cache;
 pub mod disk;
 pub mod s3;
+pub mod swift;
 
 pub use cache::cache::*;
