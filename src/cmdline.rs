@@ -48,7 +48,7 @@ pub enum Command {
 
 /// Get the `App` used for argument parsing.
 fn get_app<'a, 'b>() -> App<'a, 'b> {
-    App::new("sccache")
+    App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .setting(AppSettings::TrailingVarArg)
         .args_from_usage(
