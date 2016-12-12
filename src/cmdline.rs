@@ -20,6 +20,7 @@ use clap::{
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use which::which_in;
 
 /// A specific command to run.
 pub enum Command {
@@ -71,13 +72,48 @@ fn usage() -> Command {
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Command {
     trace!("parse");
-    let matches = get_app().get_matches();
-
+    let cwd = if let Ok(cwd) = env::current_dir() {
+        cwd
+    } else {
+        println!("sccache: Couldn't determine current working directory");
+        return usage();
+    };
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",
         Err(_) => false,
     };
+    let mut args: Vec<_> = env::args_os().collect();
+    if ! internal_start_server {
+        if let Ok(exe) = env::current_exe() {
+            match exe.file_stem().and_then(|s| s.to_str()).map(|s| s.to_lowercase()) {
+                // If the executable has its standard name, do nothing.
+                Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
+                // Otherwise, if it was copied/hardlinked under a different $name, act
+                // as if it were invoked with `sccache $name`, but avoid $name resolving
+                // to ourselves again if it's in the PATH.
+                _ => {
+                    let path = env::var_os("PATH");
+                    match which_in(exe.file_name().unwrap(), path.as_ref(), &cwd) {
+                        Ok(ref full_path) if full_path.canonicalize().unwrap() == exe.canonicalize().unwrap() => {
+                            if let Some(dir) = full_path.parent() {
+                                let path = env::join_paths(env::split_paths(&path.unwrap()).filter(|p| p != dir)).ok();
+                                match which_in(exe.file_name().unwrap(), path, &cwd) {
+                                    Ok(full_path) => args[0] = full_path.into(),
+                                    Err(_) => { }
+                                }
+                            }
+                        }
+                        Ok(full_path) => args[0] = full_path.into(),
+                        Err(_) => { }
+                    }
+                    args.insert(0, env!("CARGO_PKG_NAME").into());
+                }
+            }
+        }
+    }
+    let matches = get_app().get_matches_from(args);
+
     let show_stats = matches.is_present("show-stats");
     let start_server = matches.is_present("start-server");
     let stop_server = matches.is_present("stop-server");
@@ -106,20 +142,15 @@ pub fn parse() -> Command {
     } else if stop_server {
         Command::StopServer
     } else if let Some(mut args) = cmd {
-        if let Ok(cwd) = env::current_dir() {
-            if let Some(exe) = args.next() {
-                let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
-                Command::Compile {
-                    exe: exe.to_owned(),
-                    cmdline: cmdline,
-                    cwd: cwd,
-                }
-            } else {
-                println!("sccache: No compile command");
-                usage()
+        if let Some(exe) = args.next() {
+            let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
+            Command::Compile {
+                exe: exe.to_owned(),
+                cmdline: cmdline,
+                cwd: cwd,
             }
         } else {
-            println!("sccache: Couldn't determine current working directory");
+            println!("sccache: No compile command");
             usage()
         }
     } else {
