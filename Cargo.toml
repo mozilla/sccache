@@ -35,6 +35,11 @@ zip = { version = "0.1", default-features = false }
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"
 
+[features]
+default = []
+# Enable features that require unstable features of Nightly Rust.
+unstable = []
+
 [profile.release]
 debug = true
 

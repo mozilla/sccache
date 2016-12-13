@@ -70,42 +70,66 @@ use std::sync::{Arc,Mutex};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 pub trait CommandChild {
+    /// The type of the process' standard input.
     type I: Write + Sync + Send + 'static;
+    /// The type of the process' standard output.
     type O: Read + Sync + Send + 'static;
+    /// The type of the process' standard error.
     type E: Read + Sync + Send + 'static;
 
+    /// Take the stdin object from the process, if available.
     fn take_stdin(&mut self) -> Option<Self::I>;
+    /// Take the stdout object from the process, if available.
     fn take_stdout(&mut self) -> Option<Self::O>;
+    /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
+    /// Wait for the process to complete and return its exit status.
     fn wait(&mut self) -> io::Result<ExitStatus>;
+    /// Wait for the process to complete and return its output.
     fn wait_with_output(self) -> io::Result<Output>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
-pub trait RunCommand : fmt::Debug {
+pub trait RunCommand: fmt::Debug {
+    /// The type returned by `spawn`.
     type C: CommandChild + 'static;
 
+    /// Append `arg` to the process commandline.
     fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self;
+    /// Append `args` to the process commandline.
     fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Self;
+    /// Set the working directory of the process to `dir`.
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self;
+    /// Create the proces without a visible console on Windows.
+    fn no_console(&mut self) -> &mut Self;
+    /// Set the process' stdin from `cfg`.
     fn stdin(&mut self, cfg: Stdio) -> &mut Self;
+    /// Set the process' stdout from `cfg`.
     fn stdout(&mut self, cfg: Stdio) -> &mut Self;
+    /// Set the process' stderr from `cfg`.
     fn stderr(&mut self, cfg: Stdio) -> &mut Self;
+    /// Execute the process and return a process object.
     fn spawn(&mut self) -> io::Result<Self::C>;
 }
 
 /// A trait that provides a means to create objects implementing `RunCommand`.
 ///
 /// This is provided so that `MockCommandCreator` can have state for testing.
-pub trait CommandCreator : Send {
+/// For the non-testing scenario, `ProcessCommandCreator` is simply a unit
+/// struct with a trivial implementation of this.
+pub trait CommandCreator: Send {
+    /// The type returned by `new_command`.
     type Cmd: RunCommand;
 
+    /// Create a new instance of this type.
     fn new() -> Self;
+    /// Create a new object that implements `RunCommand` that can be used
+    /// to create a new process.
     fn new_command<S: AsRef<OsStr>>(&mut self, program: S) -> Self::Cmd;
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync : Clone + Send {
+pub trait CommandCreatorSync: Clone + Send {
     type Cmd: RunCommand;
 
     fn new() -> Self;
@@ -143,6 +167,19 @@ impl RunCommand for Command {
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Command {
         self.current_dir(dir)
     }
+
+    #[cfg(all(windows, feature = "unstable"))]
+    fn no_console(&mut self) -> &mut Command {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+
+    #[cfg(not(all(windows, feature = "unstable")))]
+    fn no_console(&mut self) -> &mut Command {
+        self
+    }
+
     fn stdin(&mut self, cfg: Stdio) -> &mut Command {
         self.stdin(cfg)
     }
@@ -302,6 +339,9 @@ impl RunCommand for MockCommand {
     }
     fn current_dir<P: AsRef<Path>>(&mut self, _dir: P) -> &mut MockCommand {
         //TODO: assert value of dir
+        self
+    }
+    fn no_console(&mut self) -> &mut MockCommand {
         self
     }
     fn stdin(&mut self, _cfg: Stdio) -> &mut MockCommand {

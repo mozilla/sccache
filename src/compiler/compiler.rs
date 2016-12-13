@@ -488,7 +488,9 @@ pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Op
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
 pub fn run_input_output<C: RunCommand>(mut command: C, input: Option<Vec<u8>>) -> io::Result<process::Output> {
-    command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
+    command
+        .no_console()
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
