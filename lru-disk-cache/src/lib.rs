@@ -56,7 +56,7 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<Iterator<Item=(PathBuf, u64)>> 
         .collect();
     // Sort by last-modified-time, so oldest file first.
     files.sort_by_key(|k| k.0);
-    Box::new(files.into_iter().map(|(mtime, path, size)| { println!("Found file {:?}, mtime {:?}, size {}", path, mtime, size); (path, size) }))
+    Box::new(files.into_iter().map(|(_mtime, path, size)| (path, size)))
 }
 
 /// An LRU cache of files on disk.

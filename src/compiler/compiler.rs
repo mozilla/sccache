@@ -499,6 +499,7 @@ pub fn run_input_output<C: RunCommand>(mut command: C, input: Option<Vec<u8>>) -
 mod test {
     use super::*;
     use cache::disk::DiskCache;
+    use futures::Future;
     use mock_command::*;
     use std::fs::{self,File};
     use std::io::Write;
@@ -579,7 +580,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -608,10 +609,13 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert!(match cached {
-            CompileResult::CacheMiss(MissType::Normal, _) => true,
-            _ => false,
-        });
+        match cached {
+            CompileResult::CacheMiss(MissType::Normal, f) => {
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap().unwrap();
+            }
+            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+        }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -639,7 +643,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -668,10 +672,14 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert!(match cached {
-            CompileResult::CacheMiss(MissType::Normal, _) => true,
-            _ => false,
-        });
+        match cached {
+            CompileResult::CacheMiss(MissType::Normal, f) => {
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap().unwrap();
+            }
+            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+        }
+
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -698,7 +706,7 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path(), usize::MAX);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -731,10 +739,13 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert!(match cached {
-            CompileResult::CacheMiss(MissType::Normal, _) => true,
-            _ => false,
-        });
+        match cached {
+            CompileResult::CacheMiss(MissType::Normal, f) => {
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap().unwrap();
+            }
+            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+        }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -743,10 +754,13 @@ mod test {
         let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::ForceRecache).unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
-        assert!(match cached {
-            CompileResult::CacheMiss(MissType::ForcedRecache, _) => true,
-            _ => false,
-        });
+        match cached {
+            CompileResult::CacheMiss(MissType::ForcedRecache, f) => {
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap().unwrap();
+            }
+            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+        }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
