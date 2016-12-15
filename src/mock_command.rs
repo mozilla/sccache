@@ -259,7 +259,7 @@ pub struct MockChild {
 impl MockChild {
     /// Create a `MockChild` that will return the specified `status`, `stdout`, and `stderr` when waited upon.
     #[allow(dead_code)]
-    pub fn new<T: AsRef<[u8]>>(status: ExitStatus, stdout: T, stderr: T) -> MockChild {
+    pub fn new<T: AsRef<[u8]>, U: AsRef<[u8]>>(status: ExitStatus, stdout: T, stderr: U) -> MockChild {
         MockChild {
             stdin: Some(io::Cursor::new(vec!())),
             stdout: Some(io::Cursor::new(stdout.as_ref().to_vec())),

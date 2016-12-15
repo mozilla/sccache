@@ -20,7 +20,7 @@ use ::compiler::{
     run_input_output,
 };
 use local_encoding::{Encoding, Encoder};
-use log::LogLevel::Trace;
+use log::LogLevel::{Debug, Trace};
 use mock_command::{
     CommandCreatorSync,
     RunCommand,
@@ -244,7 +244,7 @@ pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, p
         cmd.arg("-showIncludes");
     }
 
-    if log_enabled!(Trace) {
+    if log_enabled!(Debug) {
         debug!("preprocess: {:?}", cmd);
     }
 
@@ -318,8 +318,8 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
         .args(&parsed_args.common_args)
         .current_dir(cwd);
 
-    if log_enabled!(Trace) {
-        trace!("compile: {:?}", cmd);
+    if log_enabled!(Debug) {
+        debug!("compile: {:?}", cmd);
     }
 
     let output = try!(run_input_output(cmd, None));
@@ -335,8 +335,8 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
             .args(&parsed_args.common_args)
             .current_dir(cwd);
 
-        if log_enabled!(Trace) {
-            trace!("compile: {:?}", cmd);
+        if log_enabled!(Debug) {
+            debug!("compile: {:?}", cmd);
         }
 
         let output = try!(run_input_output(cmd, None));

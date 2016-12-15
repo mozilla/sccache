@@ -281,7 +281,9 @@ impl Compiler {
         let preprocessor_result = try!(self.kind.preprocess(creator.clone(), self, parsed_args, cwd).map_err(|e| { debug!("[{}]: preprocessor failed: {:?}", out_file, e); e }));
         // If the preprocessor failed, just return that result.
         if !preprocessor_result.status.success() {
-            return Ok((CompileResult::Error, preprocessor_result));
+            debug!("[{}]: preprocessor returned error status {:?}", out_file, preprocessor_result.status.code());
+            // Drop the stdout since it's the preprocessor output, just hand back stderr and the exit status.
+            return Ok((CompileResult::Error, process::Output { stdout: vec!(), .. preprocessor_result }));
         }
         trace!("[{}]: Preprocessor output is {} bytes", out_file, preprocessor_result.stdout.len());
 
@@ -631,7 +633,6 @@ mod test {
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit, cached);
         assert_eq!(exit_status(0), res.status);
-        //FIXME: this is broken!
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
@@ -766,5 +767,36 @@ mod test {
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    fn test_compiler_get_cached_or_compile_preprocessor_error() {
+        use env_logger;
+        match env_logger::init() {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(creator.clone(),
+                                  f.bins[0].to_str().unwrap()).unwrap();
+        // The preprocessor invocation.
+        const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
+        next_command(&creator, Ok(MockChild::new(exit_status(1), b"preprocessor output", PREPROCESSOR_STDERR)));
+        let cwd = f.tempdir.path().to_str().unwrap();
+        let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match c.parse_arguments(&arguments) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        let (cached, res) = c.get_cached_or_compile(creator.clone(), &storage, &arguments, &parsed_args, cwd, CacheControl::Default).unwrap();
+        assert_eq!(cached, CompileResult::Error);
+        assert_eq!(exit_status(1), res.status);
+        // Shouldn't get anything on stdout, since that would just be preprocessor spew!
+        assert_eq!(b"", res.stdout.as_slice());
+        assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
     }
 }
