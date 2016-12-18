@@ -49,6 +49,10 @@ If you want to use S3 storage for the sccache cache, you need to set the `SCCACH
 
 The environment variables are only taken into account when the server starts, so only on the first run.
 
+Debugging
+-------------
+One can set the SCCACHE2_LOG_LEVEL to debug or trace to get more fine grained information about what sscache is doing.
+
 
 Known caveats
 -------------
