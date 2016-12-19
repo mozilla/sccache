@@ -27,6 +27,8 @@ pub enum Command {
     Usage,
     /// Show cache statistics and exit.
     ShowStats,
+    /// Zero cache statistics and exit.
+    ZeroStats,
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
@@ -51,6 +53,7 @@ fn get_app<'a, 'b>() -> App<'a, 'b> {
         .setting(AppSettings::TrailingVarArg)
         .args_from_usage(
             "-s --show-stats 'show cache statistics'
+             -z, --zero-stats 'zero statistics counters'
              --start-server  'start background server'
              --stop-server   'stop background server'"
                 )
@@ -81,6 +84,7 @@ pub fn parse() -> Command {
     let show_stats = matches.is_present("show-stats");
     let start_server = matches.is_present("start-server");
     let stop_server = matches.is_present("stop-server");
+    let zero_stats = matches.is_present("zero-stats");
     let cmd = matches.values_of_os("cmd");
     // Ensure that we've only received one command to run.
     fn is_some<T>(x : &Option<T>) -> bool {
@@ -105,6 +109,8 @@ pub fn parse() -> Command {
         Command::StartServer
     } else if stop_server {
         Command::StopServer
+    } else if zero_stats {
+        Command::ZeroStats
     } else if let Some(mut args) = cmd {
         if let Ok(cwd) = env::current_dir() {
             if let Some(exe) = args.next() {

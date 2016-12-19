@@ -42,6 +42,7 @@ use protocol::{
     GetStats,
     Shutdown,
     UnhandledCompile,
+    ZeroStats,
 };
 use server;
 use std::env;
@@ -185,6 +186,20 @@ fn connect_or_start_server(port: u16) -> io::Result<ServerConnection> {
                 Err(e)
             }
         })
+}
+
+/// Send a `ZeroStats` request to the server, and return the `CacheStats` request if successful.
+pub fn request_zero_stats(mut conn : ServerConnection) -> io::Result<CacheStats> {
+    debug!("request_stats");
+    let mut req = ClientRequest::new();
+    req.set_zero_stats(ZeroStats::new());
+    //TODO: better error mapping
+    let mut response = try!(conn.request(req).or(Err(Error::new(ErrorKind::Other, "Failed to send zero statistics command to server or failed to receive respone"))));
+    if response.has_stats() {
+        Ok(response.take_stats())
+    } else {
+        Err(Error::new(ErrorKind::Other, "Unexpected server response!"))
+    }
 }
 
 /// Send a `GetStats` request to the server, and return the `CacheStats` request if successful.
@@ -441,6 +456,13 @@ pub fn run_command(cmd : Command) -> i32 {
                     println!("Failed to execute compile: {}", e);
                     1
                 })
+        },
+        Command::ZeroStats => {
+            trace!("Command::ZeroStats");
+            result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(request_zero_stats).and_then(print_stats),
+                             |e| {
+                                 println!("Couldn't zero stats on server: {}", e);
+                             })
         },
     }
 }
