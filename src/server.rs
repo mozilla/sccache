@@ -119,7 +119,6 @@ pub struct SccacheServer<C: CommandCreatorSync + 'static> {
 }
 
 /// Statistics about the cache.
-#[derive(Default)]
 struct ServerStats {
     /// The count of client compile requests.
     pub compile_requests: u64,
@@ -146,13 +145,39 @@ struct ServerStats {
     /// The count of errors writing to cache.
     pub cache_write_errors: u64,
     /// The number of successful cache writes.
-    pub cache_writes: u32,
-    /// The total seconds spent writing cache entries.
-    pub cache_write_duration_s: u64,
-    /// The total nanoseconds spent writing cache entries.
-    pub cache_write_duration_ns: u32,
+    pub cache_writes: u64,
+    /// The total time spent writing cache entries.
+    pub cache_write_duration: Duration,
+    /// The total time spent reading cache hits.
+    pub cache_read_hit_duration: Duration,
+    /// The total time spent reading cache misses.
+    pub cache_read_miss_duration: Duration,
     /// The count of compilation failures.
     pub compile_fails: u64,
+}
+
+impl Default for ServerStats {
+    fn default() -> ServerStats {
+        ServerStats {
+            compile_requests: u64::default(),
+            requests_unsupported_compiler: u64::default(),
+            requests_not_compile: u64::default(),
+            requests_not_cacheable: u64::default(),
+            requests_executed: u64::default(),
+            cache_errors: u64::default(),
+            cache_hits: u64::default(),
+            cache_misses: u64::default(),
+            non_cacheable_compilations: u64::default(),
+            forced_recaches: u64::default(),
+            cache_read_errors: u64::default(),
+            cache_write_errors: u64::default(),
+            cache_writes: u64::default(),
+            cache_write_duration: Duration::new(0, 0),
+            cache_read_hit_duration: Duration::new(0, 0),
+            cache_read_miss_duration: Duration::new(0, 0),
+            compile_fails: u64::default(),
+        }
+    }
 }
 
 impl ServerStats {
@@ -162,6 +187,20 @@ impl ServerStats {
                 let mut stat = CacheStatistic::new();
                 stat.set_name(String::from($name));
                 stat.set_count($var);
+                $vec.push(stat);
+            }};
+        }
+
+        macro_rules! set_duration_stat {
+            ($vec:ident, $dur:expr, $num:expr, $name:expr) => {{
+                let mut stat = CacheStatistic::new();
+                stat.set_name(String::from($name));
+                if $num > 0 {
+                    let duration = $dur / $num as u32;
+                    stat.set_str(format!("{}.{:03} s", duration.as_secs(), duration.subsec_nanos() / 1000_000));
+                } else {
+                    stat.set_str("0.000 s".to_owned());
+                }
                 $vec.push(stat);
             }};
         }
@@ -180,16 +219,9 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
         set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
         set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
-        // Set this as a string so we can view subsecond values.
-        let mut stat = CacheStatistic::new();
-        stat.set_name(String::from("Average cache write"));
-        if self.cache_writes > 0 {
-            let avg_write_duration = Duration::new(self.cache_write_duration_s, self.cache_write_duration_ns) / self.cache_writes;
-            stat.set_str(format!("{}.{:03}s", avg_write_duration.as_secs(), avg_write_duration.subsec_nanos() / 1000));
-        } else {
-            stat.set_str(String::from("0s"));
-        }
-        stats_vec.push(stat);
+        set_duration_stat!(stats_vec, self.cache_write_duration, self.cache_writes, "Average cache write");
+        set_duration_stat!(stats_vec, self.cache_read_miss_duration, self.cache_misses, "Average cache read miss");
+        set_duration_stat!(stats_vec, self.cache_read_hit_duration, self.cache_hits, "Average cache read hit");
         stats_vec
     }
 }
@@ -450,8 +482,11 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             Some((compiled, out)) => {
                 match compiled {
                     CompileResult::Error => self.stats.cache_errors += 1,
-                    CompileResult::CacheHit => self.stats.cache_hits += 1,
-                    CompileResult::CacheMiss(miss_type, future) => {
+                    CompileResult::CacheHit(duration) => {
+                        self.stats.cache_hits += 1;
+                        self.stats.cache_read_hit_duration += duration;
+                    },
+                    CompileResult::CacheMiss(miss_type, duration, future) => {
                         match miss_type {
                             MissType::Normal => self.stats.cache_misses += 1,
                             MissType::CacheReadError => self.stats.cache_read_errors += 1,
@@ -460,6 +495,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                                 self.stats.forced_recaches += 1;
                             }
                         }
+                        self.stats.cache_read_miss_duration += duration;
                         self.await_cache_write(&mut event_loop, future)
                     }
                     CompileResult::NotCacheable => {
@@ -727,10 +763,9 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
                     }
                     //TODO: save cache stats!
                     Ok(info) => {
-                        debug!("[{}]: Cache write finished in {}.{:03}s", info.object_file, info.duration.as_secs(), info.duration.subsec_nanos() / 1000);
+                        debug!("[{}]: Cache write finished in {}.{:03}s", info.object_file, info.duration.as_secs(), info.duration.subsec_nanos() / 1000_000);
                         self.stats.cache_writes += 1;
-                        self.stats.cache_write_duration_s += info.duration.as_secs();
-                        self.stats.cache_write_duration_ns += info.duration.subsec_nanos();
+                        self.stats.cache_write_duration += info.duration;
                     }
                 }
             }
