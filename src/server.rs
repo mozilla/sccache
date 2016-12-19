@@ -146,7 +146,7 @@ struct ServerStats {
     pub cache_write_errors: u64,
     /// The number of successful cache writes.
     pub cache_writes: u64,
-    /// The total seconds spent writing cache entries.
+    /// The total time spent writing cache entries.
     pub cache_write_duration: Duration,
     /// The total time spent reading cache hits.
     pub cache_read_hit_duration: Duration,
