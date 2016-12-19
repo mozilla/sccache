@@ -666,6 +666,12 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
         stats
     }
 
+    /// Zero and return stats about the cache.
+    fn zero_stats(&mut self) -> CacheStats {
+        self.stats = ServerStats::default();
+        self.get_stats()
+    }
+
     /// Reset the server timeout on client activity.
     fn reset_idle_timer(&mut self, event_loop: &mut EventLoop<SccacheServer<C>>) {
         if let Some(timeout) = self.timeout {
@@ -690,6 +696,9 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
             if req.has_get_stats() {
                 debug!("handle_client: get_stats");
                 res.set_stats(self.get_stats());
+            } else if req.has_zero_stats() {
+                debug!("handle_client: zero_stats");
+                res.set_stats(self.zero_stats());
             } else if req.has_shutdown() {
                 debug!("handle_client: shutdown");
                 self.initiate_shutdown(event_loop);

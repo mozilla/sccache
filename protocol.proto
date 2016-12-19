@@ -20,6 +20,9 @@ message GetStats {}
 // Shut down the server.
 message Shutdown {}
 
+// Zero cache statistics.
+message ZeroStats {}
+
 // Run a compile command.
 message Compile {
   // The directory in which to run the command.
@@ -33,9 +36,10 @@ message Compile {
 message ClientRequest {
   // A client request can be any one of the following:
   oneof request {
-    GetStats get_stats = 1;
-    Shutdown shutdown = 2;
-    Compile compile = 3;
+    Compile compile = 1;
+    GetStats get_stats = 2;
+    Shutdown shutdown = 3;
+    ZeroStats zero_stats = 4;
   }
 }
 
