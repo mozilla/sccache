@@ -52,7 +52,7 @@ The environment variables are only taken into account when the server starts, so
 Debugging
 ---------
 
-You can set the `SCCACHE2_LOG_LEVEL` environment variable to `debug` or `trace` (not recommended, it's *very verbose*) to cause sccache to output more fine grained logging about what it is doing. A log file named `sccache2.log` will be output in the current working directory when the server is first started.
+You can set the `SCCACHE_LOG_LEVEL` environment variable to `debug` or `trace` (not recommended, it's *very verbose*) to cause sccache to output more fine grained logging about what it is doing. A log file named `sccache.log` will be output in the current working directory whenever sccache is invoked.
 
 Alternately, you can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the `RUST_LOG` environment variable, the format of which is described in more detail in the [env_logger](http://burntsushi.net/rustdoc/env_logger/index.html#enabling-logging) documentation.
 
