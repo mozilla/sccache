@@ -47,6 +47,7 @@ use protocol::{
 use server;
 use std::env;
 use std::ffi::{OsStr,OsString};
+use std::fs::File;
 use std::io::{
     self,
     Error,
@@ -79,6 +80,7 @@ fn run_server_process() -> io::Result<()> {
     env::current_exe().and_then(|exe_path| {
         process::Command::new(exe_path)
             .env("SCCACHE_START_SERVER", "1")
+            .env("RUST_BACKTRACE", "1")
             .spawn()
     }).and(Ok(()))
 }
@@ -93,7 +95,8 @@ fn daemonize() -> io::Result<()> {
     } {
         Ok(())
     } else {
-        Daemonize::new().start().or(Err(Error::new(ErrorKind::Other, "Failed to daemonize")))
+        Daemonize::new().start()
+            .or(Err(Error::new(ErrorKind::Other, "Failed to daemonize")))
     }
 }
 
@@ -101,10 +104,39 @@ fn daemonize() -> io::Result<()> {
 #[cfg(windows)]
 fn daemonize() -> io::Result<()> { Ok(()) }
 
+#[cfg(not(windows))]
+fn redirect_stderr(f: File) -> io::Result<()> {
+    use libc::dup2;
+    use std::os::unix::io::IntoRawFd;
+    // Ignore errors here.
+    unsafe { dup2(f.into_raw_fd(), 2); }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn redirect_stderr(f: File) -> io::Result<()> {
+    use kernel32::SetStdHandle;
+    use winapi::winbase::STD_ERROR_HANDLE;
+    use std::os::windows::io::IntoRawHandle;
+    // Ignore errors here.
+    unsafe { SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle()); }
+    Ok(())
+}
+
+/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
+fn redirect_error_log() -> io::Result<()> {
+    match env::var("SCCACHE_ERROR_LOG") {
+        Ok(filename) => File::create(filename).and_then(redirect_stderr),
+        _ => Ok(()),
+    }
+}
+
 /// Re-execute the current executable as a background server.
 ///
 /// `std::process::Command` doesn't expose a way to create a
 /// detatched process on Windows, so we have to roll our own.
+/// TODO: remove this all when `CommandExt::creation_flags` hits stable:
+/// https://github.com/rust-lang/rust/issues/37827
 #[cfg(windows)]
 fn run_server_process() -> io::Result<()> {
     use kernel32;
@@ -121,10 +153,10 @@ fn run_server_process() -> io::Result<()> {
             .encode_wide()
             .chain(Some(0u16))
             .collect::<Vec<u16>>();
-        // Collect existing env vars + one more into an environment block.
+        // Collect existing env vars + extra into an environment block.
         let mut envp = {
             let mut v = vec!();
-            for (key, val) in env::vars_os().chain(Some((OsString::from("SCCACHE_START_SERVER"), OsString::from("1")))) {
+            for (key, val) in env::vars_os().chain(Some((OsString::from("SCCACHE_START_SERVER"), OsString::from("1")))).chain(Some((OsString::from("RUST_BACKTRACE"), OsString::from("1")))) {
                 v.extend(key.encode_wide().chain(Some('=' as u16)).chain(val.encode_wide()).chain(Some(0)));
             }
             v.push(0);
@@ -428,7 +460,10 @@ pub fn run_command(cmd : Command) -> i32 {
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
             // Can't report failure here, we're already daemonized.
-            result_exit_code(daemonize().and_then(|_| server::start_server(DEFAULT_PORT)), |_| {})
+            result_exit_code(daemonize()
+                             .and_then(|_| redirect_error_log())
+                             .and_then(|_| server::start_server(DEFAULT_PORT)),
+                             |_| {})
         },
         Command::StartServer => {
             trace!("Command::StartServer");

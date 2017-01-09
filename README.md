@@ -56,6 +56,8 @@ You can set the `SCCACHE_LOG_LEVEL` environment variable to `debug` or `trace` (
 
 Alternately, you can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the `RUST_LOG` environment variable, the format of which is described in more detail in the [env_logger](http://burntsushi.net/rustdoc/env_logger/index.html#enabling-logging) documentation.
 
+You can set the `SCCACHE_ERROR_LOG` environment variable to a path to cause the server process to redirect its standard error output there, in order to capture the output of unhandled panics. (The server sets `RUST_BACKTRACE=1` internally.)
+
 
 Known caveats
 -------------
