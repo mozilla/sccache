@@ -47,7 +47,7 @@ use protocol::{
 use server;
 use std::env;
 use std::ffi::{OsStr,OsString};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{
     self,
     Error,
@@ -126,7 +126,7 @@ fn redirect_stderr(f: File) -> io::Result<()> {
 /// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
 fn redirect_error_log() -> io::Result<()> {
     match env::var("SCCACHE_ERROR_LOG") {
-        Ok(filename) => File::create(filename).and_then(redirect_stderr),
+        Ok(filename) => OpenOptions::new().create(true).append(true).open(filename).and_then(redirect_stderr),
         _ => Ok(()),
     }
 }
