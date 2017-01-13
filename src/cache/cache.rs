@@ -213,7 +213,7 @@ pub fn storage_from_environment(pool: &CpuPool, handle: &Handle) -> Arc<Storage>
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION : &'static [u8] = b"2";
+pub const CACHE_VERSION : &'static [u8] = b"3";
 
 /// Environment variables that are factored into the cache key.
 pub const CACHED_ENV_VARS : &'static [&'static str] = &[
@@ -223,17 +223,14 @@ pub const CACHED_ENV_VARS : &'static [&'static str] = &[
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 #[allow(dead_code)]
-pub fn hash_key(compiler: &Compiler, args: &[String], preprocessor_output: &[u8]) -> String {
+pub fn hash_key(compiler: &Compiler, args: Vec<&str>, preprocessor_output: &[u8]) -> String {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = sha1::Sha1::new();
     m.update(compiler.digest.as_bytes());
     //TODO: drop the compiler filename from the hash
     m.update(compiler.executable.as_bytes());
     m.update(CACHE_VERSION);
-    for (i, arg) in args.iter().enumerate() {
-        if i != 0 {
-            m.update(&b" "[..]);
-        }
+    for arg in args {
         m.update(arg.as_bytes());
     }
     //TODO: should propogate these over from the client.
@@ -274,10 +271,10 @@ mod test {
         // Try to avoid testing exact hashes.
         let c1 = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
         let c2 = Compiler::new(f.bins[1].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let args = stringvec!["a", "b", "c"];
+        let args = vec!["a", "b", "c"];
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c1, &args, &PREPROCESSED),
-                    hash_key(&c2, &args, &PREPROCESSED));
+        assert_neq!(hash_key(&c1, args.clone(), &PREPROCESSED),
+                    hash_key(&c2, args, &PREPROCESSED));
     }
 
     #[test]
@@ -288,10 +285,10 @@ mod test {
         // Overwrite the contents of the binary.
         mk_bin_contents(f.tempdir.path(), "a/bin", |mut f| f.write_all(b"hello")).unwrap();
         let c2 = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let args = stringvec!["a", "b", "c"];
+        let args = vec!["a", "b", "c"];
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c1, &args, &PREPROCESSED),
-                    hash_key(&c2, &args, &PREPROCESSED));
+        assert_neq!(hash_key(&c1, args.clone(), &PREPROCESSED),
+                    hash_key(&c2, args, &PREPROCESSED));
     }
 
     #[test]
@@ -299,40 +296,48 @@ mod test {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c, &stringvec!["a", "b", "c"], &PREPROCESSED),
-                    hash_key(&c, &stringvec!["x", "y", "z"], &PREPROCESSED));
+        assert_neq!(hash_key(&c, vec!["a", "b", "c"], &PREPROCESSED),
+                    hash_key(&c, vec!["x", "y", "z"], &PREPROCESSED));
 
-        assert_neq!(hash_key(&c, &stringvec!["a", "b", "c"], &PREPROCESSED),
-                    hash_key(&c, &stringvec!["a", "b"], &PREPROCESSED));
+        assert_neq!(hash_key(&c, vec!["a", "b", "c"], &PREPROCESSED),
+                    hash_key(&c, vec!["a", "b"], &PREPROCESSED));
 
-        assert_neq!(hash_key(&c, &stringvec!["a", "b", "c"], &PREPROCESSED),
-                    hash_key(&c, &stringvec!["a"], &PREPROCESSED));
+        assert_neq!(hash_key(&c, vec!["a", "b", "c"], &PREPROCESSED),
+                    hash_key(&c, vec!["a"], &PREPROCESSED));
+    }
 
+    #[test]
+    fn test_hash_key_out_file_differs() {
+        let f = TestFixture::new();
+        let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        const PREPROCESSED : &'static [u8] = b"hello world";
+        assert_neq!(hash_key(&c, vec!["a", "b", "-o", "somefile"], &PREPROCESSED),
+                    hash_key(&c, vec!["a", "b", "-o", "otherfile"], &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let args = stringvec!["a", "b", "c"];
-        assert_neq!(hash_key(&c, &args, &b"hello world"[..]),
-                    hash_key(&c, &args, &b"goodbye"[..]));
+        let args = vec!["a", "b", "c"];
+        assert_neq!(hash_key(&c, args.clone(), &b"hello world"[..]),
+                    hash_key(&c, args, &b"goodbye"[..]));
     }
 
     #[test]
     fn test_hash_key_env_var_differs() {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let args = stringvec!["a", "b", "c"];
+        let args = vec!["a", "b", "c"];
         const PREPROCESSED : &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
             let old = env::var_os(var);
             env::remove_var(var);
-            let h1 = hash_key(&c, &args, &PREPROCESSED);
+            let h1 = hash_key(&c, args.clone(), &PREPROCESSED);
             env::set_var(var, "something");
-            let h2 = hash_key(&c, &args, &PREPROCESSED);
+            let h2 = hash_key(&c, args.clone(), &PREPROCESSED);
             env::set_var(var, "something else");
-            let h3 = hash_key(&c, &args, &PREPROCESSED);
+            let h3 = hash_key(&c, args.clone(), &PREPROCESSED);
             match old {
                 Some(val) => env::set_var(var, val),
                 None => env::remove_var(var),

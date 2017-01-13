@@ -316,7 +316,6 @@ impl Compiler {
 
         let parsed_args = parsed_args.clone();
         let cwd = cwd.to_string();
-        let arguments = arguments.to_vec();
         let me = self.clone();
         let storage = storage.clone();
         let pool = pool.clone();
@@ -339,7 +338,15 @@ impl Compiler {
                    parsed_args.output_file(),
                    preprocessor_result.stdout.len());
 
-            let key = hash_key(&me, &arguments, &preprocessor_result.stdout);
+            // Remove out_file because it has no effect on the output
+            let key = {
+                let out_file = parsed_args.output_file();
+                let arguments = parsed_args.common_args.iter()
+                    .filter(|a| **a != out_file)
+                    .map(|a| a.as_str())
+                    .collect::<Vec<&str>>();
+                hash_key(&me, arguments, &preprocessor_result.stdout)
+            };
             trace!("[{}]: Hash key: {}", parsed_args.output_file(), key);
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
