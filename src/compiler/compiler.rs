@@ -290,6 +290,11 @@ impl Compiler {
         }
         trace!("[{}]: Preprocessor output is {} bytes", out_file, preprocessor_result.stdout.len());
 
+        // Remove out_file because it has no effect on the output
+        let arguments = parsed_args.common_args.iter()
+            .filter(|a| **a != out_file)
+            .map(|a| a.as_str())
+            .collect::<Vec<&str>>();
         let key = hash_key(self, arguments, &preprocessor_result.stdout);
         trace!("[{}]: Hash key: {}", out_file, key);
         let pwd = Path::new(cwd);
