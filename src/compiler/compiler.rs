@@ -313,7 +313,6 @@ impl Compiler {
             debug!("[{}]: preprocessor failed: {:?}", out_file, e);
             e
         });
-
         let parsed_args = parsed_args.clone();
         let cwd = cwd.to_string();
         let me = self.clone();
@@ -338,14 +337,14 @@ impl Compiler {
                    parsed_args.output_file(),
                    preprocessor_result.stdout.len());
 
-            // Remove out_file because it has no effect on the output
+            // Remove object file from arguments before hash calculation
             let key = {
                 let out_file = parsed_args.output_file();
                 let arguments = parsed_args.common_args.iter()
                     .filter(|a| **a != out_file)
                     .map(|a| a.as_str())
-                    .collect::<Vec<&str>>();
-                hash_key(&me, arguments, &preprocessor_result.stdout)
+                    .collect::<String>();
+                hash_key(&me, &arguments, &preprocessor_result.stdout)
             };
             trace!("[{}]: Hash key: {}", parsed_args.output_file(), key);
             // If `ForceRecache` is enabled, we won't check the cache.
