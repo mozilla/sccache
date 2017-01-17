@@ -308,15 +308,6 @@ mod test {
     }
 
     #[test]
-    fn test_hash_key_out_file_differs() {
-        let f = TestFixture::new();
-        let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c, vec!["a", "b", "-o", "somefile"], &PREPROCESSED),
-                    hash_key(&c, vec!["a", "b", "-o", "otherfile"], &PREPROCESSED));
-    }
-
-    #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
