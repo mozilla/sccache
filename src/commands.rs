@@ -52,6 +52,7 @@ use std::io::{
     self,
     Error,
     ErrorKind,
+    Read,
     Write,
 };
 #[cfg(unix)]
@@ -63,7 +64,10 @@ use std::process;
 use which::which_in;
 
 /// The default sccache server port.
-pub const DEFAULT_PORT : u16 = 4226;
+pub const DEFAULT_PORT: u16 = 4226;
+
+/// The number of milliseconds to wait for server startup.
+const SERVER_STARTUP_TIMEOUT_MS: u32 = 5000;
 
 /// Possible responses from the server for a `Compile` request.
 enum CompileResponse {
@@ -73,16 +77,95 @@ enum CompileResponse {
     UnhandledCompile(UnhandledCompile),
 }
 
-/// Re-execute the current executable as a background server.
+// Should this just be a Result?
+/// Result of background server startup.
+enum ServerStartup {
+    /// Server started successfully.
+    Ok,
+    /// Timed out waiting for server startup.
+    TimedOut,
+    /// Server encountered an error.
+    Err(String),
+}
+
+/// Get the port on which the server should listen.
+fn get_port() -> u16 {
+    env::var("SCCACHE_SERVER_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// Re-execute the current executable as a background server, and wait
+/// for it to start up.
 #[cfg(not(windows))]
-fn run_server_process() -> io::Result<()> {
+fn run_server_process() -> io::Result<ServerStartup> {
+    use libc::{c_int, poll, pollfd, nfds_t, POLLIN, POLLERR};
+    use tempdir::TempDir;
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
+
     trace!("run_server_process");
-    env::current_exe().and_then(|exe_path| {
-        process::Command::new(exe_path)
-            .env("SCCACHE_START_SERVER", "1")
-            .env("RUST_BACKTRACE", "1")
-            .spawn()
-    }).and(Ok(()))
+    let tempdir = try!(TempDir::new("sccache"));
+    let socket_path = tempdir.path().join("sock");
+    let listener = try!(UnixListener::bind(&socket_path));
+    env::current_exe()
+        .and_then(|exe_path| {
+            process::Command::new(exe_path)
+                .env("SCCACHE_START_SERVER", "1")
+                .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
+                .env("RUST_BACKTRACE", "1")
+                .spawn()
+        })
+        .and_then(|_| {
+            // wait for a connection on the listener using `poll`
+            let mut pfds = vec![pollfd {
+                fd: listener.as_raw_fd(),
+                events: POLLIN | POLLERR,
+                revents: 0,
+            }];
+            loop {
+                match unsafe { poll(pfds.as_mut_ptr(), pfds.len() as nfds_t, SERVER_STARTUP_TIMEOUT_MS as c_int) } {
+                    // Timed out.
+                    0 => return Ok(ServerStartup::TimedOut),
+                    // Error.
+                    -1 => {
+                        let e = Error::last_os_error();
+                        match e.kind() {
+                            // We should retry on EINTR.
+                            ErrorKind::Interrupted => {}
+                            _ => return Err(e),
+                        }
+                    }
+                    // Success.
+                    _ => {
+                        if pfds[0].revents & POLLIN == POLLIN {
+                            // Ready to read
+                            break;
+                        }
+                        if pfds[0].revents & POLLERR == POLLERR {
+                            // Could give a better error here, I suppose?
+                            return Ok(ServerStartup::TimedOut);
+                        }
+                    }
+                }
+            }
+            // Now read a status from the socket.
+            //TODO: when we're using serde, use that here.
+            let (mut stream, _) = try!(listener.accept());
+            try!(stream.set_read_timeout(Some(Duration::from_millis(500))));
+            let mut buffer = [0; 1];
+            try!(stream.read_exact(&mut buffer));
+            if buffer[0] == 0 {
+                info!("Server started up successfully");
+                Ok(ServerStartup::Ok)
+            } else {
+                //TODO: send error messages over the socket as well.
+                error!("Server startup failed: {}", buffer[0]);
+                Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0])))
+            }
+        })
 }
 
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
@@ -138,57 +221,87 @@ fn redirect_error_log() -> io::Result<()> {
 /// TODO: remove this all when `CommandExt::creation_flags` hits stable:
 /// https://github.com/rust-lang/rust/issues/37827
 #[cfg(windows)]
-fn run_server_process() -> io::Result<()> {
+fn run_server_process() -> io::Result<ServerStartup> {
     use kernel32;
+    use named_pipe::PipeOptions;
     use std::io::Error;
     use std::os::windows::ffi::OsStrExt;
     use std::mem;
     use std::ptr;
+    use uuid::Uuid;
     use winapi::minwindef::{TRUE,FALSE,LPVOID,DWORD};
     use winapi::processthreadsapi::{PROCESS_INFORMATION,STARTUPINFOW};
     use winapi::winbase::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
+
     trace!("run_server_process");
-    env::current_exe().and_then(|exe_path| {
-        let mut exe = OsStr::new(&exe_path)
-            .encode_wide()
-            .chain(Some(0u16))
-            .collect::<Vec<u16>>();
-        // Collect existing env vars + extra into an environment block.
-        let mut envp = {
-            let mut v = vec!();
-            for (key, val) in env::vars_os().chain(Some((OsString::from("SCCACHE_START_SERVER"), OsString::from("1")))).chain(Some((OsString::from("RUST_BACKTRACE"), OsString::from("1")))) {
-                v.extend(key.encode_wide().chain(Some('=' as u16)).chain(val.encode_wide()).chain(Some(0)));
+    // Create a pipe to get startup status back from the server.
+    let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().simple());
+    let server = try!(PipeOptions::new(&pipe_name).single());
+    env::current_exe()
+        .and_then(|exe_path| {
+            let mut exe = OsStr::new(&exe_path)
+                .encode_wide()
+                .chain(Some(0u16))
+                .collect::<Vec<u16>>();
+            // Collect existing env vars + extra into an environment block.
+            let mut envp = {
+                let mut v = vec!();
+                let extra_vars = vec![
+                    (OsString::from("SCCACHE_START_SERVER"), OsString::from("1")),
+                    (OsString::from("SCCACHE_STARTUP_NOTIFY"), OsString::from(&pipe_name)),
+                    (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
+                ];
+                for (key, val) in env::vars_os().chain(extra_vars) {
+                    v.extend(key.encode_wide().chain(Some('=' as u16)).chain(val.encode_wide()).chain(Some(0)));
+                }
+                v.push(0);
+                v
+            };
+            let mut pi = PROCESS_INFORMATION {
+                hProcess: ptr::null_mut(),
+                hThread: ptr::null_mut(),
+                dwProcessId: 0,
+                dwThreadId: 0,
+            };
+            let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+            si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
+            if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
+                                                 ptr::null_mut(),
+                                                 ptr::null_mut(),
+                                                 ptr::null_mut(),
+                                                 FALSE,
+                                                 CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                                                 envp.as_mut_ptr() as LPVOID,
+                                                 ptr::null(),
+                                                 &mut si,
+                                                 &mut pi) == TRUE } {
+                unsafe {
+                    kernel32::CloseHandle(pi.hProcess);
+                    kernel32::CloseHandle(pi.hThread);
+                }
+                Ok(())
+            } else {
+                Err(Error::last_os_error())
             }
-            v.push(0);
-            v
-        };
-        let mut pi = PROCESS_INFORMATION {
-            hProcess: ptr::null_mut(),
-            hThread: ptr::null_mut(),
-            dwProcessId: 0,
-            dwThreadId: 0,
-        };
-        let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
-        si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
-        if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
-                                             ptr::null_mut(),
-                                             ptr::null_mut(),
-                                             ptr::null_mut(),
-                                             FALSE,
-                                             CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                                             envp.as_mut_ptr() as LPVOID,
-                                             ptr::null(),
-                                             &mut si,
-                                             &mut pi) == TRUE } {
-            unsafe {
-                kernel32::CloseHandle(pi.hProcess);
-                kernel32::CloseHandle(pi.hThread);
+        })
+        .and_then(|()| {
+            // Wait for a connection on the pipe.
+            let mut pipe = match try!(server.wait_ms(SERVER_STARTUP_TIMEOUT_MS)) {
+                Ok(pipe) => pipe,
+                Err(_) => return Ok(ServerStartup::TimedOut),
+            };
+            // It would be nice to have a read timeout here.
+            let mut buffer = [0; 1];
+            try!(pipe.read_exact(&mut buffer));
+            if buffer[0] == 0 {
+                info!("Server started up successfully");
+                Ok(ServerStartup::Ok)
+            } else {
+                //TODO: send error messages over the socket as well.
+                error!("Server startup failed: {}", buffer[0]);
+                Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0])))
             }
-            Ok(())
-        } else {
-            Err(Error::last_os_error())
-        }
-    })
+        })
 }
 
 /// Convert `res` into a process exit code.
@@ -211,7 +324,8 @@ fn connect_or_start_server(port: u16) -> io::Result<ServerConnection> {
             io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut => {
                 // If the connection was refused we probably need to start
                 // the server.
-                run_server_process().and_then(|()| connect_with_retry(port))
+                //TODO: check startup value!
+                run_server_process().and_then(|_startup| connect_with_retry(port))
             }
             _ => {
                 debug!("Error: {}", e);
@@ -452,7 +566,7 @@ pub fn run_command(cmd : Command) -> i32 {
         Command::Usage => 0,
         Command::ShowStats => {
             trace!("Command::ShowStats");
-            result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(request_stats).and_then(print_stats),
+            result_exit_code(connect_or_start_server(get_port()).and_then(request_stats).and_then(print_stats),
                              |e| {
                                  println!("Couldn't get stats from server: {}", e);
                              })
@@ -462,20 +576,28 @@ pub fn run_command(cmd : Command) -> i32 {
             // Can't report failure here, we're already daemonized.
             result_exit_code(daemonize()
                              .and_then(|_| redirect_error_log())
-                             .and_then(|_| server::start_server(DEFAULT_PORT)),
+                             .and_then(|_| server::start_server(get_port())),
                              |_| {})
         },
         Command::StartServer => {
             trace!("Command::StartServer");
             println!("Starting sccache server...");
-            result_exit_code(run_server_process(), |e| {
-                println!("failed to spawn server: {}", e);
-            })
+            result_exit_code(run_server_process()
+                             .and_then(|startup| {
+                                 match startup {
+                                     ServerStartup::Ok => Ok(()),
+                                     ServerStartup::TimedOut => Err(Error::new(ErrorKind::Other, "Timed out waiting for server startup")),
+                                     ServerStartup::Err(_e) => Err(Error::new(ErrorKind::Other, "Server startup error")),
+                                 }
+                             }),
+                             |e| {
+                                 println!("Failed to start server: {}", e);
+                             })
         },
         Command::StopServer => {
             trace!("Command::StopServer");
             println!("Stopping sccache server...");
-            result_exit_code(connect_to_server(DEFAULT_PORT).and_then(request_shutdown).and_then(print_stats),
+            result_exit_code(connect_to_server(get_port()).and_then(request_shutdown).and_then(print_stats),
                              |_e| {
                                  //TODO: check if this was connection refused,
                                  // print error if not.
@@ -485,7 +607,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::Compile { exe, cmdline, cwd } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
-            connect_or_start_server(DEFAULT_PORT)
+            connect_or_start_server(get_port())
                 .and_then(|conn| do_compile(ProcessCommandCreator, conn, &exe, cmdline, &cwd, env::var_os("PATH"), &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
@@ -494,7 +616,7 @@ pub fn run_command(cmd : Command) -> i32 {
         },
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            result_exit_code(connect_or_start_server(DEFAULT_PORT).and_then(request_zero_stats).and_then(print_stats),
+            result_exit_code(connect_or_start_server(get_port()).and_then(request_zero_stats).and_then(print_stats),
                              |e| {
                                  println!("Couldn't zero stats on server: {}", e);
                              })

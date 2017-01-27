@@ -24,6 +24,7 @@ extern crate env_logger;
 extern crate filetime;
 extern crate futures;
 extern crate hyper;
+#[cfg(windows)]
 extern crate kernel32;
 extern crate local_encoding;
 #[macro_use]
@@ -32,6 +33,8 @@ extern crate lru_disk_cache;
 extern crate fern;
 extern crate libc;
 extern crate mio;
+#[cfg(windows)]
+extern crate named_pipe;
 extern crate number_prefix;
 extern crate protobuf;
 extern crate regex;
@@ -41,6 +44,8 @@ extern crate serde_json;
 extern crate sha1;
 extern crate tempdir;
 extern crate time;
+extern crate uuid;
+#[cfg(windows)]
 extern crate winapi;
 extern crate which;
 extern crate zip;
@@ -88,6 +93,7 @@ fn init_logging() {
                     format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
                         format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
                     }),
+                    //TODO: only the server process should output to the log file.
                     output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache.log")],
                     level: log::LogLevelFilter::Trace,
                 };

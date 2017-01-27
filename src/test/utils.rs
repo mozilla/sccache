@@ -73,6 +73,20 @@ pub fn next_command_calls<C: Fn() -> io::Result<MockChild> + Send + 'static>(cre
     creator.lock().unwrap().next_command_calls(call);
 }
 
+pub fn find_sccache_binary() -> PathBuf {
+    // Older versions of cargo put the test binary next to the sccache binary.
+    // Newer versions put it in the deps/ subdirectory.
+    let exe = env::current_exe().unwrap();
+    let this_dir = exe.parent().unwrap();
+    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
+    dirs
+        .iter()
+        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
+        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
+        .next()
+        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
+}
+
 pub struct TestFixture {
     /// Temp directory.
     pub tempdir: TempDir,

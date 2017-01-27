@@ -35,7 +35,9 @@ use std::io::{
     Cursor,
     Write,
 };
+use std::net::TcpListener;
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 use std::usize;
@@ -212,4 +214,22 @@ fn test_server_compile() {
     sender.send(ServerMessage::Shutdown).unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
+}
+
+#[test]
+fn test_server_port_in_use() {
+    // Bind an arbitrary free port.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sccache = find_sccache_binary();
+    let output = Command::new(&sccache)
+        .arg("--start-server")
+        .env("SCCACHE_SERVER_PORT", listener.local_addr().unwrap().port().to_string())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let s = String::from_utf8_lossy(&output.stdout);
+    match s.find("Failed to start server:") {
+        Some(_) => {},
+        None => assert!(false, format!("Output did not contain 'Failed to start server:':\n========{}\n========", s)),
+    }
 }

@@ -60,8 +60,9 @@ use protocol::{
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use std::ffi::OsStr;
 use std::fs::metadata;
-use std::io::{self,ErrorKind};
+use std::io::{self, ErrorKind, Write};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::process::Output;
 use std::sync::Arc;
@@ -1038,15 +1039,43 @@ pub fn run_server<C : CommandCreatorSync + 'static>(mut server : SccacheServer<C
     Ok(())
 }
 
+fn notify_server_startup_internal<W: Write>(mut w: W, success: bool) -> io::Result<()> {
+    let data = [ if success { 0 } else { 1 }; 1];
+    try!(w.write_all(&data));
+    Ok(())
+}
+
+#[cfg(unix)]
+fn notify_server_startup(name: &OsStr, success: bool) -> io::Result<()> {
+    use std::os::unix::net::UnixStream;
+    debug!("notify_server_startup(success: {})", success);
+    let stream = try!(UnixStream::connect(name));
+    notify_server_startup_internal(stream, success)
+}
+
+#[cfg(windows)]
+fn notify_server_startup(name: &OsStr, success: bool) -> io::Result<()> {
+    use named_pipe::PipeClient;
+    let pipe = try!(PipeClient::connect(name));
+    notify_server_startup_internal(pipe, success)
+}
+
 /// Start an sccache server, listening on `port`.
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(port : u16) -> io::Result<()> {
     debug!("start_server");
+    let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     let (server, event_loop) = try!(create_server::<ProcessCommandCreator>(port, storage_from_environment()).or_else(|e| {
         error!("failed to create server: {}", e);
+        if let Some(ref name) = notify {
+            try!(notify_server_startup(name, false));
+        }
         Err(e)
     }));
+    if let Some(ref name) = notify {
+        try!(notify_server_startup(name, true));
+    }
     run_server(server, event_loop)
 }
