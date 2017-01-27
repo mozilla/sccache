@@ -12,6 +12,7 @@ environment:
     - channel: nightly
       target: x86_64-pc-windows-msvc
       FEATURES: --features=unstable
+      CARGO_TEST_EXTRA: --all
 
 ### GNU Toolchains ###
 #TODO: figure out how to get mingw64 working on appveyor
@@ -45,7 +46,7 @@ build_script:
 - cmd: cargo build --verbose %FEATURES%
 
 test_script:
-- cmd: cargo test --verbose %FEATURES%
+- cmd: cargo test --verbose %FEATURES% %CARGO_TEST_EXTRA%
 
 branches:
   only:

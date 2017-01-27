@@ -8,11 +8,11 @@ rust:
   - nightly
 
 before_script:
-  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export FEATURES="--features=unstable"; fi
+  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export FEATURES="--features=unstable" export CARGO_TEST_EXTRA="--all"; fi
 
 script:
   - cargo build --verbose ${FEATURES}
-  - RUST_BACKTRACE=1 cargo test --verbose ${FEATURES}
+  - RUST_BACKTRACE=1 cargo test --verbose ${FEATURES} ${CARGO_TEST_EXTRA}
 
 os:
   - linux
