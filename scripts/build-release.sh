@@ -17,7 +17,7 @@ case $system in
     MINGW*|MSYS_NT*)
 	system=Windows
         rm -rf target/release
-        cargo build --release && cargo test --release
+        rustup run nightly cargo build --release --target=x86_64-pc-windows-msvc --features=unstable && rustup run nightly cargo test --release
         cp target/release/sccache.exe "$stagedir"
         compress=bz2
         ;;
