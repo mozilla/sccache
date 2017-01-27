@@ -17,6 +17,7 @@ use clap::{
     AppSettings,
     Arg,
 };
+use errors::*;
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -24,8 +25,6 @@ use which::which_in;
 
 /// A specific command to run.
 pub enum Command {
-    /// Show usage and exit.
-    Usage,
     /// Show cache statistics and exit.
     ShowStats,
     /// Zero cache statistics and exit.
@@ -48,7 +47,7 @@ pub enum Command {
 }
 
 /// Get the `App` used for argument parsing.
-fn get_app<'a, 'b>() -> App<'a, 'b> {
+pub fn get_app<'a, 'b>() -> App<'a, 'b> {
     App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .setting(AppSettings::TrailingVarArg)
@@ -65,22 +64,10 @@ fn get_app<'a, 'b>() -> App<'a, 'b> {
                 )
 }
 
-/// Print usage summary and return a `Command::Usage`.
-fn usage() -> Command {
-    get_app().print_help().unwrap();
-    println!("");
-    Command::Usage
-}
-
 /// Parse the commandline into a `Command` to execute.
-pub fn parse() -> Command {
+pub fn parse() -> Result<Command> {
     trace!("parse");
-    let cwd = if let Ok(cwd) = env::current_dir() {
-        cwd
-    } else {
-        println!("sccache: Couldn't determine current working directory");
-        return usage();
-    };
+    let cwd = try!(env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory"));
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",
@@ -96,21 +83,22 @@ pub fn parse() -> Command {
                 // as if it were invoked with `sccache $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
-                    let path = env::var_os("PATH");
-                    match which_in(exe.file_name().unwrap(), path.as_ref(), &cwd) {
-                        Ok(ref full_path) if full_path.canonicalize().unwrap() == exe.canonicalize().unwrap() => {
-                            if let Some(dir) = full_path.parent() {
-                                let path = env::join_paths(env::split_paths(&path.unwrap()).filter(|p| p != dir)).ok();
-                                match which_in(exe.file_name().unwrap(), path, &cwd) {
-                                    Ok(full_path) => args[0] = full_path.into(),
-                                    Err(_) => { }
+                    if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name()) {
+                        match which_in(exe_filename, Some(&path), &cwd) {
+                            Ok(ref full_path) if try!(full_path.canonicalize()) == try!(exe.canonicalize()) => {
+                                if let Some(dir) = full_path.parent() {
+                                    let path = env::join_paths(env::split_paths(&path).filter(|p| p != dir)).ok();
+                                    match which_in(exe_filename, path, &cwd) {
+                                        Ok(full_path) => args[0] = full_path.into(),
+                                        Err(_) => { }
+                                    }
                                 }
                             }
+                            Ok(full_path) => args[0] = full_path.into(),
+                            Err(_) => { }
                         }
-                        Ok(full_path) => args[0] = full_path.into(),
-                        Err(_) => { }
+                        args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
-                    args.insert(0, env!("CARGO_PKG_NAME").into());
                 }
             }
         }
@@ -134,33 +122,30 @@ pub fn parse() -> Command {
         is_some(&cmd),
             ].iter()
         .fold(0, |acc, &x| acc + (x as usize)) > 1 {
-            println!("sccache: Too many commands specified");
-            return usage();
+            bail!("Too many commands specified");
         }
     if internal_start_server {
-        Command::InternalStartServer
+        Ok(Command::InternalStartServer)
     } else if show_stats {
-        Command::ShowStats
+        Ok(Command::ShowStats)
     } else if start_server {
-        Command::StartServer
+        Ok(Command::StartServer)
     } else if stop_server {
-        Command::StopServer
+        Ok(Command::StopServer)
     } else if zero_stats {
-        Command::ZeroStats
+        Ok(Command::ZeroStats)
     } else if let Some(mut args) = cmd {
         if let Some(exe) = args.next() {
             let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
-            Command::Compile {
+            Ok(Command::Compile {
                 exe: exe.to_owned(),
                 cmdline: cmdline,
                 cwd: cwd,
-            }
+            })
         } else {
-            println!("sccache: No compile command");
-            usage()
+            bail!("No compile command");
         }
     } else {
-        println!("sccache: No command specified");
-        usage()
+        bail!("No command specified");
     }
 }

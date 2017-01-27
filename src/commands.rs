@@ -560,8 +560,6 @@ pub fn do_compile<T, U, V, W, X, Y>(creator: T,
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd : Command) -> i32 {
     match cmd {
-        // Actual usage gets printed in `cmdline::parse`.
-        Command::Usage => 0,
         Command::ShowStats => {
             trace!("Command::ShowStats");
             result_exit_code(connect_or_start_server(get_port()).and_then(request_stats).and_then(print_stats),

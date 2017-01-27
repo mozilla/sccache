@@ -21,6 +21,8 @@ extern crate crypto;
 #[cfg(unix)]
 extern crate daemonize;
 extern crate env_logger;
+#[macro_use]
+extern crate error_chain;
 extern crate filetime;
 extern crate futures;
 extern crate hyper;
@@ -60,6 +62,7 @@ mod client;
 mod cmdline;
 mod commands;
 mod compiler;
+mod errors;
 mod mock_command;
 mod protocol;
 mod server;
@@ -69,7 +72,15 @@ use std::env;
 
 fn main() {
     init_logging();
-    std::process::exit(commands::run_command(cmdline::parse()));
+    std::process::exit(match cmdline::parse() {
+        Ok(cmd) => commands::run_command(cmd),
+        Err(e) => {
+            println!("sccache: {}", e);
+            cmdline::get_app().print_help().unwrap();
+            println!("");
+            1
+        }
+    });
 }
 
 fn init_logging() {
