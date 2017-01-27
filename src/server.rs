@@ -805,8 +805,14 @@ impl<C : CommandCreatorSync + 'static> Handler for SccacheServer<C> {
         }
 
         if events.is_readable() {
-            if self.token == token && !self.shutting_down {
-                self.accept(event_loop);
+            if self.token == token {
+                if !self.shutting_down {
+                    self.accept(event_loop);
+                } else {
+                    //FIXME: we should be closing the listen socket when
+                    // we start shutdown.
+                    trace!("Ignoring client connection during shutdown...");
+                }
             } else {
                 trace!("Reading from {:?}", token);
                 match { self.conns[token].read(event_loop) } {
