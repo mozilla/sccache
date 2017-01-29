@@ -29,7 +29,9 @@ use std::io::{
     self,
     Error,
     ErrorKind,
+    Read,
 };
+use std::fs::File;
 use std::path::Path;
 use std::process;
 
@@ -62,7 +64,16 @@ pub fn argument_takes_value(arg: &str) -> bool {
 /// Otherwise, return `CompilerArguments::Ok(ParsedArguments)`, with
 /// the `ParsedArguments` struct containing information parsed from
 /// `arguments`.
-pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes_value: F) -> CompilerArguments {
+pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String],
+                                            cwd: &Path,
+                                            argument_takes_value: F)
+                                            -> CompilerArguments {
+    _parse_arguments(arguments, cwd, &argument_takes_value)
+}
+
+fn _parse_arguments(arguments: &[String],
+                    cwd: &Path,
+                    argument_takes_value: &Fn(&str) -> bool) -> CompilerArguments {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;
@@ -72,63 +83,65 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
 
-    let mut it = arguments.iter();
-    loop {
-        match it.next() {
-            Some(arg) => {
-                match arg.as_ref() {
-                    "-c" => compilation = true,
-                    "-o" => output_arg = it.next(),
-                    "-gsplit-dwarf" => {
-                        split_dwarf = true;
-                        common_args.push(arg.clone());
-                    }
-                    // Arguments that take a value.
-                    // -MF and -MQ are in this set but are handled separately
-                    // because they are also preprocessor options.
-                    a if argument_takes_value(a) => {
-                        common_args.push(arg.clone());
-                        if let Some(arg_val) = it.next() {
-                            common_args.push(arg_val.clone());
-                        }
-                    },
-                    "-MF" | "-MQ" => {
-                        preprocessor_args.push(arg.clone());
-                        if let Some(arg_val) = it.next() {
-                            preprocessor_args.push(arg_val.clone());
-                        }
-                    }
-                    "-MT" => dep_target = it.next(),
-                    // Can't cache Clang modules.
-                    "-fcxx-modules" => return CompilerArguments::CannotCache,
-                    "-fmodules" => return CompilerArguments::CannotCache,
-                    // Can't cache PGO profiled output.
-                    "-fprofile-use" => return CompilerArguments::CannotCache,
-                    // Can't cache commandlines using a response file.
-                    v if v.starts_with('@') => return CompilerArguments::CannotCache,
-                    "-M" | "-MM" | "-MD" | "-MMD" => {
-                        // If one of the above options is on the command line, we'll
-                        // need -MT on the preprocessor command line, whether it's
-                        // been passed already or not
-                        need_explicit_dep_target = true;
-                        preprocessor_args.push(arg.clone());
-                    }
-                    // Other options.
-                    v if v.starts_with('-') && v.len() > 1 => {
-                        common_args.push(arg.clone());
-                    }
-                    // Anything else is an input file.
-                    v => {
-                        if input_arg.is_some() || v == "-" {
-                            // Can't cache compilations with multiple inputs
-                            // or compilation from stdin.
-                            return CompilerArguments::CannotCache;
-                        }
-                        input_arg = Some(v);
-                    }
-                };
+    // Custom iterator to expand `@` arguments which stand for reading a file
+    // and interpreting it as a list of more arguments.
+    let mut it = ExpandIncludeFile {
+        stack: arguments.iter().rev().cloned().collect(),
+        cwd: cwd,
+    };
+    while let Some(arg) = it.next() {
+        match arg.as_ref() {
+            "-c" => compilation = true,
+            "-o" => output_arg = it.next(),
+            "-gsplit-dwarf" => {
+                split_dwarf = true;
+                common_args.push(arg.clone());
+            }
+            // Arguments that take a value.
+            // -MF and -MQ are in this set but are handled separately
+            // because they are also preprocessor options.
+            a if argument_takes_value(a) => {
+                common_args.push(arg.clone());
+                if let Some(arg_val) = it.next() {
+                    common_args.push(arg_val);
+                }
             },
-            None => break,
+            "-MF" | "-MQ" => {
+                preprocessor_args.push(arg.clone());
+                if let Some(arg_val) = it.next() {
+                    preprocessor_args.push(arg_val);
+                }
+            }
+            "-MT" => dep_target = it.next(),
+            // Can't cache Clang modules.
+            "-fcxx-modules" => return CompilerArguments::CannotCache,
+            "-fmodules" => return CompilerArguments::CannotCache,
+            // Can't cache PGO profiled output.
+            "-fprofile-use" => return CompilerArguments::CannotCache,
+            // We already expanded `@` files we could through
+            // `ExpandIncludeFile` above, so if one of those arguments now
+            // makes it this far we won't understand it.
+            v if v.starts_with('@') => return CompilerArguments::CannotCache,
+            "-M" | "-MM" | "-MD" | "-MMD" => {
+                // If one of the above options is on the command line, we'll
+                // need -MT on the preprocessor command line, whether it's
+                // been passed already or not
+                need_explicit_dep_target = true;
+                preprocessor_args.push(arg.clone());
+            }
+            // Other options.
+            v if v.starts_with('-') && v.len() > 1 => {
+                common_args.push(arg.clone());
+            }
+            // Anything else is an input file.
+            _ => {
+                if input_arg.is_some() || arg == "-" {
+                    // Can't cache compilations with multiple inputs
+                    // or compilation from stdin.
+                    return CompilerArguments::CannotCache;
+                }
+                input_arg = Some(arg.clone());
+            }
         }
     }
     // We only support compilation.
@@ -139,7 +152,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
         Some(i) => {
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
-            match Path::new(i).extension().and_then(|e| e.to_str()) {
+            match Path::new(&i).extension().and_then(|e| e.to_str()) {
                 Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
                 e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
@@ -157,7 +170,7 @@ pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String], argument_takes
         Some(o) => {
             outputs.insert("obj", o.to_owned());
             if split_dwarf {
-                Path::new(o)
+                Path::new(&o)
                     .with_extension("dwo")
                     //TODO: should really be dealing with OsStr everywhere.
                     .to_str()
@@ -213,13 +226,80 @@ pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, prep
     Ok((Cacheable::Yes, output))
 }
 
+struct ExpandIncludeFile<'a> {
+    cwd: &'a Path,
+    stack: Vec<String>,
+}
+
+impl<'a> Iterator for ExpandIncludeFile<'a> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        loop {
+            let arg = match self.stack.pop() {
+                Some(arg) => arg,
+                None => return None,
+            };
+            let file = if arg.starts_with("@") {
+                self.cwd.join(&arg[1..])
+            } else {
+                return Some(arg)
+            };
+
+            // According to gcc [1], @file means:
+            //
+            //     Read command-line options from file. The options read are
+            //     inserted in place of the original @file option. If file does
+            //     not exist, or cannot be read, then the option will be
+            //     treated literally, and not removed.
+            //
+            //     Options in file are separated by whitespace. A
+            //     whitespace character may be included in an option by
+            //     surrounding the entire option in either single or double
+            //     quotes. Any character (including a backslash) may be
+            //     included by prefixing the character to be included with
+            //     a backslash. The file may itself contain additional
+            //     @file options; any such options will be processed
+            //     recursively.
+            //
+            // So here we interpret any I/O errors as "just return this
+            // argument". Currently we don't implement handling of arguments
+            // with quotes, so if those are encountered we just pass the option
+            // through literally anyway.
+            //
+            // At this time we interpret all `@` arguments above as non
+            // cacheable, so if we fail to interpret this we'll just call the
+            // compiler anyway.
+            //
+            // [1]: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html#Overall-Options
+            let mut contents = String::new();
+            let res = File::open(&file).and_then(|mut f| {
+                f.read_to_string(&mut contents)
+            });
+            if let Err(e) = res {
+                debug!("failed to read @-file `{}`: {}", file.display(), e);
+                return Some(arg)
+            }
+            if contents.contains('"') || contents.contains('\'') {
+                return Some(arg)
+            }
+            let new_args = contents.split_whitespace().collect::<Vec<_>>();
+            self.stack.extend(new_args.iter().rev().map(|s| s.to_string()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use std::fs::File;
+    use std::io::Write;
+
     use super::*;
     use ::compiler::*;
+    use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
-        parse_arguments(arguments, argument_takes_value)
+        parse_arguments(arguments, ".".as_ref(), argument_takes_value)
     }
 
     #[test]
@@ -390,10 +470,31 @@ mod test {
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
     }
 
-
     #[test]
     fn test_parse_arguments_response_file() {
         assert_eq!(CompilerArguments::CannotCache,
                    _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
+    }
+
+    #[test]
+    fn at_signs() {
+        let td = TempDir::new("sccache").unwrap();
+        File::create(td.path().join("foo")).unwrap().write_all(b"\
+            -c foo.c -o foo.o\
+        ").unwrap();
+        let arg = format!("@{}", td.path().join("foo").display());
+        match _parse_arguments(&[arg]) {
+            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
+                assert!(true, "Parsed ok");
+                assert_eq!("foo.c", input);
+                assert_eq!("c", extension);
+                assert_map_contains!(outputs, ("obj", "foo.o"));
+                //TODO: fix assert_map_contains to assert no extra keys!
+                assert_eq!(1, outputs.len());
+                assert!(preprocessor_args.is_empty());
+                assert!(common_args.is_empty());
+            }
+            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
+        }
     }
 }

@@ -547,7 +547,7 @@ impl<C : CommandCreatorSync + 'static> SccacheServer<C> {
                 debug!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                match c.parse_arguments(&cmd) {
+                match c.parse_arguments(&cmd, cwd.as_ref()) {
                     CompilerArguments::Ok(args) => {
                         self.stats.requests_executed += 1;
                         self.send_compile_started(token, event_loop);

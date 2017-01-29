@@ -95,7 +95,7 @@ mod test {
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
-        gcc::parse_arguments(arguments, argument_takes_value)
+        gcc::parse_arguments(arguments, ".".as_ref(), argument_takes_value)
     }
 
     #[test]
