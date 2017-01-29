@@ -69,12 +69,14 @@ pub enum CompilerKind {
 }
 
 impl CompilerKind {
-    pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
+    pub fn parse_arguments(&self,
+                           arguments: &[String],
+                           cwd: &Path) -> CompilerArguments {
         match *self {
             // GCC and clang share the same argument parsing logic, but
             // accept different sets of arguments.
-            CompilerKind::Gcc => gcc::parse_arguments(arguments, gcc::argument_takes_value),
-            CompilerKind::Clang => gcc::parse_arguments(arguments, clang::argument_takes_value),
+            CompilerKind::Gcc => gcc::parse_arguments(arguments, cwd, gcc::argument_takes_value),
+            CompilerKind::Clang => gcc::parse_arguments(arguments, cwd, clang::argument_takes_value),
             CompilerKind::Msvc { .. } => msvc::parse_arguments(arguments),
         }
     }
@@ -260,12 +262,14 @@ impl Compiler {
     ///
     /// Not all compiler options can be cached, so this tests the set of
     /// options for each compiler.
-    pub fn parse_arguments(&self, arguments: &[String]) -> CompilerArguments {
+    pub fn parse_arguments(&self,
+                           arguments: &[String],
+                           cwd: &Path) -> CompilerArguments {
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("parse_arguments: `{}`", cmd_str);
         }
-        let parsed_args = self.kind.parse_arguments(arguments);
+        let parsed_args = self.kind.parse_arguments(arguments, cwd);
         match parsed_args {
             CompilerArguments::Ok(_) => debug!("parse_arguments: Ok"),
             CompilerArguments::CannotCache => debug!("parse_arguments: CannotCache"),
@@ -614,7 +618,7 @@ mod test {
         });
         let cwd = f.tempdir.path().to_str().unwrap();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
-        let parsed_args = match c.parse_arguments(&arguments) {
+        let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -676,7 +680,7 @@ mod test {
         });
         let cwd = f.tempdir.path().to_str().unwrap();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
-        let parsed_args = match c.parse_arguments(&arguments) {
+        let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -743,7 +747,7 @@ mod test {
         }
         let cwd = f.tempdir.path().to_str().unwrap();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
-        let parsed_args = match c.parse_arguments(&arguments) {
+        let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
@@ -796,7 +800,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(1), b"preprocessor output", PREPROCESSOR_STDERR)));
         let cwd = f.tempdir.path().to_str().unwrap();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
-        let parsed_args = match c.parse_arguments(&arguments) {
+        let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
