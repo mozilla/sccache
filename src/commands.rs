@@ -104,7 +104,6 @@ fn run_server_process() -> io::Result<ServerStartup> {
     use tempdir::TempDir;
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixListener;
-    use std::time::Duration;
 
     trace!("run_server_process");
     let tempdir = try!(TempDir::new("sccache"));
