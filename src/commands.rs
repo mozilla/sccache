@@ -154,7 +154,6 @@ fn run_server_process() -> io::Result<ServerStartup> {
             // Now read a status from the socket.
             //TODO: when we're using serde, use that here.
             let (mut stream, _) = try!(listener.accept());
-            try!(stream.set_read_timeout(Some(Duration::from_millis(500))));
             let mut buffer = [0; 1];
             try!(stream.read_exact(&mut buffer));
             if buffer[0] == 0 {
