@@ -21,6 +21,8 @@ use ::compiler::{
 };
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
+use futures::Future;
+use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
     RunCommand,
@@ -233,125 +235,159 @@ fn normpath(path: &str) -> String {
     path.to_owned()
 }
 
-pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str, includes_prefix: &str) -> io::Result<process::Output> {
-    let mut cmd = creator.new_command_sync(&compiler.executable);
-    cmd.arg("-E")
-        .arg(&parsed_args.input)
-        .arg("-nologo")
-        .args(&parsed_args.common_args)
-        .current_dir(cwd);
-    if parsed_args.depfile.is_some() {
-        cmd.arg("-showIncludes");
-    }
+pub fn preprocess<T>(creator: &T,
+                     compiler: &Compiler,
+                     parsed_args: &ParsedArguments,
+                     cwd: &str,
+                     includes_prefix: &str,
+                     pool: &CpuPool)
+                     -> Box<Future<Item=process::Output, Error=io::Error>>
+    where T: CommandCreatorSync
+{
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    let cwd = cwd.to_string();
+    let includes_prefix = includes_prefix.to_string();
 
-    if log_enabled!(Debug) {
-        debug!("preprocess: {:?}", cmd);
-    }
+    pool.spawn_fn(move || {
+        let mut cmd = creator.new_command_sync(&compiler.executable);
+        cmd.arg("-E")
+            .arg(&parsed_args.input)
+            .arg("-nologo")
+            .args(&parsed_args.common_args)
+            .current_dir(&cwd);
+        if parsed_args.depfile.is_some() {
+            cmd.arg("-showIncludes");
+        }
 
-    let output = try!(run_input_output(cmd, None));
-    if let (Some(ref objfile), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
-        File::create(Path::new(cwd).join(depfile))
-            .and_then(move |mut f| {
-                try!(write!(f, "{}: {} ", objfile, parsed_args.input));
-                let process::Output { status, stdout, stderr: stderr_bytes } = output;
-                let stderr = try!(from_local_codepage(&stderr_bytes));
-                let mut deps = HashSet::new();
-                let mut stderr_bytes = vec!();
-                for line in stderr.lines() {
-                    if line.starts_with(includes_prefix) {
-                        let dep = normpath(line[includes_prefix.len()..].trim());
-                        trace!("included: {}", dep);
-                        if deps.insert(dep.clone()) && !dep.contains(' ') {
-                            try!(write!(f, "{} ", dep));
+        if log_enabled!(Debug) {
+            debug!("preprocess: {:?}", cmd);
+        }
+
+        let output = try!(run_input_output(cmd, None));
+        let parsed_args = &parsed_args;
+        if let (Some(ref objfile), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
+            File::create(Path::new(&cwd).join(depfile))
+                .and_then(move |mut f| {
+                    try!(write!(f, "{}: {} ", objfile, parsed_args.input));
+                    let process::Output { status, stdout, stderr: stderr_bytes } = output;
+                    let stderr = try!(from_local_codepage(&stderr_bytes));
+                    let mut deps = HashSet::new();
+                    let mut stderr_bytes = vec!();
+                    for line in stderr.lines() {
+                        if line.starts_with(&includes_prefix) {
+                            let dep = normpath(line[includes_prefix.len()..].trim());
+                            trace!("included: {}", dep);
+                            if deps.insert(dep.clone()) && !dep.contains(' ') {
+                                try!(write!(f, "{} ", dep));
+                            }
+                        } else {
+                            stderr_bytes.extend_from_slice(line.as_bytes());
+                            stderr_bytes.push(b'\n');
                         }
-                    } else {
-                        stderr_bytes.extend_from_slice(line.as_bytes());
-                        stderr_bytes.push(b'\n');
                     }
-                }
-                try!(writeln!(f, ""));
-                // Write extra rules for each dependency to handle
-                // removed files.
-                try!(writeln!(f, "{}:", parsed_args.input));
-                let mut sorted = deps.into_iter().collect::<Vec<_>>();
-                sorted.sort();
-                for dep in sorted {
-                    if !dep.contains(' ') {
-                        try!(writeln!(f, "{}:", dep));
+                    try!(writeln!(f, ""));
+                    // Write extra rules for each dependency to handle
+                    // removed files.
+                    try!(writeln!(f, "{}:", parsed_args.input));
+                    let mut sorted = deps.into_iter().collect::<Vec<_>>();
+                    sorted.sort();
+                    for dep in sorted {
+                        if !dep.contains(' ') {
+                            try!(writeln!(f, "{}:", dep));
+                        }
                     }
-                }
-                Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
-            })
-    } else {
-        Ok(output)
-    }
+                    Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
+                })
+        } else {
+            Ok(output)
+        }
+    }).boxed()
 }
 
-pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
-    trace!("compile");
-    let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-    // See if this compilation will produce a PDB.
-    let cacheable = parsed_args.outputs.get("pdb")
-        .map_or(Cacheable::Yes, |pdb| {
-            // If the PDB exists, we don't know if it's shared with another
-            // compilation. If it is, we can't cache.
-            if Path::new(cwd).join(pdb).exists() {
-                Cacheable::No
-            } else {
-                Cacheable::Yes
-            }
-        });
-    // MSVC doesn't read anything from stdin, so it needs a temporary file
-    // as input.
-    let tempdir = try!(TempDir::new("sccache"));
-    let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
-    let input = tempdir.path().join(filename);
-    {
-        try!(File::create(&input)
-             .and_then(|mut f| f.write_all(&preprocessor_output)))
-    }
+pub fn compile<T>(creator: &T,
+                  compiler: &Compiler,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+    where T: CommandCreatorSync
+{
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    let cwd = cwd.to_string();
 
-    let mut cmd = creator.new_command_sync(&compiler.executable);
-    cmd.arg("-c")
-        .arg(&input)
-        .arg(&format!("-Fo{}", out_file))
-        .args(&parsed_args.common_args)
-        .current_dir(cwd);
+    pool.spawn_fn(move || {
+        trace!("compile");
+        let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+        // See if this compilation will produce a PDB.
+        let cacheable = parsed_args.outputs.get("pdb")
+            .map_or(Cacheable::Yes, |pdb| {
+                // If the PDB exists, we don't know if it's shared with another
+                // compilation. If it is, we can't cache.
+                if Path::new(&cwd).join(pdb).exists() {
+                    Cacheable::No
+                } else {
+                    Cacheable::Yes
+                }
+            });
+        // MSVC doesn't read anything from stdin, so it needs a temporary file
+        // as input.
+        let tempdir = try!(TempDir::new("sccache"));
+        let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+        let input = tempdir.path().join(filename);
+        {
+            try!(File::create(&input)
+                 .and_then(|mut f| f.write_all(&preprocessor_output)))
+        }
 
-    if log_enabled!(Debug) {
-        debug!("compile: {:?}", cmd);
-    }
-
-    let output = try!(run_input_output(cmd, None));
-    if output.status.success() {
-        Ok((cacheable, output))
-    } else {
-        // Sometimes MSVC can't handle compiling from the preprocessed source,
-        // so just compile from the original input file.
         let mut cmd = creator.new_command_sync(&compiler.executable);
         cmd.arg("-c")
-            .arg(&parsed_args.input)
+            .arg(&input)
             .arg(&format!("-Fo{}", out_file))
             .args(&parsed_args.common_args)
-            .current_dir(cwd);
+            .current_dir(&cwd);
 
         if log_enabled!(Debug) {
             debug!("compile: {:?}", cmd);
         }
 
         let output = try!(run_input_output(cmd, None));
-        Ok((cacheable, output))
-    }
+        if output.status.success() {
+            Ok((cacheable, output))
+        } else {
+            // Sometimes MSVC can't handle compiling from the preprocessed source,
+            // so just compile from the original input file.
+            let mut cmd = creator.new_command_sync(&compiler.executable);
+            cmd.arg("-c")
+                .arg(&parsed_args.input)
+                .arg(&format!("-Fo{}", out_file))
+                .args(&parsed_args.common_args)
+                .current_dir(cwd);
+
+            if log_enabled!(Debug) {
+                debug!("compile: {:?}", cmd);
+            }
+
+            let output = try!(run_input_output(cmd, None));
+            Ok((cacheable, output))
+        }
+    }).boxed()
 }
 
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use env_logger;
-    use std::collections::HashMap;
-    use mock_command::*;
     use ::compiler::*;
+    use env_logger;
+    use futures::Future;
+    use futures_cpupool::CpuPool;
+    use mock_command::*;
+    use std::collections::HashMap;
+    use super::*;
     use test::utils::*;
 
     #[test]
@@ -486,6 +522,7 @@ mod test {
     #[test]
     fn test_compile_simple() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
@@ -499,7 +536,12 @@ mod test {
                                      CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        let (cacheable, _) = compile(&creator,
+                                     &compiler,
+                                     vec!(),
+                                     &parsed_args,
+                                     f.tempdir.path().to_str().unwrap(),
+                                     &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -508,6 +550,7 @@ mod test {
     #[test]
     fn test_compile_not_cacheable_pdb() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let pdb = f.touch("foo.pdb").unwrap();
         let parsed_args = ParsedArguments {
@@ -523,7 +566,12 @@ mod test {
                                      CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        let (cacheable, _) = compile(&creator,
+                                     &compiler,
+                                     vec!(),
+                                     &parsed_args,
+                                     f.tempdir.path().to_str().unwrap(),
+                                     &pool).wait().unwrap();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -532,6 +580,7 @@ mod test {
     #[test]
     fn test_compile_preprocessed_fails() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
@@ -547,7 +596,12 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        let (cacheable, _) = compile(&creator,
+                                     &compiler,
+                                     vec!(),
+                                     &parsed_args,
+                                     f.tempdir.path().to_str().unwrap(),
+                                     &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());

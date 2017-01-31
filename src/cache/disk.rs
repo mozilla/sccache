@@ -57,19 +57,19 @@ fn make_key_path(key: &str) -> PathBuf {
 }
 
 impl Storage for DiskCache {
-    fn get(&self, key: &str) -> Cache {
+    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>> {
         trace!("DiskCache::get({})", key);
-        match self.lru.lock().unwrap().get(make_key_path(key)) {
-            Err(LruError::FileNotInCache) => Cache::Miss,
-            Err(LruError::Io(e)) => Cache::Error(e),
-            Ok(f) => {
-                match CacheRead::from(f) {
-                    Err(e) => Cache::Error(e),
-                    Ok(cache_read) => Cache::Hit(cache_read),
-                }
+        let path = make_key_path(key);
+        let lru = self.lru.clone();
+        self.pool.spawn_fn(move || {
+            let mut lru = lru.lock().unwrap();
+            match lru.get(&path) {
+                Err(LruError::FileNotInCache) => Ok(Cache::Miss),
+                Err(LruError::Io(e)) => Err(e),
+                Ok(f) => CacheRead::from(f).map(Cache::Hit),
+                Err(_) => panic!("Unexpected error!"),
             }
-            Err(_) => panic!("Unexpected error!"),
-        }
+        }).boxed()
     }
 
     fn start_put(&self, key: &str) -> io::Result<CacheWrite> {

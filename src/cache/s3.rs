@@ -78,21 +78,20 @@ fn normalize_key(key: &str) -> String {
 }
 
 impl Storage for S3Cache {
-    fn get(&self, key: &str) -> Cache {
+    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>> {
         let key = normalize_key(key);
-        match self.bucket.get(&key) {
-            Ok(data) => {
-                CacheRead::from(io::Cursor::new(data))
-                    .map(Cache::Hit)
-                    // This should only happen if the cached data
-                    // is bad.
-                    .unwrap_or_else(Cache::Error)
+        let bucket = self.bucket.clone();
+        self.pool.spawn_fn(move || {
+            match bucket.get(&key) {
+                Ok(data) => {
+                    CacheRead::from(io::Cursor::new(data)).map(Cache::Hit)
+                }
+                Err(e) => {
+                    warn!("Got AWS error: {:?}", e);
+                    Ok(Cache::Miss)
+                }
             }
-            Err(e) => {
-                warn!("Got AWS error: {:?}", e);
-                Cache::Miss
-            }
-        }
+        }).boxed()
     }
 
     fn start_put(&self, _key: &str) -> io::Result<CacheWrite> {

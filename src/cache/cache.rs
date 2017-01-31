@@ -54,8 +54,6 @@ const TEN_GIGS: usize = 10 * 1024 * 1024 * 1024;
 
 /// Result of a cache lookup.
 pub enum Cache {
-    /// Error fetching from cache.
-    Error(Error),
     /// Result was found in cache.
     Hit(CacheRead),
     /// Result was not found in cache.
@@ -67,7 +65,6 @@ pub enum Cache {
 impl fmt::Debug for Cache {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Cache::Error(ref e) => write!(f, "Cache::Error({:?}", e),
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
             Cache::Recache => write!(f, "Cache::Recache"),
@@ -76,9 +73,9 @@ impl fmt::Debug for Cache {
 }
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
-pub trait ReadSeek : Read + Seek {}
+pub trait ReadSeek : Read + Seek + Send {}
 
-impl<T: Read + Seek> ReadSeek for T {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
 
 /// Data stored in the compiler cache.
 pub struct CacheRead {
@@ -135,7 +132,7 @@ impl CacheWrite {
 }
 
 /// An interface to cache storage.
-pub trait Storage: Send + Sync {
+pub trait Storage {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.
@@ -143,7 +140,7 @@ pub trait Storage: Send + Sync {
     /// it should return a `Cache::Miss`.
     /// If the entry is successfully found in the cache, it should
     /// return a `Cache::Hit`.
-    fn get(&self, key: &str) -> Cache;
+    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>>;
 
     /// Get a cache entry for `key` that can be filled with data.
     fn start_put(&self, key: &str) -> io::Result<CacheWrite>;

@@ -20,6 +20,8 @@ use ::compiler::{
     run_input_output,
 };
 use log::LogLevel::Trace;
+use futures::Future;
+use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
     RunCommand,
@@ -192,38 +194,67 @@ fn _parse_arguments(arguments: &[String],
     })
 }
 
-pub fn preprocess<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<process::Output> {
+pub fn preprocess<T>(creator: &T,
+                     compiler: &Compiler,
+                     parsed_args: &ParsedArguments,
+                     cwd: &str,
+                     pool: &CpuPool)
+                     -> Box<Future<Item=process::Output, Error=io::Error>>
+    where T: CommandCreatorSync
+{
     trace!("preprocess");
-    let mut cmd = creator.new_command_sync(&compiler.executable);
-    cmd.arg("-E")
-        .arg(&parsed_args.input)
-        .args(&parsed_args.preprocessor_args)
-        .args(&parsed_args.common_args)
-        .current_dir(cwd);
-    if log_enabled!(Trace) {
-        trace!("preprocess: {:?}", cmd);
-    }
-    run_input_output(cmd, None)
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    let cwd = cwd.to_string();
+    pool.spawn_fn(move || {
+        let mut cmd = creator.new_command_sync(&compiler.executable);
+        cmd.arg("-E")
+            .arg(&parsed_args.input)
+            .args(&parsed_args.preprocessor_args)
+            .args(&parsed_args.common_args)
+            .current_dir(cwd);
+        if log_enabled!(Trace) {
+            trace!("preprocess: {:?}", cmd);
+        }
+        run_input_output(cmd, None)
+    }).boxed()
 }
 
-pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
+pub fn compile<T>(creator: &T,
+                  compiler: &Compiler,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+    where T: CommandCreatorSync
+{
     trace!("compile");
-    let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-    let mut cmd = creator.new_command_sync(&compiler.executable);
-    cmd.args(&["-c", "-x"])
-        .arg(match parsed_args.extension.as_ref() {
-            "c" => "cpp-output",
-            "cc" | "cpp" | "cxx" => "c++-cpp-output",
-            e => {
-                error!("gcc::compile: Got an unexpected file extension {}", e);
-                return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
-            }
-        })
-        .args(&["-", "-o", &output.clone()])
-        .args(&parsed_args.common_args)
-        .current_dir(cwd);
-    let output = try!(run_input_output(cmd, Some(preprocessor_output)));
-    Ok((Cacheable::Yes, output))
+
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    let cwd = cwd.to_string();
+
+    pool.spawn_fn(move || {
+        let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
+        let mut cmd = creator.new_command_sync(&compiler.executable);
+        cmd.args(&["-c", "-x"])
+            .arg(match parsed_args.extension.as_ref() {
+                "c" => "cpp-output",
+                "cc" | "cpp" | "cxx" => "c++-cpp-output",
+                e => {
+                    error!("gcc::compile: Got an unexpected file extension {}", e);
+                    return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
+                }
+            })
+            .args(&["-", "-o", &output.clone()])
+            .args(&parsed_args.common_args)
+            .current_dir(cwd);
+        let output = try!(run_input_output(cmd, Some(preprocessor_output)));
+        Ok((Cacheable::Yes, output))
+    }).boxed()
 }
 
 struct ExpandIncludeFile<'a> {

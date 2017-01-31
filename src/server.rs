@@ -522,25 +522,18 @@ impl<C> SccacheService<C>
                           arguments: Vec<String>,
                           cwd: String,
                           tx: mpsc::Sender<io::Result<ServerResponse>>) {
-        let creator = self.creator.clone();
-        let storage = self.storage.clone();
         let cache_control = if self.force_recache {
             CacheControl::ForceRecache
         } else {
             CacheControl::Default
         };
-        let result = self.pool.spawn_fn(move || {
-            let parsed_args = parsed_arguments;
-            let args = arguments;
-            let c = cwd;
-            compiler.get_cached_or_compile(creator,
-                                           &*storage,
-                                           &args,
-                                           &parsed_args,
-                                           &c,
-                                           cache_control)
-        });
-
+        let result = compiler.get_cached_or_compile(&self.creator,
+                                                    &self.storage,
+                                                    &arguments,
+                                                    &parsed_arguments,
+                                                    &cwd,
+                                                    cache_control,
+                                                    &self.pool);
         let me = self.clone();
         let task = result.then(move |result| {
             let mut res = ServerResponse::new();

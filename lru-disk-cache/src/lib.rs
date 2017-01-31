@@ -109,9 +109,9 @@ impl From<io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
-pub trait ReadSeek: Read + Seek {}
+pub trait ReadSeek: Read + Seek +Send {}
 
-impl<T: Read + Seek> ReadSeek for T {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
 
 fn filetime_now() -> FileTime {
     let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
