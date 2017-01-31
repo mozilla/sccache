@@ -24,7 +24,9 @@ extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
 extern crate filetime;
+#[macro_use]
 extern crate futures;
+extern crate futures_cpupool;
 extern crate hyper;
 #[cfg(windows)]
 extern crate kernel32;
@@ -34,7 +36,6 @@ extern crate log;
 extern crate lru_disk_cache;
 extern crate fern;
 extern crate libc;
-extern crate mio;
 #[cfg(windows)]
 extern crate named_pipe;
 extern crate number_prefix;
@@ -46,6 +47,9 @@ extern crate serde_json;
 extern crate sha1;
 extern crate tempdir;
 extern crate time;
+extern crate tokio_core;
+extern crate tokio_proto;
+extern crate tokio_service;
 extern crate uuid;
 #[cfg(windows)]
 extern crate winapi;

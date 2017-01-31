@@ -129,7 +129,7 @@ pub trait CommandCreator: Send {
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync: Clone + Send {
+pub trait CommandCreatorSync: Clone + Send + 'static {
     type Cmd: RunCommand;
 
     fn new() -> Self;
@@ -400,7 +400,7 @@ impl CommandCreator for MockCommandCreator {
 }
 
 /// To simplify life for using a `CommandCreator` across multiple threads.
-impl<T : CommandCreator> CommandCreatorSync for Arc<Mutex<T>> {
+impl<T : CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
     type Cmd = T::Cmd;
 
     fn new() -> Arc<Mutex<T>> {

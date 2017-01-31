@@ -22,14 +22,13 @@ use ::commands::{
     request_stats,
 };
 use env_logger;
-use mio::Sender;
+use futures::sync::oneshot::{self, Sender};
+use futures_cpupool::CpuPool;
 use ::mock_command::*;
 use ::server::{
     ServerMessage,
-    create_server,
-    run_server,
+    SccacheServer,
 };
-use std::boxed::Box;
 use std::fs::File;
 use std::io::{
     Cursor,
@@ -40,6 +39,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
+use std::time::Duration;
 use std::usize;
 use test::utils::*;
 
@@ -60,33 +60,45 @@ struct ServerOptions {
 /// * An `Arc`-and-`Mutex`-wrapped `MockCommandCreator` which the server will
 ///   use for all process creation.
 /// * The `JoinHandle` for the server thread.
-fn run_server_thread<T: Into<Option<ServerOptions>> + Send + 'static>(cache_dir: &Path, options: T) -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>) {
+fn run_server_thread<T>(cache_dir: &Path, options: T)
+                        -> (u16, Sender<ServerMessage>, Arc<Mutex<MockCommandCreator>>, thread::JoinHandle<()>)
+    where T: Into<Option<ServerOptions>> + Send + 'static
+{
     let options = options.into();
+    let cache_dir = cache_dir.to_path_buf();
+
+    let cache_size = options.as_ref()
+                            .and_then(|o| o.cache_size.as_ref())
+                            .map(|s| *s)
+                            .unwrap_or(usize::MAX);
+    let pool = CpuPool::new(1);
+    let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
+
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
-    let storage = Box::new(DiskCache::new(&cache_dir, options.as_ref().and_then(|o| o.cache_size.as_ref()).map(|s| *s).unwrap_or(usize::MAX)));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let (mut server, event_loop) = create_server::<Arc<Mutex<MockCommandCreator>>>(0, storage).unwrap();
-        assert!(server.port() > 0);
+        let srv = SccacheServer::new(0, pool, storage).unwrap();
+        let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
+        assert!(srv.port() > 0);
         if let Some(options) = options {
             if let Some(timeout) = options.idle_timeout {
-                 server.set_idle_timeout(timeout);
+                 srv.set_idle_timeout(Duration::from_millis(timeout));
             }
         }
-        let port = server.port();
-        let sender = event_loop.channel();
-        let creator = server.command_creator();
-        tx.send((port, sender, creator)).unwrap();
-        run_server(server, event_loop).unwrap()
+        let port = srv.port();
+        let creator = srv.command_creator().clone();
+        tx.send((port, creator)).unwrap();
+        srv.run(shutdown_rx).unwrap();
     });
-    let (port, sender, creator) = rx.recv().unwrap();
-    (port, sender, creator, handle)
+    let (port, creator) = rx.recv().unwrap();
+    (port, shutdown_tx, creator, handle)
 }
 
 #[test]
 fn test_server_shutdown() {
     let f = TestFixture::new();
-    let (port, _, _, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, _sender, _storage, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it to shut down
@@ -99,7 +111,7 @@ fn test_server_shutdown() {
 fn test_server_idle_timeout() {
     let f = TestFixture::new();
     // Set a ridiculously low idle timeout.
-    let (_, _, _, child) = run_server_thread(&f.tempdir.path(), ServerOptions { idle_timeout: Some(1), .. Default::default() });
+    let (_port, _sender, _storage, child) = run_server_thread(&f.tempdir.path(), ServerOptions { idle_timeout: Some(1), .. Default::default() });
     // Don't connect to it.
     // Ensure that it shuts down.
     // It would be nice to have an explicit timeout here so we don't hang
@@ -110,14 +122,14 @@ fn test_server_idle_timeout() {
 #[test]
 fn test_server_stats() {
     let f = TestFixture::new();
-    let (port, sender, _, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, sender, _storage, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
     let stats = cache_stats_map(request_stats(conn).unwrap());
     assert_eq!(&CacheStat::Count(0), stats.get("Compile requests").unwrap());
     // Now signal it to shut down.
-    sender.send(ServerMessage::Shutdown).unwrap();
+    sender.complete(ServerMessage::Shutdown);
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -157,7 +169,7 @@ fn test_server_unsupported_compiler() {
     assert_eq!(COMPILER_STDOUT, &stdout.into_inner()[..]);
     assert_eq!(COMPILER_STDERR, &stderr.into_inner()[..]);
     // Shut down the server.
-    sender.send(ServerMessage::Shutdown).unwrap();
+    sender.complete(ServerMessage::Shutdown);
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -211,7 +223,7 @@ fn test_server_compile() {
     assert_eq!(STDOUT, stdout.into_inner().as_slice());
     assert_eq!(STDERR, stderr.into_inner().as_slice());
     // Shut down the server.
-    sender.send(ServerMessage::Shutdown).unwrap();
+    sender.complete(ServerMessage::Shutdown);
     // Ensure that it shuts down.
     child.join().unwrap();
 }

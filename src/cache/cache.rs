@@ -20,7 +20,8 @@ use app_dirs::{
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
 use compiler::Compiler;
-use futures;
+use futures::Future;
+use futures_cpupool::CpuPool;
 use regex::Regex;
 use sha1;
 use std::env;
@@ -35,6 +36,7 @@ use std::io::{
 };
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use zip::{
     CompressionMethod,
@@ -100,11 +102,8 @@ impl CacheRead {
     }
 }
 
-/// Result of writing to cache storage.
-pub type CacheWriteResult = Result<Duration, String>;
-
 /// A `Future` that may provide a `CacheWriteResult`.
-pub type CacheWriteFuture = futures::BoxFuture<CacheWriteResult, futures::Canceled>;
+pub type CacheWriteFuture = Box<Future<Item=Duration, Error=String> + Send>;
 
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
@@ -148,10 +147,11 @@ pub trait Storage: Send + Sync {
 
     /// Get a cache entry for `key` that can be filled with data.
     fn start_put(&self, key: &str) -> io::Result<CacheWrite>;
+
     /// Put `entry` in the cache under `key`.
     ///
-    /// Returns a `Future` that will provide the result or error
-    /// when the put is finished.
+    /// Returns a `Future` that will provide the result or error when the put is
+    /// finished.
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture;
 
     /// Get the storage location.
@@ -180,7 +180,7 @@ fn parse_size(val: &str) -> Option<usize> {
 }
 
 /// Get a suitable `Storage` implementation from the environment.
-pub fn storage_from_environment() -> Box<Storage> {
+pub fn storage_from_environment(pool: &CpuPool) -> Arc<Storage> {
     if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let endpoint = match env::var("SCCACHE_ENDPOINT") {
             Ok(endpoint) => format!("{}/{}", endpoint, bucket),
@@ -191,10 +191,10 @@ pub fn storage_from_environment() -> Box<Storage> {
             },
         };
         debug!("Trying S3Cache({})", endpoint);
-        match S3Cache::new(&bucket, &endpoint) {
+        match S3Cache::new(&bucket, &endpoint, pool) {
             Ok(s) => {
                 trace!("Using S3Cache");
-                return Box::new(s);
+                return Arc::new(s);
             }
             Err(e) => warn!("Failed to create S3Cache: {:?}", e),
         }
@@ -210,7 +210,7 @@ pub fn storage_from_environment() -> Box<Storage> {
         .and_then(|v| parse_size(&v))
         .unwrap_or(TEN_GIGS);
     trace!("DiskCache size: {}", cache_size);
-    Box::new(DiskCache::new(&d, cache_size))
+    Arc::new(DiskCache::new(&d, cache_size, pool))
 }
 
 /// The cache is versioned by the inputs to `hash_key`.

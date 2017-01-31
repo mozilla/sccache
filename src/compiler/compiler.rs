@@ -23,7 +23,7 @@ use compiler::{
     msvc,
 };
 use filetime::FileTime;
-use futures::{self,Future};
+use futures::Future;
 use log::LogLevel::{Debug,Trace};
 use mock_command::{
     CommandChild,
@@ -165,11 +165,8 @@ pub struct CacheWriteInfo {
     pub duration: Duration,
 }
 
-/// Result of writing to cache storage.
-pub type CacheWriteResult = Result<CacheWriteInfo, String>;
-
 /// A `Future` that may provide a `CacheWriteResult`.
-pub type CacheWriteFuture = futures::BoxFuture<CacheWriteResult, futures::Canceled>;
+pub type CacheWriteFuture = Box<Future<Item=CacheWriteInfo, Error=String> + Send>;
 
 /// The result of a compilation or cache retrieval.
 pub enum CompileResult {
@@ -279,7 +276,16 @@ impl Compiler {
     }
 
     /// Look up a cached compile result in `storage`. If not found, run the compile and store the result.
-    pub fn get_cached_or_compile<T: CommandCreatorSync>(&self, creator: T, storage: &Storage, arguments: &[String], parsed_args: &ParsedArguments, cwd: &str, cache_control: CacheControl) -> io::Result<(CompileResult, process::Output)> {
+    pub fn get_cached_or_compile<T>(&self,
+                                    creator: T,
+                                    storage: &Storage,
+                                    arguments: &[String],
+                                    parsed_args: &ParsedArguments,
+                                    cwd: &str,
+                                    cache_control: CacheControl)
+                                    -> io::Result<(CompileResult, process::Output)>
+        where T: CommandCreatorSync
+    {
         let out_file = parsed_args.output_file();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
@@ -364,7 +370,7 @@ impl Compiler {
                         // entry. We'll get the result back elsewhere.
                         let out_file = out_file.into_owned();
                         let future = storage.finish_put(&key, entry)
-                            .map(move |res| {
+                            .then(move |res| {
                                 match res {
                                     Ok(_) => debug!("[{}]: Stored in cache successfully!", out_file),
                                     Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_file, e),
@@ -373,7 +379,8 @@ impl Compiler {
                                     object_file: out_file,
                                     duration: duration,
                                 })
-                            }).boxed();
+                            });
+                        let future = Box::new(future);
                         Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
                     } else {
                         // Not cacheable
@@ -515,6 +522,7 @@ mod test {
     use super::*;
     use cache::disk::DiskCache;
     use futures::Future;
+    use futures_cpupool::CpuPool;
     use mock_command::*;
     use std::fs::{self,File};
     use std::io::Write;
@@ -596,7 +604,10 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
+        let pool = CpuPool::new(1);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"),
+                                     usize::MAX,
+                                     &pool);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -628,7 +639,7 @@ mod test {
         match cached {
             CompileResult::CacheMiss(MissType::Normal, _, f) => {
                 // wait on cache write future so we don't race with it!
-                f.wait().unwrap().unwrap();
+                f.wait().unwrap();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
@@ -658,7 +669,10 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
+        let pool = CpuPool::new(1);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"),
+                                     usize::MAX,
+                                     &pool);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -690,7 +704,7 @@ mod test {
         match cached {
             CompileResult::CacheMiss(MissType::Normal, _, f) => {
                 // wait on cache write future so we don't race with it!
-                f.wait().unwrap().unwrap();
+                f.wait().unwrap();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
@@ -721,7 +735,10 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
+        let pool = CpuPool::new(1);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"),
+                                     usize::MAX,
+                                     &pool);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
@@ -757,7 +774,7 @@ mod test {
         match cached {
             CompileResult::CacheMiss(MissType::Normal, _, f) => {
                 // wait on cache write future so we don't race with it!
-                f.wait().unwrap().unwrap();
+                f.wait().unwrap();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
@@ -772,7 +789,7 @@ mod test {
         match cached {
             CompileResult::CacheMiss(MissType::ForcedRecache, _, f) => {
                 // wait on cache write future so we don't race with it!
-                f.wait().unwrap().unwrap();
+                f.wait().unwrap();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
@@ -790,7 +807,10 @@ mod test {
         }
         let creator = new_creator();
         let f = TestFixture::new();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), usize::MAX);
+        let pool = CpuPool::new(1);
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"),
+                                     usize::MAX,
+                                     &pool);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(creator.clone(),
