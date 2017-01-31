@@ -22,6 +22,8 @@ use ::compiler::{
     ParsedArguments,
     run_input_output,
 };
+use futures::Future;
+use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreator,
     CommandCreatorSync,
@@ -46,52 +48,69 @@ pub fn argument_takes_value(arg: &str) -> bool {
     gcc::ARGS_WITH_VALUE.contains(&arg) || ARGS_WITH_VALUE.contains(&arg)
 }
 
-pub fn compile<T : CommandCreatorSync>(mut creator: T, compiler: &Compiler, preprocessor_output: Vec<u8>, parsed_args: &ParsedArguments, cwd: &str) -> io::Result<(Cacheable, process::Output)> {
-    trace!("compile");
-    // Clang needs a temporary file for compilation, otherwise debug info
-    // doesn't have a reference to the input file.
-    let tempdir = try!(TempDir::new("sccache"));
-    let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
-    let input = tempdir.path().join(filename);
-    {
-        try!(File::create(&input)
-             .and_then(|mut f| f.write_all(&preprocessor_output)))
-    }
-    let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-    let mut cmd = creator.new_command_sync(&compiler.executable);
-    cmd.arg("-c")
-        .arg(&input)
-        .arg("-o")
-        .arg(&out_file)
-        .args(&parsed_args.common_args)
-        .current_dir(cwd);
+pub fn compile<T>(creator: &T,
+                  compiler: &Compiler,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+    where T: CommandCreatorSync,
+{
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    let cwd = cwd.to_string();
 
-    // clang may fail when compiling preprocessor output with -Werror,
-    // so retry compilation from the original input file if it fails and
-    // -Werror is in the commandline.
-    let output = try!(run_input_output(cmd, None));
-    if !output.status.success() && parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
+    pool.spawn_fn(move || {
+        trace!("compile");
+        // Clang needs a temporary file for compilation, otherwise debug info
+        // doesn't have a reference to the input file.
+        let tempdir = try!(TempDir::new("sccache"));
+        let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+        let input = tempdir.path().join(filename);
+        {
+            try!(File::create(&input)
+                 .and_then(|mut f| f.write_all(&preprocessor_output)))
+        }
+        let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
         let mut cmd = creator.new_command_sync(&compiler.executable);
         cmd.arg("-c")
-            .arg(&parsed_args.input)
+            .arg(&input)
             .arg("-o")
             .arg(&out_file)
             .args(&parsed_args.common_args)
-            .current_dir(cwd);
+            .current_dir(&cwd);
+
+        // clang may fail when compiling preprocessor output with -Werror,
+        // so retry compilation from the original input file if it fails and
+        // -Werror is in the commandline.
         let output = try!(run_input_output(cmd, None));
-        Ok((Cacheable::Yes, output))
-    } else {
-        Ok((Cacheable::Yes, output))
-    }
+        if !output.status.success() && parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
+            let mut cmd = creator.new_command_sync(&compiler.executable);
+            cmd.arg("-c")
+                .arg(&parsed_args.input)
+                .arg("-o")
+                .arg(&out_file)
+                .args(&parsed_args.common_args)
+                .current_dir(&cwd);
+            let output = try!(run_input_output(cmd, None));
+            Ok((Cacheable::Yes, output))
+        } else {
+            Ok((Cacheable::Yes, output))
+        }
+    }).boxed()
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use std::collections::HashMap;
-    use mock_command::*;
     use compiler::*;
     use compiler::gcc;
+    use futures::Future;
+    use futures_cpupool::CpuPool;
+    use mock_command::*;
+    use std::collections::HashMap;
+    use super::*;
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
@@ -135,6 +154,7 @@ mod test {
     #[test]
     fn test_compile_simple() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
@@ -148,7 +168,12 @@ mod test {
                                      CompilerKind::Clang).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        let (cacheable, _) = compile(&creator,
+                                     &compiler,
+                                     vec!(),
+                                     &parsed_args,
+                                     f.tempdir.path().to_str().unwrap(),
+                                     &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -157,6 +182,7 @@ mod test {
     #[test]
     fn test_compile_werror_fails() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".to_owned(),
@@ -172,7 +198,12 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, output) = compile(creator.clone(), &compiler, vec!(), &parsed_args, f.tempdir.path().to_str().unwrap()).unwrap();
+        let (cacheable, output) = compile(&creator,
+                                          &compiler,
+                                          vec!(),
+                                          &parsed_args,
+                                          f.tempdir.path().to_str().unwrap(),
+                                          &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         assert_eq!(exit_status(0), output.status);
         // Ensure that we ran all processes.
