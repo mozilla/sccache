@@ -19,7 +19,8 @@ use cache::{
     CacheWriteFuture,
     Storage,
 };
-use futures::{self,Future};
+use futures::Future;
+use futures_cpupool::CpuPool;
 use simples3::{
     AutoRefreshingProviderSync,
     Bucket,
@@ -36,7 +37,6 @@ use std::io::{
     ErrorKind,
 };
 use std::sync::Arc;
-use std::thread;
 use std::time::Instant;
 
 /// A cache that stores entries in Amazon S3.
@@ -46,11 +46,14 @@ pub struct S3Cache {
     bucket: Arc<Bucket>,
     /// Credentials provider.
     provider: Option<Arc<DefaultCredentialsProviderSync>>,
+    /// Thread pool to execute HTTP requests on
+    pool: CpuPool,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str) -> io::Result<S3Cache> {
+    pub fn new(bucket: &str, endpoint: &str, pool: &CpuPool)
+               -> io::Result<S3Cache> {
         let home = try!(env::home_dir().ok_or(Error::new(ErrorKind::Other, "Couldn't find home directory")));
         let profile_providers = vec![
             ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
@@ -65,6 +68,7 @@ impl S3Cache {
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
+            pool: pool.clone(),
         })
     }
 }
@@ -97,26 +101,23 @@ impl Storage for S3Cache {
     }
 
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
-        let (complete, promise) = futures::oneshot();
         let this = self.clone();
         let key = key.to_owned();
-        thread::spawn(move || {
+        self.pool.spawn_fn(move || {
             let start = Instant::now();
-            complete.complete(entry.finish()
-                              .and_then(|data| {
-                                  this.provider
-                                      .as_ref()
-                                      .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
-                                      .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
-                                      .and_then(|credentials| {
-                                          let key = normalize_key(&key);
-                                          this.bucket.put(&key, &data, &credentials)
-                                              .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
-                                      })
-                                      .map(|_| start.elapsed())
-                              }).map_err(|e| format!("{}", e)));
-        });
-        promise.boxed()
+            entry.finish().and_then(|data| {
+                this.provider
+                    .as_ref()
+                    .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
+                    .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
+                    .and_then(|credentials| {
+                        let key = normalize_key(&key);
+                        this.bucket.put(&key, &data, &credentials)
+                            .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
+                    })
+                    .map(|_| start.elapsed())
+            }).map_err(|e| e.to_string())
+        }).boxed()
     }
 
     fn location(&self) -> String {

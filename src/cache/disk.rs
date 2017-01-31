@@ -19,14 +19,14 @@ use cache::{
     CacheWriteFuture,
     Storage,
 };
-use futures::{self,Future};
+use futures::Future;
+use futures_cpupool::CpuPool;
 use lru_disk_cache::LruDiskCache;
 use lru_disk_cache::Error as LruError;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path,PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Instant;
 
 /// A cache that stores entries at local disk paths.
@@ -34,14 +34,19 @@ use std::time::Instant;
 pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
     lru: Arc<Mutex<LruDiskCache>>,
+    /// Thread pool to execute disk I/O
+    pool: CpuPool,
 }
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: usize) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(root: &T,
+                                max_size: usize,
+                                pool: &CpuPool) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
             lru: Arc::new(Mutex::new(LruDiskCache::new(root, max_size).expect("Couldn't instantiate disk cache!"))),
+            pool: pool.clone(),
         }
     }
 }
@@ -76,20 +81,18 @@ impl Storage for DiskCache {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
-        let (complete, promise) = futures::oneshot();
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        thread::spawn(move || {
+        self.pool.spawn_fn(move || {
             let start = Instant::now();
-            complete.complete(entry.finish()
-                              .map_err(|e| format!("{}", e))
-                              .and_then(|v| {
-                                  lru.lock().unwrap().insert_bytes(key, &v)
-                                      .map(|_| start.elapsed())
-                                      .map_err(|e| format!("{}", e))
-                              }));
-        });
-        promise.boxed()
+            entry.finish()
+                 .map_err(|e| format!("{}", e))
+                 .and_then(|v| {
+                     lru.lock().unwrap().insert_bytes(key, &v)
+                        .map(|_| start.elapsed())
+                        .map_err(|e| format!("{}", e))
+                 })
+        }).boxed()
     }
 
     fn location(&self) -> String {
