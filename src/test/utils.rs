@@ -25,6 +25,7 @@ use std::path::{Path,PathBuf};
 
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
+use tokio_core::reactor::Core;
 
 /// Return a `Vec` with each listed entry converted to an owned `String`.
 macro_rules! stringvec {
@@ -61,7 +62,8 @@ macro_rules! assert_map_contains {
 }
 
 pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
-    Arc::new(Mutex::new(MockCommandCreator::new()))
+    let core = Core::new().unwrap();
+    Arc::new(Mutex::new(MockCommandCreator::new(&core.handle())))
 }
 
 pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,

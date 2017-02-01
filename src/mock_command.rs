@@ -47,6 +47,8 @@
 
 #[cfg(unix)]
 use libc;
+use futures::Future;
+use futures::future;
 use std::boxed::Box;
 use std::ffi::OsStr;
 use std::fmt;
@@ -57,16 +59,20 @@ use std::io::{
 };
 use std::path::Path;
 use std::process::{
-    Child,
-    ChildStderr,
-    ChildStdin,
-    ChildStdout,
     Command,
     ExitStatus,
     Output,
     Stdio,
 };
 use std::sync::{Arc,Mutex};
+use tokio_process::{
+    Child,
+    ChildStderr,
+    ChildStdin,
+    ChildStdout,
+    CommandExt,
+};
+use tokio_core::reactor::Handle;
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 pub trait CommandChild {
@@ -84,9 +90,9 @@ pub trait CommandChild {
     /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
     /// Wait for the process to complete and return its exit status.
-    fn wait(&mut self) -> io::Result<ExitStatus>;
+    fn wait(self) -> Box<Future<Item = ExitStatus, Error = io::Error>>;
     /// Wait for the process to complete and return its output.
-    fn wait_with_output(self) -> io::Result<Output>;
+    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
@@ -117,22 +123,23 @@ pub trait RunCommand: fmt::Debug {
 /// This is provided so that `MockCommandCreator` can have state for testing.
 /// For the non-testing scenario, `ProcessCommandCreator` is simply a unit
 /// struct with a trivial implementation of this.
-pub trait CommandCreator: Send {
+pub trait CommandCreator {
     /// The type returned by `new_command`.
     type Cmd: RunCommand;
 
     /// Create a new instance of this type.
-    fn new() -> Self;
+    fn new(handle: &Handle) -> Self;
     /// Create a new object that implements `RunCommand` that can be used
     /// to create a new process.
     fn new_command<S: AsRef<OsStr>>(&mut self, program: S) -> Self::Cmd;
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync: Clone + Send + 'static {
+pub trait CommandCreatorSync: Clone + 'static {
     type Cmd: RunCommand;
 
-    fn new() -> Self;
+    fn new(handle: &Handle) -> Self;
+
     fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> Self::Cmd;
 }
 
@@ -142,84 +149,118 @@ impl CommandChild for Child {
     type O = ChildStdout;
     type E = ChildStderr;
 
-    fn take_stdin(&mut self) -> Option<ChildStdin> { self.stdin.take() }
-    fn take_stdout(&mut self) -> Option<ChildStdout> { self.stdout.take() }
-    fn take_stderr(&mut self) -> Option<ChildStderr> { self.stderr.take() }
+    fn take_stdin(&mut self) -> Option<ChildStdin> { self.stdin().take() }
+    fn take_stdout(&mut self) -> Option<ChildStdout> { self.stdout().take() }
+    fn take_stderr(&mut self) -> Option<ChildStderr> { self.stderr().take() }
 
-    fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.wait()
+    fn wait(self) -> Box<Future<Item = ExitStatus, Error = io::Error>> {
+        Box::new(self)
     }
-    fn wait_with_output(self) -> io::Result<Output> {
-        self.wait_with_output()
+
+    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>> {
+        Box::new(self.wait_with_output())
+    }
+}
+
+pub struct AsyncCommand {
+    inner: Command,
+    handle: Handle,
+}
+
+impl AsyncCommand {
+    pub fn new<S: AsRef<OsStr>>(program: S, handle: Handle) -> AsyncCommand {
+        AsyncCommand {
+            inner: Command::new(program),
+            handle: handle,
+        }
     }
 }
 
 /// Trivial implementation of `RunCommand` for `std::process::Command`.
-impl RunCommand for Command {
+impl RunCommand for AsyncCommand {
     type C = Child;
 
-    fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Command {
-        self.arg(arg)
+    fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut AsyncCommand {
+        self.inner.arg(arg);
+        self
     }
-    fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Command {
-        self.args(args)
+    fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut AsyncCommand {
+        self.inner.args(args);
+        self
     }
-    fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Command {
-        self.current_dir(dir)
-    }
-
-    #[cfg(all(windows, feature = "unstable"))]
-    fn no_console(&mut self) -> &mut Command {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        self.creation_flags(CREATE_NO_WINDOW)
-    }
-
-    #[cfg(not(all(windows, feature = "unstable")))]
-    fn no_console(&mut self) -> &mut Command {
+    fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut AsyncCommand {
+        self.inner.current_dir(dir);
         self
     }
 
-    fn stdin(&mut self, cfg: Stdio) -> &mut Command {
-        self.stdin(cfg)
+    #[cfg(all(windows, feature = "unstable"))]
+    fn no_console(&mut self) -> &mut AsyncCommand {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.inner.creation_flags(CREATE_NO_WINDOW);
+        self
     }
-    fn stdout(&mut self, cfg: Stdio) -> &mut Command {
-        self.stdout(cfg)
+
+    #[cfg(not(all(windows, feature = "unstable")))]
+    fn no_console(&mut self) -> &mut AsyncCommand {
+        self
     }
-    fn stderr(&mut self, cfg: Stdio) -> &mut Command {
-        self.stderr(cfg)
+
+    fn stdin(&mut self, cfg: Stdio) -> &mut AsyncCommand {
+        self.inner.stdin(cfg);
+        self
+    }
+    fn stdout(&mut self, cfg: Stdio) -> &mut AsyncCommand {
+        self.inner.stdout(cfg);
+        self
+    }
+    fn stderr(&mut self, cfg: Stdio) -> &mut AsyncCommand {
+        self.inner.stderr(cfg);
+        self
     }
     fn spawn(&mut self) -> io::Result<Child> {
-        self.spawn()
+        self.inner.spawn_async(&self.handle)
+    }
+}
+
+impl fmt::Debug for AsyncCommand {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.inner.fmt(f)
     }
 }
 
 /// Unit struct to use `RunCommand` with `std::system::Command`.
 #[derive(Clone)]
-pub struct ProcessCommandCreator;
+pub struct ProcessCommandCreator {
+    handle: Handle,
+}
 
 /// Trivial implementation of `CommandCreator` for `ProcessCommandCreator`.
 impl CommandCreator for ProcessCommandCreator {
-    type Cmd = Command;
+    type Cmd = AsyncCommand;
 
-    fn new() -> ProcessCommandCreator {
-        ProcessCommandCreator
+    fn new(handle: &Handle) -> ProcessCommandCreator {
+        ProcessCommandCreator {
+            handle: handle.clone(),
+        }
     }
-    fn new_command<S: AsRef<OsStr>>(&mut self, program: S) -> Command {
-        Command::new(program)
+
+    fn new_command<S: AsRef<OsStr>>(&mut self, program: S) -> AsyncCommand {
+        AsyncCommand::new(program, self.handle.clone())
     }
 }
 
 /// Trivial implementation of `CommandCreatorSync` for `ProcessCommandCreator`.
 impl CommandCreatorSync for ProcessCommandCreator {
-    type Cmd = Command;
+    type Cmd = AsyncCommand;
 
-    fn new() -> ProcessCommandCreator {
-        ProcessCommandCreator
+    fn new(handle: &Handle) -> ProcessCommandCreator {
+        CommandCreator::new(handle)
     }
-    fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> Command {
+
+    fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> AsyncCommand {
         // This doesn't actually use any mutable state.
-        Command::new(program)
+        self.new_command(program)
     }
 }
 
@@ -289,19 +330,21 @@ impl CommandChild for MockChild {
     fn take_stdout(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stdout.take() }
     fn take_stderr(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stderr.take() }
 
-    fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.wait_result.take().unwrap()
+    fn wait(mut self) -> Box<Future<Item = ExitStatus, Error = io::Error>> {
+        future::result(self.wait_result.take().unwrap()).boxed()
     }
 
-    fn wait_with_output(self) -> io::Result<Output> {
+
+    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>> {
         let MockChild { stdout, stderr, wait_result, .. } = self;
-        wait_result.unwrap().and_then(|status| {
+        let result = wait_result.unwrap().and_then(|status| {
             Ok(Output {
                 status: status,
                 stdout: stdout.map(|c| c.into_inner()).unwrap_or(vec!()),
                 stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec!()),
             })
-        })
+        });
+        future::result(result).boxed()
     }
 }
 
@@ -384,9 +427,9 @@ impl MockCommandCreator {
 impl CommandCreator for MockCommandCreator {
     type Cmd = MockCommand;
 
-    fn new() -> MockCommandCreator {
+    fn new(_handle: &Handle) -> MockCommandCreator {
         MockCommandCreator {
-            children: vec!(),
+            children: Vec::new(),
         }
     }
 
@@ -400,11 +443,11 @@ impl CommandCreator for MockCommandCreator {
 }
 
 /// To simplify life for using a `CommandCreator` across multiple threads.
-impl<T : CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
+impl<T: CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
     type Cmd = T::Cmd;
 
-    fn new() -> Arc<Mutex<T>> {
-        Arc::new(Mutex::new(T::new()))
+    fn new(handle: &Handle) -> Arc<Mutex<T>> {
+        Arc::new(Mutex::new(T::new(handle)))
     }
 
     fn new_command_sync<S: AsRef<OsStr>>(&mut self, program: S) -> T::Cmd {
@@ -418,6 +461,7 @@ mod test {
     use std::error::Error;
     use std::ffi::OsStr;
     use std::io;
+    use futures::Future;
     use std::process::{
         ExitStatus,
         Output,
@@ -425,23 +469,26 @@ mod test {
     use std::sync::{Arc,Mutex};
     use std::thread;
     use test::utils::*;
+    use tokio_core::reactor::Core;
 
     fn spawn_command<T : CommandCreator, S: AsRef<OsStr>>(creator : &mut T, program: S) -> io::Result<<<T as CommandCreator>::Cmd as RunCommand>::C> {
         creator.new_command(program).spawn()
     }
 
     fn spawn_wait_command<T : CommandCreator, S: AsRef<OsStr>>(creator : &mut T, program: S) -> io::Result<ExitStatus> {
-        spawn_command(creator, program).and_then(|mut c| c.wait())
+        spawn_command(creator, program).and_then(|c| c.wait().wait())
     }
 
     fn spawn_output_command<T : CommandCreator, S: AsRef<OsStr>>(creator : &mut T, program: S) -> io::Result<Output> {
-        spawn_command(creator, program).and_then(|c| c.wait_with_output())
+        spawn_command(creator, program).and_then(|c| c.wait_with_output().wait())
     }
 
     fn spawn_on_thread<T : CommandCreatorSync + Send + 'static>(mut t : T, really : bool) -> ExitStatus {
         thread::spawn(move || {
             if really {
-                t.new_command_sync("foo").spawn().and_then(|mut c| c.wait()).unwrap()
+                t.new_command_sync("foo").spawn().and_then(|c| {
+                    c.wait().wait()
+                }).unwrap()
             } else {
                 exit_status(1)
             }
@@ -450,7 +497,8 @@ mod test {
 
     #[test]
     fn test_mock_command_wait() {
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         assert_eq!(0, spawn_wait_command(&mut creator, "foo").unwrap().code().unwrap());
     }
@@ -460,13 +508,15 @@ mod test {
     fn test_unexpected_new_command() {
         // If next_command_spawns hasn't been called enough times,
         // new_command should panic.
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.new_command("foo").spawn().unwrap();
     }
 
     #[test]
     fn test_mock_command_output() {
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         let output = spawn_output_command(&mut creator, "foo").unwrap();
         assert_eq!(0, output.status.code().unwrap());
@@ -476,7 +526,8 @@ mod test {
 
     #[test]
     fn test_mock_command_calls() {
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.next_command_calls(|| {
             Ok(MockChild::new(exit_status(0), "hello", "error"))
         });
@@ -488,7 +539,8 @@ mod test {
 
     #[test]
     fn test_mock_spawn_error() {
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.next_command_spawns(Err(io::Error::new(io::ErrorKind::Other, "error")));
         let e = spawn_command(&mut creator, "foo").err().unwrap();
         assert_eq!(io::ErrorKind::Other, e.kind());
@@ -497,7 +549,8 @@ mod test {
 
     #[test]
     fn test_mock_wait_error() {
-        let mut creator = MockCommandCreator::new();
+        let core = Core::new().unwrap();
+        let mut creator = MockCommandCreator::new(&core.handle());
         creator.next_command_spawns(Ok(MockChild::with_error(io::Error::new(io::ErrorKind::Other, "error"))));
         let e = spawn_wait_command(&mut creator, "foo").err().unwrap();
         assert_eq!(io::ErrorKind::Other, e.kind());
@@ -506,15 +559,9 @@ mod test {
 
     #[test]
     fn test_mock_command_sync() {
-        let creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+        let core = Core::new().unwrap();
+        let creator = Arc::new(Mutex::new(MockCommandCreator::new(&core.handle())));
         next_command(&creator, Ok(MockChild::new(exit_status(0), "hello", "error")));
         assert_eq!(exit_status(0), spawn_on_thread(creator.clone(), true));
-    }
-
-    #[test]
-    fn test_real_command_sync() {
-        let creator = ProcessCommandCreator;
-        // Don't *really* spawn a command, but ensure that the code compiles.
-        assert_eq!(exit_status(1), spawn_on_thread(creator.clone(), false));
     }
 }

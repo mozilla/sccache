@@ -22,6 +22,7 @@ use ::compiler::{
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::Future;
+use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
@@ -45,28 +46,44 @@ fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
-pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut creator: &mut T, exe: U) -> io::Result<String> {
-    let tempdir = try!(TempDir::new("sccache"));
-    let input = tempdir.path().join("test.c");
-    {
+pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
+                                     -> Box<Future<Item=String, Error=io::Error>>
+    where T: CommandCreatorSync
+{
+    let write = pool.spawn_fn(|| {
+        let tempdir = try!(TempDir::new("sccache"));
+        let input = tempdir.path().join("test.c");
         try!(File::create(&input)
-             .and_then(|mut f| f.write_all(b"#include <stdio.h>\n")))
-    }
+             .and_then(|mut f| f.write_all(b"#include <stdio.h>\n")));
+        Ok((tempdir, input))
+    });
 
-    let mut cmd = creator.new_command_sync(&exe);
-    cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul"])
-        .arg(&input)
-        // The MSDN docs say the -showIncludes output goes to stderr,
-        // but that's not true unless running with -E.
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let exe = exe.to_os_string();
+    let mut creator = creator.clone();
+    let output = write.and_then(move |(tempdir, input)| {
+        let mut cmd = creator.new_command_sync(&exe);
+        cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul"])
+            .arg(&input)
+            // The MSDN docs say the -showIncludes output goes to stderr,
+            // but that's not true unless running with -E.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
 
-    if log_enabled!(Trace) {
-        trace!("detect_showincludes_prefix: {:?}", cmd);
-    }
+        if log_enabled!(Trace) {
+            trace!("detect_showincludes_prefix: {:?}", cmd);
+        }
 
-    let output = try!(run_input_output(cmd, None));
-    if output.status.success() {
+        run_input_output(cmd, None).map(|e| {
+            drop(tempdir);
+            e
+        })
+    });
+
+    Box::new(output.and_then(|output| {
+        if !output.status.success() {
+            return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
+        }
+
         let process::Output { stdout: stdout_bytes, .. } = output;
         let stdout = try!(from_local_codepage(&stdout_bytes));
         for line in stdout.lines() {
@@ -83,8 +100,9 @@ pub fn detect_showincludes_prefix<T : CommandCreatorSync, U: AsRef<OsStr>>(mut c
                 }
             }
         }
-    }
-    Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
+
+        return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
+    }))
 }
 
 pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
@@ -240,32 +258,29 @@ pub fn preprocess<T>(creator: &T,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      includes_prefix: &str,
-                     pool: &CpuPool)
+                     _pool: &CpuPool)
                      -> Box<Future<Item=process::Output, Error=io::Error>>
     where T: CommandCreatorSync
 {
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.arg("-E")
+        .arg(&parsed_args.input)
+        .arg("-nologo")
+        .args(&parsed_args.common_args)
+        .current_dir(&cwd);
+    if parsed_args.depfile.is_some() {
+        cmd.arg("-showIncludes");
+    }
+
+    if log_enabled!(Debug) {
+        debug!("preprocess: {:?}", cmd);
+    }
+
     let parsed_args = parsed_args.clone();
-    let cwd = cwd.to_string();
     let includes_prefix = includes_prefix.to_string();
+    let cwd = cwd.to_string();
 
-    pool.spawn_fn(move || {
-        let mut cmd = creator.new_command_sync(&compiler.executable);
-        cmd.arg("-E")
-            .arg(&parsed_args.input)
-            .arg("-nologo")
-            .args(&parsed_args.common_args)
-            .current_dir(&cwd);
-        if parsed_args.depfile.is_some() {
-            cmd.arg("-showIncludes");
-        }
-
-        if log_enabled!(Debug) {
-            debug!("preprocess: {:?}", cmd);
-        }
-
-        let output = try!(run_input_output(cmd, None));
+    Box::new(run_input_output(cmd, None).and_then(move |output| {
         let parsed_args = &parsed_args;
         if let (Some(ref objfile), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
             File::create(Path::new(&cwd).join(depfile))
@@ -303,7 +318,7 @@ pub fn preprocess<T>(creator: &T,
         } else {
             Ok(output)
         }
-    }).boxed()
+    }))
 }
 
 pub fn compile<T>(creator: &T,
@@ -315,49 +330,68 @@ pub fn compile<T>(creator: &T,
                   -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
     where T: CommandCreatorSync
 {
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
-    let parsed_args = parsed_args.clone();
-    let cwd = cwd.to_string();
-
-    pool.spawn_fn(move || {
-        trace!("compile");
-        let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-        // See if this compilation will produce a PDB.
-        let cacheable = parsed_args.outputs.get("pdb")
-            .map_or(Cacheable::Yes, |pdb| {
-                // If the PDB exists, we don't know if it's shared with another
-                // compilation. If it is, we can't cache.
-                if Path::new(&cwd).join(pdb).exists() {
-                    Cacheable::No
-                } else {
-                    Cacheable::Yes
-                }
-            });
-        // MSVC doesn't read anything from stdin, so it needs a temporary file
-        // as input.
-        let tempdir = try!(TempDir::new("sccache"));
-        let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
-        let input = tempdir.path().join(filename);
-        {
-            try!(File::create(&input)
-                 .and_then(|mut f| f.write_all(&preprocessor_output)))
+    trace!("compile");
+    let out_file = match parsed_args.outputs.get("obj") {
+        Some(obj) => obj.clone(),
+        None => {
+            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
         }
+    };
 
-        let mut cmd = creator.new_command_sync(&compiler.executable);
+    // See if this compilation will produce a PDB.
+    let cacheable = parsed_args.outputs.get("pdb")
+        .map_or(Cacheable::Yes, |pdb| {
+            // If the PDB exists, we don't know if it's shared with another
+            // compilation. If it is, we can't cache.
+            if Path::new(&cwd).join(pdb).exists() {
+                Cacheable::No
+            } else {
+                Cacheable::Yes
+            }
+        });
+
+    // MSVC doesn't read anything from stdin, so it needs a temporary file
+    // as input.
+    let input = parsed_args.input.clone();
+    let write = pool.spawn_fn(move || {
+        let tempdir = try!(TempDir::new("sccache"));
+        let filename = try!(Path::new(&input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+        let input = tempdir.path().join(filename);
+        try!(File::create(&input)
+             .and_then(|mut f| f.write_all(&preprocessor_output)));
+        Ok((tempdir, input))
+    });
+
+    let mut creator2 = creator.clone();
+    let compiler2 = compiler.clone();
+    let cwd2 = cwd.to_string();
+    let parsed_args2 = parsed_args.clone();
+    let out_file2 = out_file.clone();
+    let output = write.and_then(move |(tempdir, input)| {
+        let mut cmd = creator2.new_command_sync(&compiler2.executable);
         cmd.arg("-c")
             .arg(&input)
-            .arg(&format!("-Fo{}", out_file))
-            .args(&parsed_args.common_args)
-            .current_dir(&cwd);
+            .arg(&format!("-Fo{}", out_file2))
+            .args(&parsed_args2.common_args)
+            .current_dir(&cwd2);
 
         if log_enabled!(Debug) {
             debug!("compile: {:?}", cmd);
         }
 
-        let output = try!(run_input_output(cmd, None));
+        run_input_output(cmd, None).map(|e| {
+            drop(tempdir);
+            e
+        })
+    });
+
+    let cwd = cwd.to_string();
+    let mut creator = creator.clone();
+    let compiler = compiler.clone();
+    let parsed_args = parsed_args.clone();
+    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
         if output.status.success() {
-            Ok((cacheable, output))
+            future::ok((cacheable, output)).boxed()
         } else {
             // Sometimes MSVC can't handle compiling from the preprocessed source,
             // so just compile from the original input file.
@@ -372,10 +406,11 @@ pub fn compile<T>(creator: &T,
                 debug!("compile: {:?}", cmd);
             }
 
-            let output = try!(run_input_output(cmd, None));
-            Ok((cacheable, output))
+            Box::new(run_input_output(cmd, None).map(|output| {
+                (cacheable, output)
+            }))
         }
-    }).boxed()
+    }))
 }
 
 
@@ -392,11 +427,9 @@ mod test {
 
     #[test]
     fn test_detect_showincludes_prefix() {
-        match env_logger::init() {
-            Ok(_) => {},
-            Err(_) => {},
-        }
-        let mut creator = new_creator();
+        drop(env_logger::init());
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let srcfile = f.touch("stdio.h").unwrap();
         let mut s = srcfile.to_str().unwrap();
@@ -406,7 +439,7 @@ mod test {
         let stdout = format!("blah: {}\r\n", s);
         let stderr = String::from("some\r\nstderr\r\n");
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &stderr)));
-        assert_eq!("blah: ", detect_showincludes_prefix(&mut creator, "cl.exe").unwrap());
+        assert_eq!("blah: ", detect_showincludes_prefix(&creator, "cl.exe".as_ref(), &pool).wait().unwrap());
     }
 
     #[test]

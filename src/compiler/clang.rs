@@ -23,6 +23,7 @@ use ::compiler::{
     run_input_output,
 };
 use futures::Future;
+use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreator,
@@ -57,36 +58,55 @@ pub fn compile<T>(creator: &T,
                   -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
     where T: CommandCreatorSync,
 {
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
-    let parsed_args = parsed_args.clone();
-    let cwd = cwd.to_string();
-
-    pool.spawn_fn(move || {
-        trace!("compile");
-        // Clang needs a temporary file for compilation, otherwise debug info
-        // doesn't have a reference to the input file.
+    trace!("compile");
+    // Clang needs a temporary file for compilation, otherwise debug info
+    // doesn't have a reference to the input file.
+    let input = parsed_args.input.clone();
+    let write = pool.spawn_fn(move || {
         let tempdir = try!(TempDir::new("sccache"));
-        let filename = try!(Path::new(&parsed_args.input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
+        let filename = try!(Path::new(&input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
         let input = tempdir.path().join(filename);
-        {
-            try!(File::create(&input)
-                 .and_then(|mut f| f.write_all(&preprocessor_output)))
+        try!(File::create(&input)
+             .and_then(|mut f| f.write_all(&preprocessor_output)));
+        Ok((tempdir, input))
+    });
+
+    let out_file = match parsed_args.outputs.get("obj") {
+        Some(obj) => obj.clone(),
+        None => {
+            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
         }
-        let out_file = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-        let mut cmd = creator.new_command_sync(&compiler.executable);
+    };
+
+    let compiler2 = compiler.clone();
+    let cwd2 = cwd.to_string();
+    let mut creator2 = creator.clone();
+    let parsed_args2 = parsed_args.clone();
+    let out_file2 = out_file.clone();
+    let output = write.and_then(move |(tempdir, input)| {
+        let mut cmd = creator2.new_command_sync(&compiler2.executable);
         cmd.arg("-c")
             .arg(&input)
             .arg("-o")
-            .arg(&out_file)
-            .args(&parsed_args.common_args)
-            .current_dir(&cwd);
+            .arg(&out_file2)
+            .args(&parsed_args2.common_args)
+            .current_dir(&cwd2);
+        run_input_output(cmd, None).map(|e| {
+            drop(tempdir);
+            e
+        })
+    });
 
-        // clang may fail when compiling preprocessor output with -Werror,
-        // so retry compilation from the original input file if it fails and
-        // -Werror is in the commandline.
-        let output = try!(run_input_output(cmd, None));
-        if !output.status.success() && parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
+    // clang may fail when compiling preprocessor output with -Werror,
+    // so retry compilation from the original input file if it fails and
+    // -Werror is in the commandline.
+    let compiler = compiler.clone();
+    let cwd = cwd.to_string();
+    let mut creator = creator.clone();
+    let parsed_args = parsed_args.clone();
+    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
+        if !output.status.success() &&
+           parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
             let mut cmd = creator.new_command_sync(&compiler.executable);
             cmd.arg("-c")
                 .arg(&parsed_args.input)
@@ -94,12 +114,13 @@ pub fn compile<T>(creator: &T,
                 .arg(&out_file)
                 .args(&parsed_args.common_args)
                 .current_dir(&cwd);
-            let output = try!(run_input_output(cmd, None));
-            Ok((Cacheable::Yes, output))
+            Box::new(run_input_output(cmd, None).map(|output| {
+                (Cacheable::Yes, output)
+            }))
         } else {
-            Ok((Cacheable::Yes, output))
+            future::ok((Cacheable::Yes, output)).boxed()
         }
-    }).boxed()
+    }))
 }
 
 #[cfg(test)]

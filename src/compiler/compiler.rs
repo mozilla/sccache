@@ -24,7 +24,7 @@ use compiler::{
 };
 use filetime::FileTime;
 use futures::future;
-use futures::Future;
+use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use log::LogLevel::{Debug,Trace};
 use mock_command::{
@@ -51,7 +51,6 @@ use std::process::{self,Stdio};
 use std::result;
 use std::str;
 use std::sync::Arc;
-use std::thread;
 use std::time::{
     Duration,
     Instant,
@@ -505,12 +504,15 @@ fn write_file(path : &Path, contents: &[u8]) -> io::Result<()> {
 }
 
 /// If `executable` is a known compiler, return `Some(CompilerKind)`.
-pub fn detect_compiler_kind<T : CommandCreatorSync>(mut creator : T,  executable : &str) -> Option<CompilerKind> {
+pub fn detect_compiler_kind<T>(creator: &T, executable: &str, pool: &CpuPool)
+                               -> Box<Future<Item=Option<CompilerKind>, Error=io::Error>>
+    where T: CommandCreatorSync
+{
     trace!("detect_compiler");
-    TempDir::new("sccache")
-        .and_then(|dir| {
-            let src = dir.path().join("testfile.c");
-            try!(write_file(&src, b"#if defined(_MSC_VER)
+    let write = pool.spawn_fn(move || {
+        let dir = try!(TempDir::new("sccache"));
+        let src = dir.path().join("testfile.c");
+        try!(write_file(&src, b"#if defined(_MSC_VER)
 msvc
 #elif defined(__clang__)
 clang
@@ -518,105 +520,127 @@ clang
 gcc
 #endif
 "));
+        Ok((dir, src))
+    });
 
-            let args = vec!(OsString::from("-E"), OsString::from(&src));
-            if log_enabled!(Trace) {
-                let va = args.iter().map(|a| a.to_str().unwrap()).collect::<Vec<&str>>();
-                trace!("compiler: {}, args: '{}'", executable, va.join(" "));
-            }
-            creator.new_command_sync(&executable)
-                .args(&args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .and_then(|child| child.wait_with_output())
-                .and_then(|output| {
-                    str::from_utf8(&output.stdout)
-                        .or_else(|_| Err(Error::new(ErrorKind::Other, "Failed to parse output")))
-                        .and_then(|stdout| {
-                            for line in stdout.lines() {
-                                //TODO: do something smarter here.
-                                if line == "gcc" {
-                                    debug!("Found GCC");
-                                    return Ok(Some(CompilerKind::Gcc));
-                                } else if line == "clang" {
-                                    debug!("Found clang");
-                                    return Ok(Some(CompilerKind::Clang));
-                                } else if line == "msvc" {
-                                    debug!("Found MSVC");
-                                    let prefix = try!(msvc::detect_showincludes_prefix(&mut creator, &executable));
-                                    trace!("showIncludes prefix: '{}'", prefix);
-                                    return Ok(Some(CompilerKind::Msvc {
-                                        includes_prefix: prefix,
-                                    }));
-                                }
-                            }
-                            Ok(None)
-                        })
-                })
-        }).unwrap_or_else(|e| {
-            warn!("Failed to run compiler: {}", e);
-            None
+    let mut creator2 = creator.clone();
+    let executable2 = executable.to_string();
+    let output = write.and_then(move |(tempdir, src)| {
+        let args = vec!(OsString::from("-E"), OsString::from(&src));
+        if log_enabled!(Trace) {
+            let va = args.iter().map(|a| a.to_str().unwrap()).collect::<Vec<&str>>();
+            trace!("compiler: {}, args: '{}'", executable2, va.join(" "));
+        }
+        let child = creator2.new_command_sync(&executable2)
+                        .args(&args)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn();
+
+        child.into_future().and_then(|child| {
+            child.wait_with_output()
+        }).map(|e| {
+            drop(tempdir);
+            e
         })
+    });
+
+    let creator = creator.clone();
+    let pool = pool.clone();
+    let executable = executable.to_string();
+    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
+        let stdout = match str::from_utf8(&output.stdout) {
+            Ok(s) => s,
+            Err(_) => return future::err(Error::new(ErrorKind::Other, "Failed to parse output")).boxed(),
+        };
+        for line in stdout.lines() {
+            //TODO: do something smarter here.
+            if line == "gcc" {
+                debug!("Found GCC");
+                return future::ok(Some(CompilerKind::Gcc)).boxed()
+            } else if line == "clang" {
+                debug!("Found clang");
+                return future::ok(Some(CompilerKind::Clang)).boxed()
+            } else if line == "msvc" {
+                debug!("Found MSVC");
+                let prefix = msvc::detect_showincludes_prefix(&creator,
+                                                              executable.as_ref(),
+                                                              &pool);
+                return Box::new(prefix.map(|prefix| {
+                    trace!("showIncludes prefix: '{}'", prefix);
+                    Some(CompilerKind::Msvc {
+                        includes_prefix: prefix,
+                    })
+                }))
+            }
+        }
+        future::ok(None).boxed()
+    }))
 }
 
 /// If `executable` is a known compiler, return `Some(Compiler)` containing information about it.
-pub fn get_compiler_info<T : CommandCreatorSync>(creator : T,  executable : &str) -> Option<Compiler> {
-    detect_compiler_kind(creator, executable)
-        .and_then(|kind| {
-            Compiler::new(executable, kind)
-                .or_else(|e| {
-                    error!("Failed to create Compiler: {}", e);
-                    Err(())
-                })
-                .ok()
-        })
+pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
+                            -> Box<Future<Item=Compiler, Error=io::Error>>
+    where T: CommandCreatorSync
+{
+    let executable = executable.to_string();
+    Box::new(detect_compiler_kind(creator, &executable, pool).and_then(move |kind| {
+        match kind {
+            Some(kind) => Compiler::new(&executable, kind),
+            None => Err(io::Error::new(io::ErrorKind::Other,
+                                       "could not determine compiler kind")),
+        }
+    }))
 }
 
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-pub fn wait_with_input_output<T: CommandChild + 'static>(mut child: T, input: Option<Vec<u8>>) -> io::Result<process::Output> {
+pub fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
+                                 -> Box<Future<Item=process::Output, Error=io::Error>>
+    where T: CommandChild + 'static,
+{
+    use tokio_core::io::{write_all, read_to_end};
     let stdin = input.and_then(|i| {
-        child.take_stdin().map(|mut stdin| {
-            thread::spawn(move || {
-                stdin.write_all(&i)
-            })
+        child.take_stdin().map(|stdin| {
+            write_all(stdin, i)
         })
     });
-    fn read<R>(mut input: R) -> thread::JoinHandle<io::Result<Vec<u8>>>
-        where R: Read + Send + 'static
-    {
-        thread::spawn(move || {
-            let mut ret = Vec::new();
-            input.read_to_end(&mut ret).map(|_| ret)
-        })
-    }
-    // Finish writing stdin before waiting, because waiting drops stdin.
-    stdin.and_then(|t| t.join().unwrap().ok());
-    let stdout = child.take_stdout().map(read);
-    let stderr = child.take_stderr().map(read);
-    let status = try!(child.wait());
-    let stdout = stdout.and_then(|t| t.join().unwrap().ok());
-    let stderr = stderr.and_then(|t| t.join().unwrap().ok());
+    let stdout = child.take_stdout().map(|io| read_to_end(io, Vec::new()));
+    let stderr = child.take_stderr().map(|io| read_to_end(io, Vec::new()));
 
-    Ok(process::Output {
-        status: status,
-        stdout: stdout.unwrap_or_default(),
-        stderr: stderr.unwrap_or_default(),
-    })
+    // Finish writing stdin before waiting, because waiting drops stdin.
+    let status = Future::and_then(stdin, |io| {
+        drop(io);
+        child.wait()
+    });
+
+    Box::new(status.join3(stdout, stderr).map(|(status, out, err)| {
+        let stdout = out.map(|p| p.1);
+        let stderr = err.map(|p| p.1);
+        process::Output {
+            status: status,
+            stdout: stdout.unwrap_or_default(),
+            stderr: stderr.unwrap_or_default(),
+        }
+    }))
 }
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
-pub fn run_input_output<C: RunCommand>(mut command: C, input: Option<Vec<u8>>) -> io::Result<process::Output> {
-    command
+pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
+                           -> Box<Future<Item=process::Output, Error=io::Error>>
+    where C: RunCommand
+{
+    let child = command
         .no_console()
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .and_then(|child| wait_with_input_output(child, input))
+        .spawn();
+
+    Box::new(future::result(child)
+                .and_then(|child| wait_with_input_output(child, input)))
 }
 
 #[cfg(test)]
@@ -637,15 +661,19 @@ mod test {
     #[test]
     fn test_detect_compiler_kind_gcc() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")));
-        assert_eq!(Some(CompilerKind::Gcc), detect_compiler_kind(creator.clone(), "/foo/bar"));
+        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
+        assert_eq!(Some(CompilerKind::Gcc), kind);
     }
 
     #[test]
     fn test_detect_compiler_kind_clang() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\nfoo", "")));
-        assert_eq!(Some(CompilerKind::Clang), detect_compiler_kind(creator.clone(), "/foo/bar"));
+        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
+        assert_eq!(Some(CompilerKind::Clang), kind);
     }
 
     #[test]
@@ -653,6 +681,7 @@ mod test {
         use env_logger;
         drop(env_logger::init());
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let srcfile = f.touch("stdio.h").unwrap();
         let mut s = srcfile.to_str().unwrap();
@@ -665,31 +694,36 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
         // showincludes prefix detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
-        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix }), detect_compiler_kind(creator.clone(), "/foo/bar"));
+        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
+        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix }), kind);
     }
 
     #[test]
     fn test_detect_compiler_kind_unknown() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "something", "")));
-        assert_eq!(None, detect_compiler_kind(creator.clone(), "/foo/bar"));
+        assert_eq!(None, detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap());
     }
 
     #[test]
     fn test_detect_compiler_kind_process_fail() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert_eq!(None, detect_compiler_kind(creator.clone(), "/foo/bar"));
+        assert_eq!(None, detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap());
     }
 
     #[test]
     fn test_get_compiler_info() {
         let creator = new_creator();
+        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(),
-                                  f.bins[0].to_str().unwrap()).unwrap();
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
         assert_eq!(f.bins[0].to_str().unwrap(), c.executable);
         // sha-1 digest of an empty file.
         assert_eq!("da39a3ee5e6b4b0d3255bfef95601890afd80709", c.digest);
@@ -709,8 +743,9 @@ mod test {
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(),
-                                  f.bins[0].to_str().unwrap()).unwrap();
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // The compiler invocation.
@@ -784,8 +819,9 @@ mod test {
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(),
-                                  f.bins[0].to_str().unwrap()).unwrap();
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // The compiler invocation.
@@ -860,8 +896,9 @@ mod test {
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(),
-                                  f.bins[0].to_str().unwrap()).unwrap();
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
         const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
         const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
@@ -942,8 +979,9 @@ mod test {
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(),
-                                  f.bins[0].to_str().unwrap()).unwrap();
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
         // The preprocessor invocation.
         const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
         next_command(&creator, Ok(MockChild::new(exit_status(1), b"preprocessor output", PREPROCESSOR_STDERR)));

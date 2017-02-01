@@ -61,6 +61,7 @@ use std::path::{
     Path,
 };
 use std::process;
+use tokio_core::reactor::Core;
 use which::which_in;
 
 /// The default sccache server port.
@@ -440,7 +441,9 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
 }
 
 /// Handle `response`, the output from running a compile on the server. Return the compiler exit status.
-fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, stdout : &mut T, stderr : &mut U) -> io::Result<i32> {
+fn handle_compile_finished(response: CompileFinished,
+                           stdout: &mut Write,
+                           stderr: &mut Write) -> io::Result<i32> {
     trace!("handle_compile_finished");
     // It might be nice if the server sent stdout/stderr as the process
     // ran, but then it would have to also save them in the cache as
@@ -471,65 +474,62 @@ fn handle_compile_finished<T : Write, U : Write>(response : CompileFinished, std
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
-fn handle_compile_response<T, U, V, W, X, Y>(mut creator: T,
-                                             conn: &mut ServerConnection,
-                                             response: CompileResponse,
-                                             exe: W,
-                                             cmdline: Vec<X>,
-                                             cwd: Y,
-                                             stdout: &mut U,
-                                             stderr: &mut V) -> io::Result<i32>
-  where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
+fn handle_compile_response<T>(mut creator: T,
+                              core: &mut Core,
+                              conn: &mut ServerConnection,
+                              response: CompileResponse,
+                              exe: &Path,
+                              cmdline: Vec<OsString>,
+                              cwd: &Path,
+                              stdout: &mut Write,
+                              stderr: &mut Write) -> io::Result<i32>
+    where T : CommandCreatorSync,
+{
     match response {
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
-            conn.read_one_response()
-                .or_else(|err| {
-                    //TODO: something better here?
-                    error!("Error reading compile response from server: {}", err);
-                    Err(Error::new(ErrorKind::Other, "Error reading compile response from server"))
-                })
-                .and_then(|mut res| {
-                    if res.has_compile_finished() {
-                        trace!("Server sent CompileFinished");
-                        handle_compile_finished(res.take_compile_finished(),
-                                                stdout, stderr)
-                    } else {
-                        Err(Error::new(ErrorKind::Other, "Unexpected response from server"))
-                    }
-                })
+            let mut res = try!(conn.read_one_response().map_err(|err| {
+                //TODO: something better here?
+                error!("Error reading compile response from server: {}", err);
+                Error::new(ErrorKind::Other, "Error reading compile response from server")
+            }));
+            if res.has_compile_finished() {
+                trace!("Server sent CompileFinished");
+                handle_compile_finished(res.take_compile_finished(),
+                                        stdout, stderr)
+            } else {
+                Err(Error::new(ErrorKind::Other, "Unexpected response from server"))
+            }
         }
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
             //TODO: possibly capture output here for testing.
-            let mut cmd = creator.new_command_sync(exe.as_ref());
+            let mut cmd = creator.new_command_sync(exe);
             cmd.args(&cmdline)
-                .current_dir(cwd.as_ref());
+                .current_dir(cwd);
             if log_enabled!(Trace) {
                 trace!("running command: {:?}", cmd);
             }
-            run_input_output(cmd, None)
-                .and_then(|output| {
-                    if !output.stdout.is_empty() {
-                        try!(stdout.write_all(&output.stdout));
-                    }
-                    if !output.stderr.is_empty() {
-                        try!(stderr.write_all(&output.stderr));
-                    }
-                    Ok(output.status.code()
-                       .unwrap_or_else(|| {
-                           /* TODO: this breaks type inference, figure out why
-                           status_signal(status)
-                           .and_then(|sig : i32| {
-                           println!("Compile terminated by signal {}", sig);
-                           None
-                       });
-                            */
-                           // Arbitrary.
-                           2
-                       }))
-                })
+            let output = try!(core.run(run_input_output(cmd, None)));
+            if !output.stdout.is_empty() {
+                try!(stdout.write_all(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                try!(stderr.write_all(&output.stderr));
+            }
+            Ok(output.status.code()
+               .unwrap_or_else(|| {
+                   /* TODO: this breaks type inference, figure out why
+                   status_signal(status)
+                   .and_then(|sig : i32| {
+                   println!("Compile terminated by signal {}", sig);
+                   None
+               });
+                    */
+                   // Arbitrary.
+                   2
+               }))
         }
     }
 }
@@ -539,22 +539,23 @@ fn handle_compile_response<T, U, V, W, X, Y>(mut creator: T,
 /// The first entry in `cmdline` will be looked up in `path` if it is not
 /// an absolute path.
 /// See `request_compile` and `handle_compile_response`.
-pub fn do_compile<T, U, V, W, X, Y>(creator: T,
-                                    mut conn: ServerConnection,
-                                    exe: W,
-                                    cmdline: Vec<X>,
-                                    cwd: Y,
-                                    path: Option<OsString>,
-                                    stdout: &mut U,
-                                    stderr: &mut V) -> io::Result<i32>
-  where T : CommandCreatorSync, U : Write, V : Write, W: AsRef<OsStr>, X: AsRef<OsStr>, Y: AsRef<Path> {
-      trace!("do_compile");
-    which_in(exe, path, &cwd)
-          .map_err( |x: &'static str| Error::new(ErrorKind::Other, x))
-          .and_then(|exe_path| {
-              request_compile(&mut conn, &exe_path, &cmdline, &cwd)
-                  .and_then(|res| handle_compile_response(creator, &mut conn, res, exe_path, cmdline, cwd, stdout, stderr))
-          })
+pub fn do_compile<T>(creator: T,
+                     core: &mut Core,
+                     mut conn: ServerConnection,
+                     exe: &Path,
+                     cmdline: Vec<OsString>,
+                     cwd: &Path,
+                     path: Option<OsString>,
+                     stdout: &mut Write,
+                     stderr: &mut Write) -> io::Result<i32>
+    where T : CommandCreatorSync,
+{
+    trace!("do_compile");
+    let exe_path = try!(which_in(exe, path, &cwd).map_err(|x| {
+        Error::new(ErrorKind::Other, x)
+    }));
+    let res = try!(request_compile(&mut conn, &exe_path, &cmdline, &cwd));
+    handle_compile_response(creator, core, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr)
 }
 
 /// Run `cmd` and return the process exit status.
@@ -604,7 +605,8 @@ pub fn run_command(cmd : Command) -> i32 {
         Command::Compile { exe, cmdline, cwd } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             connect_or_start_server(get_port())
-                .and_then(|conn| do_compile(ProcessCommandCreator, conn, &exe, cmdline, &cwd, env::var_os("PATH"), &mut io::stdout(), &mut io::stderr()))
+                .and_then(|conn| Core::new().map(|c| (conn, c)))
+                .and_then(|(conn, mut c)| do_compile(ProcessCommandCreator::new(&c.handle()), &mut c, conn, exe.as_ref(), cmdline, &cwd, env::var_os("PATH"), &mut io::stdout(), &mut io::stderr()))
                 .unwrap_or_else(|e| {
                     println!("Failed to execute compile: {}", e);
                     1
