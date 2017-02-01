@@ -21,6 +21,7 @@ use ::compiler::{
 };
 use log::LogLevel::Trace;
 use futures::Future;
+use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
@@ -198,27 +199,21 @@ pub fn preprocess<T>(creator: &T,
                      compiler: &Compiler,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
-                     pool: &CpuPool)
+                     _pool: &CpuPool)
                      -> Box<Future<Item=process::Output, Error=io::Error>>
     where T: CommandCreatorSync
 {
     trace!("preprocess");
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
-    let parsed_args = parsed_args.clone();
-    let cwd = cwd.to_string();
-    pool.spawn_fn(move || {
-        let mut cmd = creator.new_command_sync(&compiler.executable);
-        cmd.arg("-E")
-            .arg(&parsed_args.input)
-            .args(&parsed_args.preprocessor_args)
-            .args(&parsed_args.common_args)
-            .current_dir(cwd);
-        if log_enabled!(Trace) {
-            trace!("preprocess: {:?}", cmd);
-        }
-        run_input_output(cmd, None)
-    }).boxed()
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.arg("-E")
+        .arg(&parsed_args.input)
+        .args(&parsed_args.preprocessor_args)
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+    if log_enabled!(Trace) {
+        trace!("preprocess: {:?}", cmd);
+    }
+    run_input_output(cmd, None)
 }
 
 pub fn compile<T>(creator: &T,
@@ -226,35 +221,35 @@ pub fn compile<T>(creator: &T,
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
-                  pool: &CpuPool)
+                  _pool: &CpuPool)
                   -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
     where T: CommandCreatorSync
 {
     trace!("compile");
 
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
-    let parsed_args = parsed_args.clone();
-    let cwd = cwd.to_string();
+    let output = match parsed_args.outputs.get("obj") {
+        Some(obj) => obj,
+        None => {
+            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
+        }
+    };
 
-    pool.spawn_fn(move || {
-        let output = try!(parsed_args.outputs.get("obj").ok_or(Error::new(ErrorKind::Other, "Missing object file output")));
-        let mut cmd = creator.new_command_sync(&compiler.executable);
-        cmd.args(&["-c", "-x"])
-            .arg(match parsed_args.extension.as_ref() {
-                "c" => "cpp-output",
-                "cc" | "cpp" | "cxx" => "c++-cpp-output",
-                e => {
-                    error!("gcc::compile: Got an unexpected file extension {}", e);
-                    return Err(Error::new(ErrorKind::Other, "Unexpected file extension"));
-                }
-            })
-            .args(&["-", "-o", &output.clone()])
-            .args(&parsed_args.common_args)
-            .current_dir(cwd);
-        let output = try!(run_input_output(cmd, Some(preprocessor_output)));
-        Ok((Cacheable::Yes, output))
-    }).boxed()
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.args(&["-c", "-x"])
+        .arg(match parsed_args.extension.as_ref() {
+            "c" => "cpp-output",
+            "cc" | "cpp" | "cxx" => "c++-cpp-output",
+            e => {
+                error!("gcc::compile: Got an unexpected file extension {}", e);
+                return future::err(Error::new(ErrorKind::Other, "Unexpected file extension")).boxed()
+            }
+        })
+        .args(&["-", "-o", &output.clone()])
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
+    Box::new(run_input_output(cmd, Some(preprocessor_output)).map(|output| {
+        (Cacheable::Yes, output)
+    }))
 }
 
 struct ExpandIncludeFile<'a> {

@@ -42,6 +42,7 @@ use std::thread;
 use std::time::Duration;
 use std::usize;
 use test::utils::*;
+use tokio_core::reactor::Core;
 
 /// Options for running the server in tests.
 #[derive(Default)]
@@ -149,9 +150,9 @@ fn test_server_unsupported_compiler() {
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
     let exe = &f.bins[0];
-    let cmdline = vec!["-c", "file.c", "-o", "file.o"];
+    let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
     let cwd = f.tempdir.path();
-    let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+    let client_creator = new_creator();
     const COMPILER_STDOUT: &'static [u8] = b"some stdout";
     const COMPILER_STDERR: &'static [u8] = b"some stderr";
     {
@@ -162,7 +163,8 @@ fn test_server_unsupported_compiler() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    let mut core = Core::new().unwrap();
+    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
@@ -209,15 +211,16 @@ fn test_server_compile() {
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
     let exe = &f.bins[0];
-    let cmdline = vec!["-c", "file.c", "-o", "file.o"];
+    let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
     let cwd = f.tempdir.path();
     // This creator shouldn't create any processes. It will assert if
     // it tries to.
-    let client_creator = Arc::new(Mutex::new(MockCommandCreator::new()));
+    let client_creator = new_creator();
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    assert_eq!(0, do_compile(client_creator.clone(), conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    let mut core = Core::new().unwrap();
+    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(STDOUT, stdout.into_inner().as_slice());

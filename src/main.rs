@@ -48,6 +48,7 @@ extern crate sha1;
 extern crate tempdir;
 extern crate time;
 extern crate tokio_core;
+extern crate tokio_process;
 extern crate tokio_proto;
 extern crate tokio_service;
 extern crate uuid;
