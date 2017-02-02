@@ -21,8 +21,7 @@ use ::compiler::{
 };
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
-use futures::Future;
-use futures::future;
+use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,

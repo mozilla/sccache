@@ -38,6 +38,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_core::reactor::Handle;
 use zip::{
     CompressionMethod,
     ZipArchive,
@@ -100,7 +101,7 @@ impl CacheRead {
 }
 
 /// A `Future` that may provide a `CacheWriteResult`.
-pub type CacheWriteFuture = Box<Future<Item=Duration, Error=String> + Send>;
+pub type CacheWriteFuture = Box<Future<Item=Duration, Error=String>>;
 
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
@@ -177,7 +178,7 @@ fn parse_size(val: &str) -> Option<usize> {
 }
 
 /// Get a suitable `Storage` implementation from the environment.
-pub fn storage_from_environment(pool: &CpuPool) -> Arc<Storage> {
+pub fn storage_from_environment(pool: &CpuPool, handle: &Handle) -> Arc<Storage> {
     if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let endpoint = match env::var("SCCACHE_ENDPOINT") {
             Ok(endpoint) => format!("{}/{}", endpoint, bucket),
@@ -188,7 +189,7 @@ pub fn storage_from_environment(pool: &CpuPool) -> Arc<Storage> {
             },
         };
         debug!("Trying S3Cache({})", endpoint);
-        match S3Cache::new(&bucket, &endpoint, pool) {
+        match S3Cache::new(&bucket, &endpoint, handle) {
             Ok(s) => {
                 trace!("Using S3Cache");
                 return Arc::new(s);

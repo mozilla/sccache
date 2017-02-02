@@ -28,6 +28,7 @@ extern crate filetime;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate hyper;
+extern crate hyper_tls;
 #[cfg(windows)]
 extern crate kernel32;
 extern crate local_encoding;

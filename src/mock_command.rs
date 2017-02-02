@@ -47,8 +47,7 @@
 
 #[cfg(unix)]
 use libc;
-use futures::Future;
-use futures::future;
+use futures::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::OsStr;
 use std::fmt;
