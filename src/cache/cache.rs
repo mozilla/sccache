@@ -187,7 +187,7 @@ pub fn storage_from_environment() -> Box<Storage> {
             _ => match env::var("SCCACHE_REGION") {
                 Ok(ref region) if region != "us-east-1" =>
                     format!("{}.s3-{}.amazonaws.com", bucket, region),
-                _ => String::from("s3.amazonaws.com"),
+                _ => format!("{}.s3.amazonaws.com", bucket),
             },
         };
         debug!("Trying S3Cache({})", endpoint);
