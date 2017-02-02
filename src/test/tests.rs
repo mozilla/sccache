@@ -79,7 +79,8 @@ fn run_server_thread<T>(cache_dir: &Path, options: T)
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let srv = SccacheServer::new(0, pool, storage).unwrap();
+        let core = Core::new().unwrap();
+        let srv = SccacheServer::new(0, pool, core, storage).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {

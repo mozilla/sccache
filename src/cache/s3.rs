@@ -19,13 +19,11 @@ use cache::{
     CacheWriteFuture,
     Storage,
 };
-use futures::Future;
-use futures_cpupool::CpuPool;
+use futures::future::{self, Future};
 use simples3::{
-    AutoRefreshingProviderSync,
+    AutoRefreshingProvider,
     Bucket,
     ChainProvider,
-    DefaultCredentialsProviderSync,
     ProfileProvider,
     ProvideAwsCredentials,
     Ssl,
@@ -36,24 +34,21 @@ use std::io::{
     Error,
     ErrorKind,
 };
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::Instant;
+use tokio_core::reactor::Handle;
 
 /// A cache that stores entries in Amazon S3.
-#[derive(Clone)]
 pub struct S3Cache {
     /// The S3 bucket.
-    bucket: Arc<Bucket>,
+    bucket: Rc<Bucket>,
     /// Credentials provider.
-    provider: Option<Arc<DefaultCredentialsProviderSync>>,
-    /// Thread pool to execute HTTP requests on
-    pool: CpuPool,
+    provider: AutoRefreshingProvider<ChainProvider>,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str, pool: &CpuPool)
-               -> io::Result<S3Cache> {
+    pub fn new(bucket: &str, endpoint: &str, handle: &Handle) -> io::Result<S3Cache> {
         let home = try!(env::home_dir().ok_or(Error::new(ErrorKind::Other, "Couldn't find home directory")));
         let profile_providers = vec![
             ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
@@ -61,14 +56,13 @@ impl S3Cache {
             // credentials. We should either match what boto does more directly
             // or make those builders put their credentials in ~/.aws/credentials
             ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
-            ];
-        let provider = AutoRefreshingProviderSync::with_mutex(ChainProvider::with_profile_providers(profile_providers)).ok().map(Arc::new);
+        ];
+        let provider = AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers, handle));
         //TODO: configurable SSL
-        let bucket = Arc::new(Bucket::new(bucket, endpoint, Ssl::No));
+        let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No, handle));
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
-            pool: pool.clone(),
         })
     }
 }
@@ -80,9 +74,8 @@ fn normalize_key(key: &str) -> String {
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>> {
         let key = normalize_key(key);
-        let bucket = self.bucket.clone();
-        self.pool.spawn_fn(move || {
-            match bucket.get(&key) {
+        Box::new(self.bucket.get(&key).then(|result| {
+            match result {
                 Ok(data) => {
                     CacheRead::from(io::Cursor::new(data)).map(Cache::Hit)
                 }
@@ -91,7 +84,7 @@ impl Storage for S3Cache {
                     Ok(Cache::Miss)
                 }
             }
-        }).boxed()
+        }))
     }
 
     fn start_put(&self, _key: &str) -> io::Result<CacheWrite> {
@@ -100,23 +93,25 @@ impl Storage for S3Cache {
     }
 
     fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
-        let this = self.clone();
-        let key = key.to_owned();
-        self.pool.spawn_fn(move || {
-            let start = Instant::now();
-            entry.finish().and_then(|data| {
-                this.provider
-                    .as_ref()
-                    .ok_or(Error::new(ErrorKind::Other, "No AWS credential provider available!"))
-                    .and_then(|provider| provider.credentials().or(Err(Error::new(ErrorKind::Other, "Couldn't get AWS credentials!"))))
-                    .and_then(|credentials| {
-                        let key = normalize_key(&key);
-                        this.bucket.put(&key, &data, &credentials)
-                            .map_err(|e| Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e)))
-                    })
-                    .map(|_| start.elapsed())
-            }).map_err(|e| e.to_string())
-        }).boxed()
+        let key = normalize_key(&key);
+        let start = Instant::now();
+        let data = match entry.finish() {
+            Ok(data) => data,
+            Err(e) => return future::err(e.to_string()).boxed(),
+        };
+        let credentials = self.provider.credentials().map_err(|e| {
+            Error::new(ErrorKind::Other, format!("couldn't get AWS credentials: {}", e))
+        });
+
+        let bucket = self.bucket.clone();
+        let response = credentials.and_then(move |credentials| {
+            bucket.put(&key, data, &credentials).map_err(|e| {
+                Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e))
+            })
+        });
+
+        Box::new(response.map(move |_| start.elapsed())
+                         .map_err(|e| e.to_string()))
     }
 
     fn location(&self) -> String {

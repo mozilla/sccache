@@ -20,8 +20,7 @@ use ::compiler::{
     run_input_output,
 };
 use log::LogLevel::Trace;
-use futures::Future;
-use futures::future;
+use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,

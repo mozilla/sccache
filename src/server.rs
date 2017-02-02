@@ -110,9 +110,10 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(port: u16) -> io::Result<()> {
+    let core = Core::new()?;
     let pool = CpuPool::new(20);
-    let storage = storage_from_environment(&pool);
-    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, storage);
+    let storage = storage_from_environment(&pool, &core.handle());
+    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
@@ -138,15 +139,15 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(port: u16,
                pool: CpuPool,
+               core: Core,
                storage: Arc<Storage>) -> io::Result<SccacheServer<C>> {
-        let core = Core::new()?;
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = TcpListener::bind(&SocketAddr::V4(addr), &handle)?;
 
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
         let service = SccacheService::new(storage, core.handle(), pool, tx, info);
 
@@ -466,9 +467,10 @@ impl<C> SccacheService<C>
                 let me = self.clone();
 
                 let info = get_compiler_info(&self.creator, &path, &self.pool);
-                Box::new(info.map(move |info| {
+                Box::new(info.then(move |info| {
+                    let info = info.ok();
                     me.compilers.borrow_mut().insert(path, info.clone());
-                    info
+                    Ok(info)
                 }))
             }
         }
