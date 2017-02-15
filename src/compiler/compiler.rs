@@ -300,7 +300,12 @@ impl Compiler {
         }
         trace!("[{}]: Preprocessor output is {} bytes", out_file, preprocessor_result.stdout.len());
 
-        let key = hash_key(self, arguments, &preprocessor_result.stdout);
+        // Remove object file from arguments before hash calculation
+        let arguments = arguments.iter()
+            .filter(|a| **a != out_file)
+            .map(|a| &**a)
+            .collect::<String>();
+        let key = hash_key(self, &arguments, &preprocessor_result.stdout);
         trace!("[{}]: Hash key: {}", out_file, key);
         let pwd = Path::new(cwd);
         let outputs = parsed_args.outputs.iter()
