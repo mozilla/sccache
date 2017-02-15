@@ -18,6 +18,8 @@ use simples3::credential::*;
 use time;
 use tokio_core::reactor::Handle;
 
+use errors::*;
+
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
 /// Whether or not to use SSL.
@@ -60,13 +62,6 @@ impl fmt::Display for Bucket {
     }
 }
 
-/// Errors from making S3 requests.
-#[derive(Debug)]
-pub enum S3Error {
-    HyperError(hyper::Error),
-    BadHTTPStatus(hyper::status::StatusCode),
-}
-
 impl Bucket {
     pub fn new(name: &str, endpoint: &str, ssl: Ssl, handle: &Handle) -> Bucket {
         let base_url = base_url(&endpoint, ssl);
@@ -79,31 +74,29 @@ impl Bucket {
         }
     }
 
-    pub fn get(&self, key: &str) -> Box<Future<Item=Vec<u8>, Error=S3Error>> {
+    pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {
         let url = format!("{}{}", self.base_url, key);
         debug!("GET {}", url);
-        Box::new(self.client.get(url.parse().unwrap()).then(|result| {
-            match result {
-                Ok(res) => {
-                    if res.status().class() == hyper::status::StatusClass::Success {
-                        Ok(res.body())
-                    } else {
-                        Err(S3Error::BadHTTPStatus(res.status().clone()))
-                    }
-                }
-                Err(e) => Err(S3Error::HyperError(e)),
+        Box::new(self.client.get(url.parse().unwrap()).chain_err(move || {
+            format!("failed GET: {}", url)
+        }).and_then(|res| {
+            if res.status().class() == hyper::status::StatusClass::Success {
+                Ok(res.body())
+            } else {
+                Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
             }
         }).and_then(|body| {
-            let body = body.map_err(S3Error::HyperError);
             body.fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
-                Ok(body)
+                Ok::<_, hyper::Error>(body)
+            }).chain_err(|| {
+                "failed to read HTTP body"
             })
         }))
     }
 
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials)
-               -> Box<Future<Item=(), Error=S3Error>> {
+               -> SFuture<()> {
         let url = format!("{}{}", self.base_url, key);
         debug!("PUT {}", url);
         let mut request = Request::new(Method::Put, url.parse().unwrap());
@@ -142,12 +135,12 @@ impl Bucket {
                         Ok(())
                     } else {
                         trace!("PUT failed with HTTP status: {}", res.status());
-                        Err(S3Error::BadHTTPStatus(res.status().clone()))
+                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
                     }
                 }
                 Err(e) => {
                     trace!("PUT failed with error: {:?}", e);
-                    Err(S3Error::HyperError(e))
+                    Err(e.into())
                 }
             }
         }))

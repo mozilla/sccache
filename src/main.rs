@@ -75,11 +75,25 @@ mod server;
 mod simples3;
 
 use std::env;
+use std::io::Write;
 
 fn main() {
     init_logging();
     std::process::exit(match cmdline::parse() {
-        Ok(cmd) => commands::run_command(cmd),
+        Ok(cmd) => {
+            match commands::run_command(cmd) {
+                Ok(s) => s,
+                Err(e) =>  {
+                    let stderr = &mut std::io::stderr();
+                    writeln!(stderr, "error: {}", e).unwrap();
+
+                    for e in e.iter().skip(1) {
+                        writeln!(stderr, "caused by: {}", e).unwrap();
+                    }
+                    2
+                }
+            }
+        }
         Err(e) => {
             println!("sccache: {}", e);
             cmdline::get_app().print_help().unwrap();

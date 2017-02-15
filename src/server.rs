@@ -58,7 +58,7 @@ use std::cell::RefCell;
 use std::env;
 use std::ffi::OsString;
 use std::fs::metadata;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, Write};
 use std::marker;
 use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
 use std::process::Output;
@@ -72,6 +72,8 @@ use tokio_proto::BindServer;
 use tokio_proto::streaming::pipeline::{Frame, ServerProto, Transport};
 use tokio_proto::streaming::{Body, Message};
 use tokio_service::Service;
+
+use errors::*;
 
 /// If the server is idle for this many milliseconds, shut down.
 const DEFAULT_IDLE_TIMEOUT: u64 = 600_000;
@@ -109,7 +111,7 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
-pub fn start_server(port: u16) -> io::Result<()> {
+pub fn start_server(port: u16) -> Result<()> {
     let core = Core::new()?;
     let pool = CpuPool::new(20);
     let storage = storage_from_environment(&pool, &core.handle());
@@ -118,7 +120,8 @@ pub fn start_server(port: u16) -> io::Result<()> {
     match res {
         Ok(srv) => {
             notify_server_startup(&notify, true)?;
-            srv.run(future::empty::<(), ()>())
+            srv.run(future::empty::<(), ()>())?;
+            Ok(())
         }
         Err(e) => {
             notify_server_startup(&notify, false)?;
@@ -140,7 +143,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(port: u16,
                pool: CpuPool,
                core: Core,
-               storage: Arc<Storage>) -> io::Result<SccacheServer<C>> {
+               storage: Arc<Storage>) -> Result<SccacheServer<C>> {
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = TcpListener::bind(&SocketAddr::V4(addr), &handle)?;
@@ -304,8 +307,8 @@ struct SccacheService<C: CommandCreatorSync> {
     info: ActiveInfo,
 }
 
-type SccacheRequest = Message<ClientRequest, Body<(), io::Error>>;
-type SccacheResponse = Message<ServerResponse, Body<ServerResponse, io::Error>>;
+type SccacheRequest = Message<ClientRequest, Body<(), Error>>;
+type SccacheResponse = Message<ServerResponse, Body<ServerResponse, Error>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -324,8 +327,8 @@ impl<C> Service for SccacheService<C>
 {
     type Request = SccacheRequest;
     type Response = SccacheResponse;
-    type Error = io::Error;
-    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+    type Error = Error;
+    type Future = SFuture<Self::Response>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
         let mut req = req.into_inner();
@@ -427,7 +430,7 @@ impl<C> SccacheService<C>
     /// the inital information and an optional body which will eventually
     /// contain the results of the compilation.
     fn handle_compile(&self, mut compile: Compile)
-                      -> Box<Future<Item = SccacheResponse, Error = io::Error>>
+                      -> SFuture<SccacheResponse>
     {
         let exe = compile.take_exe();
         let cmd = compile.take_command().into_vec();
@@ -440,7 +443,7 @@ impl<C> SccacheService<C>
 
     /// Look up compiler info from the cache for the compiler `path`.
     fn compiler_info(&self, path: &str)
-                     -> Box<Future<Item=Option<Compiler>, Error=io::Error>> {
+                     -> SFuture<Option<Compiler>> {
         trace!("compiler_info_cached");
         let result = match metadata(path) {
             Ok(attr) => {
@@ -520,7 +523,7 @@ impl<C> SccacheService<C>
                           parsed_arguments: ParsedArguments,
                           arguments: Vec<String>,
                           cwd: String,
-                          tx: mpsc::Sender<io::Result<ServerResponse>>) {
+                          tx: mpsc::Sender<Result<ServerResponse>>) {
         let cache_control = if self.force_recache {
             CacheControl::ForceRecache
         } else {
@@ -735,7 +738,7 @@ impl<I> ServerProto<I> for SccacheProto
     type RequestBody = ();
     type Response = ServerResponse;
     type ResponseBody = ServerResponse;
-    type Error = io::Error;
+    type Error = Error;
     type Transport = SccacheTransport<I>;
     type BindTransport = future::FutureResult<Self::Transport, io::Error>;
 
@@ -755,7 +758,7 @@ struct SccacheTransport<I> {
 }
 
 impl<I: Io> Stream for SccacheTransport<I> {
-    type Item = Frame<ClientRequest, (), io::Error>;
+    type Item = Frame<ClientRequest, (), Error>;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
@@ -770,7 +773,7 @@ impl<I: Io> Stream for SccacheTransport<I> {
 }
 
 impl<I: Io> Sink for SccacheTransport<I> {
-    type SinkItem = Frame<ServerResponse, ServerResponse, io::Error>;
+    type SinkItem = Frame<ServerResponse, ServerResponse, Error>;
     type SinkError = io::Error;
 
     fn start_send(&mut self, item: Self::SinkItem)
@@ -798,7 +801,13 @@ impl<I: Io> Sink for SccacheTransport<I> {
                 }
             }
             Frame::Body { chunk: None } => Ok(AsyncSink::Ready),
-            Frame::Error { error } => Err(error),
+            Frame::Error { error } => {
+                error!("client hit an error:");
+                for e in error.iter() {
+                    error!("\t{}", e);
+                }
+                Err(io::Error::new(io::ErrorKind::Other, "application error"))
+            }
         }
     }
 
