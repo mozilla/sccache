@@ -16,7 +16,6 @@ use cache::{
     Cache,
     CacheRead,
     CacheWrite,
-    CacheWriteFuture,
     Storage,
 };
 use futures::future::{self, Future};
@@ -29,14 +28,12 @@ use simples3::{
     Ssl,
 };
 use std::env;
-use std::io::{
-    self,
-    Error,
-    ErrorKind,
-};
+use std::io;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use tokio_core::reactor::Handle;
+
+use errors::*;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
@@ -48,8 +45,8 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str, handle: &Handle) -> io::Result<S3Cache> {
-        let home = try!(env::home_dir().ok_or(Error::new(ErrorKind::Other, "Couldn't find home directory")));
+    pub fn new(bucket: &str, endpoint: &str, handle: &Handle) -> Result<S3Cache> {
+        let home = env::home_dir().ok_or("Couldn't find home directory")?;
         let profile_providers = vec![
             ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
             //TODO: this is hacky, this is where our mac builders store their
@@ -72,12 +69,13 @@ fn normalize_key(key: &str) -> String {
 }
 
 impl Storage for S3Cache {
-    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>> {
+    fn get(&self, key: &str) -> SFuture<Cache> {
         let key = normalize_key(key);
         Box::new(self.bucket.get(&key).then(|result| {
             match result {
                 Ok(data) => {
-                    CacheRead::from(io::Cursor::new(data)).map(Cache::Hit)
+                    let hit = CacheRead::from(io::Cursor::new(data))?;
+                    Ok(Cache::Hit(hit))
                 }
                 Err(e) => {
                     warn!("Got AWS error: {:?}", e);
@@ -87,31 +85,30 @@ impl Storage for S3Cache {
         }))
     }
 
-    fn start_put(&self, _key: &str) -> io::Result<CacheWrite> {
+    fn start_put(&self, _key: &str) -> Result<CacheWrite> {
         // Just hand back an in-memory buffer.
         Ok(CacheWrite::new())
     }
 
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         let key = normalize_key(&key);
         let start = Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,
-            Err(e) => return future::err(e.to_string()).boxed(),
+            Err(e) => return future::err(e.into()).boxed(),
         };
-        let credentials = self.provider.credentials().map_err(|e| {
-            Error::new(ErrorKind::Other, format!("couldn't get AWS credentials: {}", e))
+        let credentials = self.provider.credentials().chain_err(|| {
+            "failed to get AWS credentials"
         });
 
         let bucket = self.bucket.clone();
         let response = credentials.and_then(move |credentials| {
-            bucket.put(&key, data, &credentials).map_err(|e| {
-                Error::new(ErrorKind::Other, format!("Error putting cache entry to S3: {:?}", e))
+            bucket.put(&key, data, &credentials).chain_err(|| {
+                "failed to put cache entry in s3"
             })
         });
 
-        Box::new(response.map(move |_| start.elapsed())
-                         .map_err(|e| e.to_string()))
+        Box::new(response.map(move |_| start.elapsed()))
     }
 
     fn location(&self) -> String {

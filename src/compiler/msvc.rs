@@ -32,13 +32,13 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{
     self,
-    Error,
-    ErrorKind,
     Write,
 };
 use std::path::Path;
 use std::process::{self,Stdio};
 use tempdir::TempDir;
+
+use errors::*;
 
 fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
@@ -46,7 +46,7 @@ fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
 pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
-                                     -> Box<Future<Item=String, Error=io::Error>>
+                                     -> SFuture<String>
     where T: CommandCreatorSync
 {
     let write = pool.spawn_fn(|| {
@@ -80,7 +80,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
 
     Box::new(output.and_then(|output| {
         if !output.status.success() {
-            return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
+            bail!("Failed to detect showIncludes prefix")
         }
 
         let process::Output { stdout: stdout_bytes, .. } = output;
@@ -100,7 +100,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
             }
         }
 
-        return Err(Error::new(ErrorKind::Other, "Failed to detect showIncludes prefix"))
+        bail!("Failed to detect showIncludes prefix")
     }))
 }
 
@@ -227,7 +227,7 @@ fn normpath(path: &str) -> String {
                                                          0)
             };
             if size == 0 {
-                return Err(Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
             let mut wchars = Vec::with_capacity(size as usize);
             wchars.resize(size as usize, 0);
@@ -235,14 +235,14 @@ fn normpath(path: &str) -> String {
                                                             wchars.as_mut_ptr(),
                                                             wchars.len() as u32,
                                                             0) } == 0 {
-                return Err(Error::last_os_error());
+                return Err(io::Error::last_os_error());
             }
             // The return value of GetFinalPathNameByHandleW uses the
             // '\\?\' prefix.
             let o = OsString::from_wide(&wchars[4..wchars.len() - 1]);
             o.into_string()
                 .map(|s| s.replace('\\', "/"))
-                .or(Err(Error::new(ErrorKind::Other, "Error converting string")))
+                .or(Err(io::Error::new(io::ErrorKind::Other, "Error converting string")))
         })
         .unwrap_or(path.replace('\\', "/"))
 }
@@ -258,7 +258,7 @@ pub fn preprocess<T>(creator: &T,
                      cwd: &str,
                      includes_prefix: &str,
                      _pool: &CpuPool)
-                     -> Box<Future<Item=process::Output, Error=io::Error>>
+                     -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
     let mut cmd = creator.clone().new_command_sync(&compiler.executable);
@@ -282,38 +282,36 @@ pub fn preprocess<T>(creator: &T,
     Box::new(run_input_output(cmd, None).and_then(move |output| {
         let parsed_args = &parsed_args;
         if let (Some(ref objfile), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
-            File::create(Path::new(&cwd).join(depfile))
-                .and_then(move |mut f| {
-                    try!(write!(f, "{}: {} ", objfile, parsed_args.input));
-                    let process::Output { status, stdout, stderr: stderr_bytes } = output;
-                    let stderr = try!(from_local_codepage(&stderr_bytes));
-                    let mut deps = HashSet::new();
-                    let mut stderr_bytes = vec!();
-                    for line in stderr.lines() {
-                        if line.starts_with(&includes_prefix) {
-                            let dep = normpath(line[includes_prefix.len()..].trim());
-                            trace!("included: {}", dep);
-                            if deps.insert(dep.clone()) && !dep.contains(' ') {
-                                try!(write!(f, "{} ", dep));
-                            }
-                        } else {
-                            stderr_bytes.extend_from_slice(line.as_bytes());
-                            stderr_bytes.push(b'\n');
-                        }
+            let mut f = File::create(Path::new(&cwd).join(depfile))?;
+            write!(f, "{}: {} ", objfile, parsed_args.input)?;
+            let process::Output { status, stdout, stderr: stderr_bytes } = output;
+            let stderr = from_local_codepage(&stderr_bytes)?;
+            let mut deps = HashSet::new();
+            let mut stderr_bytes = vec!();
+            for line in stderr.lines() {
+                if line.starts_with(&includes_prefix) {
+                    let dep = normpath(line[includes_prefix.len()..].trim());
+                    trace!("included: {}", dep);
+                    if deps.insert(dep.clone()) && !dep.contains(' ') {
+                        write!(f, "{} ", dep)?;
                     }
-                    try!(writeln!(f, ""));
-                    // Write extra rules for each dependency to handle
-                    // removed files.
-                    try!(writeln!(f, "{}:", parsed_args.input));
-                    let mut sorted = deps.into_iter().collect::<Vec<_>>();
-                    sorted.sort();
-                    for dep in sorted {
-                        if !dep.contains(' ') {
-                            try!(writeln!(f, "{}:", dep));
-                        }
-                    }
-                    Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
-                })
+                } else {
+                    stderr_bytes.extend_from_slice(line.as_bytes());
+                    stderr_bytes.push(b'\n');
+                }
+            }
+            writeln!(f, "")?;
+            // Write extra rules for each dependency to handle
+            // removed files.
+            writeln!(f, "{}:", parsed_args.input)?;
+            let mut sorted = deps.into_iter().collect::<Vec<_>>();
+            sorted.sort();
+            for dep in sorted {
+                if !dep.contains(' ') {
+                    writeln!(f, "{}:", dep)?;
+                }
+            }
+            Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
         } else {
             Ok(output)
         }
@@ -326,14 +324,14 @@ pub fn compile<T>(creator: &T,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
                   pool: &CpuPool)
-                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+                  -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj.clone(),
         None => {
-            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
+            return future::err("Missing object file output".into()).boxed()
         }
     };
 
@@ -388,7 +386,7 @@ pub fn compile<T>(creator: &T,
     let mut creator = creator.clone();
     let compiler = compiler.clone();
     let parsed_args = parsed_args.clone();
-    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
+    Box::new(output.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
             future::ok((cacheable, output)).boxed()
         } else {

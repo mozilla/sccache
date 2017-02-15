@@ -243,9 +243,8 @@ fn test_server_port_in_use() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    let s = String::from_utf8_lossy(&output.stdout);
-    match s.find("Failed to start server:") {
-        Some(_) => {},
-        None => assert!(false, format!("Output did not contain 'Failed to start server:':\n========{}\n========", s)),
-    }
+    let s = String::from_utf8_lossy(&output.stderr);
+    assert!(s.contains("Server startup failed:"),
+            "Output did not contain 'Failed to start server:':\n========\n{}\n========",
+            s);
 }

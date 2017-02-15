@@ -16,7 +16,6 @@ use cache::{
     Cache,
     CacheRead,
     CacheWrite,
-    CacheWriteFuture,
     Storage,
 };
 use futures::Future;
@@ -24,10 +23,11 @@ use futures_cpupool::CpuPool;
 use lru_disk_cache::LruDiskCache;
 use lru_disk_cache::Error as LruError;
 use std::ffi::OsStr;
-use std::io;
 use std::path::{Path,PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, Duration};
+
+use errors::*;
 
 /// A cache that stores entries at local disk paths.
 #[derive(Clone)]
@@ -57,27 +57,29 @@ fn make_key_path(key: &str) -> PathBuf {
 }
 
 impl Storage for DiskCache {
-    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>> {
+    fn get(&self, key: &str) -> SFuture<Cache> {
         trace!("DiskCache::get({})", key);
         let path = make_key_path(key);
         let lru = self.lru.clone();
         self.pool.spawn_fn(move || {
             let mut lru = lru.lock().unwrap();
-            match lru.get(&path) {
-                Err(LruError::FileNotInCache) => Ok(Cache::Miss),
-                Err(LruError::Io(e)) => Err(e),
-                Ok(f) => CacheRead::from(f).map(Cache::Hit),
+            let f = match lru.get(&path) {
+                Ok(f) => f,
+                Err(LruError::FileNotInCache) => return Ok(Cache::Miss),
+                Err(LruError::Io(e)) => return Err(e.into()),
                 Err(_) => panic!("Unexpected error!"),
-            }
+            };
+            let hit = CacheRead::from(f)?;
+            Ok(Cache::Hit(hit))
         }).boxed()
     }
 
-    fn start_put(&self, key: &str) -> io::Result<CacheWrite> {
+    fn start_put(&self, key: &str) -> Result<CacheWrite> {
         trace!("DiskCache::start_put({})", key);
         Ok(CacheWrite::new())
     }
 
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture {
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
@@ -85,13 +87,9 @@ impl Storage for DiskCache {
         let key = make_key_path(key);
         self.pool.spawn_fn(move || {
             let start = Instant::now();
-            entry.finish()
-                 .map_err(|e| format!("{}", e))
-                 .and_then(|v| {
-                     lru.lock().unwrap().insert_bytes(key, &v)
-                        .map(|_| start.elapsed())
-                        .map_err(|e| format!("{}", e))
-                 })
+            let v = entry.finish()?;
+            lru.lock().unwrap().insert_bytes(key, &v)?;
+            Ok(start.elapsed())
         }).boxed()
     }
 

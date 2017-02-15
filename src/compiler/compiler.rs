@@ -43,8 +43,6 @@ use std::io::prelude::*;
 use std::io::{
     self,
     BufReader,
-    Error,
-    ErrorKind,
 };
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
@@ -55,6 +53,8 @@ use std::time::{
     Instant,
 };
 use tempdir::TempDir;
+
+use errors::*;
 
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
@@ -89,7 +89,7 @@ impl CompilerKind {
                          parsed_args: &ParsedArguments,
                          cwd: &str,
                          pool: &CpuPool)
-                         -> Box<Future<Item=process::Output, Error=io::Error>>
+                         -> SFuture<process::Output>
         where T: CommandCreatorSync
     {
         match *self {
@@ -108,7 +108,7 @@ impl CompilerKind {
                       parsed_args: &ParsedArguments,
                       cwd: &str,
                       pool: &CpuPool)
-                      -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+                      -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync,
     {
         match *self {
@@ -184,9 +184,6 @@ pub struct CacheWriteInfo {
     pub duration: Duration,
 }
 
-/// A `Future` that may provide a `CacheWriteResult`.
-pub type CacheWriteFuture = Box<Future<Item=CacheWriteInfo, Error=String>>;
-
 /// The result of a compilation or cache retrieval.
 pub enum CompileResult {
     /// An error made the compilation not possible.
@@ -197,7 +194,7 @@ pub enum CompileResult {
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
     /// being stored in the cache.
-    CacheMiss(MissType, Duration, CacheWriteFuture),
+    CacheMiss(MissType, Duration, SFuture<CacheWriteInfo>),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
     /// Not in cache, but compilation failed.
@@ -304,8 +301,7 @@ impl Compiler {
                                     cwd: &str,
                                     cache_control: CacheControl,
                                     pool: &CpuPool)
-                                    -> Box<Future<Item=(CompileResult, process::Output),
-                                                  Error=io::Error>>
+                                    -> SFuture<(CompileResult, process::Output)>
         where T: CommandCreatorSync
     {
         let out_file = parsed_args.output_file();
@@ -328,7 +324,7 @@ impl Compiler {
         let pool = pool.clone();
         let creator = creator.clone();
 
-        Box::new(result.and_then(move |preprocessor_result| {
+        Box::new(result.and_then(move |preprocessor_result| -> SFuture<_> {
             // If the preprocessor failed, just return that result.
             if !preprocessor_result.status.success() {
                 debug!("[{}]: preprocessor returned error status {:?}",
@@ -339,7 +335,7 @@ impl Compiler {
                     stdout: vec!(),
                     ..preprocessor_result
                 };
-                return Box::new(future::ok((CompileResult::Error, output))) as Box<Future<Item=_, Error=_>>
+                return Box::new(future::ok((CompileResult::Error, output)))
             }
             trace!("[{}]: Preprocessor output is {} bytes",
                    parsed_args.output_file(),
@@ -384,7 +380,7 @@ impl Compiler {
                         let result = CompileResult::CacheHit(duration);
                         return Box::new(write.map(|_| {
                             (result, output)
-                        })) as Box<Future<Item=_, Error=_>>
+                        })) as SFuture<_>
                     }
                     Ok(Cache::Miss) => {
                         debug!("[{}]: Cache miss!", parsed_args.output_file());
@@ -423,8 +419,7 @@ impl Compiler {
                   storage: Arc<Storage>,
                   key: String,
                   miss_type: MissType)
-                  -> Box<Future<Item=(CompileResult, process::Output),
-                                Error=io::Error>>
+                  -> SFuture<(CompileResult, process::Output)>
         where T: CommandCreatorSync,
     {
         let process::Output { stdout, .. } = preprocessor_result;
@@ -443,7 +438,7 @@ impl Compiler {
                     debug!("[{}]: Compiled but not cacheable",
                            parsed_args.output_file());
                     return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
-                        as Box<Future<Item=_, Error=_>>
+                        as SFuture<_>
                 }
             } else {
                 debug!("[{}]: Compiled but failed, not storing in cache",
@@ -465,14 +460,15 @@ impl Compiler {
                 }
                 Ok(entry)
             });
+            let write = write.chain_err(|| "failed to zip up compiler outputs");
             Box::new(write.and_then(move |mut entry| {
                 if !compiler_result.stdout.is_empty() {
                     let mut stdout = &compiler_result.stdout[..];
-                    try!(entry.put_object("stdout", &mut stdout));
+                    entry.put_object("stdout", &mut stdout)?;
                 }
                 if !compiler_result.stderr.is_empty() {
                     let mut stderr = &compiler_result.stderr[..];
-                    try!(entry.put_object("stderr", &mut stderr));
+                    entry.put_object("stderr", &mut stderr)?;
                 }
 
                 // Try to finish storing the newly-written cache
@@ -504,23 +500,24 @@ fn write_file(path : &Path, contents: &[u8]) -> io::Result<()> {
 
 /// If `executable` is a known compiler, return `Some(CompilerKind)`.
 pub fn detect_compiler_kind<T>(creator: &T, executable: &str, pool: &CpuPool)
-                               -> Box<Future<Item=Option<CompilerKind>, Error=io::Error>>
+                               -> SFuture<Option<CompilerKind>>
     where T: CommandCreatorSync
 {
     trace!("detect_compiler");
-    let write = pool.spawn_fn(move || {
-        let dir = try!(TempDir::new("sccache"));
+    let write = pool.spawn_fn(move || -> io::Result<_> {
+        let dir = TempDir::new("sccache")?;
         let src = dir.path().join("testfile.c");
-        try!(write_file(&src, b"#if defined(_MSC_VER)
+        write_file(&src, b"#if defined(_MSC_VER)
 msvc
 #elif defined(__clang__)
 clang
 #elif defined(__GNUC__)
 gcc
 #endif
-"));
+")?;
         Ok((dir, src))
     });
+    let write = write.chain_err(|| "failed to write temporary file");
 
     let mut creator2 = creator.clone();
     let executable2 = executable.to_string();
@@ -535,9 +532,10 @@ gcc
                         .stdout(Stdio::piped())
                         .stderr(Stdio::null())
                         .spawn();
+        let child = child.chain_err(|| "failed to spawn child");
 
         child.into_future().and_then(|child| {
-            child.wait_with_output()
+            child.wait_with_output().chain_err(|| "failed to read child output")
         }).map(|e| {
             drop(tempdir);
             e
@@ -547,10 +545,10 @@ gcc
     let creator = creator.clone();
     let pool = pool.clone();
     let executable = executable.to_string();
-    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
+    Box::new(output.and_then(move |output| -> SFuture<_> {
         let stdout = match str::from_utf8(&output.stdout) {
             Ok(s) => s,
-            Err(_) => return future::err(Error::new(ErrorKind::Other, "Failed to parse output")).boxed(),
+            Err(_) => return future::err("Failed to parse output".into()).boxed(),
         };
         for line in stdout.lines() {
             //TODO: do something smarter here.
@@ -579,15 +577,18 @@ gcc
 
 /// If `executable` is a known compiler, return `Some(Compiler)` containing information about it.
 pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
-                            -> Box<Future<Item=Compiler, Error=io::Error>>
+                            -> SFuture<Compiler>
     where T: CommandCreatorSync
 {
     let executable = executable.to_string();
-    Box::new(detect_compiler_kind(creator, &executable, pool).and_then(move |kind| {
+    let pool = pool.clone();
+    Box::new(detect_compiler_kind(creator, &executable, &pool).and_then(move |kind| {
         match kind {
-            Some(kind) => Compiler::new(&executable, kind),
-            None => Err(io::Error::new(io::ErrorKind::Other,
-                                       "could not determine compiler kind")),
+            Some(kind) => {
+                pool.spawn_fn(move || Compiler::new(&executable, kind))
+                    .chain_err(|| "failed to learn compiler metadata")
+            }
+            None => future::err("could not determine compiler kind".into()).boxed(),
         }
     }))
 }
@@ -597,7 +598,7 @@ pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
 pub fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
-                                 -> Box<Future<Item=process::Output, Error=io::Error>>
+                                 -> SFuture<process::Output>
     where T: CommandChild + 'static,
 {
     use tokio_core::io::{write_all, read_to_end};
@@ -605,14 +606,16 @@ pub fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
         child.take_stdin().map(|stdin| {
             write_all(stdin, i)
         })
-    });
+    }).chain_err(|| "failed to write stdin");
     let stdout = child.take_stdout().map(|io| read_to_end(io, Vec::new()));
+    let stdout = stdout.chain_err(|| "failed to read stdout");
     let stderr = child.take_stderr().map(|io| read_to_end(io, Vec::new()));
+    let stderr = stderr.chain_err(|| "failed to read stderr");
 
     // Finish writing stdin before waiting, because waiting drops stdin.
     let status = Future::and_then(stdin, |io| {
         drop(io);
-        child.wait()
+        child.wait().chain_err(|| "failed to wait for child")
     });
 
     Box::new(status.join3(stdout, stderr).map(|(status, out, err)| {
@@ -628,7 +631,7 @@ pub fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
 pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
-                           -> Box<Future<Item=process::Output, Error=io::Error>>
+                           -> SFuture<process::Output>
     where C: RunCommand
 {
     let child = command
@@ -636,7 +639,8 @@ pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn();
+        .spawn()
+        .chain_err(|| "failed to spawn child");
 
     Box::new(future::result(child)
                 .and_then(|child| wait_with_input_output(child, input)))

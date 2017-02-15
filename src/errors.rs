@@ -12,8 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::error;
+use std::io;
+
+use futures::Future;
+use hyper;
+use lru_disk_cache;
+
 error_chain! {
     foreign_links {
-        Io(::std::io::Error);
+        Io(io::Error);
+        Hyper(hyper::Error);
+        Lru(lru_disk_cache::Error);
+    }
+
+    errors {
+        BadHTTPStatus(status: hyper::status::StatusCode) {
+            description("failed to get a successful HTTP status")
+            display("didn't get a successful HTTP status, got `{}`", status)
+        }
+    }
+}
+
+pub type SFuture<T> = Box<Future<Item = T, Error = Error>>;
+
+pub trait FutureChainErr<T> {
+    fn chain_err<F, E>(self, callback: F) -> SFuture<T>
+        where F: FnOnce() -> E + 'static,
+              E: Into<ErrorKind>;
+}
+
+impl<F> FutureChainErr<F::Item> for F
+    where F: Future + 'static,
+          F::Error: error::Error + Send + 'static,
+{
+    fn chain_err<C, E>(self, callback: C) -> SFuture<F::Item>
+        where C: FnOnce() -> E + 'static,
+              E: Into<ErrorKind>,
+    {
+        Box::new(self.then(|r| r.chain_err(callback)))
     }
 }

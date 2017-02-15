@@ -27,15 +27,12 @@ use mock_command::{
     RunCommand,
 };
 use std::collections::HashMap;
-use std::io::{
-    self,
-    Error,
-    ErrorKind,
-    Read,
-};
+use std::io::Read;
 use std::fs::File;
 use std::path::Path;
 use std::process;
+
+use errors::*;
 
 /// Arguments that take a value. Shared with clang.
 pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
@@ -199,7 +196,7 @@ pub fn preprocess<T>(creator: &T,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      _pool: &CpuPool)
-                     -> Box<Future<Item=process::Output, Error=io::Error>>
+                     -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
     trace!("preprocess");
@@ -221,7 +218,7 @@ pub fn compile<T>(creator: &T,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
                   _pool: &CpuPool)
-                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+                  -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
     trace!("compile");
@@ -229,7 +226,7 @@ pub fn compile<T>(creator: &T,
     let output = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
+            return future::err("Missing object file output".into()).boxed()
         }
     };
 
@@ -240,7 +237,7 @@ pub fn compile<T>(creator: &T,
             "cc" | "cpp" | "cxx" => "c++-cpp-output",
             e => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
-                return future::err(Error::new(ErrorKind::Other, "Unexpected file extension")).boxed()
+                return future::err("Unexpected file extension".into()).boxed()
             }
         })
         .args(&["-", "-o", &output.clone()])

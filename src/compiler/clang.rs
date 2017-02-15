@@ -32,13 +32,13 @@ use mock_command::{
 use std::fs::File;
 use std::io::{
     self,
-    Error,
-    ErrorKind,
     Write,
 };
 use std::path::Path;
 use std::process;
 use tempdir::TempDir;
+
+use errors::*;
 
 /// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
 const ARGS_WITH_VALUE: &'static [&'static str] = &["-arch"];
@@ -54,7 +54,7 @@ pub fn compile<T>(creator: &T,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
                   pool: &CpuPool)
-                  -> Box<Future<Item=(Cacheable, process::Output), Error=io::Error>>
+                  -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync,
 {
     trace!("compile");
@@ -73,7 +73,7 @@ pub fn compile<T>(creator: &T,
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj.clone(),
         None => {
-            return future::err(Error::new(ErrorKind::Other, "Missing object file output")).boxed()
+            return future::err("Missing object file output".into()).boxed()
         }
     };
 
@@ -103,7 +103,7 @@ pub fn compile<T>(creator: &T,
     let cwd = cwd.to_string();
     let mut creator = creator.clone();
     let parsed_args = parsed_args.clone();
-    Box::new(output.and_then(move |output| -> Box<Future<Item=_, Error=_>> {
+    Box::new(output.and_then(move |output| -> SFuture<_> {
         if !output.status.success() &&
            parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
             let mut cmd = creator.new_command_sync(&compiler.executable);

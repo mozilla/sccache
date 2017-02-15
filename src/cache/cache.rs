@@ -20,7 +20,6 @@ use app_dirs::{
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
 use compiler::Compiler;
-use futures::Future;
 use futures_cpupool::CpuPool;
 use regex::Regex;
 use sha1;
@@ -28,8 +27,6 @@ use std::env;
 use std::fmt;
 use std::io::{
     self,
-    Error,
-    ErrorKind,
     Read,
     Seek,
     Write,
@@ -44,6 +41,8 @@ use zip::{
     ZipArchive,
     ZipWriter,
 };
+
+use errors::*;
 
 //TODO: might need to put this somewhere more central
 const APP_INFO: AppInfo = AppInfo {
@@ -85,23 +84,24 @@ pub struct CacheRead {
 
 impl CacheRead {
     /// Create a cache entry from `reader`.
-    pub fn from<R: ReadSeek + 'static>(reader: R) -> io::Result<CacheRead> {
-        let z = try!(ZipArchive::new(Box::new(reader) as Box<ReadSeek>).or(Err(Error::new(ErrorKind::Other, "Failed to parse cache entry"))));
+    pub fn from<R: ReadSeek + 'static>(reader: R) -> Result<CacheRead> {
+        let z = ZipArchive::new(Box::new(reader) as Box<ReadSeek>).chain_err(|| {
+            "Failed to parse cache entry"
+        })?;
         Ok(CacheRead {
             zip: z,
         })
     }
 
     /// Get an object from this cache entry at `name` and write it to `to`.
-    pub fn get_object<T: Write>(&mut self, name: &str, to: &mut T) -> io::Result<()> {
-        let mut file = try!(self.zip.by_name(name).or(Err(Error::new(ErrorKind::Other, "Failed to read object from cache entry"))));
-        try!(io::copy(&mut file, to));
+    pub fn get_object<T: Write>(&mut self, name: &str, to: &mut T) -> Result<()> {
+        let mut file = self.zip.by_name(name).chain_err(|| {
+            "Failed to read object from cache entry"
+        })?;
+        io::copy(&mut file, to)?;
         Ok(())
     }
 }
-
-/// A `Future` that may provide a `CacheWriteResult`.
-pub type CacheWriteFuture = Box<Future<Item=Duration, Error=String>>;
 
 /// Data to be stored in the compiler cache.
 pub struct CacheWrite {
@@ -117,18 +117,19 @@ impl CacheWrite {
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
-    pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> io::Result<()> {
-        try!(self.zip.start_file(name, CompressionMethod::Deflated).or(Err(Error::new(ErrorKind::Other, "Failed to start cache entry object"))));
-        try!(io::copy(from, &mut self.zip));
+    pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> Result<()> {
+        self.zip.start_file(name, CompressionMethod::Deflated).chain_err(|| {
+            "Failed to start cache entry object"
+        })?;
+        io::copy(from, &mut self.zip)?;
         Ok(())
     }
 
     /// Finish writing data to the cache entry writer, and return the data.
-    pub fn finish(self) -> io::Result<Vec<u8>> {
+    pub fn finish(self) -> Result<Vec<u8>> {
         let CacheWrite { mut zip } = self;
-        zip.finish()
-            .or(Err(Error::new(ErrorKind::Other, "Failed to finish cache entry zip")))
-            .map(|cur| cur.into_inner())
+        let cur = zip.finish().chain_err(|| "Failed to finish cache entry zip")?;
+        Ok(cur.into_inner())
     }
 }
 
@@ -141,16 +142,16 @@ pub trait Storage {
     /// it should return a `Cache::Miss`.
     /// If the entry is successfully found in the cache, it should
     /// return a `Cache::Hit`.
-    fn get(&self, key: &str) -> Box<Future<Item=Cache, Error=io::Error>>;
+    fn get(&self, key: &str) -> SFuture<Cache>;
 
     /// Get a cache entry for `key` that can be filled with data.
-    fn start_put(&self, key: &str) -> io::Result<CacheWrite>;
+    fn start_put(&self, key: &str) -> Result<CacheWrite>;
 
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> CacheWriteFuture;
+    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
 
     /// Get the storage location.
     fn location(&self) -> String;
