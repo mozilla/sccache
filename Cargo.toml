@@ -26,6 +26,7 @@ local-encoding = "0.2.0"
 log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache" }
 number_prefix = "0.2.5"
+redis = { version = "0.8.0" }
 regex = "0.1.65"
 retry = "0.4.0"
 rust-crypto = "0.2.36"

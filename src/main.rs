@@ -40,6 +40,7 @@ extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate number_prefix;
+extern crate redis;
 extern crate regex;
 extern crate retry;
 extern crate rustc_serialize;

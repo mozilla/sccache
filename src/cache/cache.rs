@@ -18,6 +18,7 @@ use app_dirs::{
     app_dir,
 };
 use cache::disk::DiskCache;
+use cache::redis::RedisCache;
 use cache::s3::S3Cache;
 use futures_cpupool::CpuPool;
 use regex::Regex;
@@ -205,6 +206,18 @@ pub fn storage_from_environment(pool: &CpuPool, handle: &Handle) -> Arc<Storage>
             Err(e) => warn!("Failed to create S3Cache: {:?}", e),
         }
     }
+
+    if let Ok(url) = env::var("SCCACHE_REDIS") {
+        debug!("Trying Redis({})", url);
+        match RedisCache::new(&url, pool) {
+            Ok(s) => {
+                trace!("Using Redis: {}", url);
+                return Arc::new(s);
+            }
+            Err(e) => warn!("Failed to create RedisCache: {:?}", e),
+        }
+    }
+
     let d = env::var_os("SCCACHE_DIR")
         .map(|p| PathBuf::from(p))
         .or_else(|| app_dir(AppDataType::UserCache, &APP_INFO, "").ok())

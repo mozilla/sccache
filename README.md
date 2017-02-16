@@ -49,7 +49,9 @@ sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` envi
 
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
 
-The environment variables are only taken into account when the server starts, so only on the first run.
+Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance.
+
+*Important:* The environment variables are only taken into account when the server starts, so only on the first run.
 
 Debugging
 ---------

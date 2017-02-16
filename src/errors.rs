@@ -22,6 +22,7 @@ use futures::future;
 use hyper;
 use lru_disk_cache;
 use serde_json;
+use redis;
 
 error_chain! {
     foreign_links {
@@ -30,6 +31,7 @@ error_chain! {
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
         Bincode(bincode::Error);
+        Redis(redis::RedisError);
     }
 
     errors {
