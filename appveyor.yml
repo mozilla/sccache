@@ -5,13 +5,15 @@ environment:
   # Stable 64-bit MSVC
     - channel: stable
       target: x86_64-pc-windows-msvc
+      FEATURES: --features=all
   # Beta 64-bit MSVC
     - channel: beta
       target: x86_64-pc-windows-msvc
+      FEATURES: --features=all
   # Nightly 64-bit MSVC
     - channel: nightly
       target: x86_64-pc-windows-msvc
-      FEATURES: --features=unstable
+      FEATURES: --features="all unstable"
       CARGO_TEST_EXTRA: --all
 
 ### GNU Toolchains ###

@@ -17,14 +17,15 @@ case $system in
     MINGW*|MSYS_NT*)
 	system=Windows
         rm -rf target/release
-        rustup run nightly cargo build --release --target=x86_64-pc-windows-msvc --features=unstable && rustup run nightly cargo test --release
+        rustup run nightly cargo build --release --target=x86_64-pc-windows-msvc --features="all unstable" && rustup run nightly cargo test --release
         cp target/release/sccache.exe "$stagedir"
         compress=bz2
         ;;
     Linux)
         # Build using rust-musl-builder
         rm -rf target/x86_64-unknown-linux-musl/release
-        docker run --rm -it -v "$(pwd)":/home/rust/src -v ~/.cargo/git:/home/rust/.cargo/git -v ~/.cargo/registry:/home/rust/.cargo/registry luser/rust-musl-builder sh -c "cargo build --release && cargo test --release"
+        docker run --rm -it -v "$(pwd)":/home/rust/src -v ~/.cargo/git:/home/rust/.cargo/git -v
+        ~/.cargo/registry:/home/rust/.cargo/registry luser/rust-musl-builder sh -c "cargo build --release --features=all && cargo test --features=all --release"
         cp target/x86_64-unknown-linux-musl/release/sccache "$stagedir"
         strip "$stagedir/sccache"
         compress=xz

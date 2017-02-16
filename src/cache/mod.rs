@@ -14,7 +14,9 @@
 
 pub mod cache;
 pub mod disk;
+#[cfg(feature = "redis")]
 pub mod redis;
+#[cfg(feature = "s3")]
 pub mod s3;
 
 pub use cache::cache::*;

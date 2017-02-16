@@ -18,7 +18,9 @@ use app_dirs::{
     app_dir,
 };
 use cache::disk::DiskCache;
+#[cfg(feature = "redis")]
 use cache::redis::RedisCache;
+#[cfg(feature = "s3")]
 use cache::s3::S3Cache;
 use futures_cpupool::CpuPool;
 use regex::Regex;
@@ -187,34 +189,40 @@ fn parse_size(val: &str) -> Option<usize> {
 }
 
 /// Get a suitable `Storage` implementation from the environment.
-pub fn storage_from_environment(pool: &CpuPool, handle: &Handle) -> Arc<Storage> {
-    if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
-        let endpoint = match env::var("SCCACHE_ENDPOINT") {
-            Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-            _ => match env::var("SCCACHE_REGION") {
-                Ok(ref region) if region != "us-east-1" =>
-                    format!("{}.s3-{}.amazonaws.com", bucket, region),
-                _ => format!("{}.s3.amazonaws.com", bucket),
-            },
-        };
-        debug!("Trying S3Cache({})", endpoint);
-        match S3Cache::new(&bucket, &endpoint, handle) {
-            Ok(s) => {
-                trace!("Using S3Cache");
-                return Arc::new(s);
+pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
+    if cfg!(feature = "s3") {
+        if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
+            let endpoint = match env::var("SCCACHE_ENDPOINT") {
+                Ok(endpoint) => format!("{}/{}", endpoint, bucket),
+                _ => match env::var("SCCACHE_REGION") {
+                    Ok(ref region) if region != "us-east-1" =>
+                        format!("{}.s3-{}.amazonaws.com", bucket, region),
+                    _ => format!("{}.s3.amazonaws.com", bucket),
+                },
+            };
+            debug!("Trying S3Cache({})", endpoint);
+            #[cfg(feature = "s3")]
+            match S3Cache::new(&bucket, &endpoint, _handle) {
+                Ok(s) => {
+                    trace!("Using S3Cache");
+                    return Arc::new(s);
+                }
+                Err(e) => warn!("Failed to create S3Cache: {:?}", e),
             }
-            Err(e) => warn!("Failed to create S3Cache: {:?}", e),
         }
     }
 
-    if let Ok(url) = env::var("SCCACHE_REDIS") {
-        debug!("Trying Redis({})", url);
-        match RedisCache::new(&url, pool) {
-            Ok(s) => {
-                trace!("Using Redis: {}", url);
-                return Arc::new(s);
+    if cfg!(feature = "redis") {
+        if let Ok(url) = env::var("SCCACHE_REDIS") {
+            debug!("Trying Redis({})", url);
+            #[cfg(feature = "redis")]
+            match RedisCache::new(&url, pool) {
+                Ok(s) => {
+                    trace!("Using Redis: {}", url);
+                    return Arc::new(s);
+                }
+                Err(e) => warn!("Failed to create RedisCache: {:?}", e),
             }
-            Err(e) => warn!("Failed to create RedisCache: {:?}", e),
         }
     }
 
