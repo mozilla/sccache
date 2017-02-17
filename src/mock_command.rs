@@ -228,7 +228,7 @@ impl fmt::Debug for AsyncCommand {
     }
 }
 
-/// Unit struct to use `RunCommand` with `std::system::Command`.
+/// Struct to use `RunCommand` with `std::process::Command`.
 #[derive(Clone)]
 pub struct ProcessCommandCreator {
     handle: Handle,

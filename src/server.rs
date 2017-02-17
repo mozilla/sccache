@@ -557,9 +557,6 @@ impl<C> SccacheService<C>
                                 MissType::Normal => {
                                     stats.cache_misses += 1;
                                 }
-                                MissType::CacheReadError => {
-                                    stats.cache_read_errors += 1;
-                                }
                                 MissType::ForcedRecache => {
                                     stats.cache_misses += 1;
                                     stats.forced_recaches += 1;
@@ -642,8 +639,6 @@ struct ServerStats {
     pub non_cacheable_compilations: u64,
     /// The count of compilations which forcibly ignored the cache.
     pub forced_recaches: u64,
-    /// The count of errors reading from cache.
-    pub cache_read_errors: u64,
     /// The count of errors writing to cache.
     pub cache_write_errors: u64,
     /// The number of successful cache writes.
@@ -671,7 +666,6 @@ impl Default for ServerStats {
             cache_misses: u64::default(),
             non_cacheable_compilations: u64::default(),
             forced_recaches: u64::default(),
-            cache_read_errors: u64::default(),
             cache_write_errors: u64::default(),
             cache_writes: u64::default(),
             cache_write_duration: Duration::new(0, 0),
@@ -713,7 +707,6 @@ impl ServerStats {
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
-        set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
         set_stat!(stats_vec, self.cache_errors, "Cache errors");
@@ -858,12 +851,12 @@ impl<Request, Response> Codec for ProtobufCodec<Request, Response>
                 if s == "truncated message" {
                     Ok(None)
                 } else {
-                    Err(io::Error::new(ErrorKind::Other, s))
+                    Err(io::Error::new(io::ErrorKind::Other, s))
                 }
             }
             Err(ProtobufError::IoError(ioe)) => Err(ioe),
             Err(ProtobufError::MessageNotInitialized { message }) => {
-                Err(io::Error::new(ErrorKind::Other, message))
+                Err(io::Error::new(io::ErrorKind::Other, message))
             }
         }
     }
