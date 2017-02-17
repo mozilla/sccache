@@ -486,18 +486,13 @@ fn handle_compile_response<T>(mut creator: T,
             if !output.stderr.is_empty() {
                 try!(stderr.write_all(&output.stderr));
             }
-            Ok(output.status.code()
-               .unwrap_or_else(|| {
-                   /* TODO: this breaks type inference, figure out why
-                   status_signal(status)
-                   .and_then(|sig : i32| {
+            Ok(output.status.code().unwrap_or_else(|| {
+                if let Some(sig) = status_signal(output.status) {
                    println!("Compile terminated by signal {}", sig);
-                   None
-               });
-                    */
-                   // Arbitrary.
-                   2
-               }))
+                }
+                // Arbitrary.
+                2
+            }))
         }
     }
 }
