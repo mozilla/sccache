@@ -69,26 +69,21 @@ pub fn compile<T>(creator: &T,
     };
     let input = parsed_args.input.clone();
     let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => obj.clone(),
+        Some(obj) => obj,
         None => {
             return future::err("Missing object file output".into()).boxed()
         }
     };
 
-    let compiler2 = compiler.clone();
-    let cwd2 = cwd.to_string();
-    let mut creator2 = creator.clone();
-    let parsed_args2 = parsed_args.clone();
-    let out_file2 = out_file.clone();
+    let mut attempt = creator.clone().new_command_sync(&compiler.executable);
+    attempt.arg("-c")
+        .arg("-o")
+        .arg(&out_file)
+        .args(&parsed_args.common_args)
+        .current_dir(&cwd);
     let output = write.and_then(move |(tempdir, input)| {
-        let mut cmd = creator2.new_command_sync(&compiler2.executable);
-        cmd.arg("-c")
-            .arg(&input)
-            .arg("-o")
-            .arg(&out_file2)
-            .args(&parsed_args2.common_args)
-            .current_dir(&cwd2);
-        run_input_output(cmd, None).map(|e| {
+        attempt.arg(&input);
+        run_input_output(attempt, None).map(|e| {
             drop(tempdir);
             e
         })
@@ -97,20 +92,21 @@ pub fn compile<T>(creator: &T,
     // clang may fail when compiling preprocessor output with -Werror,
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
-    let compiler = compiler.clone();
-    let cwd = cwd.to_string();
-    let mut creator = creator.clone();
-    let parsed_args = parsed_args.clone();
+    //
+    // Otherwise if -Werror is missing we can just use the first instance.
+    if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
+        return Box::new(output.map(|output| (Cacheable::Yes, output)))
+    }
+
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.arg("-c")
+        .arg(&parsed_args.input)
+        .arg("-o")
+        .arg(&out_file)
+        .args(&parsed_args.common_args)
+        .current_dir(&cwd);
     Box::new(output.and_then(move |output| -> SFuture<_> {
-        if !output.status.success() &&
-           parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
-            let mut cmd = creator.new_command_sync(&compiler.executable);
-            cmd.arg("-c")
-                .arg(&parsed_args.input)
-                .arg("-o")
-                .arg(&out_file)
-                .args(&parsed_args.common_args)
-                .current_dir(&cwd);
+        if !output.status.success() {
             Box::new(run_input_output(cmd, None).map(|output| {
                 (Cacheable::Yes, output)
             }))

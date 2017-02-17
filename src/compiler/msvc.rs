@@ -325,7 +325,7 @@ pub fn compile<T>(creator: &T,
 {
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => obj.clone(),
+        Some(obj) => obj,
         None => {
             return future::err("Missing object file output".into()).boxed()
         }
@@ -353,50 +353,36 @@ pub fn compile<T>(creator: &T,
         write_temp_file(pool, filename.as_ref(), preprocessor_output)
     };
 
-    let mut creator2 = creator.clone();
-    let compiler2 = compiler.clone();
-    let cwd2 = cwd.to_string();
-    let parsed_args2 = parsed_args.clone();
-    let out_file2 = out_file.clone();
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.arg("-c")
+        .arg(&format!("-Fo{}", out_file))
+        .args(&parsed_args.common_args)
+        .current_dir(&cwd);
     let output = write.and_then(move |(tempdir, input)| {
-        let mut cmd = creator2.new_command_sync(&compiler2.executable);
-        cmd.arg("-c")
-            .arg(&input)
-            .arg(&format!("-Fo{}", out_file2))
-            .args(&parsed_args2.common_args)
-            .current_dir(&cwd2);
-
-        if log_enabled!(Debug) {
-            debug!("compile: {:?}", cmd);
-        }
-
+        cmd.arg(input);
+        debug!("compile: {:?}", cmd);
         run_input_output(cmd, None).map(|e| {
             drop(tempdir);
             e
         })
     });
 
-    let cwd = cwd.to_string();
-    let mut creator = creator.clone();
-    let compiler = compiler.clone();
-    let parsed_args = parsed_args.clone();
+    // Sometimes MSVC can't handle compiling from the preprocessed source,
+    // so have a fallback path that compiles from the original input file.
+    //
+    // We may just throw away this `cmd` if our execution turns out to be
+    // successful.
+    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    cmd.arg("-c")
+        .arg(&parsed_args.input)
+        .arg(&format!("-Fo{}", out_file))
+        .args(&parsed_args.common_args)
+        .current_dir(cwd);
     Box::new(output.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
             future::ok((cacheable, output)).boxed()
         } else {
-            // Sometimes MSVC can't handle compiling from the preprocessed source,
-            // so just compile from the original input file.
-            let mut cmd = creator.new_command_sync(&compiler.executable);
-            cmd.arg("-c")
-                .arg(&parsed_args.input)
-                .arg(&format!("-Fo{}", out_file))
-                .args(&parsed_args.common_args)
-                .current_dir(cwd);
-
-            if log_enabled!(Debug) {
-                debug!("compile: {:?}", cmd);
-            }
-
+            debug!("compile: {:?}", cmd);
             Box::new(run_input_output(cmd, None).map(|output| {
                 (cacheable, output)
             }))
@@ -560,6 +546,7 @@ mod test {
                                      CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
                                      vec!(),
@@ -590,6 +577,7 @@ mod test {
                                      CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
                                      vec!(),

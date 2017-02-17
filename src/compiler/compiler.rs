@@ -533,21 +533,15 @@ gcc
 ".to_vec();
     let write = write_temp_file(pool, "testfile.c".as_ref(), test);
 
-    let mut creator2 = creator.clone();
-    let executable2 = executable.to_string();
+    let mut cmd = creator.clone().new_command_sync(&executable);
+    cmd.stdout(Stdio::piped())
+       .stderr(Stdio::null());
     let output = write.and_then(move |(tempdir, src)| {
         let args = vec!(OsString::from("-E"), OsString::from(&src));
-        if log_enabled!(Trace) {
-            let va = args.iter().map(|a| a.to_str().unwrap()).collect::<Vec<&str>>();
-            trace!("compiler: {}, args: '{}'", executable2, va.join(" "));
-        }
-        let child = creator2.new_command_sync(&executable2)
-                        .args(&args)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .spawn();
-        let child = child.chain_err(|| "failed to spawn child");
-
+        trace!("compiler {:?}", cmd);
+        let child = cmd.args(&args).spawn().chain_err(|| {
+            format!("failed to execute {:?}", cmd)
+        });
         child.into_future().and_then(|child| {
             child.wait_with_output().chain_err(|| "failed to read child output")
         }).map(|e| {
