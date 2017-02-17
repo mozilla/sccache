@@ -227,8 +227,6 @@ pub fn hash_key(compiler: &Compiler, arguments: &str, preprocessor_output: &[u8]
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = sha1::Sha1::new();
     m.update(compiler.digest.as_bytes());
-    //TODO: drop the compiler filename from the hash
-    m.update(compiler.executable.as_bytes());
     m.update(CACHE_VERSION);
     m.update(arguments.as_bytes());
     //TODO: should propogate these over from the client.
@@ -262,18 +260,6 @@ mod test {
     use std::env;
     use std::io::Write;
     use test::utils::*;
-
-    #[test]
-    fn test_hash_key_executable_path_differs() {
-        let f = TestFixture::new();
-        // Try to avoid testing exact hashes.
-        let c1 = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let c2 = Compiler::new(f.bins[1].to_str().unwrap(), CompilerKind::Gcc).unwrap();
-        let args = "a b c";
-        const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c1, &args, &PREPROCESSED),
-                    hash_key(&c2, &args, &PREPROCESSED));
-    }
 
     #[test]
     fn test_hash_key_executable_contents_differs() {
