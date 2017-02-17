@@ -43,6 +43,7 @@ zip = { version = "0.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"
+tokio-uds = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 kernel32-sys = "0.2.2"

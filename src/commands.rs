@@ -50,7 +50,6 @@ use std::ffi::{OsStr,OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{
     self,
-    Read,
     Write,
 };
 #[cfg(unix)]
@@ -101,15 +100,20 @@ fn get_port() -> u16 {
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use libc::{c_int, poll, pollfd, nfds_t, POLLIN, POLLERR};
+    extern crate tokio_uds;
+
+    use futures::{Future, Stream};
+    use std::time::Duration;
     use tempdir::TempDir;
-    use std::os::unix::io::AsRawFd;
-    use std::os::unix::net::UnixListener;
+    use tokio_core::io::read_exact;
+    use tokio_core::reactor::Timeout;
 
     trace!("run_server_process");
     let tempdir = TempDir::new("sccache")?;
     let socket_path = tempdir.path().join("sock");
-    let listener = UnixListener::bind(&socket_path)?;
+    let mut core = Core::new()?;
+    let handle = core.handle();
+    let listener = tokio_uds::UnixListener::bind(&socket_path, &handle)?;
     let exe_path = env::current_exe()?;
     let _child = process::Command::new(exe_path)
             .env("SCCACHE_START_SERVER", "1")
@@ -117,50 +121,24 @@ fn run_server_process() -> Result<ServerStartup> {
             .env("RUST_BACKTRACE", "1")
             .spawn()?;
 
-    // wait for a connection on the listener using `poll`
-    let mut pfds = vec![pollfd {
-        fd: listener.as_raw_fd(),
-        events: POLLIN | POLLERR,
-        revents: 0,
-    }];
-    loop {
-        match unsafe { poll(pfds.as_mut_ptr(), pfds.len() as nfds_t, SERVER_STARTUP_TIMEOUT_MS as c_int) } {
-            // Timed out.
-            0 => return Ok(ServerStartup::TimedOut),
-            // Error.
-            -1 => {
-                let e = io::Error::last_os_error();
-                match e.kind() {
-                    // We should retry on EINTR.
-                    io::ErrorKind::Interrupted => {}
-                    _ => return Err(e.into()),
-                }
+    let startup = listener.incoming().into_future().map_err(|e| e.0);
+    let startup = startup.and_then(|(socket, _rest)| {
+        let (socket, _addr) = socket.unwrap(); // incoming() never returns None
+        read_exact(socket, [0u8]).map(|(_socket, byte)| {
+            if byte[0] == 0 {
+                ServerStartup::Ok
+            } else {
+                let err = format!("Server startup failed: {}", byte[0]).into();
+                ServerStartup::Err(err)
             }
-            // Success.
-            _ => {
-                if pfds[0].revents & POLLIN == POLLIN {
-                    // Ready to read
-                    break;
-                }
-                if pfds[0].revents & POLLERR == POLLERR {
-                    // Could give a better error here, I suppose?
-                    return Ok(ServerStartup::TimedOut);
-                }
-            }
-        }
-    }
-    // Now read a status from the socket.
-    //TODO: when we're using serde, use that here.
-    let (mut stream, _) = listener.accept()?;
-    let mut buffer = [0; 1];
-    stream.read_exact(&mut buffer)?;
-    if buffer[0] == 0 {
-        info!("Server started up successfully");
-        Ok(ServerStartup::Ok)
-    } else {
-        //TODO: send error messages over the socket as well.
-        error!("Server startup failed: {}", buffer[0]);
-        Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0]).into()))
+        })
+    });
+
+    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = Timeout::new(timeout, &handle)?.map(|()| ServerStartup::TimedOut);
+    match core.run(startup.select(timeout)) {
+        Ok((e, _other)) => Ok(e),
+        Err((e, _other)) => Err(e.into()),
     }
 }
 
@@ -223,7 +201,7 @@ fn redirect_error_log() -> Result<()> {
 fn run_server_process() -> Result<ServerStartup> {
     use kernel32;
     use named_pipe::PipeOptions;
-    use std::io::Error;
+    use std::io::{Read, Error};
     use std::os::windows::ffi::OsStrExt;
     use std::mem;
     use std::ptr;
@@ -294,7 +272,7 @@ fn run_server_process() -> Result<ServerStartup> {
     } else {
         //TODO: send error messages over the socket as well.
         error!("Server startup failed: {}", buffer[0]);
-        Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0])))
+        Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0]).into()))
     }
 }
 
