@@ -26,7 +26,7 @@ use filetime::FileTime;
 use futures::future;
 use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
-use log::LogLevel::{Debug,Trace};
+use log::LogLevel::Debug;
 use mock_command::{
     CommandChild,
     CommandCreatorSync,
@@ -172,8 +172,6 @@ pub struct Compiler {
 pub enum MissType {
     /// The compilation was not found in the cache, nothing more.
     Normal,
-    /// There was a cache entry, but an error occurred trying to read it.
-    CacheReadError,
     /// Cache lookup was overridden, recompilation was forced.
     ForcedRecache,
 }
@@ -351,7 +349,7 @@ impl Compiler {
                 storage.get(&key)
             };
 
-            Box::new(cache_status.then(move |result| {
+            Box::new(cache_status.and_then(move |result| {
                 let duration = start.elapsed();
                 let pwd = Path::new(&cwd);
                 let outputs = parsed_args.outputs.iter()
@@ -359,7 +357,7 @@ impl Compiler {
                     .collect::<HashMap<_, _>>();
 
                 let miss_type = match result {
-                    Ok(Cache::Hit(mut entry)) => {
+                    Cache::Hit(mut entry) => {
                         debug!("[{}]: Cache hit!", parsed_args.output_file());
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
@@ -382,18 +380,13 @@ impl Compiler {
                             (result, output)
                         })) as SFuture<_>
                     }
-                    Ok(Cache::Miss) => {
+                    Cache::Miss => {
                         debug!("[{}]: Cache miss!", parsed_args.output_file());
                         MissType::Normal
                     }
-                    Ok(Cache::Recache) => {
+                    Cache::Recache => {
                         debug!("[{}]: Cache recache!", parsed_args.output_file());
                         MissType::ForcedRecache
-                    }
-                    Err(e) => {
-                        debug!("[{}]: Cache read error: {:?}", parsed_args.output_file(), e);
-                        //TODO: store the error in CacheReadError in some way
-                        MissType::CacheReadError
                     }
                 };
                 me.compile(&creator,
@@ -424,39 +417,34 @@ impl Compiler {
     {
         let process::Output { stdout, .. } = preprocessor_result;
         let start = Instant::now();
+        let out_file = parsed_args.output_file().into_owned();
 
         let compile = self.kind.compile(creator, self, stdout, &parsed_args, cwd, &pool);
         Box::new(compile.and_then(move |(cacheable, compiler_result)| {
             let duration = start.elapsed();
-            if compiler_result.status.success() {
-                if cacheable == Cacheable::Yes {
-                    debug!("[{}]: Compiled, storing in cache",
-                           parsed_args.output_file());
-                    // fall through
-                } else {
-                    // Not cacheable
-                    debug!("[{}]: Compiled but not cacheable",
-                           parsed_args.output_file());
-                    return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
-                        as SFuture<_>
-                }
-            } else {
+            if !compiler_result.status.success() {
                 debug!("[{}]: Compiled but failed, not storing in cache",
                        parsed_args.output_file());
                 return Box::new(future::ok((CompileResult::CompileFailed, compiler_result)))
+                    as SFuture<_>
             }
+            if cacheable != Cacheable::Yes {
+                // Not cacheable
+                debug!("[{}]: Compiled but not cacheable",
+                       parsed_args.output_file());
+                return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
+            }
+            debug!("[{}]: Compiled, storing in cache", parsed_args.output_file());
             let mut entry = match storage.start_put(&key) {
                 Ok(entry) => entry,
                 Err(e) => return Box::new(future::err(e))
             };
-            let write = pool.spawn_fn(move || -> io::Result<_> {
+            let write = pool.spawn_fn(move || -> Result<_> {
                 for (key, path) in &outputs {
-                    let mut f = try!(File::open(&path));
-                    try!(entry.put_object(key, &mut f).map_err(|e| {
-                        let msg = format!("failed to put object `{:?}` in \
-                                           storage: {}", path, e);
-                        io::Error::new(io::ErrorKind::Other, msg)
-                    }));
+                    let mut f = File::open(&path)?;
+                    entry.put_object(key, &mut f).chain_err(|| {
+                        format!("failed to put object `{:?}` in zip", path)
+                    })?;
                 }
                 Ok(entry)
             });
