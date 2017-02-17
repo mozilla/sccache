@@ -21,6 +21,7 @@ use ::compiler::{
     CompilerArguments,
     ParsedArguments,
     run_input_output,
+    write_temp_file,
 };
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
@@ -36,7 +37,6 @@ use std::io::{
 };
 use std::path::Path;
 use std::process;
-use tempdir::TempDir;
 
 use errors::*;
 
@@ -60,16 +60,14 @@ pub fn compile<T>(creator: &T,
     trace!("compile");
     // Clang needs a temporary file for compilation, otherwise debug info
     // doesn't have a reference to the input file.
+    let write = {
+        let filename = match Path::new(&parsed_args.input).file_name() {
+            Some(name) => name,
+            None => return future::err("missing input filename".into()).boxed(),
+        };
+        write_temp_file(pool, filename.as_ref(), preprocessor_output)
+    };
     let input = parsed_args.input.clone();
-    let write = pool.spawn_fn(move || {
-        let tempdir = try!(TempDir::new("sccache"));
-        let filename = try!(Path::new(&input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
-        let input = tempdir.path().join(filename);
-        try!(File::create(&input)
-             .and_then(|mut f| f.write_all(&preprocessor_output)));
-        Ok((tempdir, input))
-    });
-
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj.clone(),
         None => {
