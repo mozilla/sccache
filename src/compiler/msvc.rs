@@ -18,6 +18,7 @@ use ::compiler::{
     CompilerArguments,
     ParsedArguments,
     run_input_output,
+    write_temp_file,
 };
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
@@ -36,7 +37,6 @@ use std::io::{
 };
 use std::path::Path;
 use std::process::{self,Stdio};
-use tempdir::TempDir;
 
 use errors::*;
 
@@ -49,13 +49,9 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
                                      -> SFuture<String>
     where T: CommandCreatorSync
 {
-    let write = pool.spawn_fn(|| {
-        let tempdir = try!(TempDir::new("sccache"));
-        let input = tempdir.path().join("test.c");
-        try!(File::create(&input)
-             .and_then(|mut f| f.write_all(b"#include <stdio.h>\n")));
-        Ok((tempdir, input))
-    });
+    let write = write_temp_file(pool,
+                                "test.c".as_ref(),
+                                b"#include <stdio.h>\n".to_vec());
 
     let exe = exe.to_os_string();
     let mut creator = creator.clone();
@@ -349,15 +345,13 @@ pub fn compile<T>(creator: &T,
 
     // MSVC doesn't read anything from stdin, so it needs a temporary file
     // as input.
-    let input = parsed_args.input.clone();
-    let write = pool.spawn_fn(move || {
-        let tempdir = try!(TempDir::new("sccache"));
-        let filename = try!(Path::new(&input).file_name().ok_or(Error::new(ErrorKind::Other, "Missing input filename")));
-        let input = tempdir.path().join(filename);
-        try!(File::create(&input)
-             .and_then(|mut f| f.write_all(&preprocessor_output)));
-        Ok((tempdir, input))
-    });
+    let write = {
+        let filename = match Path::new(&parsed_args.input).file_name() {
+            Some(name) => name,
+            None => return future::err("missing input filename".into()).boxed(),
+        };
+        write_temp_file(pool, filename.as_ref(), preprocessor_output)
+    };
 
     let mut creator2 = creator.clone();
     let compiler2 = compiler.clone();

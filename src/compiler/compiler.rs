@@ -487,15 +487,34 @@ impl Compiler {
                     });
                 let future = Box::new(future);
                 Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
+            }).chain_err(move || {
+                format!("failed to store `{}` to cache", out_file)
             }))
         }))
     }
 }
 
-/// Write `contents` to `path`.
-fn write_file(path : &Path, contents: &[u8]) -> io::Result<()> {
-    let mut f = try!(File::create(path));
-    f.write_all(contents)
+/// Creates a future that will write `contents` to `path` inside of a temporary
+/// directory.
+///
+/// The future will resolve to the temporary directory and an absolute path
+/// inside that temporary directory with a file that has the same filename as
+/// `path` contains the `contents` specified.
+///
+/// Note that when the `TempDir` is dropped it will delete all of its contents
+/// including the path returned.
+pub fn write_temp_file(pool: &CpuPool, path: &Path, contents: Vec<u8>)
+                       -> SFuture<(TempDir, PathBuf)> {
+    let path = path.to_owned();
+    pool.spawn_fn(move || -> Result<_> {
+        let dir = TempDir::new("sccache")?;
+        let src = dir.path().join(path);
+        let mut file = File::create(&src)?;
+        file.write_all(&contents)?;
+        Ok((dir, src))
+    }).chain_err(|| {
+        "failed to write temporary file"
+    })
 }
 
 /// If `executable` is a known compiler, return `Some(CompilerKind)`.
@@ -504,20 +523,15 @@ pub fn detect_compiler_kind<T>(creator: &T, executable: &str, pool: &CpuPool)
     where T: CommandCreatorSync
 {
     trace!("detect_compiler");
-    let write = pool.spawn_fn(move || -> io::Result<_> {
-        let dir = TempDir::new("sccache")?;
-        let src = dir.path().join("testfile.c");
-        write_file(&src, b"#if defined(_MSC_VER)
+    let test = b"#if defined(_MSC_VER)
 msvc
 #elif defined(__clang__)
 clang
 #elif defined(__GNUC__)
 gcc
 #endif
-")?;
-        Ok((dir, src))
-    });
-    let write = write.chain_err(|| "failed to write temporary file");
+".to_vec();
+    let write = write_temp_file(pool, "testfile.c".as_ref(), test);
 
     let mut creator2 = creator.clone();
     let executable2 = executable.to_string();
