@@ -56,6 +56,19 @@ use tempdir::TempDir;
 
 use errors::*;
 
+/// Result of generating a hash from a compiler command.
+pub enum HashResult {
+    /// Successful.
+    Ok {
+        key: String,
+        //TODO: fix this to be generic so a Rust compiler doesn't have to
+        // provide this.
+        preprocessor_output: Vec<u8>
+    },
+    /// Something failed.
+    Error { output: process::Output },
+}
+
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompilerKind {
@@ -83,9 +96,24 @@ impl CompilerKind {
         }
     }
 
+    pub fn generate_hash_key<T>(&self,
+                                creator: &T,
+                                compiler: &str,
+                                compiler_digest: &str,
+                                parsed_args: &ParsedArguments,
+                                cwd: &str,
+                                pool: &CpuPool)
+                                -> SFuture<HashResult>
+        where T: CommandCreatorSync
+    {
+        match *self {
+            CompilerKind::Gcc | CompilerKind::Clang | CompilerKind::Msvc { .. } => hash_key_from_c_preprocessor_output(creator, self, compiler, compiler_digest, parsed_args, cwd, pool),
+        }
+    }
+
     pub fn preprocess<T>(&self,
                          creator: &T,
-                         compiler: &Compiler,
+                         compiler: &str,
                          parsed_args: &ParsedArguments,
                          cwd: &str,
                          pool: &CpuPool)
@@ -103,7 +131,7 @@ impl CompilerKind {
 
     pub fn compile<T>(&self,
                       creator: &T,
-                      compiler: &Compiler,
+                      compiler: &str,
                       preprocessor_output: Vec<u8>,
                       parsed_args: &ParsedArguments,
                       cwd: &str,
@@ -272,11 +300,59 @@ pub enum CacheControl {
     ForceRecache,
 }
 
+fn hash_key_from_c_preprocessor_output<T>(creator: &T,
+                                          kind: &CompilerKind,
+                                          compiler: &str,
+                                          compiler_digest: &str,
+                                          parsed_args: &ParsedArguments,
+                                          cwd: &str,
+                                          pool: &CpuPool)
+                                          -> SFuture<HashResult>
+            where T: CommandCreatorSync
+{
+    let result = kind.preprocess(creator, compiler, parsed_args, cwd, pool);
+    let parsed_args = parsed_args.clone();
+    let out_file = parsed_args.output_file().into_owned();
+    let result = result.map_err(move |e| {
+        debug!("[{}]: preprocessor failed: {:?}", out_file, e);
+        e
+    });
+    let compiler_digest = compiler_digest.to_string();
+
+    Box::new(result.map(move |preprocessor_result| {
+        // If the preprocessor failed, just return that result.
+        if !preprocessor_result.status.success() {
+            debug!("[{}]: preprocessor returned error status {:?}",
+                   parsed_args.output_file(),
+                   preprocessor_result.status.code());
+            return HashResult::Error { output: preprocessor_result };
+        }
+        trace!("[{}]: Preprocessor output is {} bytes",
+               parsed_args.output_file(),
+               preprocessor_result.stdout.len());
+
+        // Remove object file from arguments before hash calculation
+        let key = {
+            let out_file = parsed_args.output_file();
+            let arguments = parsed_args.common_args.iter()
+                .filter(|a| **a != out_file)
+                .map(|a| a.as_str())
+                .collect::<String>();
+            hash_key(&compiler_digest, &arguments, &preprocessor_result.stdout)
+        };
+        return HashResult::Ok {
+            key: key,
+            preprocessor_output: preprocessor_result.stdout,
+        }
+    }))
+}
+
 impl Compiler {
     /// Create a new `Compiler` of `kind`, with `executable` as the binary.
     ///
     /// This will generate a hash of the contents of `executable`, so
-    /// don't call it where it shouldn't block on I/O.
+    /// don't call it where it shouldn't block on I/O. This is called
+    /// from `get_compiler_info`.
     pub fn new(executable: &str, kind: CompilerKind) -> io::Result<Compiler> {
         let attr = try!(fs::metadata(executable));
         let f = try!(File::open(executable));
@@ -309,18 +385,12 @@ impl Compiler {
             let cmd_str = arguments.join(" ");
             debug!("parse_arguments: `{}`", cmd_str);
         }
-        let parsed_args = self.kind.parse_arguments(arguments, cwd);
-        match parsed_args {
-            CompilerArguments::Ok(_) => debug!("parse_arguments: Ok"),
-            CompilerArguments::CannotCache => debug!("parse_arguments: CannotCache"),
-            CompilerArguments::NotCompilation => debug!("parse_arguments: NotCompilation"),
-        };
-        parsed_args
+        self.kind.parse_arguments(arguments, cwd)
     }
 
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
-    pub fn get_cached_or_compile<T>(&self,
+    pub fn get_cached_or_compile<T>(self,
                                     creator: &T,
                                     storage: &Arc<Storage>,
                                     arguments: &[String],
@@ -331,49 +401,29 @@ impl Compiler {
                                     -> SFuture<(CompileResult, process::Output)>
         where T: CommandCreatorSync
     {
+        let Compiler { executable, digest, kind, .. } = self;
         let out_file = parsed_args.output_file();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
-        let result = self.kind.preprocess(creator, self, parsed_args, cwd, pool);
-        let out_file = out_file.into_owned();
-        let result = result.map_err(move |e| {
-            debug!("[{}]: preprocessor failed: {:?}", out_file, e);
-            e
-        });
+        let result = kind.generate_hash_key(creator, &executable, &digest, parsed_args, cwd, pool);
         let parsed_args = parsed_args.clone();
         let cwd = cwd.to_string();
-        let me = self.clone();
-        let storage = storage.clone();
         let pool = pool.clone();
         let creator = creator.clone();
-
-        Box::new(result.and_then(move |preprocessor_result| -> SFuture<_> {
-            // If the preprocessor failed, just return that result.
-            if !preprocessor_result.status.success() {
-                debug!("[{}]: preprocessor returned error status {:?}",
-                       parsed_args.output_file(),
-                       preprocessor_result.status.code());
-                // Drop the stdout since it's the preprocessor output, just hand back stderr and the exit status.
-                let output = process::Output {
-                    stdout: vec!(),
-                    ..preprocessor_result
-                };
-                return Box::new(future::ok((CompileResult::Error, output)))
-            }
-            trace!("[{}]: Preprocessor output is {} bytes",
-                   parsed_args.output_file(),
-                   preprocessor_result.stdout.len());
-
-            // Remove object file from arguments before hash calculation
-            let key = {
-                let out_file = parsed_args.output_file();
-                let arguments = parsed_args.common_args.iter()
-                    .filter(|a| **a != out_file)
-                    .map(|a| a.as_str())
-                    .collect::<String>();
-                hash_key(&me, &arguments, &preprocessor_result.stdout)
+        let storage = storage.clone();
+        Box::new(result.and_then(move |hash_res| -> SFuture<_> {
+            let (key, preprocessor_output) = match hash_res {
+                HashResult::Error { output } => {
+                    // Drop the stdout since it's the preprocessor output, just hand back stderr and the exit status.
+                    let output = process::Output {
+                        stdout: vec!(),
+                        ..output
+                    };
+                    return Box::new(future::ok((CompileResult::Error, output)));
+                }
+                HashResult::Ok { key, preprocessor_output } => (key, preprocessor_output),
             };
             trace!("[{}]: Hash key: {}", parsed_args.output_file(), key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -384,6 +434,7 @@ impl Compiler {
                 storage.get(&key)
             };
 
+            // Check the result of the cache lookup.
             Box::new(cache_status.and_then(move |result| {
                 let duration = start.elapsed();
                 let pwd = Path::new(&cwd);
@@ -427,95 +478,72 @@ impl Compiler {
                         MissType::ForcedRecache
                     }
                 };
-                me.compile(&creator,
-                           preprocessor_result,
-                           parsed_args,
-                           &cwd,
-                           pool,
-                           outputs,
-                           storage,
-                           key,
-                           miss_type)
-            }))
-        }))
-    }
 
-    fn compile<T>(&self,
-                  creator: &T,
-                  preprocessor_result: process::Output,
-                  parsed_args: ParsedArguments,
-                  cwd: &str,
-                  pool: CpuPool,
-                  outputs: HashMap<String, PathBuf>,
-                  storage: Arc<Storage>,
-                  key: String,
-                  miss_type: MissType)
-                  -> SFuture<(CompileResult, process::Output)>
-        where T: CommandCreatorSync,
-    {
-        let process::Output { stdout, .. } = preprocessor_result;
-        let start = Instant::now();
-        let out_file = parsed_args.output_file().into_owned();
-
-        let compile = self.kind.compile(creator, self, stdout, &parsed_args, cwd, &pool);
-        Box::new(compile.and_then(move |(cacheable, compiler_result)| {
-            let duration = start.elapsed();
-            if !compiler_result.status.success() {
-                debug!("[{}]: Compiled but failed, not storing in cache",
-                       parsed_args.output_file());
-                return Box::new(future::ok((CompileResult::CompileFailed, compiler_result)))
-                    as SFuture<_>
-            }
-            if cacheable != Cacheable::Yes {
-                // Not cacheable
-                debug!("[{}]: Compiled but not cacheable",
-                       parsed_args.output_file());
-                return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
-            }
-            debug!("[{}]: Compiled, storing in cache", parsed_args.output_file());
-            let mut entry = match storage.start_put(&key) {
-                Ok(entry) => entry,
-                Err(e) => return Box::new(future::err(e))
-            };
-            let write = pool.spawn_fn(move || -> Result<_> {
-                for (key, path) in &outputs {
-                    let mut f = File::open(&path)?;
-                    let mode = get_file_mode(&path)?;
-                    entry.put_object(key, &mut f, mode).chain_err(|| {
-                        format!("failed to put object `{:?}` in zip", path)
-                    })?;
-                }
-                Ok(entry)
-            });
-            let write = write.chain_err(|| "failed to zip up compiler outputs");
-            Box::new(write.and_then(move |mut entry| {
-                if !compiler_result.stdout.is_empty() {
-                    let mut stdout = &compiler_result.stdout[..];
-                    entry.put_object("stdout", &mut stdout, None)?;
-                }
-                if !compiler_result.stderr.is_empty() {
-                    let mut stderr = &compiler_result.stderr[..];
-                    entry.put_object("stderr", &mut stderr, None)?;
-                }
-
-                // Try to finish storing the newly-written cache
-                // entry. We'll get the result back elsewhere.
+                // Cache miss, so compile it.
+                let start = Instant::now();
                 let out_file = parsed_args.output_file().into_owned();
-                let future = storage.finish_put(&key, entry)
-                    .then(move |res| {
-                        match res {
-                            Ok(_) => debug!("[{}]: Stored in cache successfully!", out_file),
-                            Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_file, e),
+
+                let compile = kind.compile(&creator, &executable, preprocessor_output, &parsed_args, &cwd, &pool);
+                Box::new(compile.and_then(move |(cacheable, compiler_result)| {
+                    let duration = start.elapsed();
+                    if !compiler_result.status.success() {
+                        debug!("[{}]: Compiled but failed, not storing in cache",
+                               parsed_args.output_file());
+                        return Box::new(future::ok((CompileResult::CompileFailed, compiler_result)))
+                            as SFuture<_>
+                    }
+                    if cacheable != Cacheable::Yes {
+                        // Not cacheable
+                        debug!("[{}]: Compiled but not cacheable",
+                               parsed_args.output_file());
+                        return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
+                    }
+                    debug!("[{}]: Compiled, storing in cache", parsed_args.output_file());
+                    let mut entry = match storage.start_put(&key) {
+                        Ok(entry) => entry,
+                        Err(e) => return Box::new(future::err(e))
+                    };
+                    let write = pool.spawn_fn(move || -> Result<_> {
+                        for (key, path) in &outputs {
+                            let mut f = File::open(&path)?;
+                            let mode = get_file_mode(&path)?;
+                            entry.put_object(key, &mut f, mode).chain_err(|| {
+                                format!("failed to put object `{:?}` in zip", path)
+                            })?;
                         }
-                        res.map(|duration| CacheWriteInfo {
-                            object_file: out_file,
-                            duration: duration,
-                        })
+                        Ok(entry)
                     });
-                let future = Box::new(future);
-                Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
-            }).chain_err(move || {
-                format!("failed to store `{}` to cache", out_file)
+                    let write = write.chain_err(|| "failed to zip up compiler outputs");
+                    Box::new(write.and_then(move |mut entry| {
+                        if !compiler_result.stdout.is_empty() {
+                            let mut stdout = &compiler_result.stdout[..];
+                            entry.put_object("stdout", &mut stdout, None)?;
+                        }
+                        if !compiler_result.stderr.is_empty() {
+                            let mut stderr = &compiler_result.stderr[..];
+                            entry.put_object("stderr", &mut stderr, None)?;
+                        }
+
+                        // Try to finish storing the newly-written cache
+                        // entry. We'll get the result back elsewhere.
+                        let out_file = parsed_args.output_file().into_owned();
+                        let future = storage.finish_put(&key, entry)
+                            .then(move |res| {
+                                match res {
+                                    Ok(_) => debug!("[{}]: Stored in cache successfully!", out_file),
+                                    Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_file, e),
+                                }
+                                res.map(|duration| CacheWriteInfo {
+                                    object_file: out_file,
+                                    duration: duration,
+                                })
+                            });
+                        let future = Box::new(future);
+                        Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
+                    }).chain_err(move || {
+                        format!("failed to store `{}` to cache", out_file)
+                    }))
+                }))
             }))
         }))
     }
@@ -805,13 +833,14 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
-                                                    cwd,
-                                                    CacheControl::Default,
-                                                    &pool).wait().unwrap();
+        let c2 = c.clone();
+        let (cached, res) = c2.get_cached_or_compile(&creator,
+                                                     &storage,
+                                                     &arguments,
+                                                     &parsed_args,
+                                                     cwd,
+                                                     CacheControl::Default,
+                                                     &pool).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -881,13 +910,14 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
-                                                    cwd,
-                                                    CacheControl::Default,
-                                                    &pool).wait().unwrap();
+        let c2 = c.clone();
+        let (cached, res) = c2.get_cached_or_compile(&creator,
+                                                     &storage,
+                                                     &arguments,
+                                                     &parsed_args,
+                                                     cwd,
+                                                     CacheControl::Default,
+                                                     &pool).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -962,13 +992,14 @@ mod test {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
-                                                    cwd,
-                                                    CacheControl::Default,
-                                                    &pool).wait().unwrap();
+        let c2 = c.clone();
+        let (cached, res) = c2.get_cached_or_compile(&creator,
+                                                     &storage,
+                                                     &arguments,
+                                                     &parsed_args,
+                                                     cwd,
+                                                     CacheControl::Default,
+                                                     &pool).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {

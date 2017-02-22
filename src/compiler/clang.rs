@@ -17,7 +17,6 @@
 use ::compiler::{
     gcc,
     Cacheable,
-    Compiler,
     CompilerArguments,
     ParsedArguments,
     run_input_output,
@@ -49,7 +48,7 @@ pub fn argument_takes_value(arg: &str) -> bool {
 }
 
 pub fn compile<T>(creator: &T,
-                  compiler: &Compiler,
+                  compiler: &str,
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
@@ -75,7 +74,7 @@ pub fn compile<T>(creator: &T,
         }
     };
 
-    let mut attempt = creator.clone().new_command_sync(&compiler.executable);
+    let mut attempt = creator.clone().new_command_sync(compiler);
     attempt.arg("-c")
         .arg("-o")
         .arg(&out_file)
@@ -98,7 +97,7 @@ pub fn compile<T>(creator: &T,
         return Box::new(output.map(|output| (Cacheable::Yes, output)))
     }
 
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg("-o")
@@ -178,8 +177,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
-        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Clang).unwrap();
+        let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
@@ -206,8 +204,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: stringvec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
         };
-        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Clang).unwrap();
+        let compiler = f.bins[0].to_str().unwrap();
         // First compiler invocation fails.
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.

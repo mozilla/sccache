@@ -443,6 +443,7 @@ impl<C> SccacheService<C>
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
+    /// If not cached, determine the compiler type and cache the result.
     fn compiler_info(&self, path: &str)
                      -> SFuture<Option<Compiler>> {
         trace!("compiler_info_cached");
@@ -466,7 +467,9 @@ impl<C> SccacheService<C>
             }
             None => {
                 trace!("compiler_info cache miss");
-                // Run a Task to check the compiler type.
+                // Check the compiler type and return the result when
+                // finished. This generally involves invoking the compiler,
+                // so do it asynchronously.
                 let path = path.to_string();
                 let me = self.clone();
 
@@ -480,6 +483,8 @@ impl<C> SccacheService<C>
         }
     }
 
+    /// Check that we can handle and cache `cmd` when run with `compiler`.
+    /// If so, run `start_compile_task` to execute it.
     fn check_compiler(&self,
                       compiler: Option<Compiler>,
                       cmd: Vec<String>,
@@ -498,6 +503,7 @@ impl<C> SccacheService<C>
                 // the provided commandline.
                 match c.parse_arguments(&cmd, cwd.as_ref()) {
                     CompilerArguments::Ok(args) => {
+                        debug!("parse_arguments: Ok");
                         stats.requests_executed += 1;
                         res.set_compile_started(CompileStarted::new());
                         let (tx, rx) = Body::pair();
@@ -505,9 +511,11 @@ impl<C> SccacheService<C>
                         return Message::WithBody(res, rx)
                     }
                     CompilerArguments::CannotCache => {
+                        debug!("parse_arguments: CannotCache");
                         stats.requests_not_cacheable += 1;
                     }
                     CompilerArguments::NotCompilation => {
+                        debug!("parse_arguments: NotCompilation");
                         stats.requests_not_compile += 1;
                     }
                 }
@@ -518,7 +526,9 @@ impl<C> SccacheService<C>
         Message::WithoutBody(res)
     }
 
-    /// Start running `cmd` in a thread on our thread pool, in `cwd`.
+    /// Given compiler arguments `arguments` + `parsed_arguments`, look up
+    /// a compile result in the cache or execute the compilation and store
+    /// the result in the cache.
     fn start_compile_task(&self,
                           compiler: Compiler,
                           parsed_arguments: ParsedArguments,
