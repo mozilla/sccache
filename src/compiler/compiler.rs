@@ -184,7 +184,7 @@ pub enum CompilerArguments {
 
 /// Information about a compiler.
 #[derive(Clone)]
-pub struct Compiler {
+pub struct CompilerInfo {
     /// The path to the compiler binary.
     pub executable: String,
     /// The last modified time of `executable`.
@@ -347,13 +347,13 @@ fn hash_key_from_c_preprocessor_output<T>(creator: &T,
     }))
 }
 
-impl Compiler {
-    /// Create a new `Compiler` of `kind`, with `executable` as the binary.
+impl CompilerInfo {
+    /// Create a new `CompilerInfo` of `kind`, with `executable` as the binary.
     ///
     /// This will generate a hash of the contents of `executable`, so
     /// don't call it where it shouldn't block on I/O. This is called
     /// from `get_compiler_info`.
-    pub fn new(executable: &str, kind: CompilerKind) -> io::Result<Compiler> {
+    pub fn new(executable: &str, kind: CompilerKind) -> io::Result<CompilerInfo> {
         let attr = try!(fs::metadata(executable));
         let f = try!(File::open(executable));
         let mut m = sha1::Sha1::new();
@@ -366,7 +366,7 @@ impl Compiler {
             }
             m.update(&buffer[..count]);
         }
-        Ok(Compiler {
+        Ok(CompilerInfo {
             executable: executable.to_owned(),
             mtime: FileTime::from_last_modification_time(&attr),
             digest: m.digest().to_string(),
@@ -401,7 +401,7 @@ impl Compiler {
                                     -> SFuture<(CompileResult, process::Output)>
         where T: CommandCreatorSync
     {
-        let Compiler { executable, digest, kind, .. } = self;
+        let CompilerInfo { executable, digest, kind, .. } = self;
         let out_file = parsed_args.output_file();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
@@ -638,9 +638,9 @@ gcc
     }))
 }
 
-/// If `executable` is a known compiler, return `Some(Compiler)` containing information about it.
+/// If `executable` is a known compiler, return `Some(CompilerInfo)` containing information about it.
 pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
-                            -> SFuture<Compiler>
+                            -> SFuture<CompilerInfo>
     where T: CommandCreatorSync
 {
     let executable = executable.to_string();
@@ -648,7 +648,7 @@ pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
     Box::new(detect_compiler_kind(creator, &executable, &pool).and_then(move |kind| {
         match kind {
             Some(kind) => {
-                pool.spawn_fn(move || Compiler::new(&executable, kind))
+                pool.spawn_fn(move || CompilerInfo::new(&executable, kind))
                     .chain_err(|| "failed to learn compiler metadata")
             }
             None => future::err("could not determine compiler kind".into()).boxed(),
