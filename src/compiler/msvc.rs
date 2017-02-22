@@ -14,7 +14,6 @@
 
 use ::compiler::{
     Cacheable,
-    Compiler,
     CompilerArguments,
     ParsedArguments,
     run_input_output,
@@ -249,7 +248,7 @@ fn normpath(path: &str) -> String {
 }
 
 pub fn preprocess<T>(creator: &T,
-                     compiler: &Compiler,
+                     compiler: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      includes_prefix: &str,
@@ -257,7 +256,7 @@ pub fn preprocess<T>(creator: &T,
                      -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .arg("-nologo")
@@ -315,7 +314,7 @@ pub fn preprocess<T>(creator: &T,
 }
 
 pub fn compile<T>(creator: &T,
-                  compiler: &Compiler,
+                  compiler: &str,
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
@@ -353,7 +352,7 @@ pub fn compile<T>(creator: &T,
         write_temp_file(pool, filename.as_ref(), preprocessor_output)
     };
 
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.arg("-c")
         .arg(&format!("-Fo{}", out_file))
         .args(&parsed_args.common_args)
@@ -372,7 +371,7 @@ pub fn compile<T>(creator: &T,
     //
     // We may just throw away this `cmd` if our execution turns out to be
     // successful.
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg(&format!("-Fo{}", out_file))
@@ -542,8 +541,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
-        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
+        let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
@@ -573,8 +571,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
-        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
+        let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
@@ -602,8 +599,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
         };
-        let compiler = Compiler::new(f.bins[0].to_str().unwrap(),
-                                     CompilerKind::Msvc { includes_prefix: String::new() }).unwrap();
+        let compiler = f.bins[0].to_str().unwrap();
         // First compiler invocation fails.
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.

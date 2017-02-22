@@ -19,7 +19,6 @@ use app_dirs::{
 };
 use cache::disk::DiskCache;
 use cache::s3::S3Cache;
-use compiler::Compiler;
 use futures_cpupool::CpuPool;
 use regex::Regex;
 use sha1;
@@ -232,10 +231,10 @@ pub const CACHED_ENV_VARS : &'static [&'static str] = &[
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 #[allow(dead_code)]
-pub fn hash_key(compiler: &Compiler, arguments: &str, preprocessor_output: &[u8]) -> String {
+pub fn hash_key(compiler_digest: &str, arguments: &str, preprocessor_output: &[u8]) -> String {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = sha1::Sha1::new();
-    m.update(compiler.digest.as_bytes());
+    m.update(compiler_digest.as_bytes());
     m.update(CACHE_VERSION);
     m.update(arguments.as_bytes());
     //TODO: should propogate these over from the client.
@@ -280,8 +279,8 @@ mod test {
         let c2 = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
         let args = "a b c";
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c1, &args, &PREPROCESSED),
-                    hash_key(&c2, &args, &PREPROCESSED));
+        assert_neq!(hash_key(&c1.digest, &args, &PREPROCESSED),
+                    hash_key(&c2.digest, &args, &PREPROCESSED));
     }
 
     #[test]
@@ -289,14 +288,14 @@ mod test {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c, "a b c", &PREPROCESSED),
-                    hash_key(&c, "x y z", &PREPROCESSED));
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "x y z", &PREPROCESSED));
 
-        assert_neq!(hash_key(&c, "a b c", &PREPROCESSED),
-                    hash_key(&c, "a b", &PREPROCESSED));
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "a b", &PREPROCESSED));
 
-        assert_neq!(hash_key(&c, "a b c", &PREPROCESSED),
-                    hash_key(&c, "a", &PREPROCESSED));
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "a", &PREPROCESSED));
     }
 
     #[test]
@@ -304,8 +303,8 @@ mod test {
         let f = TestFixture::new();
         let c = Compiler::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
         let args = "a b c";
-        assert_neq!(hash_key(&c, &args, &b"hello world"[..]),
-                    hash_key(&c, &args, &b"goodbye"[..]));
+        assert_neq!(hash_key(&c.digest, &args, &b"hello world"[..]),
+                    hash_key(&c.digest, &args, &b"goodbye"[..]));
     }
 
     #[test]
@@ -317,11 +316,11 @@ mod test {
         for var in CACHED_ENV_VARS.iter() {
             let old = env::var_os(var);
             env::remove_var(var);
-            let h1 = hash_key(&c, &args, &PREPROCESSED);
+            let h1 = hash_key(&c.digest, &args, &PREPROCESSED);
             env::set_var(var, "something");
-            let h2 = hash_key(&c, &args, &PREPROCESSED);
+            let h2 = hash_key(&c.digest, &args, &PREPROCESSED);
             env::set_var(var, "something else");
-            let h3 = hash_key(&c, &args, &PREPROCESSED);
+            let h3 = hash_key(&c.digest, &args, &PREPROCESSED);
             match old {
                 Some(val) => env::set_var(var, val),
                 None => env::remove_var(var),

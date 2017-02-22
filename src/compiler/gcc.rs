@@ -14,7 +14,6 @@
 
 use ::compiler::{
     Cacheable,
-    Compiler,
     CompilerArguments,
     ParsedArguments,
     run_input_output,
@@ -192,7 +191,7 @@ fn _parse_arguments(arguments: &[String],
 }
 
 pub fn preprocess<T>(creator: &T,
-                     compiler: &Compiler,
+                     compiler: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      _pool: &CpuPool)
@@ -200,7 +199,7 @@ pub fn preprocess<T>(creator: &T,
     where T: CommandCreatorSync
 {
     trace!("preprocess");
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
@@ -213,7 +212,7 @@ pub fn preprocess<T>(creator: &T,
 }
 
 pub fn compile<T>(creator: &T,
-                  compiler: &Compiler,
+                  compiler: &str,
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
@@ -230,7 +229,7 @@ pub fn compile<T>(creator: &T,
         }
     };
 
-    let mut cmd = creator.clone().new_command_sync(&compiler.executable);
+    let mut cmd = creator.clone().new_command_sync(compiler);
     cmd.args(&["-c", "-x"])
         .arg(match parsed_args.extension.as_ref() {
             "c" => "cpp-output",
