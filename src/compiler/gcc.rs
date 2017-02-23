@@ -15,9 +15,11 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
+    CompilerKind,
     ParsedArguments,
     run_input_output,
 };
+use compiler::c::CCompilerImpl;
 use log::LogLevel::Trace;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
@@ -32,6 +34,44 @@ use std::path::Path;
 use std::process;
 
 use errors::*;
+
+/// A unit struct on which to implement `CCompilerImpl`.
+#[derive(Clone)]
+pub struct GCC;
+
+impl CCompilerImpl for GCC {
+    fn kind(&self) -> CompilerKind { CompilerKind::GCC }
+    fn parse_arguments(&self,
+                       arguments: &[String],
+                       cwd: &Path) -> CompilerArguments
+    {
+        parse_arguments(arguments, cwd, argument_takes_value)
+    }
+
+    fn preprocess<T>(&self,
+                     creator: &T,
+                     executable: &str,
+                     parsed_args: &ParsedArguments,
+                     cwd: &str,
+                     pool: &CpuPool)
+                     -> SFuture<process::Output> where T: CommandCreatorSync
+    {
+        preprocess(creator, executable, parsed_args, cwd, pool)
+    }
+
+    fn compile<T>(&self,
+                  creator: &T,
+                  executable: &str,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> SFuture<(Cacheable, process::Output)>
+        where T: CommandCreatorSync
+    {
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+    }
+}
 
 /// Arguments that take a value. Shared with clang.
 pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
@@ -191,7 +231,7 @@ fn _parse_arguments(arguments: &[String],
 }
 
 pub fn preprocess<T>(creator: &T,
-                     compiler: &str,
+                     executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      _pool: &CpuPool)
@@ -199,7 +239,7 @@ pub fn preprocess<T>(creator: &T,
     where T: CommandCreatorSync
 {
     trace!("preprocess");
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
@@ -211,13 +251,13 @@ pub fn preprocess<T>(creator: &T,
     run_input_output(cmd, None)
 }
 
-pub fn compile<T>(creator: &T,
-                  compiler: &str,
-                  preprocessor_output: Vec<u8>,
-                  parsed_args: &ParsedArguments,
-                  cwd: &str,
-                  _pool: &CpuPool)
-                  -> SFuture<(Cacheable, process::Output)>
+fn compile<T>(creator: &T,
+              executable: &str,
+              preprocessor_output: Vec<u8>,
+              parsed_args: &ParsedArguments,
+              cwd: &str,
+              _pool: &CpuPool)
+              -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
     trace!("compile");
@@ -229,7 +269,7 @@ pub fn compile<T>(creator: &T,
         }
     };
 
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&["-c", "-x"])
         .arg(match parsed_args.extension.as_ref() {
             "c" => "cpp-output",

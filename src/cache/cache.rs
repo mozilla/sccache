@@ -264,7 +264,7 @@ fn test_parse_size() {
 #[cfg(test)]
 mod test {
     use super::*;
-    use compiler::{CompilerInfo,CompilerKind};
+    use compiler::{CompilerInfo, get_gcc};
     use std::env;
     use std::io::Write;
     use test::utils::*;
@@ -273,10 +273,10 @@ mod test {
     fn test_hash_key_executable_contents_differs() {
         let f = TestFixture::new();
         // Try to avoid testing exact hashes.
-        let c1 = CompilerInfo::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        let c1 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         // Overwrite the contents of the binary.
         mk_bin_contents(f.tempdir.path(), "a/bin", |mut f| f.write_all(b"hello")).unwrap();
-        let c2 = CompilerInfo::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        let c2 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
         const PREPROCESSED : &'static [u8] = b"hello world";
         assert_neq!(hash_key(&c1.digest, &args, &PREPROCESSED),
@@ -286,7 +286,7 @@ mod test {
     #[test]
     fn test_hash_key_args_differs() {
         let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         const PREPROCESSED : &'static [u8] = b"hello world";
         assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
                     hash_key(&c.digest, "x y z", &PREPROCESSED));
@@ -301,7 +301,7 @@ mod test {
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
         assert_neq!(hash_key(&c.digest, &args, &b"hello world"[..]),
                     hash_key(&c.digest, &args, &b"goodbye"[..]));
@@ -310,7 +310,7 @@ mod test {
     #[test]
     fn test_hash_key_env_var_differs() {
         let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), CompilerKind::Gcc).unwrap();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
         const PREPROCESSED : &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {

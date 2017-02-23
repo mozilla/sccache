@@ -15,13 +15,12 @@
 use cache::{
     Cache,
     Storage,
-    hash_key,
 };
-use compiler::{
-    clang,
-    gcc,
-    msvc,
-};
+use compiler::msvc;
+use compiler::c::CCompiler;
+use compiler::clang::Clang;
+use compiler::gcc::GCC;
+use compiler::msvc::MSVC;
 use filetime::FileTime;
 use futures::future;
 use futures::{Future, IntoFuture};
@@ -33,6 +32,8 @@ use mock_command::{
     RunCommand,
     exit_status,
 };
+#[cfg(test)]
+use mock_command::MockCommandCreator;
 use sha1;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -48,6 +49,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
 use std::str;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{
     Duration,
     Instant,
@@ -56,95 +59,68 @@ use tempdir::TempDir;
 
 use errors::*;
 
-/// Result of generating a hash from a compiler command.
-pub enum HashResult {
-    /// Successful.
-    Ok {
-        key: String,
-        //TODO: fix this to be generic so a Rust compiler doesn't have to
-        // provide this.
-        preprocessor_output: Vec<u8>
-    },
-    /// Something failed.
-    Error { output: process::Output },
-}
-
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompilerKind {
     /// GCC
-    Gcc,
+    GCC,
     /// clang
     Clang,
     /// Microsoft Visual C++
-    Msvc {
-        /// The prefix used in the output of `-showIncludes`.
-        includes_prefix: String,
-    },
+    MSVC,
 }
 
-impl CompilerKind {
-    pub fn parse_arguments(&self,
-                           arguments: &[String],
-                           cwd: &Path) -> CompilerArguments {
-        match *self {
-            // GCC and clang share the same argument parsing logic, but
-            // accept different sets of arguments.
-            CompilerKind::Gcc => gcc::parse_arguments(arguments, cwd, gcc::argument_takes_value),
-            CompilerKind::Clang => gcc::parse_arguments(arguments, cwd, clang::argument_takes_value),
-            CompilerKind::Msvc { .. } => msvc::parse_arguments(arguments),
-        }
-    }
-
-    pub fn generate_hash_key<T>(&self,
-                                creator: &T,
-                                compiler: &str,
-                                compiler_digest: &str,
-                                parsed_args: &ParsedArguments,
-                                cwd: &str,
-                                pool: &CpuPool)
-                                -> SFuture<HashResult>
-        where T: CommandCreatorSync
-    {
-        match *self {
-            CompilerKind::Gcc | CompilerKind::Clang | CompilerKind::Msvc { .. } => hash_key_from_c_preprocessor_output(creator, self, compiler, compiler_digest, parsed_args, cwd, pool),
-        }
-    }
-
-    pub fn preprocess<T>(&self,
+/// An interface to a compiler.
+pub trait Compiler<T: CommandCreatorSync>: Send + 'static {
+    /// Return the kind of compiler.
+    fn kind(&self) -> CompilerKind;
+    /// Determine whether `arguments` are supported by this compiler.
+    fn parse_arguments(&self,
+                       arguments: &[String],
+                       cwd: &Path) -> CompilerArguments;
+    /// Given information about a compiler command, generate a hash key
+    /// that can be used for cache lookups, as well as any additional
+    /// information that can be reused for compilation if necessary.
+    fn generate_hash_key(&self,
                          creator: &T,
-                         compiler: &str,
+                         executable: &str,
+                         executable_digest: &str,
                          parsed_args: &ParsedArguments,
                          cwd: &str,
                          pool: &CpuPool)
-                         -> SFuture<process::Output>
-        where T: CommandCreatorSync
-    {
-        match *self {
-            CompilerKind::Gcc | CompilerKind::Clang => {
-                // GCC and clang use the same preprocessor invocation.
-                gcc::preprocess(creator, compiler, parsed_args, cwd, pool)
-            },
-            CompilerKind::Msvc { ref includes_prefix } => msvc::preprocess(creator, compiler, parsed_args, cwd, includes_prefix, pool),
-        }
-    }
+                         -> SFuture<HashResult<T>>;
+    fn box_clone(&self) -> Box<Compiler<T>>;
+}
 
-    pub fn compile<T>(&self,
-                      creator: &T,
-                      compiler: &str,
-                      preprocessor_output: Vec<u8>,
-                      parsed_args: &ParsedArguments,
-                      cwd: &str,
-                      pool: &CpuPool)
-                      -> SFuture<(Cacheable, process::Output)>
-        where T: CommandCreatorSync,
-    {
-        match *self {
-            CompilerKind::Gcc => gcc::compile(creator, compiler, preprocessor_output, parsed_args, cwd, pool),
-            CompilerKind::Clang => clang::compile(creator, compiler, preprocessor_output, parsed_args, cwd, pool),
-            CompilerKind::Msvc { .. } => msvc::compile(creator, compiler, preprocessor_output, parsed_args, cwd, pool),
-        }
-    }
+impl<T: CommandCreatorSync> Clone for Box<Compiler<T>> {
+    fn clone(&self) -> Box<Compiler<T>> { self.box_clone() }
+}
+
+pub trait Compilation<T: CommandCreatorSync> {
+    /// Given information about a compiler command, execute the compiler.
+    fn compile(self: Box<Self>,
+               creator: &T,
+               executable: &str,
+               parsed_args: &ParsedArguments,
+               cwd: &str,
+               pool: &CpuPool)
+               -> SFuture<(Cacheable, process::Output)>;
+}
+
+/// Result of generating a hash from a compiler command.
+pub enum HashResult<T: CommandCreatorSync> {
+    /// Successful.
+    Ok {
+        /// The hash key of the inputs.
+        key: String,
+        /// An object to use for the actual compilation, if necessary.
+        compilation: Box<Compilation<T> + 'static>,
+    },
+    /// Something failed.
+    Error {
+        /// The error output and return code.
+        output: process::Output,
+    },
 }
 
 /// The results of parsing a compiler commandline.
@@ -184,15 +160,15 @@ pub enum CompilerArguments {
 
 /// Information about a compiler.
 #[derive(Clone)]
-pub struct CompilerInfo {
+pub struct CompilerInfo<T: CommandCreatorSync> {
     /// The path to the compiler binary.
     pub executable: String,
     /// The last modified time of `executable`.
     pub mtime: FileTime,
     /// The sha-1 digest of `executable`, as a hex string.
     pub digest: String,
-    /// The kind of compiler, from the set of known compilers.
-    pub kind: CompilerKind,
+    /// The actual compiler implementation.
+    pub compiler: Box<Compiler<T>>,
 }
 
 /// Specifics about cache misses.
@@ -300,60 +276,13 @@ pub enum CacheControl {
     ForceRecache,
 }
 
-fn hash_key_from_c_preprocessor_output<T>(creator: &T,
-                                          kind: &CompilerKind,
-                                          compiler: &str,
-                                          compiler_digest: &str,
-                                          parsed_args: &ParsedArguments,
-                                          cwd: &str,
-                                          pool: &CpuPool)
-                                          -> SFuture<HashResult>
-            where T: CommandCreatorSync
-{
-    let result = kind.preprocess(creator, compiler, parsed_args, cwd, pool);
-    let parsed_args = parsed_args.clone();
-    let out_file = parsed_args.output_file().into_owned();
-    let result = result.map_err(move |e| {
-        debug!("[{}]: preprocessor failed: {:?}", out_file, e);
-        e
-    });
-    let compiler_digest = compiler_digest.to_string();
-
-    Box::new(result.map(move |preprocessor_result| {
-        // If the preprocessor failed, just return that result.
-        if !preprocessor_result.status.success() {
-            debug!("[{}]: preprocessor returned error status {:?}",
-                   parsed_args.output_file(),
-                   preprocessor_result.status.code());
-            return HashResult::Error { output: preprocessor_result };
-        }
-        trace!("[{}]: Preprocessor output is {} bytes",
-               parsed_args.output_file(),
-               preprocessor_result.stdout.len());
-
-        // Remove object file from arguments before hash calculation
-        let key = {
-            let out_file = parsed_args.output_file();
-            let arguments = parsed_args.common_args.iter()
-                .filter(|a| **a != out_file)
-                .map(|a| a.as_str())
-                .collect::<String>();
-            hash_key(&compiler_digest, &arguments, &preprocessor_result.stdout)
-        };
-        return HashResult::Ok {
-            key: key,
-            preprocessor_output: preprocessor_result.stdout,
-        }
-    }))
-}
-
-impl CompilerInfo {
-    /// Create a new `CompilerInfo` of `kind`, with `executable` as the binary.
+impl<T: CommandCreatorSync> CompilerInfo<T> {
+    /// Create a new `CompilerInfo` with `compiler` and `executable` as the binary.
     ///
     /// This will generate a hash of the contents of `executable`, so
     /// don't call it where it shouldn't block on I/O. This is called
     /// from `get_compiler_info`.
-    pub fn new(executable: &str, kind: CompilerKind) -> io::Result<CompilerInfo> {
+    pub fn new(executable: &str, compiler: Box<Compiler<T>>) -> io::Result<CompilerInfo<T>> {
         let attr = try!(fs::metadata(executable));
         let f = try!(File::open(executable));
         let mut m = sha1::Sha1::new();
@@ -370,7 +299,7 @@ impl CompilerInfo {
             executable: executable.to_owned(),
             mtime: FileTime::from_last_modification_time(&attr),
             digest: m.digest().to_string(),
-            kind: kind,
+            compiler: compiler,
         })
     }
 
@@ -385,40 +314,34 @@ impl CompilerInfo {
             let cmd_str = arguments.join(" ");
             debug!("parse_arguments: `{}`", cmd_str);
         }
-        self.kind.parse_arguments(arguments, cwd)
+        self.compiler.parse_arguments(arguments, cwd)
     }
 
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
-    pub fn get_cached_or_compile<T>(self,
-                                    creator: T,
-                                    storage: Arc<Storage>,
-                                    arguments: Vec<String>,
-                                    parsed_args: ParsedArguments,
-                                    cwd: String,
-                                    cache_control: CacheControl,
-                                    pool: CpuPool)
-                                    -> SFuture<(CompileResult, process::Output)>
-        where T: CommandCreatorSync
+    pub fn get_cached_or_compile(self,
+                                 creator: T,
+                                 storage: Arc<Storage>,
+                                 arguments: Vec<String>,
+                                 parsed_args: ParsedArguments,
+                                 cwd: String,
+                                 cache_control: CacheControl,
+                                 pool: CpuPool)
+                                 -> SFuture<(CompileResult, process::Output)>
     {
-        let CompilerInfo { executable, digest, kind, .. } = self;
+        let CompilerInfo { executable, digest, compiler, .. } = self;
         let out_file = parsed_args.output_file().into_owned();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
-        let result = kind.generate_hash_key(&creator, &executable, &digest, &parsed_args, &cwd, &pool);
+        let result = compiler.generate_hash_key(&creator, &executable, &digest, &parsed_args, &cwd, &pool);
         Box::new(result.and_then(move |hash_res| -> SFuture<_> {
-            let (key, preprocessor_output) = match hash_res {
+            let (key, compilation) = match hash_res {
                 HashResult::Error { output } => {
-                    // Drop the stdout since it's the preprocessor output, just hand back stderr and the exit status.
-                    let output = process::Output {
-                        stdout: vec!(),
-                        ..output
-                    };
                     return Box::new(future::ok((CompileResult::Error, output)));
                 }
-                HashResult::Ok { key, preprocessor_output } => (key, preprocessor_output),
+                HashResult::Ok { key, compilation } => (key, compilation),
             };
             trace!("[{}]: Hash key: {}", parsed_args.output_file(), key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -478,7 +401,7 @@ impl CompilerInfo {
                 let start = Instant::now();
                 let out_file = parsed_args.output_file().into_owned();
 
-                let compile = kind.compile(&creator, &executable, preprocessor_output, &parsed_args, &cwd, &pool);
+                let compile = compilation.compile(&creator, &executable, &parsed_args, &cwd, &pool);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
@@ -567,9 +490,16 @@ pub fn write_temp_file(pool: &CpuPool, path: &Path, contents: Vec<u8>)
     })
 }
 
-/// If `executable` is a known compiler, return `Some(CompilerKind)`.
-pub fn detect_compiler_kind<T>(creator: &T, executable: &str, pool: &CpuPool)
-                               -> SFuture<Option<CompilerKind>>
+/// Utility function for tests in other modules.
+#[cfg(test)]
+pub fn get_gcc() -> Box<Compiler<Arc<Mutex<MockCommandCreator>>>>
+{
+    Box::new(CCompiler(GCC))
+}
+
+/// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
+fn detect_compiler<T>(creator: &T, executable: &str, pool: &CpuPool)
+                      -> SFuture<Option<Box<Compiler<T>>>>
     where T: CommandCreatorSync
 {
     trace!("detect_compiler");
@@ -612,10 +542,10 @@ gcc
             //TODO: do something smarter here.
             if line == "gcc" {
                 debug!("Found GCC");
-                return future::ok(Some(CompilerKind::Gcc)).boxed()
+                return future::ok(Some(Box::new(CCompiler(GCC)) as Box<Compiler<T>>)).boxed()
             } else if line == "clang" {
                 debug!("Found clang");
-                return future::ok(Some(CompilerKind::Clang)).boxed()
+                return future::ok(Some(Box::new(CCompiler(Clang)) as Box<Compiler<T>>)).boxed()
             } else if line == "msvc" {
                 debug!("Found MSVC");
                 let prefix = msvc::detect_showincludes_prefix(&creator,
@@ -623,9 +553,9 @@ gcc
                                                               &pool);
                 return Box::new(prefix.map(|prefix| {
                     trace!("showIncludes prefix: '{}'", prefix);
-                    Some(CompilerKind::Msvc {
+                    Some(Box::new(CCompiler(MSVC {
                         includes_prefix: prefix,
-                    })
+                    })) as Box<Compiler<T>>)
                 }))
             }
         }
@@ -633,17 +563,17 @@ gcc
     }))
 }
 
-/// If `executable` is a known compiler, return `Some(CompilerInfo)` containing information about it.
+/// If `executable` is a known compiler, return a `CompilerInfo` containing information about it.
 pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
-                            -> SFuture<CompilerInfo>
+                            -> SFuture<CompilerInfo<T>>
     where T: CommandCreatorSync
 {
     let executable = executable.to_string();
     let pool = pool.clone();
-    Box::new(detect_compiler_kind(creator, &executable, &pool).and_then(move |kind| {
-        match kind {
-            Some(kind) => {
-                pool.spawn_fn(move || CompilerInfo::new(&executable, kind))
+    Box::new(detect_compiler(creator, &executable, &pool).and_then(move |compiler| {
+        match compiler {
+            Some(compiler) => {
+                pool.spawn_fn(move || CompilerInfo::new(&executable, compiler))
                     .chain_err(|| "failed to learn compiler metadata")
             }
             None => future::err("could not determine compiler kind".into()).boxed(),
@@ -724,8 +654,8 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")));
-        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
-        assert_eq!(Some(CompilerKind::Gcc), kind);
+        let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
+        assert_eq!(CompilerKind::GCC, c.kind());
     }
 
     #[test]
@@ -733,8 +663,8 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\nfoo", "")));
-        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
-        assert_eq!(Some(CompilerKind::Clang), kind);
+        let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
+        assert_eq!(CompilerKind::Clang, c.kind());
     }
 
     #[test]
@@ -755,8 +685,8 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
         // showincludes prefix detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
-        let kind = detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap();
-        assert_eq!(Some(CompilerKind::Msvc { includes_prefix: prefix }), kind);
+        let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
+        assert_eq!(CompilerKind::MSVC, c.kind());
     }
 
     #[test]
@@ -764,7 +694,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "something", "")));
-        assert_eq!(None, detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap());
+        assert!(detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().is_none());
     }
 
     #[test]
@@ -772,7 +702,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert_eq!(None, detect_compiler_kind(&creator, "/foo/bar", &pool).wait().unwrap());
+        assert!(detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().is_none());
     }
 
     #[test]
@@ -788,7 +718,7 @@ mod test {
         assert_eq!(f.bins[0].to_str().unwrap(), c.executable);
         // sha-1 digest of an empty file.
         assert_eq!("da39a3ee5e6b4b0d3255bfef95601890afd80709", c.digest);
-        assert_eq!(CompilerKind::Gcc, c.kind);
+        assert_eq!(CompilerKind::GCC, c.compiler.kind());
     }
 
     #[test]
