@@ -540,13 +540,13 @@ impl<C> SccacheService<C>
         } else {
             CacheControl::Default
         };
-        let result = compiler.get_cached_or_compile(&self.creator,
-                                                    &self.storage,
-                                                    &arguments,
-                                                    &parsed_arguments,
-                                                    &cwd,
+        let result = compiler.get_cached_or_compile(self.creator.clone(),
+                                                    self.storage.clone(),
+                                                    arguments,
+                                                    parsed_arguments,
+                                                    cwd,
                                                     cache_control,
-                                                    &self.pool);
+                                                    self.pool.clone());
         let me = self.clone();
         let task = result.then(move |result| {
             let mut res = ServerResponse::new();

@@ -391,28 +391,23 @@ impl CompilerInfo {
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     pub fn get_cached_or_compile<T>(self,
-                                    creator: &T,
-                                    storage: &Arc<Storage>,
-                                    arguments: &[String],
-                                    parsed_args: &ParsedArguments,
-                                    cwd: &str,
+                                    creator: T,
+                                    storage: Arc<Storage>,
+                                    arguments: Vec<String>,
+                                    parsed_args: ParsedArguments,
+                                    cwd: String,
                                     cache_control: CacheControl,
-                                    pool: &CpuPool)
+                                    pool: CpuPool)
                                     -> SFuture<(CompileResult, process::Output)>
         where T: CommandCreatorSync
     {
         let CompilerInfo { executable, digest, kind, .. } = self;
-        let out_file = parsed_args.output_file();
+        let out_file = parsed_args.output_file().into_owned();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
-        let result = kind.generate_hash_key(creator, &executable, &digest, parsed_args, cwd, pool);
-        let parsed_args = parsed_args.clone();
-        let cwd = cwd.to_string();
-        let pool = pool.clone();
-        let creator = creator.clone();
-        let storage = storage.clone();
+        let result = kind.generate_hash_key(&creator, &executable, &digest, &parsed_args, &cwd, &pool);
         Box::new(result.and_then(move |hash_res| -> SFuture<_> {
             let (key, preprocessor_output) = match hash_res {
                 HashResult::Error { output } => {
@@ -827,20 +822,20 @@ mod test {
                     Err(e) => Err(e),
                 }
         });
-        let cwd = f.tempdir.path().to_str().unwrap();
+        let cwd = f.tempdir.path().to_str().unwrap().to_string();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let c2 = c.clone();
-        let (cached, res) = c2.get_cached_or_compile(&creator,
-                                                     &storage,
-                                                     &arguments,
-                                                     &parsed_args,
-                                                     cwd,
+        let (cached, res) = c2.get_cached_or_compile(creator.clone(),
+                                                     storage.clone(),
+                                                     arguments.clone(),
+                                                     parsed_args.clone(),
+                                                     cwd.clone(),
                                                      CacheControl::Default,
-                                                     &pool).wait().unwrap();
+                                                     pool.clone()).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -858,13 +853,13 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
+        let (cached, res) = c.get_cached_or_compile(creator.clone(),
+                                                    storage.clone(),
+                                                    arguments,
+                                                    parsed_args,
                                                     cwd,
                                                     CacheControl::Default,
-                                                    &pool).wait().unwrap();
+                                                    pool.clone()).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
@@ -904,20 +899,20 @@ mod test {
                     Err(e) => Err(e),
                 }
         });
-        let cwd = f.tempdir.path().to_str().unwrap();
+        let cwd = f.tempdir.path().to_str().unwrap().to_string();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let c2 = c.clone();
-        let (cached, res) = c2.get_cached_or_compile(&creator,
-                                                     &storage,
-                                                     &arguments,
-                                                     &parsed_args,
-                                                     cwd,
+        let (cached, res) = c2.get_cached_or_compile(creator.clone(),
+                                                     storage.clone(),
+                                                     arguments.clone(),
+                                                     parsed_args.clone(),
+                                                     cwd.clone(),
                                                      CacheControl::Default,
-                                                     &pool).wait().unwrap();
+                                                     pool.clone()).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -936,13 +931,13 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
+        let (cached, res) = c.get_cached_or_compile(creator,
+                                                    storage,
+                                                    arguments,
+                                                    parsed_args,
                                                     cwd,
                                                     CacheControl::Default,
-                                                    &pool).wait().unwrap();
+                                                    pool).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
@@ -986,20 +981,20 @@ mod test {
                     }
             });
         }
-        let cwd = f.tempdir.path().to_str().unwrap();
+        let cwd = f.tempdir.path().to_str().unwrap().to_string();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let c2 = c.clone();
-        let (cached, res) = c2.get_cached_or_compile(&creator,
-                                                     &storage,
-                                                     &arguments,
-                                                     &parsed_args,
-                                                     cwd,
+        let (cached, res) = c2.get_cached_or_compile(creator.clone(),
+                                                     storage.clone(),
+                                                     arguments.clone(),
+                                                     parsed_args.clone(),
+                                                     cwd.clone(),
                                                      CacheControl::Default,
-                                                     &pool).wait().unwrap();
+                                                     pool.clone()).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -1014,13 +1009,13 @@ mod test {
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         // Now compile again, but force recaching.
         fs::remove_file(&obj).unwrap();
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
+        let (cached, res) = c.get_cached_or_compile(creator,
+                                                    storage,
+                                                    arguments,
+                                                    parsed_args,
                                                     cwd,
                                                     CacheControl::ForceRecache,
-                                                    &pool).wait().unwrap();
+                                                    pool).wait().unwrap();
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
@@ -1054,19 +1049,19 @@ mod test {
         // The preprocessor invocation.
         const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
         next_command(&creator, Ok(MockChild::new(exit_status(1), b"preprocessor output", PREPROCESSOR_STDERR)));
-        let cwd = f.tempdir.path().to_str().unwrap();
+        let cwd = f.tempdir.path().to_str().unwrap().to_string();
         let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let parsed_args = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(parsed) => parsed,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = c.get_cached_or_compile(&creator,
-                                                    &storage,
-                                                    &arguments,
-                                                    &parsed_args,
+        let (cached, res) = c.get_cached_or_compile(creator,
+                                                    storage,
+                                                    arguments,
+                                                    parsed_args,
                                                     cwd,
                                                     CacheControl::Default,
-                                                    &pool).wait().unwrap();
+                                                    pool).wait().unwrap();
         assert_eq!(cached, CompileResult::Error);
         assert_eq!(exit_status(1), res.status);
         // Shouldn't get anything on stdout, since that would just be preprocessor spew!
