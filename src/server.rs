@@ -278,7 +278,7 @@ struct SccacheService<C: CommandCreatorSync> {
     storage: Arc<Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<HashMap<String, Option<CompilerInfo>>>>,
+    compilers: Rc<RefCell<HashMap<String, Option<CompilerInfo<C>>>>>,
 
     /// True if all compiles should be forced, ignoring existing cache entries.
     ///
@@ -445,7 +445,7 @@ impl<C> SccacheService<C>
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
     fn compiler_info(&self, path: &str)
-                     -> SFuture<Option<CompilerInfo>> {
+                     -> SFuture<Option<CompilerInfo<C>>> {
         trace!("compiler_info_cached");
         let result = match metadata(path) {
             Ok(attr) => {
@@ -486,7 +486,7 @@ impl<C> SccacheService<C>
     /// Check that we can handle and cache `cmd` when run with `compiler`.
     /// If so, run `start_compile_task` to execute it.
     fn check_compiler(&self,
-                      compiler: Option<CompilerInfo>,
+                      compiler: Option<CompilerInfo<C>>,
                       cmd: Vec<String>,
                       cwd: String)
                       -> SccacheResponse {
@@ -530,7 +530,7 @@ impl<C> SccacheService<C>
     /// a compile result in the cache or execute the compilation and store
     /// the result in the cache.
     fn start_compile_task(&self,
-                          compiler: CompilerInfo,
+                          compiler: CompilerInfo<C>,
                           parsed_arguments: ParsedArguments,
                           arguments: Vec<String>,
                           cwd: String,

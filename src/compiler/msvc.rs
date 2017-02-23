@@ -15,10 +15,12 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
+    CompilerKind,
     ParsedArguments,
     run_input_output,
     write_temp_file,
 };
+use compiler::c::CCompilerImpl;
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::{self, Future};
@@ -38,6 +40,49 @@ use std::path::Path;
 use std::process::{self,Stdio};
 
 use errors::*;
+
+/// A struct on which to implement `CCompilerImpl`.
+///
+/// Needs a little bit of state just to persist `includes_prefix`.
+#[derive(Debug, PartialEq, Clone)]
+pub struct MSVC {
+    /// The prefix used in the output of `-showIncludes`.
+    pub includes_prefix: String,
+}
+
+impl CCompilerImpl for MSVC {
+    fn kind(&self) -> CompilerKind { CompilerKind::MSVC }
+    fn parse_arguments(&self,
+                       arguments: &[String],
+                       _cwd: &Path) -> CompilerArguments
+    {
+        parse_arguments(arguments)
+    }
+
+    fn preprocess<T>(&self,
+                     creator: &T,
+                     executable: &str,
+                     parsed_args: &ParsedArguments,
+                     cwd: &str,
+                     pool: &CpuPool)
+                     -> SFuture<process::Output> where T: CommandCreatorSync
+    {
+        preprocess(creator, executable, parsed_args, cwd, &self.includes_prefix, pool)
+    }
+
+    fn compile<T>(&self,
+                  creator: &T,
+                  executable: &str,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> SFuture<(Cacheable, process::Output)>
+        where T: CommandCreatorSync
+    {
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+    }
+}
 
 fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
@@ -248,7 +293,7 @@ fn normpath(path: &str) -> String {
 }
 
 pub fn preprocess<T>(creator: &T,
-                     compiler: &str,
+                     executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
                      includes_prefix: &str,
@@ -256,7 +301,7 @@ pub fn preprocess<T>(creator: &T,
                      -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .arg("-nologo")
@@ -313,13 +358,13 @@ pub fn preprocess<T>(creator: &T,
     }))
 }
 
-pub fn compile<T>(creator: &T,
-                  compiler: &str,
-                  preprocessor_output: Vec<u8>,
-                  parsed_args: &ParsedArguments,
-                  cwd: &str,
-                  pool: &CpuPool)
-                  -> SFuture<(Cacheable, process::Output)>
+fn compile<T>(creator: &T,
+              executable: &str,
+              preprocessor_output: Vec<u8>,
+              parsed_args: &ParsedArguments,
+              cwd: &str,
+              pool: &CpuPool)
+              -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
     trace!("compile");
@@ -352,7 +397,7 @@ pub fn compile<T>(creator: &T,
         write_temp_file(pool, filename.as_ref(), preprocessor_output)
     };
 
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-c")
         .arg(&format!("-Fo{}", out_file))
         .args(&parsed_args.common_args)
@@ -371,7 +416,7 @@ pub fn compile<T>(creator: &T,
     //
     // We may just throw away this `cmd` if our execution turns out to be
     // successful.
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg(&format!("-Fo{}", out_file))

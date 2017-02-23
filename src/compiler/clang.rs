@@ -18,10 +18,12 @@ use ::compiler::{
     gcc,
     Cacheable,
     CompilerArguments,
+    CompilerKind,
     ParsedArguments,
     run_input_output,
     write_temp_file,
 };
+use compiler::c::CCompilerImpl;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -39,6 +41,44 @@ use std::process;
 
 use errors::*;
 
+/// A unit struct on which to implement `CCompilerImpl`.
+#[derive(Clone)]
+pub struct Clang;
+
+impl CCompilerImpl for Clang {
+    fn kind(&self) -> CompilerKind { CompilerKind::Clang }
+    fn parse_arguments(&self,
+                       arguments: &[String],
+                       cwd: &Path) -> CompilerArguments
+    {
+        gcc::parse_arguments(arguments, cwd, argument_takes_value)
+    }
+
+    fn preprocess<T>(&self,
+                     creator: &T,
+                     executable: &str,
+                     parsed_args: &ParsedArguments,
+                     cwd: &str,
+                     pool: &CpuPool)
+                     -> SFuture<process::Output> where T: CommandCreatorSync
+    {
+        gcc::preprocess(creator, executable, parsed_args, cwd, pool)
+    }
+
+    fn compile<T>(&self,
+                  creator: &T,
+                  executable: &str,
+                  preprocessor_output: Vec<u8>,
+                  parsed_args: &ParsedArguments,
+                  cwd: &str,
+                  pool: &CpuPool)
+                  -> SFuture<(Cacheable, process::Output)>
+        where T: CommandCreatorSync
+    {
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+    }
+}
+
 /// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
 const ARGS_WITH_VALUE: &'static [&'static str] = &["-arch"];
 
@@ -47,13 +87,13 @@ pub fn argument_takes_value(arg: &str) -> bool {
     gcc::ARGS_WITH_VALUE.contains(&arg) || ARGS_WITH_VALUE.contains(&arg)
 }
 
-pub fn compile<T>(creator: &T,
-                  compiler: &str,
-                  preprocessor_output: Vec<u8>,
-                  parsed_args: &ParsedArguments,
-                  cwd: &str,
-                  pool: &CpuPool)
-                  -> SFuture<(Cacheable, process::Output)>
+fn compile<T>(creator: &T,
+              executable: &str,
+              preprocessor_output: Vec<u8>,
+              parsed_args: &ParsedArguments,
+              cwd: &str,
+              pool: &CpuPool)
+              -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync,
 {
     trace!("compile");
@@ -74,7 +114,7 @@ pub fn compile<T>(creator: &T,
         }
     };
 
-    let mut attempt = creator.clone().new_command_sync(compiler);
+    let mut attempt = creator.clone().new_command_sync(executable);
     attempt.arg("-c")
         .arg("-o")
         .arg(&out_file)
@@ -97,7 +137,7 @@ pub fn compile<T>(creator: &T,
         return Box::new(output.map(|output| (Cacheable::Yes, output)))
     }
 
-    let mut cmd = creator.clone().new_command_sync(compiler);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg("-o")
