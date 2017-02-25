@@ -583,7 +583,7 @@ impl<C> SccacheService<C>
                     finish.set_stderr(stderr);
                 }
                 Err(_) => {
-                    me.stats.borrow_mut().cache_errors += 1;
+                    stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?
                     finish.set_retcode(-2);
                 }
