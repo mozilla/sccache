@@ -18,6 +18,7 @@ mod c;
 mod clang;
 #[macro_use]
 mod compiler;
+mod diab;
 mod gcc;
 mod msvc;
 mod rust;
