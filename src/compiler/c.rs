@@ -142,6 +142,8 @@ pub enum CCompilerKind {
     GCC,
     /// clang
     Clang,
+    /// Diab
+    Diab,
     /// Microsoft Visual C++
     MSVC,
 }

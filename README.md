@@ -112,7 +112,7 @@ or use it with rust, like so:
 
 > $ RUSTC_WRAPPER=[path to sccache] cargo build
 
-Sccache (tries to) support gcc, clang and MSVC. If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
+Sccache (tries to) support gcc, clang, [diab](https://www.windriver.com/products/development-tools/#diab_compiler) and MSVC. If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
 You can run `sccache --start-server` to start the background server process without performing any compilation.
 

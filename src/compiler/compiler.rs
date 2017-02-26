@@ -15,6 +15,7 @@
 use cache::{Cache, CacheWrite, Storage};
 use compiler::c::{CCompiler, CCompilerKind};
 use compiler::clang::Clang;
+use compiler::diab::Diab;
 use compiler::gcc::GCC;
 use compiler::msvc;
 use compiler::msvc::MSVC;
@@ -883,6 +884,8 @@ msvc
 clang
 #elif defined(__GNUC__)
 gcc
+#elif defined(__DCC__)
+diab
 #endif
 ".to_vec();
     let write = write_temp_file(&pool, "testfile.c".as_ref(), test);
@@ -912,41 +915,44 @@ gcc
         };
         for line in stdout.lines() {
             //TODO: do something smarter here.
-            if line == "gcc" {
-                debug!("Found GCC");
-                return Box::new(
-                    CCompiler::new(GCC, executable, &pool)
-                        .map(|c| Some(Box::new(c) as Box<Compiler<T>>)),
-                );
-            } else if line == "clang" {
-                debug!("Found clang");
-                return Box::new(
-                    CCompiler::new(Clang, executable, &pool)
-                        .map(|c| Some(Box::new(c) as Box<Compiler<T>>)),
-                );
-            } else if line == "msvc" || line == "msvc-clang" {
-                let is_clang = line == "msvc-clang";
-                debug!("Found MSVC (is clang: {})", is_clang);
-                let prefix = msvc::detect_showincludes_prefix(
-                    &creator,
-                    executable.as_ref(),
-                    is_clang,
-                    env,
-                    &pool,
-                );
-                return Box::new(prefix.and_then(move |prefix| {
-                    trace!("showIncludes prefix: '{}'", prefix);
-                    CCompiler::new(
-                        MSVC {
+            match line {
+                "clang" => {
+                    debug!("Found clang");
+                    return Box::new(CCompiler::new(Clang, executable, &pool)
+                                    .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+                }
+                "diab" => {
+                    debug!("Found diab");
+                    return Box::new(CCompiler::new(Diab, executable, &pool)
+                                    .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+
+                }
+                "gcc" => {
+                    debug!("Found GCC");
+                    return Box::new(CCompiler::new(GCC, executable, &pool)
+                                .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+                }
+                "msvc" | "msvc-clang" => {
+                    let is_clang = line == "msvc-clang";
+                    debug!("Found MSVC (is clang: {})", is_clang);
+                    let prefix = msvc::detect_showincludes_prefix(&creator,
+                                                                executable.as_ref(),
+                                                                is_clang,
+                                                                env,
+                                                                &pool);
+                    return Box::new(prefix.and_then(move |prefix| {
+                        trace!("showIncludes prefix: '{}'", prefix);
+                        CCompiler::new(MSVC {
                             includes_prefix: prefix,
                             is_clang,
-                        },
-                        executable,
-                        &pool,
-                    ).map(|c| Some(Box::new(c) as Box<Compiler<T>>))
-                }));
+                        }, executable, &pool)
+                            .map(|c| Some(Box::new(c) as Box<Compiler<T>>))
+                    }))
+                }
+                _ => (),
             }
         }
+
         debug!("nothing useful in detection output {:?}", stdout);
         debug!("compiler status: {}", output.status);
         debug!(
@@ -1090,6 +1096,16 @@ LLVM version: 6.0",
             .unwrap()
             .unwrap();
         assert_eq!(CompilerKind::Rust, c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_diab() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")));
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap().unwrap();
+        assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
     }
 
     #[test]
