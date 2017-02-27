@@ -200,7 +200,7 @@ fn test_server_compile() {
         // Compiler invocation.
         //TODO: wire up a way to get data written to stdin.
         let obj = f.tempdir.path().join("file.o");
-        c.next_command_calls(move || {
+        c.next_command_calls(move |_| {
             // Pretend to compile something.
             match File::create(&obj)
                 .and_then(|mut f| f.write_all(b"file contents")) {

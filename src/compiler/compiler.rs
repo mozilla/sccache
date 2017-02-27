@@ -17,10 +17,11 @@ use cache::{
     Storage,
 };
 use compiler::msvc;
-use compiler::c::CCompiler;
+use compiler::c::{CCompiler, CCompilerKind};
 use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
+use compiler::rust::Rust;
 use filetime::FileTime;
 use futures::future;
 use futures::{Future, IntoFuture};
@@ -32,42 +33,33 @@ use mock_command::{
     RunCommand,
     exit_status,
 };
-#[cfg(test)]
-use mock_command::MockCommandCreator;
-use sha1;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self,File};
 use std::io::prelude::*;
-use std::io::{
-    self,
-    BufReader,
-};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
 use std::str;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 use std::time::{
     Duration,
     Instant,
 };
 use tempdir::TempDir;
+use util::sha1_digest;
 
 use errors::*;
 
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompilerKind {
-    /// GCC
-    GCC,
-    /// clang
-    Clang,
-    /// Microsoft Visual C++
-    MSVC,
+    /// A C compiler.
+    C(CCompilerKind),
+    /// A Rust compiler.
+    Rust,
 }
 
 /// An interface to a compiler for argument parsing.
@@ -95,7 +87,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// Given information about a compiler command, generate a hash key
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
-    fn generate_hash_key(&self,
+    fn generate_hash_key(self: Box<Self>,
                          creator: &T,
                          executable: &str,
                          executable_digest: &str,
@@ -104,7 +96,6 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                          -> SFuture<HashResult<T>>;
     /// Get the output file of the compilation.
     fn output_file(&self) -> Cow<str>;
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a &'static str, &'a String)> + 'a>;
     fn box_clone(&self) -> Box<CompilerHasher<T>>;
 }
 
@@ -123,6 +114,7 @@ pub trait Compilation<T>
                cwd: &str,
                pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>;
+    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a String)> + 'a>;
 }
 
 /// Result of generating a hash from a compiler command.
@@ -272,28 +264,14 @@ pub enum CacheControl {
 }
 
 impl<T: CommandCreatorSync> CompilerInfo<T> {
-    /// Create a new `CompilerInfo` with `compiler` and `executable` as the binary.
-    ///
-    /// This will generate a hash of the contents of `executable`, so
-    /// don't call it where it shouldn't block on I/O. This is called
-    /// from `get_compiler_info`.
-    pub fn new(executable: &str, compiler: Box<Compiler<T>>) -> io::Result<CompilerInfo<T>> {
-        let attr = try!(fs::metadata(executable));
-        let f = try!(File::open(executable));
-        let mut m = sha1::Sha1::new();
-        let mut reader = BufReader::new(f);
-        loop {
-            let mut buffer = [0; 1024];
-            let count = try!(reader.read(&mut buffer[..]));
-            if count == 0 {
-                break;
-            }
-            m.update(&buffer[..count]);
-        }
+    /// Create a new `CompilerInfo` with `compiler`, `executable` as the binary,
+    /// and `digest` being the SHA-1 digest of `executable` as a hex string.
+    pub fn new(executable: String, digest: String, compiler: Box<Compiler<T>>) -> Result<CompilerInfo<T>> {
+        let attr = fs::metadata(&executable)?;
         Ok(CompilerInfo {
-            executable: executable.to_owned(),
+            executable: executable,
             mtime: FileTime::from_last_modification_time(&attr),
-            digest: m.digest().to_string(),
+            digest: digest,
             compiler: compiler,
         })
     }
@@ -338,7 +316,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                 }
                 HashResult::Ok { key, compilation } => (key, compilation),
             };
-            trace!("[{}]: Hash key: {}", hasher.output_file(), key);
+            trace!("[{}]: Hash key: {}", out_file, key);
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
             let cache_status = if cache_control == CacheControl::ForceRecache {
@@ -351,13 +329,13 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
             Box::new(cache_status.and_then(move |result| {
                 let duration = start.elapsed();
                 let pwd = Path::new(&cwd);
-                let outputs = hasher.outputs()
+                let outputs = compilation.outputs()
                     .map(|(key, path)| (key.to_string(), pwd.join(path)))
                     .collect::<HashMap<_, _>>();
 
                 let miss_type = match result {
                     Cache::Hit(mut entry) => {
-                        debug!("[{}]: Cache hit!", hasher.output_file());
+                        debug!("[{}]: Cache hit!", out_file);
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
                         drop(entry.get_object("stdout", &mut stdout));
@@ -383,34 +361,34 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                         })) as SFuture<_>
                     }
                     Cache::Miss => {
-                        debug!("[{}]: Cache miss!", hasher.output_file());
+                        debug!("[{}]: Cache miss!", out_file);
                         MissType::Normal
                     }
                     Cache::Recache => {
-                        debug!("[{}]: Cache recache!", hasher.output_file());
+                        debug!("[{}]: Cache recache!", out_file);
                         MissType::ForcedRecache
                     }
                 };
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let out_file = hasher.output_file().into_owned();
+                let out_file = out_file.clone();
                 let compile = compilation.compile(&creator, &executable, &cwd, &pool);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
-                               hasher.output_file());
+                               out_file);
                         return Box::new(future::ok((CompileResult::CompileFailed, compiler_result)))
                             as SFuture<_>
                     }
                     if cacheable != Cacheable::Yes {
                         // Not cacheable
                         debug!("[{}]: Compiled but not cacheable",
-                               hasher.output_file());
+                               out_file);
                         return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
                     }
-                    debug!("[{}]: Compiled, storing in cache", hasher.output_file());
+                    debug!("[{}]: Compiled, storing in cache", out_file);
                     let mut entry = match storage.start_put(&key) {
                         Ok(entry) => entry,
                         Err(e) => return Box::new(future::err(e))
@@ -426,6 +404,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                         Ok(entry)
                     });
                     let write = write.chain_err(|| "failed to zip up compiler outputs");
+                    let o = out_file.clone();
                     Box::new(write.and_then(move |mut entry| {
                         if !compiler_result.stdout.is_empty() {
                             let mut stdout = &compiler_result.stdout[..];
@@ -438,7 +417,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
 
                         // Try to finish storing the newly-written cache
                         // entry. We'll get the result back elsewhere.
-                        let out_file = hasher.output_file().into_owned();
+                        let out_file = out_file.clone();
                         let future = storage.finish_put(&key, entry)
                             .then(move |res| {
                                 match res {
@@ -453,7 +432,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                         let future = Box::new(future);
                         Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
                     }).chain_err(move || {
-                        format!("failed to store `{}` to cache", out_file)
+                        format!("failed to store `{}` to cache", o)
                     }))
                 }))
             }))
@@ -484,19 +463,65 @@ pub fn write_temp_file(pool: &CpuPool, path: &Path, contents: Vec<u8>)
     })
 }
 
-/// Utility function for tests in other modules.
-#[cfg(test)]
-pub fn get_gcc() -> Box<Compiler<Arc<Mutex<MockCommandCreator>>>>
-{
-    Box::new(CCompiler(GCC))
-}
-
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
 fn detect_compiler<T>(creator: &T, executable: &str, pool: &CpuPool)
                       -> SFuture<Option<Box<Compiler<T>>>>
     where T: CommandCreatorSync
 {
     trace!("detect_compiler");
+
+    // First, see if this looks like rustc.
+    let p = Path::new(executable);
+    let filename = match p.file_stem() {
+        None => return future::err("could not determine compiler kind".into()).boxed(),
+        Some(f) => f,
+    };
+    let is_rustc = if filename.to_string_lossy().to_lowercase() == "rustc" {
+        // Sanity check that it's really rustc.
+        let child = creator.clone().new_command_sync(&executable)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .args(&["--version"])
+            .spawn().chain_err(|| {
+                format!("failed to execute {:?}", executable)
+            });
+        let output = child.into_future().and_then(move |child| {
+            child.wait_with_output()
+                .chain_err(|| "failed to read child output")
+        });
+        Box::new(output.map(|output| {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    if stdout.starts_with("rustc ") {
+                        return true;
+                    }
+                }
+            }
+            false
+        }))
+    } else {
+        Box::new(future::ok(false)) as SFuture<_>
+    };
+
+    let creator = creator.clone();
+    let executable = executable.to_owned();
+    let pool = pool.clone();
+    Box::new(is_rustc.and_then(move |is_rustc| {
+        if is_rustc {
+            debug!("Found rustc");
+            Box::new(future::ok(Some(Box::new(Rust) as Box<Compiler<T>>)))
+        } else {
+            detect_c_compiler(creator, executable, pool)
+        }
+    }))
+}
+
+fn detect_c_compiler<T>(creator: T, executable: String, pool: CpuPool)
+                        -> SFuture<Option<Box<Compiler<T>>>>
+    where T: CommandCreatorSync
+{
+    trace!("detect_c_compiler");
+
     let test = b"#if defined(_MSC_VER)
 msvc
 #elif defined(__clang__)
@@ -505,7 +530,7 @@ clang
 gcc
 #endif
 ".to_vec();
-    let write = write_temp_file(pool, "testfile.c".as_ref(), test);
+    let write = write_temp_file(&pool, "testfile.c".as_ref(), test);
 
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
@@ -524,9 +549,6 @@ gcc
         })
     });
 
-    let creator = creator.clone();
-    let pool = pool.clone();
-    let executable = executable.to_string();
     Box::new(output.and_then(move |output| -> SFuture<_> {
         let stdout = match str::from_utf8(&output.stdout) {
             Ok(s) => s,
@@ -564,13 +586,16 @@ pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
 {
     let executable = executable.to_string();
     let pool = pool.clone();
-    Box::new(detect_compiler(creator, &executable, &pool).and_then(move |compiler| {
+    let detect = detect_compiler(creator, &executable, &pool);
+    Box::new(detect.and_then(move |compiler| {
         match compiler {
             Some(compiler) => {
-                pool.spawn_fn(move || CompilerInfo::new(&executable, compiler))
-                    .chain_err(|| "failed to learn compiler metadata")
+                Box::new(sha1_digest(executable.clone(), &pool)
+                         .and_then(move |digest| -> Result<_> {
+                             CompilerInfo::new(executable, digest, compiler)
+                         })) as SFuture<_>
             }
-            None => future::err("could not determine compiler kind".into()).boxed(),
+            None => Box::new(future::err("could not determine compiler kind".into())) as SFuture<_>,
         }
     }))
 }
@@ -649,7 +674,7 @@ mod test {
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")));
         let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
-        assert_eq!(CompilerKind::GCC, c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
 
     #[test]
@@ -658,7 +683,7 @@ mod test {
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\nfoo", "")));
         let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
-        assert_eq!(CompilerKind::Clang, c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
     }
 
     #[test]
@@ -680,7 +705,16 @@ mod test {
         // showincludes prefix detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
         let c = detect_compiler(&creator, "/foo/bar", &pool).wait().unwrap().unwrap();
-        assert_eq!(CompilerKind::MSVC, c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_rustc() {
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "rustc 1.15 (blah 2017-01-01)", "")));
+        let c = detect_compiler(&creator, "/foo/rustc.exe", &pool).wait().unwrap().unwrap();
+        assert_eq!(CompilerKind::Rust, c.kind());
     }
 
     #[test]
@@ -712,7 +746,7 @@ mod test {
         assert_eq!(f.bins[0].to_str().unwrap(), c.executable);
         // sha-1 digest of an empty file.
         assert_eq!("da39a3ee5e6b4b0d3255bfef95601890afd80709", c.digest);
-        assert_eq!(CompilerKind::GCC, c.compiler.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.compiler.kind());
     }
 
     #[test]
@@ -738,7 +772,7 @@ mod test {
         const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
-        next_command_calls(&creator, move || {
+        next_command_calls(&creator, move |_| {
             // Pretend to compile something.
             match File::create(&o)
                 .and_then(|mut f| f.write_all(b"file contents")) {
@@ -815,7 +849,7 @@ mod test {
         const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
-        next_command_calls(&creator, move || {
+        next_command_calls(&creator, move |_| {
             // Pretend to compile something.
             match File::create(&o)
                 .and_then(|mut f| f.write_all(b"file contents")) {
@@ -896,7 +930,7 @@ mod test {
             next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
             // The compiler invocation.
             let o = obj.clone();
-            next_command_calls(&creator, move || {
+            next_command_calls(&creator, move |_| {
                 // Pretend to compile something.
                 match File::create(&o)
                     .and_then(|mut f| f.write_all(b"file contents")) {

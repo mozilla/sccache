@@ -18,11 +18,10 @@ use ::compiler::{
     gcc,
     Cacheable,
     CompilerArguments,
-    CompilerKind,
     run_input_output,
     write_temp_file,
 };
-use compiler::c::{CCompilerImpl, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -45,7 +44,7 @@ use errors::*;
 pub struct Clang;
 
 impl CCompilerImpl for Clang {
-    fn kind(&self) -> CompilerKind { CompilerKind::Clang }
+    fn kind(&self) -> CCompilerKind { CCompilerKind::Clang }
     fn parse_arguments(&self,
                        arguments: &[String],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>

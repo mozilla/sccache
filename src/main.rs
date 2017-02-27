@@ -71,6 +71,7 @@ mod mock_command;
 mod protocol;
 mod server;
 mod simples3;
+mod util;
 
 use std::env;
 use std::io::Write;

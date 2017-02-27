@@ -15,10 +15,9 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
-    CompilerKind,
     run_input_output,
 };
-use compiler::c::{CCompilerImpl, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use log::LogLevel::Trace;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
@@ -39,7 +38,7 @@ use errors::*;
 pub struct GCC;
 
 impl CCompilerImpl for GCC {
-    fn kind(&self) -> CompilerKind { CompilerKind::GCC }
+    fn kind(&self) -> CCompilerKind { CCompilerKind::GCC }
     fn parse_arguments(&self,
                        arguments: &[String],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>

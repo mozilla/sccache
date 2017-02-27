@@ -71,7 +71,7 @@ pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
     creator.lock().unwrap().next_command_spawns(child);
 }
 
-pub fn next_command_calls<C: Fn() -> io::Result<MockChild> + Send + 'static>(creator : &Arc<Mutex<MockCommandCreator>>, call: C) {
+pub fn next_command_calls<C: Fn(&[OsString]) -> io::Result<MockChild> + Send + 'static>(creator: &Arc<Mutex<MockCommandCreator>>, call: C) {
     creator.lock().unwrap().next_command_calls(call);
 }
 

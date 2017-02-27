@@ -17,5 +17,6 @@ mod clang;
 mod compiler;
 mod gcc;
 mod msvc;
+mod rust;
 
 pub use compiler::compiler::*;
