@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::hash_key;
 use compiler::{Cacheable, Compiler, CompilerArguments, CompilerKind, Compilation, HashResult, ParsedArguments};
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
+use sha1;
+use std::env;
 use std::path::Path;
 use std::process;
 
@@ -141,5 +142,104 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         let me = *self;
         let CCompilation { preprocessor_output, compiler } = me;
         compiler.compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+    }
+}
+
+/// The cache is versioned by the inputs to `hash_key`.
+pub const CACHE_VERSION : &'static [u8] = b"3";
+
+/// Environment variables that are factored into the cache key.
+pub const CACHED_ENV_VARS : &'static [&'static str] = &[
+    "MACOSX_DEPLOYMENT_TARGET",
+    "IPHONEOS_DEPLOYMENT_TARGET",
+];
+
+/// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
+pub fn hash_key(compiler_digest: &str, arguments: &str, preprocessor_output: &[u8]) -> String {
+    // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
+    let mut m = sha1::Sha1::new();
+    m.update(compiler_digest.as_bytes());
+    m.update(CACHE_VERSION);
+    m.update(arguments.as_bytes());
+    //TODO: should propogate these over from the client.
+    // https://github.com/glandium/sccache/issues/5
+    for var in CACHED_ENV_VARS.iter() {
+        if let Ok(val) = env::var(var) {
+            m.update(var.as_bytes());
+            m.update(&b"="[..]);
+            m.update(val.as_bytes());
+        }
+    }
+    m.update(preprocessor_output);
+    m.digest().to_string()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use compiler::{CompilerInfo, get_gcc};
+    use std::env;
+    use std::io::Write;
+    use test::utils::*;
+
+    #[test]
+    fn test_hash_key_executable_contents_differs() {
+        let f = TestFixture::new();
+        // Try to avoid testing exact hashes.
+        let c1 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
+        // Overwrite the contents of the binary.
+        mk_bin_contents(f.tempdir.path(), "a/bin", |mut f| f.write_all(b"hello")).unwrap();
+        let c2 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
+        let args = "a b c";
+        const PREPROCESSED : &'static [u8] = b"hello world";
+        assert_neq!(hash_key(&c1.digest, &args, &PREPROCESSED),
+                    hash_key(&c2.digest, &args, &PREPROCESSED));
+    }
+
+    #[test]
+    fn test_hash_key_args_differs() {
+        let f = TestFixture::new();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
+        const PREPROCESSED : &'static [u8] = b"hello world";
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "x y z", &PREPROCESSED));
+
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "a b", &PREPROCESSED));
+
+        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
+                    hash_key(&c.digest, "a", &PREPROCESSED));
+    }
+
+    #[test]
+    fn test_hash_key_preprocessed_content_differs() {
+        let f = TestFixture::new();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
+        let args = "a b c";
+        assert_neq!(hash_key(&c.digest, &args, &b"hello world"[..]),
+                    hash_key(&c.digest, &args, &b"goodbye"[..]));
+    }
+
+    #[test]
+    fn test_hash_key_env_var_differs() {
+        let f = TestFixture::new();
+        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
+        let args = "a b c";
+        const PREPROCESSED : &'static [u8] = b"hello world";
+        for var in CACHED_ENV_VARS.iter() {
+            let old = env::var_os(var);
+            env::remove_var(var);
+            let h1 = hash_key(&c.digest, &args, &PREPROCESSED);
+            env::set_var(var, "something");
+            let h2 = hash_key(&c.digest, &args, &PREPROCESSED);
+            env::set_var(var, "something else");
+            let h3 = hash_key(&c.digest, &args, &PREPROCESSED);
+            match old {
+                Some(val) => env::set_var(var, val),
+                None => env::remove_var(var),
+            }
+            assert_neq!(h1, h2);
+            assert_neq!(h2, h3);
+        }
     }
 }
