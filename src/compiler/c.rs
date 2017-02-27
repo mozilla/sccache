@@ -69,10 +69,21 @@ struct CCompilation<I: CCompilerImpl> {
     compiler: I,
 }
 
+/// Supported C compilers.
+#[derive(Debug, PartialEq, Clone)]
+pub enum CCompilerKind {
+    /// GCC
+    GCC,
+    /// clang
+    Clang,
+    /// Microsoft Visual C++
+    MSVC,
+}
+
 /// An interface to a specific C compiler.
 pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     /// Return the kind of compiler.
-    fn kind(&self) -> CompilerKind;
+    fn kind(&self) -> CCompilerKind;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(&self,
                        arguments: &[String],
@@ -99,7 +110,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
-    fn kind(&self) -> CompilerKind { self.0.kind() }
+    fn kind(&self) -> CompilerKind { CompilerKind::C(self.0.kind()) }
     fn parse_arguments(&self,
                        arguments: &[String],
                        cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>> {
@@ -124,7 +135,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
     where T: CommandCreatorSync,
           I: CCompilerImpl,
 {
-    fn generate_hash_key(&self,
+    fn generate_hash_key(self: Box<Self>,
                          creator: &T,
                          executable: &str,
                          executable_digest: &str,
@@ -184,11 +195,6 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
         self.parsed_args.output_file()
     }
 
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a &'static str, &'a String)> + 'a>
-    {
-        Box::new(self.parsed_args.outputs.iter())
-    }
-
     fn box_clone(&self) -> Box<CompilerHasher<T>>
     {
         Box::new((*self).clone())
@@ -206,6 +212,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         let me = *self;
         let CCompilation { parsed_args, preprocessor_output, compiler } = me;
         compiler.compile(creator, executable, preprocessor_output, &parsed_args, cwd, pool)
+    }
+
+    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a String)> + 'a>
+    {
+        Box::new(self.parsed_args.outputs.iter().map(|(k, v)| (*k, v)))
     }
 }
 
@@ -241,63 +252,50 @@ pub fn hash_key(compiler_digest: &str, arguments: &str, preprocessor_output: &[u
 #[cfg(test)]
 mod test {
     use super::*;
-    use compiler::{CompilerInfo, get_gcc};
     use std::env;
-    use std::io::Write;
-    use test::utils::*;
 
     #[test]
     fn test_hash_key_executable_contents_differs() {
-        let f = TestFixture::new();
-        // Try to avoid testing exact hashes.
-        let c1 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
-        // Overwrite the contents of the binary.
-        mk_bin_contents(f.tempdir.path(), "a/bin", |mut f| f.write_all(b"hello")).unwrap();
-        let c2 = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c1.digest, &args, &PREPROCESSED),
-                    hash_key(&c2.digest, &args, &PREPROCESSED));
+        assert_neq!(hash_key("abcd", &args, &PREPROCESSED),
+                    hash_key("wxyz", &args, &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_args_differs() {
-        let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
-        const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
-                    hash_key(&c.digest, "x y z", &PREPROCESSED));
+        let digest = "abcd";
+        const PREPROCESSED: &'static [u8] = b"hello world";
+        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
+                    hash_key(digest, "x y z", &PREPROCESSED));
 
-        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
-                    hash_key(&c.digest, "a b", &PREPROCESSED));
+        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
+                    hash_key(digest, "a b", &PREPROCESSED));
 
-        assert_neq!(hash_key(&c.digest, "a b c", &PREPROCESSED),
-                    hash_key(&c.digest, "a", &PREPROCESSED));
+        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
+                    hash_key(digest, "a", &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
-        let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
-        assert_neq!(hash_key(&c.digest, &args, &b"hello world"[..]),
-                    hash_key(&c.digest, &args, &b"goodbye"[..]));
+        assert_neq!(hash_key("abcd", &args, &b"hello world"[..]),
+                    hash_key("abcd", &args, &b"goodbye"[..]));
     }
 
     #[test]
     fn test_hash_key_env_var_differs() {
-        let f = TestFixture::new();
-        let c = CompilerInfo::new(f.bins[0].to_str().unwrap(), get_gcc()).unwrap();
         let args = "a b c";
-        const PREPROCESSED : &'static [u8] = b"hello world";
+        let digest = "abcd";
+        const PREPROCESSED: &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
             let old = env::var_os(var);
             env::remove_var(var);
-            let h1 = hash_key(&c.digest, &args, &PREPROCESSED);
+            let h1 = hash_key(digest, &args, &PREPROCESSED);
             env::set_var(var, "something");
-            let h2 = hash_key(&c.digest, &args, &PREPROCESSED);
+            let h2 = hash_key(digest, &args, &PREPROCESSED);
             env::set_var(var, "something else");
-            let h3 = hash_key(&c.digest, &args, &PREPROCESSED);
+            let h3 = hash_key(digest, &args, &PREPROCESSED);
             match old {
                 Some(val) => env::set_var(var, val),
                 None => env::remove_var(var),

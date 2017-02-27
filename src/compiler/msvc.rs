@@ -15,11 +15,10 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
-    CompilerKind,
     run_input_output,
     write_temp_file,
 };
-use compiler::c::{CCompilerImpl, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::{self, Future};
@@ -50,7 +49,7 @@ pub struct MSVC {
 }
 
 impl CCompilerImpl for MSVC {
-    fn kind(&self) -> CompilerKind { CompilerKind::MSVC }
+    fn kind(&self) -> CCompilerKind { CCompilerKind::MSVC }
     fn parse_arguments(&self,
                        arguments: &[String],
                        _cwd: &Path) -> CompilerArguments<ParsedArguments>

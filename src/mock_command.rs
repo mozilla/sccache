@@ -49,7 +49,7 @@
 use libc;
 use futures::future::{self, Future};
 use std::boxed::Box;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{
     self,
@@ -349,7 +349,7 @@ impl CommandChild for MockChild {
 
 pub enum ChildOrCall {
     Child(io::Result<MockChild>),
-    Call(Box<Fn() -> io::Result<MockChild> + Send>),
+    Call(Box<Fn(&[OsString]) -> io::Result<MockChild> + Send>),
 }
 
 impl fmt::Debug for ChildOrCall {
@@ -365,18 +365,19 @@ impl fmt::Debug for ChildOrCall {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct MockCommand {
-    pub child : Option<ChildOrCall>,
+    pub child: Option<ChildOrCall>,
+    pub args: Vec<OsString>,
 }
 
 impl RunCommand for MockCommand {
     type C = MockChild;
 
-    fn arg<S: AsRef<OsStr>>(&mut self, _arg: S) -> &mut MockCommand {
-        //TODO: assert value of args
+    fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut MockCommand {
+        self.args.push(arg.as_ref().to_owned());
         self
     }
-    fn args<S: AsRef<OsStr>>(&mut self, _args: &[S]) -> &mut MockCommand {
-        //TODO: assert value of args
+    fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut MockCommand {
+        self.args.extend(args.iter().map(|a| a.as_ref().to_owned()));
         self
     }
     fn current_dir<P: AsRef<Path>>(&mut self, _dir: P) -> &mut MockCommand {
@@ -398,7 +399,7 @@ impl RunCommand for MockCommand {
     fn spawn(&mut self) -> io::Result<MockChild> {
         match self.child.take().unwrap() {
             ChildOrCall::Child(c) => c,
-            ChildOrCall::Call(f) => f(),
+            ChildOrCall::Call(f) => f(&self.args),
         }
     }
 }
@@ -417,8 +418,12 @@ impl MockCommandCreator {
         self.children.push(ChildOrCall::Child(child));
     }
 
+    /// The next `MockCommand` created will call `call` with the command-line
+    /// arguments passed to the command.
     #[allow(dead_code)]
-    pub fn next_command_calls<C: Fn() -> io::Result<MockChild> + Send + 'static>(&mut self, call: C) {
+    pub fn next_command_calls<C>(&mut self, call: C)
+        where C: Fn(&[OsString]) -> io::Result<MockChild> + Send + 'static,
+    {
         self.children.push(ChildOrCall::Call(Box::new(call)));
     }
 }
@@ -437,6 +442,7 @@ impl CommandCreator for MockCommandCreator {
         //TODO: assert value of program
         MockCommand {
             child: Some(self.children.remove(0)),
+            args: vec![],
         }
     }
 }
@@ -527,7 +533,7 @@ mod test {
     fn test_mock_command_calls() {
         let core = Core::new().unwrap();
         let mut creator = MockCommandCreator::new(&core.handle());
-        creator.next_command_calls(|| {
+        creator.next_command_calls(|_| {
             Ok(MockChild::new(exit_status(0), "hello", "error"))
         });
         let output = spawn_output_command(&mut creator, "foo").unwrap();
