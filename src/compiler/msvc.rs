@@ -16,11 +16,10 @@ use ::compiler::{
     Cacheable,
     CompilerArguments,
     CompilerKind,
-    ParsedArguments,
     run_input_output,
     write_temp_file,
 };
-use compiler::c::CCompilerImpl;
+use compiler::c::{CCompilerImpl, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::{self, Future};
@@ -54,7 +53,7 @@ impl CCompilerImpl for MSVC {
     fn kind(&self) -> CompilerKind { CompilerKind::MSVC }
     fn parse_arguments(&self,
                        arguments: &[String],
-                       _cwd: &Path) -> CompilerArguments
+                       _cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
         parse_arguments(arguments)
     }
@@ -144,7 +143,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
     }))
 }
 
-pub fn parse_arguments(arguments: &[String]) -> CompilerArguments {
+pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec!();

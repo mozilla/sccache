@@ -16,10 +16,9 @@ use ::compiler::{
     Cacheable,
     CompilerArguments,
     CompilerKind,
-    ParsedArguments,
     run_input_output,
 };
-use compiler::c::CCompilerImpl;
+use compiler::c::{CCompilerImpl, ParsedArguments};
 use log::LogLevel::Trace;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
@@ -36,14 +35,14 @@ use std::process;
 use errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GCC;
 
 impl CCompilerImpl for GCC {
     fn kind(&self) -> CompilerKind { CompilerKind::GCC }
     fn parse_arguments(&self,
                        arguments: &[String],
-                       cwd: &Path) -> CompilerArguments
+                       cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
         parse_arguments(arguments, cwd, argument_takes_value)
     }
@@ -105,13 +104,13 @@ pub fn argument_takes_value(arg: &str) -> bool {
 pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String],
                                             cwd: &Path,
                                             argument_takes_value: F)
-                                            -> CompilerArguments {
+                                            -> CompilerArguments<ParsedArguments> {
     _parse_arguments(arguments, cwd, &argument_takes_value)
 }
 
 fn _parse_arguments(arguments: &[String],
                     cwd: &Path,
-                    argument_takes_value: &Fn(&str) -> bool) -> CompilerArguments {
+                    argument_takes_value: &Fn(&str) -> bool) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;
@@ -359,7 +358,7 @@ mod test {
     use ::compiler::*;
     use tempdir::TempDir;
 
-    fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
+    fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         parse_arguments(arguments, ".".as_ref(), argument_takes_value)
     }
 

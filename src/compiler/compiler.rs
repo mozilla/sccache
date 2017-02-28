@@ -70,25 +70,16 @@ pub enum CompilerKind {
     MSVC,
 }
 
-/// An interface to a compiler.
-pub trait Compiler<T: CommandCreatorSync>: Send + 'static {
+/// An interface to a compiler for argument parsing.
+pub trait Compiler<T>: Send + 'static
+    where T: CommandCreatorSync,
+{
     /// Return the kind of compiler.
     fn kind(&self) -> CompilerKind;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(&self,
                        arguments: &[String],
-                       cwd: &Path) -> CompilerArguments;
-    /// Given information about a compiler command, generate a hash key
-    /// that can be used for cache lookups, as well as any additional
-    /// information that can be reused for compilation if necessary.
-    fn generate_hash_key(&self,
-                         creator: &T,
-                         executable: &str,
-                         executable_digest: &str,
-                         parsed_args: &ParsedArguments,
-                         cwd: &str,
-                         pool: &CpuPool)
-                         -> SFuture<HashResult<T>>;
+                       cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<Compiler<T>>;
 }
 
@@ -96,12 +87,39 @@ impl<T: CommandCreatorSync> Clone for Box<Compiler<T>> {
     fn clone(&self) -> Box<Compiler<T>> { self.box_clone() }
 }
 
-pub trait Compilation<T: CommandCreatorSync> {
+/// An interface to a compiler for hash key generation, the result of
+/// argument parsing.
+pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
+    where T: CommandCreatorSync,
+{
+    /// Given information about a compiler command, generate a hash key
+    /// that can be used for cache lookups, as well as any additional
+    /// information that can be reused for compilation if necessary.
+    fn generate_hash_key(&self,
+                         creator: &T,
+                         executable: &str,
+                         executable_digest: &str,
+                         cwd: &str,
+                         pool: &CpuPool)
+                         -> SFuture<HashResult<T>>;
+    /// Get the output file of the compilation.
+    fn output_file(&self) -> Cow<str>;
+    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a &'static str, &'a String)> + 'a>;
+    fn box_clone(&self) -> Box<CompilerHasher<T>>;
+}
+
+impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
+    fn clone(&self) -> Box<CompilerHasher<T>> { self.box_clone() }
+}
+
+/// An interface to a compiler for actually invoking compilation.
+pub trait Compilation<T>
+    where T: CommandCreatorSync,
+{
     /// Given information about a compiler command, execute the compiler.
     fn compile(self: Box<Self>,
                creator: &T,
                executable: &str,
-               parsed_args: &ParsedArguments,
                cwd: &str,
                pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>;
@@ -123,35 +141,12 @@ pub enum HashResult<T: CommandCreatorSync> {
     },
 }
 
-/// The results of parsing a compiler commandline.
-#[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone)]
-pub struct ParsedArguments {
-    /// The input source file.
-    pub input: String,
-    /// The file extension of the input source file.
-    pub extension: String,
-    /// The file in which to generate dependencies.
-    pub depfile: Option<String>,
-    /// Output files, keyed by a simple name, like "obj".
-    pub outputs: HashMap<&'static str, String>,
-    /// Commandline arguments for the preprocessor.
-    pub preprocessor_args: Vec<String>,
-    /// Commandline arguments for the preprocessor or the compiler.
-    pub common_args: Vec<String>,
-}
-
-impl ParsedArguments {
-    pub fn output_file(&self) -> Cow<str> {
-        self.outputs.get("obj").and_then(|o| Path::new(o).file_name().map(|f| f.to_string_lossy())).unwrap_or(Cow::Borrowed("Unknown filename"))
-    }
-}
-
 /// Possible results of parsing compiler arguments.
 #[derive(Debug, PartialEq)]
-pub enum CompilerArguments {
+pub enum CompilerArguments<T>
+{
     /// Commandline can be handled.
-    Ok(ParsedArguments),
+    Ok(T),
     /// Cannot cache this compilation.
     CannotCache,
     /// This commandline is not a compile.
@@ -309,7 +304,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
     /// options for each compiler.
     pub fn parse_arguments(&self,
                            arguments: &[String],
-                           cwd: &Path) -> CompilerArguments {
+                           cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>> {
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("parse_arguments: `{}`", cmd_str);
@@ -323,19 +318,19 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                                  creator: T,
                                  storage: Arc<Storage>,
                                  arguments: Vec<String>,
-                                 parsed_args: ParsedArguments,
+                                 hasher: Box<CompilerHasher<T> + 'static>,
                                  cwd: String,
                                  cache_control: CacheControl,
                                  pool: CpuPool)
                                  -> SFuture<(CompileResult, process::Output)>
     {
-        let CompilerInfo { executable, digest, compiler, .. } = self;
-        let out_file = parsed_args.output_file().into_owned();
+        let CompilerInfo { executable, digest, .. } = self;
+        let out_file = hasher.output_file().into_owned();
         if log_enabled!(Debug) {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
-        let result = compiler.generate_hash_key(&creator, &executable, &digest, &parsed_args, &cwd, &pool);
+        let result = hasher.generate_hash_key(&creator, &executable, &digest, &cwd, &pool);
         Box::new(result.and_then(move |hash_res| -> SFuture<_> {
             let (key, compilation) = match hash_res {
                 HashResult::Error { output } => {
@@ -343,7 +338,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                 }
                 HashResult::Ok { key, compilation } => (key, compilation),
             };
-            trace!("[{}]: Hash key: {}", parsed_args.output_file(), key);
+            trace!("[{}]: Hash key: {}", hasher.output_file(), key);
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
             let cache_status = if cache_control == CacheControl::ForceRecache {
@@ -356,13 +351,13 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
             Box::new(cache_status.and_then(move |result| {
                 let duration = start.elapsed();
                 let pwd = Path::new(&cwd);
-                let outputs = parsed_args.outputs.iter()
+                let outputs = hasher.outputs()
                     .map(|(key, path)| (key.to_string(), pwd.join(path)))
                     .collect::<HashMap<_, _>>();
 
                 let miss_type = match result {
                     Cache::Hit(mut entry) => {
-                        debug!("[{}]: Cache hit!", parsed_args.output_file());
+                        debug!("[{}]: Cache hit!", hasher.output_file());
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
                         drop(entry.get_object("stdout", &mut stdout));
@@ -388,35 +383,34 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                         })) as SFuture<_>
                     }
                     Cache::Miss => {
-                        debug!("[{}]: Cache miss!", parsed_args.output_file());
+                        debug!("[{}]: Cache miss!", hasher.output_file());
                         MissType::Normal
                     }
                     Cache::Recache => {
-                        debug!("[{}]: Cache recache!", parsed_args.output_file());
+                        debug!("[{}]: Cache recache!", hasher.output_file());
                         MissType::ForcedRecache
                     }
                 };
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let out_file = parsed_args.output_file().into_owned();
-
-                let compile = compilation.compile(&creator, &executable, &parsed_args, &cwd, &pool);
+                let out_file = hasher.output_file().into_owned();
+                let compile = compilation.compile(&creator, &executable, &cwd, &pool);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
-                               parsed_args.output_file());
+                               hasher.output_file());
                         return Box::new(future::ok((CompileResult::CompileFailed, compiler_result)))
                             as SFuture<_>
                     }
                     if cacheable != Cacheable::Yes {
                         // Not cacheable
                         debug!("[{}]: Compiled but not cacheable",
-                               parsed_args.output_file());
+                               hasher.output_file());
                         return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
                     }
-                    debug!("[{}]: Compiled, storing in cache", parsed_args.output_file());
+                    debug!("[{}]: Compiled, storing in cache", hasher.output_file());
                     let mut entry = match storage.start_put(&key) {
                         Ok(entry) => entry,
                         Err(e) => return Box::new(future::err(e))
@@ -444,7 +438,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
 
                         // Try to finish storing the newly-written cache
                         // entry. We'll get the result back elsewhere.
-                        let out_file = parsed_args.output_file().into_owned();
+                        let out_file = hasher.output_file().into_owned();
                         let future = storage.finish_put(&key, entry)
                             .then(move |res| {
                                 match res {

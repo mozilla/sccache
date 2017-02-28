@@ -19,10 +19,10 @@ use cache::{
 use compiler::{
     CacheControl,
     CompilerArguments,
+    CompilerHasher,
     CompilerInfo,
     CompileResult,
     MissType,
-    ParsedArguments,
     get_compiler_info,
 };
 use filetime::FileTime;
@@ -526,12 +526,12 @@ impl<C> SccacheService<C>
         Message::WithoutBody(res)
     }
 
-    /// Given compiler arguments `arguments` + `parsed_arguments`, look up
+    /// Given compiler arguments `arguments`, look up
     /// a compile result in the cache or execute the compilation and store
     /// the result in the cache.
     fn start_compile_task(&self,
                           compiler: CompilerInfo<C>,
-                          parsed_arguments: ParsedArguments,
+                          hasher: Box<CompilerHasher<C>>,
                           arguments: Vec<String>,
                           cwd: String,
                           tx: mpsc::Sender<Result<ServerResponse>>) {
@@ -540,10 +540,11 @@ impl<C> SccacheService<C>
         } else {
             CacheControl::Default
         };
+        let output = hasher.output_file().into_owned();
         let result = compiler.get_cached_or_compile(self.creator.clone(),
                                                     self.storage.clone(),
                                                     arguments,
-                                                    parsed_arguments,
+                                                    hasher,
                                                     cwd,
                                                     cache_control,
                                                     self.pool.clone());
@@ -596,9 +597,9 @@ impl<C> SccacheService<C>
                 Err(err) => {
                     debug!("[{:?}] compilation failed: {:?}",
                            err,
-                           parsed_arguments.output_file());
+                           output);
                     for e in err.iter() {
-                        error!("[{:?}] \t{}", e, parsed_arguments.output_file());
+                        error!("[{:?}] \t{}", e, output);
                     }
                     stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?

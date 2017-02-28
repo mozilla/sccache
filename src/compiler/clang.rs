@@ -19,11 +19,10 @@ use ::compiler::{
     Cacheable,
     CompilerArguments,
     CompilerKind,
-    ParsedArguments,
     run_input_output,
     write_temp_file,
 };
-use compiler::c::CCompilerImpl;
+use compiler::c::{CCompilerImpl, ParsedArguments};
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -42,14 +41,14 @@ use std::process;
 use errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Clang;
 
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CompilerKind { CompilerKind::Clang }
     fn parse_arguments(&self,
                        arguments: &[String],
-                       cwd: &Path) -> CompilerArguments
+                       cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
         gcc::parse_arguments(arguments, cwd, argument_takes_value)
     }
@@ -166,7 +165,7 @@ mod test {
     use super::*;
     use test::utils::*;
 
-    fn _parse_arguments(arguments: &[String]) -> CompilerArguments {
+    fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(arguments, ".".as_ref(), argument_takes_value)
     }
 
