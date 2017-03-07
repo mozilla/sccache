@@ -227,6 +227,35 @@ impl PartialEq<CompileResult> for CompileResult {
     }
 }
 
+#[cfg(unix)]
+fn get_file_mode(path: &Path) -> Result<Option<u32>>
+{
+    use std::os::unix::fs::MetadataExt;
+    Ok(Some(fs::metadata(path)?.mode()))
+}
+
+#[cfg(windows)]
+fn get_file_mode(path: &Path) -> Result<Option<u32>>
+{
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn set_file_mode(path: &Path, mode: u32) -> Result<()>
+{
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+    let p = Permissions::from_mode(mode);
+    fs::set_permissions(path, p)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_file_mode(path: &Path, mode: u32) -> Result<()>
+{
+    Ok(())
+}
+
 /// Can this result be stored in cache?
 #[derive(Debug, PartialEq)]
 pub enum Cacheable {
@@ -367,12 +396,15 @@ impl Compiler {
                         debug!("[{}]: Cache hit!", parsed_args.output_file());
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
-                        entry.get_object("stdout", &mut stdout).unwrap_or(());
-                        entry.get_object("stderr", &mut stderr).unwrap_or(());
+                        drop(entry.get_object("stdout", &mut stdout));
+                        drop(entry.get_object("stderr", &mut stderr));
                         let write = pool.spawn_fn(move ||{
                             for (key, path) in &outputs {
-                                let mut f = try!(File::create(path));
-                                try!(entry.get_object(&key, &mut f));
+                                let mut f = File::create(&path)?;
+                                let mode = entry.get_object(&key, &mut f)?;
+                                if let Some(mode) = mode {
+                                    set_file_mode(&path, mode)?;
+                                }
                             }
                             Ok(())
                         });
@@ -448,7 +480,8 @@ impl Compiler {
             let write = pool.spawn_fn(move || -> Result<_> {
                 for (key, path) in &outputs {
                     let mut f = File::open(&path)?;
-                    entry.put_object(key, &mut f).chain_err(|| {
+                    let mode = get_file_mode(&path)?;
+                    entry.put_object(key, &mut f, mode).chain_err(|| {
                         format!("failed to put object `{:?}` in zip", path)
                     })?;
                 }
@@ -458,11 +491,11 @@ impl Compiler {
             Box::new(write.and_then(move |mut entry| {
                 if !compiler_result.stdout.is_empty() {
                     let mut stdout = &compiler_result.stdout[..];
-                    entry.put_object("stdout", &mut stdout)?;
+                    entry.put_object("stdout", &mut stdout, None)?;
                 }
                 if !compiler_result.stderr.is_empty() {
                     let mut stderr = &compiler_result.stderr[..];
-                    entry.put_object("stderr", &mut stderr)?;
+                    entry.put_object("stderr", &mut stderr, None)?;
                 }
 
                 // Try to finish storing the newly-written cache

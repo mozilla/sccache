@@ -38,7 +38,7 @@ dependencies = [
  "uuid 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "which 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "zip 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zip 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1053,7 +1053,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "zip"
-version = "0.1.17"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "flate2 0.2.14 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1184,4 +1184,4 @@ dependencies = [
 "checksum winapi-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)" = "2d315eee3b34aca4797b2da6b13ed88266e6d612562a0c46390af8299fc699bc"
 "checksum ws2_32-sys 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "d59cefebd0c892fa2dd6de581e937301d8552cb44489cdff035c6187cb63fa5e"
 "checksum xdg 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "77b831a5ba77110f438f0ac5583aafeb087f70432998ba6b7dcb1d32185db453"
-"checksum zip 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)" = "1dab89003aedbd81df3366c7c4ac0209bbf460298fafa884f961d451b57d3091"
+"checksum zip 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "f360ab8d0a447363447d49847f029fc1f6ed0c2a334b5d24291e80fb381f0555"

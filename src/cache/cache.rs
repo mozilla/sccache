@@ -36,11 +36,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_core::reactor::Handle;
-use zip::{
-    CompressionMethod,
-    ZipArchive,
-    ZipWriter,
-};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::write::FileOptions;
 
 use errors::*;
 
@@ -84,7 +81,9 @@ pub struct CacheRead {
 
 impl CacheRead {
     /// Create a cache entry from `reader`.
-    pub fn from<R: ReadSeek + 'static>(reader: R) -> Result<CacheRead> {
+    pub fn from<R>(reader: R) -> Result<CacheRead>
+        where R: ReadSeek + 'static,
+    {
         let z = ZipArchive::new(Box::new(reader) as Box<ReadSeek>).chain_err(|| {
             "Failed to parse cache entry"
         })?;
@@ -94,12 +93,15 @@ impl CacheRead {
     }
 
     /// Get an object from this cache entry at `name` and write it to `to`.
-    pub fn get_object<T: Write>(&mut self, name: &str, to: &mut T) -> Result<()> {
+    /// If the file has stored permissions, return them.
+    pub fn get_object<T>(&mut self, name: &str, to: &mut T) -> Result<Option<u32>>
+        where T: Write,
+    {
         let mut file = self.zip.by_name(name).chain_err(|| {
             "Failed to read object from cache entry"
         })?;
         io::copy(&mut file, to)?;
-        Ok(())
+        Ok(file.unix_mode())
     }
 }
 
@@ -110,15 +112,21 @@ pub struct CacheWrite {
 
 impl CacheWrite {
     /// Create a new, empty cache entry.
-    pub fn new() -> CacheWrite {
+    pub fn new() -> CacheWrite
+    {
         CacheWrite {
             zip: ZipWriter::new(io::Cursor::new(vec!())),
         }
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
-    pub fn put_object<T: Read>(&mut self, name: &str, from: &mut T) -> Result<()> {
-        self.zip.start_file(name, CompressionMethod::Deflated).chain_err(|| {
+    /// If `mode` is `Some`, store the file entry with that mode.
+    pub fn put_object<T>(&mut self, name: &str, from: &mut T, mode: Option<u32>) -> Result<()>
+        where T: Read,
+    {
+        let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let opts = if let Some(mode) = mode { opts.unix_permissions(mode) } else { opts };
+        self.zip.start_file(name, opts).chain_err(|| {
             "Failed to start cache entry object"
         })?;
         io::copy(from, &mut self.zip)?;
@@ -126,7 +134,8 @@ impl CacheWrite {
     }
 
     /// Finish writing data to the cache entry writer, and return the data.
-    pub fn finish(self) -> Result<Vec<u8>> {
+    pub fn finish(self) -> Result<Vec<u8>>
+    {
         let CacheWrite { mut zip } = self;
         let cur = zip.finish().chain_err(|| "Failed to finish cache entry zip")?;
         Ok(cur.into_inner())
