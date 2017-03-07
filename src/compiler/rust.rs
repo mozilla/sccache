@@ -26,8 +26,9 @@ use std::io::Read;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Instant;
 use tempdir::TempDir;
-use util::sha1_digest;
+use util::{fmt_duration_as_secs, sha1_digest};
 
 use errors::*;
 
@@ -59,6 +60,8 @@ pub struct RustCompilation {
     arguments: Vec<String>,
     /// The compiler outputs.
     outputs: HashMap<String, String>,
+    /// The crate name being compiled.
+    crate_name: String,
 }
 
 /// Arguments that take a value.
@@ -118,14 +121,21 @@ fn arg_in(arg: &str, set: &HashSet<&str>) -> bool
 /// in `pool`.
 fn hash_all(files: Vec<String>, pool: &CpuPool) -> SFuture<Vec<String>>
 {
+    let start = Instant::now();
+    let count = files.len();
     let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| sha1_digest(f, &pool))))
+    Box::new(future::join_all(files.into_iter().map(move |f| sha1_digest(f, &pool)))
+             .map(move |hashes| {
+                 trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
+                 hashes
+             }))
 }
 
 /// Calculate SHA-1 digests for all source files listed in rustc's dep-info output.
-fn hash_source_files<T>(creator: &T, executable: &str, arguments: &[String], cwd: &str, pool: &CpuPool) -> SFuture<Vec<String>>
+fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, arguments: &[String], cwd: &str, pool: &CpuPool) -> SFuture<Vec<String>>
     where T: CommandCreatorSync,
 {
+    let start = Instant::now();
     // Get the full list of source files from rustc's dep-info.
     let temp_dir = match TempDir::new("sccache") {
         Ok(d) => d,
@@ -138,17 +148,18 @@ fn hash_source_files<T>(creator: &T, executable: &str, arguments: &[String], cwd
         .arg("-o")
         .arg(&dep_file)
         .current_dir(cwd);
-    if log_enabled!(Trace) {
-        trace!("get dep-info: {:?}", cmd);
-    }
+    trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     let dep_info = run_input_output(cmd, None);
     // Parse the dep-info file, then hash the contents of those files.
     let pool = pool.clone();
     let cwd = cwd.to_owned();
+    let crate_name = crate_name.to_owned();
     Box::new(dep_info.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
             match parse_dep_file(&dep_file, &cwd) {
                 Ok(files) => {
+                    trace!("[{}]: got {} source files from dep-info in {}", crate_name,
+                           files.len(), fmt_duration_as_secs(&start.elapsed()));
                     // Just to make sure we capture temp_dir.
                     drop(temp_dir);
                     hash_all(files, &pool)
@@ -393,10 +404,12 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
-        let RustHasher { arguments, filtered_arguments, output_dir, externs, dep_info, .. } = me;
-        let source_hashes = hash_source_files(creator, executable, &filtered_arguments, cwd, pool);
+        let RustHasher { arguments, filtered_arguments, output_dir, externs, crate_name, dep_info } = me;
+        trace!("[{}]: generate_hash_key", crate_name);
+        let source_hashes = hash_source_files(creator, &crate_name, executable, &filtered_arguments, cwd, pool);
         // Hash the contents of the externs listed on the commandline.
         let cwp = Path::new(cwd);
+        trace!("[{}]: hashing {} externs", crate_name, externs.len());
         let extern_hashes = hash_all(externs.iter()
                                      .map(|e| cwp.join(e).to_string_lossy().into_owned())
                                      .collect(),
@@ -411,21 +424,17 @@ impl<T> CompilerHasher<T> for RustHasher
             let mut m = sha1::Sha1::new();
             // Hash inputs:
             // 1. A version
-            trace!("CACHE_VERSION: {:?}", CACHE_VERSION);
             m.update(CACHE_VERSION);
             // 2. The executable_digest
-            trace!("executable_digest: {}", executable_digest);
             m.update(executable_digest.as_bytes());
             // 3. The full commandline (self.arguments)
             // TODO: there will be full paths here, it would be nice to
             // normalize them so we can get cross-machine cache hits.
             let args = arguments.iter().map(|s| s.as_str()).collect::<String>();
-            trace!("args: {}", args);
             m.update(args.as_bytes());
             // 4. The sha-1 digests of all source files (this includes src file from cmdline).
             // 5. The sha-1 digests of all files listed on the commandline (self.externs)
             for h in source_hashes.into_iter().chain(extern_hashes) {
-                trace!("file hash: {}", h);
                 m.update(h.as_bytes());
             }
             // 6. TODO: Environment variables:
@@ -449,6 +458,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     compilation: Box::new(RustCompilation {
                         arguments: arguments,
                         outputs: outputs,
+                        crate_name: crate_name,
                     }),
                 }
             }))
@@ -475,8 +485,10 @@ impl<T> Compilation<T> for RustCompilation
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
-        let RustCompilation { arguments, .. } = me;
+        let RustCompilation { arguments, crate_name, .. } = me;
+        trace!("[{}]: compile", crate_name);
         let mut cmd = creator.clone().new_command_sync(executable);
+        trace!("");
         cmd.args(&arguments)
             .current_dir(cwd);
         if log_enabled!(Trace) {
@@ -705,7 +717,6 @@ bar.rs:
                 }
             }
             let dep_info_path = dep_info_path.unwrap();
-            trace!("dep_info_path: {:?}", dep_info_path.to_string_lossy());
             let mut f = File::create(dep_info_path)?;
             f.write_all(b"blah: foo.rs bar.rs
 

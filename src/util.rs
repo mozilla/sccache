@@ -18,6 +18,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use errors::*;
 
@@ -41,4 +42,10 @@ pub fn sha1_digest<T>(path: T, pool: &CpuPool) -> SFuture<String>
         }
         Ok(m.digest().to_string())
     }))
+}
+
+/// Format `duration` as seconds with a fractional component.
+pub fn fmt_duration_as_secs(duration: &Duration) -> String
+{
+    format!("{}.{:03}s", duration.as_secs(), duration.subsec_nanos() / 1000_000)
 }

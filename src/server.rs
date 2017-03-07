@@ -72,6 +72,7 @@ use tokio_proto::BindServer;
 use tokio_proto::streaming::pipeline::{Frame, ServerProto, Transport};
 use tokio_proto::streaming::{Body, Message};
 use tokio_service::Service;
+use util::fmt_duration_as_secs;
 
 use errors::*;
 
@@ -618,7 +619,7 @@ impl<C> SccacheService<C>
                     }
                     //TODO: save cache stats!
                     Ok(Some(info)) => {
-                        debug!("[{}]: Cache write finished in {}.{:03}s", info.object_file, info.duration.as_secs(), info.duration.subsec_nanos() / 1000_000);
+                        debug!("[{}]: Cache write finished in {}", info.object_file, fmt_duration_as_secs(&info.duration));
                         me.stats.borrow_mut().cache_writes += 1;
                         me.stats.borrow_mut().cache_write_duration += info.duration;
                     }
@@ -711,9 +712,9 @@ impl ServerStats {
                 stat.set_name(String::from($name));
                 if $num > 0 {
                     let duration = $dur / $num as u32;
-                    stat.set_str(format!("{}.{:03} s", duration.as_secs(), duration.subsec_nanos() / 1000_000));
+                    stat.set_str(fmt_duration_as_secs(&duration));
                 } else {
-                    stat.set_str("0.000 s".to_owned());
+                    stat.set_str("0.000s".to_owned());
                 }
                 $vec.push(stat);
             }};
