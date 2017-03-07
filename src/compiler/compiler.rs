@@ -49,7 +49,7 @@ use std::time::{
     Instant,
 };
 use tempdir::TempDir;
-use util::sha1_digest;
+use util::{fmt_duration_as_secs, sha1_digest};
 
 use errors::*;
 
@@ -308,8 +308,10 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
             let cmd_str = arguments.join(" ");
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
+        let start = Instant::now();
         let result = hasher.generate_hash_key(&creator, &executable, &digest, &cwd, &pool);
         Box::new(result.and_then(move |hash_res| -> SFuture<_> {
+            debug!("[{}]: generate_hash_key took {}", out_file, fmt_duration_as_secs(&start.elapsed()));
             let (key, compilation) = match hash_res {
                 HashResult::Error { output } => {
                     return Box::new(future::ok((CompileResult::Error, output)));
@@ -335,7 +337,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
 
                 let miss_type = match result {
                     Cache::Hit(mut entry) => {
-                        debug!("[{}]: Cache hit!", out_file);
+                        debug!("[{}]: Cache hit in {}", out_file, fmt_duration_as_secs(&duration));
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
                         drop(entry.get_object("stdout", &mut stdout));
@@ -361,11 +363,11 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                         })) as SFuture<_>
                     }
                     Cache::Miss => {
-                        debug!("[{}]: Cache miss!", out_file);
+                        debug!("[{}]: Cache miss", out_file);
                         MissType::Normal
                     }
                     Cache::Recache => {
-                        debug!("[{}]: Cache recache!", out_file);
+                        debug!("[{}]: Cache recache", out_file);
                         MissType::ForcedRecache
                     }
                 };
@@ -388,7 +390,7 @@ impl<T: CommandCreatorSync> CompilerInfo<T> {
                                out_file);
                         return Box::new(future::ok((CompileResult::NotCacheable, compiler_result)))
                     }
-                    debug!("[{}]: Compiled, storing in cache", out_file);
+                    debug!("[{}]: Compiled in {}, storing in cache", out_file, fmt_duration_as_secs(&duration));
                     let mut entry = match storage.start_put(&key) {
                         Ok(entry) => entry,
                         Err(e) => return Box::new(future::err(e))
