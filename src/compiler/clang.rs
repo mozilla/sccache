@@ -68,7 +68,7 @@ impl CCompilerImpl for Clang {
     fn compile<T>(&self,
                   creator: &T,
                   executable: &str,
-                  preprocessor_output: Vec<u8>,
+                  preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
                   env_vars: &[(OsString, OsString)],
@@ -76,7 +76,7 @@ impl CCompilerImpl for Clang {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_output, parsed_args, cwd, env_vars, pool)
+        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -95,7 +95,7 @@ pub fn argument_takes_value(arg: &str) -> bool {
 
 fn compile<T>(creator: &T,
               executable: &str,
-              preprocessor_output: Vec<u8>,
+              preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &str,
               env_vars: &[(OsString, OsString)],
@@ -111,7 +111,7 @@ fn compile<T>(creator: &T,
             Some(name) => name,
             None => return future::err("missing input filename".into()).boxed(),
         };
-        write_temp_file(pool, filename.as_ref(), preprocessor_output)
+        write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout)
     };
     let input = parsed_args.input.clone();
     let out_file = match parsed_args.outputs.get("obj") {
@@ -193,6 +193,7 @@ mod test {
         }
     }
 
+
     #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
@@ -236,13 +237,14 @@ mod test {
             outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            msvc_show_includes: false,
         };
         let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     vec!(),
+                                     empty_output(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
                                      &[],
@@ -264,6 +266,7 @@ mod test {
             outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: stringvec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
+            msvc_show_includes: false,
         };
         let compiler = f.bins[0].to_str().unwrap();
         // First compiler invocation fails.
@@ -272,7 +275,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, output) = compile(&creator,
                                           &compiler,
-                                          vec!(),
+                                          empty_output(),
                                           &parsed_args,
                                           f.tempdir.path().to_str().unwrap(),
                                           &[],
