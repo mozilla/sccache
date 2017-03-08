@@ -154,9 +154,15 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
     let mut depfile = None;
 
     //TODO: support arguments that start with / as well.
-    let mut it = arguments.iter();
+    let mut it = arguments.iter().map(|i| {
+        if i.starts_with("/") {
+            format!("-{}", &i[1..])
+        } else {
+            i.to_string()
+        }
+    });
     while let Some(arg) = it.next() {
-        match arg.as_ref() {
+        match &arg[..] {
             "-c" => compilation = true,
             v if v.starts_with("-Fo") => {
                 output_arg = Some(String::from(&v[3..]));
@@ -195,7 +201,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                     // Can't cache compilations with multiple inputs.
                     return CompilerArguments::CannotCache("multiple input files");
                 }
-                input_arg = Some(v);
+                input_arg = Some(v.to_owned());
             }
         }
         input_arg = Some(v);
@@ -206,7 +212,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
     }
     let (input, extension) = match input_arg {
         Some(i) => {
-            match Path::new(i).extension().and_then(|e| e.to_str()) {
+            match Path::new(&i).extension().and_then(|e| e.to_str()) {
                 Some(e) => (i.to_owned(), e.to_owned()),
                 _ => {
                     trace!("Bad or missing source extension: {:?}", i);
