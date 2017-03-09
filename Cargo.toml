@@ -9,16 +9,17 @@ repository = "https://github.com/mozilla/sccache/"
 
 [dependencies]
 app_dirs = "1.1.1"
+bytes = "0.4"
 chrono = "0.2.25"
 clap = "2.3.0"
 env_logger = "0.3.3"
 error-chain = { version = "0.7.2", default-features = false }
 fern = "0.3.5"
 filetime = "0.1"
-futures = "0.1"
+futures = "0.1.11"
 futures-cpupool = "0.1"
-hyper = { git = "https://github.com/hyperium/hyper" }
-hyper-tls = { git = "https://github.com/hyperium/hyper-tls" }
+hyper = { git = "https://github.com/alexcrichton/hyper", branch = "tio" }
+hyper-tls = { git = "https://github.com/alexcrichton/hyper-tls", branch = "tio" }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
@@ -33,9 +34,11 @@ serde_json = "0.8.0"
 sha1 = "0.2.0"
 tempdir = "0.3.4"
 time = "0.1.35"
-tokio-core = "0.1"
+tokio-core = "0.1.6"
 tokio-proto = "0.1"
+tokio-io = "0.1"
 tokio-service = "0.1"
+tokio-tls = "0.1"
 tokio-process = "0.1"
 uuid = { version = "0.3.1", features = ["v4"] }
 which = "0.2.1"

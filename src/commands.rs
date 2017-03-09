@@ -105,7 +105,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use futures::{Future, Stream};
     use std::time::Duration;
     use tempdir::TempDir;
-    use tokio_core::io::read_exact;
+    use tokio_io::io::read_exact;
     use tokio_core::reactor::Timeout;
 
     trace!("run_server_process");
