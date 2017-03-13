@@ -244,6 +244,15 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             handle: handle.clone(),
             timeout_dur: timeout,
         };
+        let shutdown_idle = shutdown_idle.map(|a| {
+            info!("shutting down due to being idle");
+            a
+        });
+
+        let shutdown = shutdown.map(|a| {
+            info!("shutting down due to explicit signal");
+            a
+        });
 
         let server = future::select_all(vec![
             Box::new(server) as Box<Future<Item=_, Error=_>>,
@@ -255,6 +264,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         core.run(server)
             .map_err(|p| p.0)?;
 
+        info!("moving into the shutdown phase now, waiting at most 10 seconds \
+              for all client requests to complete");
+
         // Once our server has shut down either due to inactivity or a manual
         // request we still need to give a bit of time for all active
         // connections to finish. This `wait` future will resolve once all
@@ -264,6 +276,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // don't want to wait *too* long.
         core.run(wait.select(Timeout::new(Duration::new(10, 0), &handle)?))
             .map_err(|p| p.0)?;
+
+        info!("ok, fully shutting down now");
 
         Ok(())
     }
