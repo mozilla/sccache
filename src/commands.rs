@@ -562,7 +562,11 @@ fn handle_compile_response<T>(mut creator: T,
                 // get a response then we just forge ahead locally and run the
                 // compilation ourselves.
                 Err(ProtobufError::IoError(ref e))
-                    if e.kind() == io::ErrorKind::UnexpectedEof => {}
+                    if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    writeln!(io::stderr(),
+                             "warning: sccache server looks like it shut down \
+                              unexpectedly, compiling locally instead").unwrap();
+                }
 
                 Err(e) => return Err(e).chain_err(|| {
                     //TODO: something better here?
