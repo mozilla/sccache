@@ -18,9 +18,9 @@ use cache::{
 };
 use compiler::{
     CacheControl,
+    Compiler,
     CompilerArguments,
     CompilerHasher,
-    CompilerInfo,
     CompileResult,
     MissType,
     get_compiler_info,
@@ -279,7 +279,7 @@ struct SccacheService<C: CommandCreatorSync> {
     storage: Arc<Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<HashMap<String, Option<CompilerInfo<C>>>>>,
+    compilers: Rc<RefCell<HashMap<String, Option<(Box<Compiler<C>>, FileTime)>>>>,
 
     /// True if all compiles should be forced, ignoring existing cache entries.
     ///
@@ -369,7 +369,7 @@ impl<C> Service for SccacheService<C>
                 res.set_unknown(UnknownCommand::new());
             }
 
-            future::ok(Message::WithoutBody(res)).boxed()
+            f_ok(Message::WithoutBody(res))
         }
     }
 }
@@ -438,46 +438,43 @@ impl<C> SccacheService<C>
         let cmd = compile.take_command().into_vec();
         let cwd = compile.take_cwd();
         let me = self.clone();
-        Box::new(self.compiler_info(&exe).map(move |info| {
+        Box::new(self.compiler_info(exe).map(move |info| {
             me.check_compiler(info, cmd, cwd)
         }))
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
-    fn compiler_info(&self, path: &str)
-                     -> SFuture<Option<CompilerInfo<C>>> {
-        trace!("compiler_info_cached");
-        let result = match metadata(path) {
-            Ok(attr) => {
-                let mtime = FileTime::from_last_modification_time(&attr);
-                match self.compilers.borrow().get(path) {
-                    // It's a hit only if the mtime matches.
-                    Some(&Some(ref c)) if c.mtime == mtime => Some(Some(c.clone())),
-                    // We cache non-results.
-                    Some(&None) => Some(None),
-                    _ => None,
-                }
-            }
-            Err(_) => None,
+    fn compiler_info(&self, path: String)
+                     -> SFuture<Option<Box<Compiler<C>>>> {
+        trace!("compiler_info");
+        let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
+        //TODO: properly handle rustup overrides. Currently this will
+        // cache based on the rustup rustc path, ignoring overrides.
+        // https://github.com/mozilla/sccache/issues/87
+        let result = match self.compilers.borrow().get(&path) {
+            // It's a hit only if the mtime matches.
+            Some(&Some((ref c, ref cached_mtime))) if *cached_mtime == mtime => Some(Some(c.clone())),
+            // We cache non-results.
+            Some(&None) => Some(None),
+            _ => None,
         };
         match result {
             Some(info) => {
                 trace!("compiler_info cache hit");
-                future::ok(info).boxed()
+                f_ok(info)
             }
             None => {
                 trace!("compiler_info cache miss");
                 // Check the compiler type and return the result when
                 // finished. This generally involves invoking the compiler,
                 // so do it asynchronously.
-                let path = path.to_string();
                 let me = self.clone();
 
                 let info = get_compiler_info(&self.creator, &path, &self.pool);
                 Box::new(info.then(move |info| {
                     let info = info.ok();
-                    me.compilers.borrow_mut().insert(path, info.clone());
+                    me.compilers.borrow_mut().insert(path, info.clone().map(|i| (i, mtime)));
                     Ok(info)
                 }))
             }
@@ -487,7 +484,7 @@ impl<C> SccacheService<C>
     /// Check that we can handle and cache `cmd` when run with `compiler`.
     /// If so, run `start_compile_task` to execute it.
     fn check_compiler(&self,
-                      compiler: Option<CompilerInfo<C>>,
+                      compiler: Option<Box<Compiler<C>>>,
                       cmd: Vec<String>,
                       cwd: String)
                       -> SccacheResponse {
@@ -503,12 +500,12 @@ impl<C> SccacheService<C>
                 // Now check that we can handle this compiler with
                 // the provided commandline.
                 match c.parse_arguments(&cmd, cwd.as_ref()) {
-                    CompilerArguments::Ok(args) => {
+                    CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok");
                         stats.requests_executed += 1;
                         res.set_compile_started(CompileStarted::new());
                         let (tx, rx) = Body::pair();
-                        self.start_compile_task(c, args, cmd, cwd, tx);
+                        self.start_compile_task(hasher, cmd, cwd, tx);
                         return Message::WithBody(res, rx)
                     }
                     CompilerArguments::CannotCache => {
@@ -531,7 +528,6 @@ impl<C> SccacheService<C>
     /// a compile result in the cache or execute the compilation and store
     /// the result in the cache.
     fn start_compile_task(&self,
-                          compiler: CompilerInfo<C>,
                           hasher: Box<CompilerHasher<C>>,
                           arguments: Vec<String>,
                           cwd: String,
@@ -542,13 +538,12 @@ impl<C> SccacheService<C>
             CacheControl::Default
         };
         let output = hasher.output_file().into_owned();
-        let result = compiler.get_cached_or_compile(self.creator.clone(),
-                                                    self.storage.clone(),
-                                                    arguments,
-                                                    hasher,
-                                                    cwd,
-                                                    cache_control,
-                                                    self.pool.clone());
+        let result = hasher.get_cached_or_compile(self.creator.clone(),
+                                                  self.storage.clone(),
+                                                  arguments,
+                                                  cwd,
+                                                  cache_control,
+                                                  self.pool.clone());
         let me = self.clone();
         let task = result.then(move |result| {
             let mut res = ServerResponse::new();
