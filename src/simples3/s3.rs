@@ -102,7 +102,7 @@ impl Bucket {
         let mut request = Request::new(Method::Put, url.parse().unwrap());
 
         let content_type = "application/octet-stream";
-        let date = time::now().rfc822z().to_string();
+        let date = time::now_utc().rfc822().to_string();
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
