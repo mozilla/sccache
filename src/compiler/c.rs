@@ -23,17 +23,28 @@ use std::env;
 use std::fmt;
 use std::path::Path;
 use std::process;
+use util::sha1_digest;
 
 use errors::*;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
-pub struct CCompiler<I: CCompilerImpl>(pub I);
+pub struct CCompiler<I>
+    where I: CCompilerImpl,
+{
+    executable: String,
+    executable_digest: String,
+    compiler: I,
+}
 
 /// A generic implementation of the `CompilerHasher` trait for C/C++ compilers.
 #[derive(Debug, Clone)]
-pub struct CCompilerHasher<I: CCompilerImpl> {
+pub struct CCompilerHasher<I>
+    where I: CCompilerImpl,
+{
     parsed_args: ParsedArguments,
+    executable: String,
+    executable_digest: String,
     compiler: I,
 }
 
@@ -64,6 +75,7 @@ impl ParsedArguments {
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
+    executable: String,
     /// The output from running the preprocessor.
     preprocessor_output: Vec<u8>,
     compiler: I,
@@ -109,16 +121,33 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         where T: CommandCreatorSync;
 }
 
+impl <I> CCompiler<I>
+    where I: CCompilerImpl,
+{
+    pub fn new(compiler: I, executable: String, pool: &CpuPool) -> SFuture<CCompiler<I>>
+    {
+        Box::new(sha1_digest(executable.clone(), &pool).map(move |digest| {
+            CCompiler {
+                executable: executable,
+                executable_digest: digest,
+                compiler: compiler,
+            }
+        }))
+    }
+}
+
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
-    fn kind(&self) -> CompilerKind { CompilerKind::C(self.0.kind()) }
+    fn kind(&self) -> CompilerKind { CompilerKind::C(self.compiler.kind()) }
     fn parse_arguments(&self,
                        arguments: &[String],
                        cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>> {
-        match self.0.parse_arguments(arguments, cwd) {
+        match self.compiler.parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => {
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
                     parsed_args: args,
-                    compiler: self.0.clone(),
+                    executable: self.executable.clone(),
+                    executable_digest: self.executable_digest.clone(),
+                    compiler: self.compiler.clone(),
                 }))
             }
             CompilerArguments::CannotCache => CompilerArguments::CannotCache,
@@ -137,22 +166,18 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 {
     fn generate_hash_key(self: Box<Self>,
                          creator: &T,
-                         executable: &str,
-                         executable_digest: &str,
                          cwd: &str,
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
-        let result = self.compiler.preprocess(creator, executable, &self.parsed_args, cwd, pool);
-        let parsed_args = self.parsed_args.clone();
+        let me = *self;
+        let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
+        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, pool);
         let out_file = parsed_args.output_file().into_owned();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_file, e);
             e
         });
-        let executable_digest = executable_digest.to_string();
-        let compiler = self.compiler.clone();
-
         Box::new(result.map(move |preprocessor_result| {
             // If the preprocessor failed, just return that result.
             if !preprocessor_result.status.success() {
@@ -183,6 +208,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 key: key,
                 compilation: Box::new(CCompilation {
                     parsed_args: parsed_args,
+                    executable: executable,
                     preprocessor_output: preprocessor_result.stdout,
                     compiler: compiler,
                 }),
@@ -204,14 +230,13 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
     fn compile(self: Box<Self>,
                creator: &T,
-               executable: &str,
                cwd: &str,
                pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
-        let CCompilation { parsed_args, preprocessor_output, compiler } = me;
-        compiler.compile(creator, executable, preprocessor_output, &parsed_args, cwd, pool)
+        let CCompilation { parsed_args, executable, preprocessor_output, compiler } = me;
+        compiler.compile(creator, &executable, preprocessor_output, &parsed_args, cwd, pool)
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a String)> + 'a>

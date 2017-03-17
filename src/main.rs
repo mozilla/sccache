@@ -61,12 +61,14 @@ extern crate zip;
 #[macro_use]
 mod test;
 
+#[macro_use]
+mod errors;
+
 mod cache;
 mod client;
 mod cmdline;
 mod commands;
 mod compiler;
-mod errors;
 mod mock_command;
 mod protocol;
 mod server;

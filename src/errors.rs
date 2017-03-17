@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::boxed::Box;
 use std::error;
 use std::io;
 
 use futures::Future;
+use futures::future;
 use hyper;
 use lru_disk_cache;
 
@@ -52,4 +54,27 @@ impl<F> FutureChainErr<F::Item> for F
     {
         Box::new(self.then(|r| r.chain_err(callback)))
     }
+}
+
+/// Like `try`, but returns an SFuture instead of a Result.
+macro_rules! ftry {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return Box::new(future::err(e.into())),
+        }
+    }
+}
+
+pub fn f_ok<T>(t: T) -> SFuture<T>
+    where T: 'static,
+{
+    Box::new(future::ok(t))
+}
+
+pub fn f_err<T, E>(e: E) -> SFuture<T>
+    where T: 'static,
+          E: Into<Error>,
+{
+    Box::new(future::err(e.into()))
 }

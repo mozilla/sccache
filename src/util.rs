@@ -29,7 +29,7 @@ pub fn sha1_digest<T>(path: T, pool: &CpuPool) -> SFuture<String>
 {
     let path = path.into();
     Box::new(pool.spawn_fn(move || -> Result<_> {
-        let f = File::open(&path)?;
+        let f = File::open(&path).chain_err(|| "Failed to open file for hashing")?;
         let mut m = sha1::Sha1::new();
         let mut reader = BufReader::new(f);
         loop {

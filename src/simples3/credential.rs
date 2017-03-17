@@ -315,7 +315,7 @@ impl IamProvider {
 impl ProvideAwsCredentials for IamProvider {
     fn credentials(&self) -> SFuture<AwsCredentials> {
         let url = match var("AWS_IAM_CREDENTIALS_URL") {
-            Ok(url) => Box::new(future::ok(url)) as SFuture<_>,
+            Ok(url) => f_ok(url),
             Err(_) => self.iam_role(),
         };
         let url = url.and_then(|url| {

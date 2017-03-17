@@ -61,12 +61,19 @@ impl Storage for DiskCache {
         trace!("DiskCache::get({})", key);
         let path = make_key_path(key);
         let lru = self.lru.clone();
+        let key = key.to_owned();
         self.pool.spawn_fn(move || {
             let mut lru = lru.lock().unwrap();
             let f = match lru.get(&path) {
                 Ok(f) => f,
-                Err(LruError::FileNotInCache) => return Ok(Cache::Miss),
-                Err(LruError::Io(e)) => return Err(e.into()),
+                Err(LruError::FileNotInCache) => {
+                    trace!("DiskCache::get({}): FileNotInCache", key);
+                    return Ok(Cache::Miss);
+                }
+                Err(LruError::Io(e)) => {
+                    trace!("DiskCache::get({}): IoError: {:?}", key, e);
+                    return Err(e.into());
+                }
                 Err(_) => panic!("Unexpected error!"),
             };
             let hit = CacheRead::from(f)?;

@@ -21,7 +21,7 @@ use ::compiler::{
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
-use futures::future::{self, Future};
+use futures::future::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
@@ -369,7 +369,7 @@ fn compile<T>(creator: &T,
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return future::err("Missing object file output".into()).boxed()
+            return f_err("Missing object file output")
         }
     };
 
@@ -390,7 +390,7 @@ fn compile<T>(creator: &T,
     let write = {
         let filename = match Path::new(&parsed_args.input).file_name() {
             Some(name) => name,
-            None => return future::err("missing input filename".into()).boxed(),
+            None => return f_err("missing input filename"),
         };
         write_temp_file(pool, filename.as_ref(), preprocessor_output)
     };
@@ -422,7 +422,7 @@ fn compile<T>(creator: &T,
         .current_dir(cwd);
     Box::new(output.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
-            future::ok((cacheable, output)).boxed()
+            f_ok((cacheable, output))
         } else {
             debug!("compile: {:?}", cmd);
             Box::new(run_input_output(cmd, None).map(|output| {

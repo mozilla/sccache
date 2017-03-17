@@ -148,7 +148,7 @@ fn compile<T>(creator: &T,
                 (Cacheable::Yes, output)
             }))
         } else {
-            future::ok((Cacheable::Yes, output)).boxed()
+            f_ok((Cacheable::Yes, output))
         }
     }))
 }

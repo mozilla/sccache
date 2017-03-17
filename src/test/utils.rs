@@ -103,8 +103,10 @@ pub const BIN_NAME: &'static str = "bin";
 
 pub fn create_file<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf> {
     let b = dir.join(path);
-    let f = try!(fs::File::create(&b));
-    try!(fill_contents(f));
+    let parent = b.parent().unwrap();
+    fs::create_dir_all(&parent)?;
+    let f = fs::File::create(&b)?;
+    fill_contents(f)?;
     b.canonicalize()
 }
 
@@ -116,12 +118,14 @@ pub fn touch(dir: &Path, path: &str) -> io::Result<PathBuf> {
 pub fn mk_bin_contents<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let bin = dir.join(path);
-    let f = try!(fs::OpenOptions::new()
-                 .write(true)
-                 .create(true)
-                 .mode(0o666 | (libc::S_IXUSR as u32))
-                 .open(&bin));
-    try!(fill_contents(f));
+    let parent = bin.parent().unwrap();
+    fs::create_dir_all(&parent)?;
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o666 | (libc::S_IXUSR as u32))
+        .open(&bin)?;
+    fill_contents(f)?;
     bin.canonicalize()
 }
 
@@ -165,6 +169,10 @@ impl TestFixture {
         touch(self.tempdir.path(), &path)
     }
 
+    #[allow(dead_code)]
+    pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
+        mk_bin(self.tempdir.path(), &path)
+    }
 }
 
 #[derive(Debug, PartialEq)]
