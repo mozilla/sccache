@@ -583,7 +583,12 @@ impl<C> SccacheService<C>
                     finish.set_stderr(stderr);
                 }
                 Err(err) => {
-                    debug!("Compiling failed: {:?}", err);
+                    debug!("[{:?}] compilation failed: {:?}",
+                           err,
+                           parsed_arguments.output_file());
+                    for e in err.iter() {
+                        error!("[{:?}] \t{}", e, parsed_arguments.output_file());
+                    }
                     stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?
                     finish.set_retcode(-2);
