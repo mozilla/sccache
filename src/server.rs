@@ -582,7 +582,8 @@ impl<C> SccacheService<C>
                     finish.set_stdout(stdout);
                     finish.set_stderr(stderr);
                 }
-                Err(_) => {
+                Err(err) => {
+                    debug!("Compiling failed: {:?}", err);
                     stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?
                     finish.set_retcode(-2);
