@@ -98,12 +98,13 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
 
 #[cfg(windows)]
 fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<()> {
-    use named_pipe::PipeClient;
+    use std::fs::OpenOptions;
+
     let name = match *name {
         Some(ref s) => s,
         None => return Ok(()),
     };
-    let pipe = try!(PipeClient::connect(name));
+    let pipe = try!(OpenOptions::new().write(true).read(true).open(name));
     notify_server_startup_internal(pipe, success)
 }
 

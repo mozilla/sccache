@@ -47,8 +47,8 @@ tokio-uds = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 kernel32-sys = "0.2.2"
-named_pipe = "0.2.2"
 winapi = "0.2"
+mio-named-pipes = "0.1"
 
 [features]
 default = []

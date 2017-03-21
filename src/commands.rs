@@ -192,87 +192,57 @@ fn redirect_error_log() -> Result<()> {
 }
 
 /// Re-execute the current executable as a background server.
-///
-/// `std::process::Command` doesn't expose a way to create a
-/// detatched process on Windows, so we have to roll our own.
-/// TODO: remove this all when `CommandExt::creation_flags` hits stable:
-/// https://github.com/rust-lang/rust/issues/37827
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use kernel32;
-    use named_pipe::PipeOptions;
-    use std::io::{Read, Error};
-    use std::os::windows::ffi::OsStrExt;
-    use std::mem;
-    use std::ptr;
+    use futures::Future;
+    use mio_named_pipes::NamedPipe;
+    use std::os::windows::process::CommandExt;
+    use std::time::Duration;
+    use tokio_core::io::read_exact;
+    use tokio_core::reactor::{Core, Timeout, PollEvented};
     use uuid::Uuid;
-    use winapi::minwindef::{TRUE,FALSE,LPVOID,DWORD};
-    use winapi::processthreadsapi::{PROCESS_INFORMATION,STARTUPINFOW};
-    use winapi::winbase::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
+    use winapi::{DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP};
 
     trace!("run_server_process");
-    // Create a pipe to get startup status back from the server.
+
+    // Create a mini event loop and register our named pipe server
+    let mut core = Core::new()?;
+    let handle = core.handle();
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().simple());
-    let server = PipeOptions::new(&pipe_name).single()?;
-    let exe_path = env::current_exe()?;
-    let mut exe = OsStr::new(&exe_path)
-        .encode_wide()
-        .chain(Some(0u16))
-        .collect::<Vec<u16>>();
-    // Collect existing env vars + extra into an environment block.
-    let mut envp = {
-        let mut v = vec!();
-        let extra_vars = vec![
-            (OsString::from("SCCACHE_START_SERVER"), OsString::from("1")),
-            (OsString::from("SCCACHE_STARTUP_NOTIFY"), OsString::from(&pipe_name)),
-            (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
-        ];
-        for (key, val) in env::vars_os().chain(extra_vars) {
-            v.extend(key.encode_wide().chain(Some('=' as u16)).chain(val.encode_wide()).chain(Some(0)));
-        }
-        v.push(0);
-        v
-    };
-    let mut pi = PROCESS_INFORMATION {
-        hProcess: ptr::null_mut(),
-        hThread: ptr::null_mut(),
-        dwProcessId: 0,
-        dwThreadId: 0,
-    };
-    let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
-    si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
-    if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
-                                         ptr::null_mut(),
-                                         ptr::null_mut(),
-                                         ptr::null_mut(),
-                                         FALSE,
-                                         CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                                         envp.as_mut_ptr() as LPVOID,
-                                         ptr::null(),
-                                         &mut si,
-                                         &mut pi) == TRUE } {
-        unsafe {
-            kernel32::CloseHandle(pi.hProcess);
-            kernel32::CloseHandle(pi.hThread);
-        }
-    } else {
-        return Err(Error::last_os_error().into())
+    let server = NamedPipe::new(&pipe_name)?;
+    let server = PollEvented::new(server, &handle)?;
+
+    // Connect a client to our server, and we'll wait below if it's still in
+    // progress.
+    match server.get_ref().connect() {
+        Ok(()) => {}
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+        Err(e) => return Err(e.into()),
     }
-    // Wait for a connection on the pipe.
-    let mut pipe = match server.wait_ms(SERVER_STARTUP_TIMEOUT_MS)? {
-        Ok(pipe) => pipe,
-        Err(_) => return Ok(ServerStartup::TimedOut),
-    };
-    // It would be nice to have a read timeout here.
-    let mut buffer = [0; 1];
-    pipe.read_exact(&mut buffer)?;
-    if buffer[0] == 0 {
-        info!("Server started up successfully");
-        Ok(ServerStartup::Ok)
-    } else {
-        //TODO: send error messages over the socket as well.
-        error!("Server startup failed: {}", buffer[0]);
-        Ok(ServerStartup::Err(format!("Server startup failed: {}", buffer[0]).into()))
+
+    // Spawn a server which should come back and connect to us
+    let exe_path = env::current_exe()?;
+    let _child = process::Command::new(exe_path)
+            .env("SCCACHE_START_SERVER", "1")
+            .env("SCCACHE_STARTUP_NOTIFY", &pipe_name)
+            .env("RUST_BACKTRACE", "1")
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .spawn()?;
+
+    let result = read_exact(server, [0u8]).map(|(_socket, byte)| {
+        if byte[0] == 0 {
+            ServerStartup::Ok
+        } else {
+            let err = format!("Server startup failed: {}", byte[0]).into();
+            ServerStartup::Err(err)
+        }
+    });
+
+    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = Timeout::new(timeout, &handle)?.map(|()| ServerStartup::TimedOut);
+    match core.run(result.select(timeout)) {
+        Ok((e, _other)) => Ok(e),
+        Err((e, _other)) => Err(e).chain_err(|| "failed waiting for server to start"),
     }
 }
 

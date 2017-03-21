@@ -192,7 +192,7 @@ impl RunCommand for AsyncCommand {
         self
     }
 
-    #[cfg(all(windows, feature = "unstable"))]
+    #[cfg(windows)]
     fn no_console(&mut self) -> &mut AsyncCommand {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -200,7 +200,7 @@ impl RunCommand for AsyncCommand {
         self
     }
 
-    #[cfg(not(all(windows, feature = "unstable")))]
+    #[cfg(unix)]
     fn no_console(&mut self) -> &mut AsyncCommand {
         self
     }

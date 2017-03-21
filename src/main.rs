@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(feature = "unstable", feature(windows_process_extensions))]
-
 extern crate app_dirs;
 extern crate chrono;
 extern crate clap;
@@ -38,7 +36,7 @@ extern crate lru_disk_cache;
 extern crate fern;
 extern crate libc;
 #[cfg(windows)]
-extern crate named_pipe;
+extern crate mio_named_pipes;
 extern crate number_prefix;
 extern crate protobuf;
 extern crate regex;
