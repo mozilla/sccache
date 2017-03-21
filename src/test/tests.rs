@@ -131,7 +131,7 @@ fn test_server_stats() {
     let stats = cache_stats_map(request_stats(conn).unwrap());
     assert_eq!(&CacheStat::Count(0), stats.get("Compile requests").unwrap());
     // Now signal it to shut down.
-    sender.complete(ServerMessage::Shutdown);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -172,7 +172,7 @@ fn test_server_unsupported_compiler() {
     assert_eq!(COMPILER_STDOUT, &stdout.into_inner()[..]);
     assert_eq!(COMPILER_STDERR, &stderr.into_inner()[..]);
     // Shut down the server.
-    sender.complete(ServerMessage::Shutdown);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }
@@ -227,7 +227,7 @@ fn test_server_compile() {
     assert_eq!(STDOUT, stdout.into_inner().as_slice());
     assert_eq!(STDERR, stderr.into_inner().as_slice());
     // Shut down the server.
-    sender.complete(ServerMessage::Shutdown);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.
     child.join().unwrap();
 }
