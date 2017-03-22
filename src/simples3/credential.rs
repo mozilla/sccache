@@ -355,19 +355,19 @@ impl ProvideAwsCredentials for IamProvider {
             };
 
             let access_key;
-            match json_object.find("AccessKeyId") {
+            match json_object.get("AccessKeyId") {
                 None => bail!("Couldn't find AccessKeyId in response."),
                 Some(val) => access_key = val.as_str().expect("AccessKeyId value was not a string").to_owned().replace("\"", "")
             };
 
             let secret_key;
-            match json_object.find("SecretAccessKey") {
+            match json_object.get("SecretAccessKey") {
                 None => bail!("Couldn't find SecretAccessKey in response."),
                 Some(val) => secret_key = val.as_str().expect("SecretAccessKey value was not a string").to_owned().replace("\"", "")
             };
 
             let expiration;
-            match json_object.find("Expiration") {
+            match json_object.get("Expiration") {
                 None => bail!("Couldn't find Expiration in response."),
                 Some(val) => expiration = val.as_str().expect("Expiration value was not a string").to_owned().replace("\"", "")
             };
@@ -377,7 +377,7 @@ impl ProvideAwsCredentials for IamProvider {
             })?;
 
             let token_from_response;
-            match json_object.find("Token") {
+            match json_object.get("Token") {
                 None => bail!("Couldn't find Token in response."),
                 Some(val) => token_from_response = val.as_str().expect("Token value was not a string").to_owned().replace("\"", "")
             };

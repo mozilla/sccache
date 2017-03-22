@@ -21,6 +21,7 @@ use commands::{
 };
 use env_logger;
 use log::LogLevel::Trace;
+use protocol::CacheStat;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};

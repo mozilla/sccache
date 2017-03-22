@@ -9,7 +9,8 @@ repository = "https://github.com/mozilla/sccache/"
 
 [dependencies]
 app_dirs = "1.1.1"
-bytes = "0.4"
+bincode = { git = 'https://github.com/TyOverby/bincode' }
+byteorder = "1.0"
 chrono = "0.2.25"
 clap = "2.3.0"
 env_logger = "0.3.3"
@@ -18,28 +19,30 @@ fern = "0.3.5"
 filetime = "0.1"
 futures = "0.1.11"
 futures-cpupool = "0.1"
-hyper = { git = "https://github.com/alexcrichton/hyper", branch = "tio" }
-hyper-tls = { git = "https://github.com/alexcrichton/hyper-tls", branch = "tio" }
+hyper = { git = "https://github.com/hyperium/hyper" }
+hyper-tls = { git = "https://github.com/hyperium/hyper-tls" }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache" }
 number_prefix = "0.2.5"
-protobuf = "1.0.18"
 regex = "0.1.65"
 retry = "0.4.0"
 rust-crypto = "0.2.36"
 rustc-serialize = "0.3"
-serde_json = "0.8.0"
+serde = "0.9"
+serde_derive = "0.9"
+serde_json = "0.9.0"
 sha1 = "0.2.0"
 tempdir = "0.3.4"
 time = "0.1.35"
 tokio-core = "0.1.6"
-tokio-proto = "0.1"
 tokio-io = "0.1"
+tokio-process = "0.1"
+tokio-proto = "0.1"
+tokio-serde-bincode = { git = "https://github.com/alexcrichton/tokio-serde-bincode" }
 tokio-service = "0.1"
 tokio-tls = "0.1"
-tokio-process = "0.1"
 uuid = { version = "0.3.1", features = ["v4"] }
 which = "0.2.1"
 zip = { version = "0.2", default-features = false }

@@ -16,16 +16,20 @@ use std::boxed::Box;
 use std::error;
 use std::io;
 
+use bincode;
 use futures::Future;
 use futures::future;
 use hyper;
 use lru_disk_cache;
+use serde_json;
 
 error_chain! {
     foreign_links {
         Io(io::Error);
         Hyper(hyper::Error);
         Lru(lru_disk_cache::Error);
+        Json(serde_json::Error);
+        Bincode(bincode::Error);
     }
 
     errors {

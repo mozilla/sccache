@@ -24,6 +24,7 @@ use ::commands::{
 use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
+use protocol::CacheStat;
 use ::mock_command::*;
 use ::server::{
     ServerMessage,
