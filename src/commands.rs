@@ -195,13 +195,18 @@ fn redirect_error_log() -> Result<()> {
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
     use futures::Future;
+    use kernel32;
     use mio_named_pipes::NamedPipe;
-    use std::os::windows::process::CommandExt;
+    use std::mem;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
     use std::time::Duration;
     use tokio_core::io::read_exact;
     use tokio_core::reactor::{Core, Timeout, PollEvented};
     use uuid::Uuid;
-    use winapi::{DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP};
+    use winapi::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
+    use winapi::{PROCESS_INFORMATION,STARTUPINFOW};
+    use winapi::{TRUE,FALSE,LPVOID,DWORD};
 
     trace!("run_server_process");
 
@@ -222,12 +227,56 @@ fn run_server_process() -> Result<ServerStartup> {
 
     // Spawn a server which should come back and connect to us
     let exe_path = env::current_exe()?;
-    let _child = process::Command::new(exe_path)
-            .env("SCCACHE_START_SERVER", "1")
-            .env("SCCACHE_STARTUP_NOTIFY", &pipe_name)
-            .env("RUST_BACKTRACE", "1")
-            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-            .spawn()?;
+	let mut exe = OsStr::new(&exe_path)
+						.encode_wide()
+						.chain(Some(0u16))
+                        .collect::<Vec<u16>>();
+    let mut envp = {
+        let mut v = vec!();
+        let extra_vars =
+        vec![
+            (OsString::from("SCCACHE_START_SERVER"), OsString::from("1")),
+            (OsString::from("SCCACHE_STARTUP_NOTIFY"), OsString::from(&pipe_name)),
+            (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
+        ];
+        for (key, val) in env::vars_os().chain(extra_vars) {
+            v.extend(key.encode_wide().chain(Some('=' as u16))
+                                      .chain(val.encode_wide())
+                                      .chain(Some(0)));
+        }
+        v.push(0);
+        v
+    };
+
+    // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
+    //       standard library's `Command` type and then use that instead.
+	let mut pi = PROCESS_INFORMATION {
+		hProcess: ptr::null_mut(),
+		hThread: ptr::null_mut(),
+		dwProcessId: 0,
+        dwThreadId: 0,
+    };
+    let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+    si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
+    if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
+                                         ptr::null_mut(),
+                                         ptr::null_mut(),
+                                         ptr::null_mut(),
+                                         FALSE,
+                                         CREATE_UNICODE_ENVIRONMENT |
+                                            DETACHED_PROCESS |
+                                            CREATE_NEW_PROCESS_GROUP,
+                                         envp.as_mut_ptr() as LPVOID,
+                                         ptr::null(),
+                                         &mut si,
+                                         &mut pi) == TRUE } {
+        unsafe {
+            kernel32::CloseHandle(pi.hProcess);
+            kernel32::CloseHandle(pi.hThread);
+        }
+    } else {
+        return Err(io::Error::last_os_error().into())
+    }
 
     let result = read_exact(server, [0u8]).map(|(_socket, byte)| {
         if byte[0] == 0 {
