@@ -146,15 +146,83 @@ fn run_server_process() -> Result<ServerStartup> {
 #[cfg(not(windows))]
 fn daemonize() -> Result<()> {
     use daemonize::Daemonize;
-    if match env::var("SCCACHE_NO_DAEMON") {
-            Ok(val) => val == "1",
-            Err(_) => false,
-    } {
-        Ok(())
-    } else {
-        Daemonize::new().start().chain_err(|| {
-            "failed to daemonize"
-        })
+    use libc;
+    use std::mem;
+
+    match env::var("SCCACHE_NO_DAEMON") {
+        Ok(ref val) if val == "1" => {}
+        _ => {
+            Daemonize::new().start().chain_err(|| {
+                "failed to daemonize"
+            })?;
+        }
+    }
+
+    static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;
+    static mut PREV_SIGBUS: *mut libc::sigaction = 0 as *mut _;
+    static mut PREV_SIGILL: *mut libc::sigaction = 0 as *mut _;
+
+    // We don't have a parent process any more once we've reached this point,
+    // which means that no one's probably listening for our exit status.
+    // In order to assist with debugging crashes of the server we configure our
+    // rlimit to allow core dumps and we also install a signal handler for
+    // segfaults which at least prints out what just happened.
+    unsafe {
+        match env::var("SCCACHE_ALLOW_CORE_DUMPS") {
+            Ok(ref val) if val == "1" => {
+                let rlim = libc::rlimit {
+                    rlim_cur: libc::RLIM_INFINITY,
+                    rlim_max: libc::RLIM_INFINITY,
+                };
+                libc::setrlimit(libc::RLIMIT_CORE, &rlim);
+            }
+            _ => {}
+        }
+
+        PREV_SIGSEGV = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
+        PREV_SIGBUS = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
+        PREV_SIGILL = Box::into_raw(Box::new(mem::zeroed::<libc::sigaction>()));
+        let mut new: libc::sigaction = mem::zeroed();
+        new.sa_sigaction = handler as usize;
+        new.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
+        libc::sigaction(libc::SIGSEGV, &new, &mut *PREV_SIGSEGV);
+        libc::sigaction(libc::SIGBUS, &new, &mut *PREV_SIGBUS);
+        libc::sigaction(libc::SIGILL, &new, &mut *PREV_SIGILL);
+    }
+
+    return Ok(());
+
+    extern fn handler(signum: libc::c_int,
+                      _info: *mut libc::siginfo_t,
+                      _ptr: *mut libc::c_void) {
+        use std::fmt::{Result, Write};
+
+        struct Stderr;
+
+        impl Write for Stderr {
+            fn write_str(&mut self, s: &str) -> Result {
+                unsafe {
+                    let bytes = s.as_bytes();
+                    libc::write(libc::STDERR_FILENO,
+                                bytes.as_ptr() as *const _,
+                                bytes.len());
+                    Ok(())
+                }
+            }
+        }
+
+        unsafe {
+            drop(writeln!(Stderr, "signal {} received", signum));
+
+            // Configure the old handler and then resume the program. This'll
+            // likely go on to create a core dump if one's configured to be
+            // created.
+            match signum {
+                libc::SIGBUS => libc::sigaction(signum, &*PREV_SIGBUS, 0 as *mut _),
+                libc::SIGILL => libc::sigaction(signum, &*PREV_SIGILL, 0 as *mut _),
+                _ => libc::sigaction(signum, &*PREV_SIGSEGV, 0 as *mut _),
+            };
+        }
     }
 }
 
