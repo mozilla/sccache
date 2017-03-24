@@ -168,16 +168,19 @@ fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, argumen
     let crate_name = crate_name.to_owned();
     Box::new(dep_info.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
-            match parse_dep_file(&dep_file, &cwd).chain_err(|| format!("Failed to parse dep info for {}", crate_name)) {
-                Ok(files) => {
-                    trace!("[{}]: got {} source files from dep-info in {}", crate_name,
-                           files.len(), fmt_duration_as_secs(&start.elapsed()));
-                    // Just to make sure we capture temp_dir.
-                    drop(temp_dir);
-                    hash_all(files, &pool)
-                }
-                Err(e) => return f_err(e),
-            }
+            let name2 = crate_name.clone();
+            let parsed = pool.spawn_fn(move || {
+                parse_dep_file(&dep_file, &cwd).chain_err(|| {
+                    format!("Failed to parse dep info for {}", name2)
+                })
+            });
+            Box::new(parsed.and_then(move |files| {
+                trace!("[{}]: got {} source files from dep-info in {}", crate_name,
+                       files.len(), fmt_duration_as_secs(&start.elapsed()));
+                // Just to make sure we capture temp_dir.
+                drop(temp_dir);
+                hash_all(files, &pool)
+            }))
         } else {
             f_err(format!("Failed run rustc --dep-info. rustc stderr: `{}`",
                           String::from_utf8_lossy(&output.stderr)))
