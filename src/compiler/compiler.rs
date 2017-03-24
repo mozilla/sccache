@@ -235,7 +235,7 @@ fn get_file_mode(path: &Path) -> Result<Option<u32>>
 }
 
 #[cfg(windows)]
-fn get_file_mode(path: &Path) -> Result<Option<u32>>
+fn get_file_mode(_path: &Path) -> Result<Option<u32>>
 {
     Ok(None)
 }
@@ -251,7 +251,7 @@ fn set_file_mode(path: &Path, mode: u32) -> Result<()>
 }
 
 #[cfg(windows)]
-fn set_file_mode(path: &Path, mode: u32) -> Result<()>
+fn set_file_mode(_path: &Path, _mode: u32) -> Result<()>
 {
     Ok(())
 }
