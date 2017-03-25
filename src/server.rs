@@ -244,6 +244,15 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             handle: handle.clone(),
             timeout_dur: timeout,
         };
+        let shutdown_idle = shutdown_idle.map(|a| {
+            info!("shutting down due to being idle");
+            a
+        });
+
+        let shutdown = shutdown.map(|a| {
+            info!("shutting down due to explicit signal");
+            a
+        });
 
         let server = future::select_all(vec![
             Box::new(server) as Box<Future<Item=_, Error=_>>,
@@ -255,6 +264,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         core.run(server)
             .map_err(|p| p.0)?;
 
+        info!("moving into the shutdown phase now, waiting at most 10 seconds \
+              for all client requests to complete");
+
         // Once our server has shut down either due to inactivity or a manual
         // request we still need to give a bit of time for all active
         // connections to finish. This `wait` future will resolve once all
@@ -264,6 +276,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // don't want to wait *too* long.
         core.run(wait.select(Timeout::new(Duration::new(10, 0), &handle)?))
             .map_err(|p| p.0)?;
+
+        info!("ok, fully shutting down now");
 
         Ok(())
     }
@@ -543,7 +557,8 @@ impl<C> SccacheService<C>
                                                   arguments,
                                                   cwd,
                                                   cache_control,
-                                                  self.pool.clone());
+                                                  self.pool.clone(),
+                                                  self.handle.clone());
         let me = self.clone();
         let task = result.then(move |result| {
             let mut res = ServerResponse::new();
@@ -568,6 +583,10 @@ impl<C> SccacheService<C>
                                 MissType::ForcedRecache => {
                                     stats.cache_misses += 1;
                                     stats.forced_recaches += 1;
+                                }
+                                MissType::TimedOut => {
+                                    stats.cache_misses += 1;
+                                    stats.cache_timeouts += 1;
                                 }
                             }
                             stats.cache_read_miss_duration += duration;
@@ -649,6 +668,8 @@ struct ServerStats {
     pub cache_hits: u64,
     /// The count of cache misses for handled compile requests.
     pub cache_misses: u64,
+    /// The count of cache misses because the cache took too long to respond.
+    pub cache_timeouts: u64,
     /// The count of compilations which were successful but couldn't be cached.
     pub non_cacheable_compilations: u64,
     /// The count of compilations which forcibly ignored the cache.
@@ -678,6 +699,7 @@ impl Default for ServerStats {
             cache_errors: u64::default(),
             cache_hits: u64::default(),
             cache_misses: u64::default(),
+            cache_timeouts: u64::default(),
             non_cacheable_compilations: u64::default(),
             forced_recaches: u64::default(),
             cache_write_errors: u64::default(),
@@ -720,6 +742,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_executed, "Compile requests executed");
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
+        set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");

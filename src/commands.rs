@@ -32,7 +32,7 @@ use number_prefix::{
     Prefixed,
     Standalone,
 };
-use protobuf::RepeatedField;
+use protobuf::{RepeatedField, ProtobufError};
 use protocol::{
     CacheStats,
     ClientRequest,
@@ -545,43 +545,61 @@ fn handle_compile_response<T>(mut creator: T,
         CompileResponse::CompileStarted(_) => {
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
-            let mut res = conn.read_one_response().chain_err(|| {
-                //TODO: something better here?
-                "error reading compile response from server"
-            })?;
-            if res.has_compile_finished() {
-                trace!("Server sent CompileFinished");
-                handle_compile_finished(res.take_compile_finished(),
-                                        stdout, stderr)
-            } else {
-                bail!("unexpected response from server")
+            match conn.read_one_response() {
+                Ok(mut res) => {
+                    if res.has_compile_finished() {
+                        trace!("Server sent CompileFinished");
+                        return handle_compile_finished(res.take_compile_finished(),
+                                                       stdout, stderr)
+                    } else {
+                        bail!("unexpected response from server")
+                    }
+                }
+
+                // Currently the shutdown behavior of the remote sccache server
+                // is to wait at most N seconds for all active connections to
+                // finish and then close everything. If we get unlucky and don't
+                // get a response then we just forge ahead locally and run the
+                // compilation ourselves.
+                Err(ProtobufError::IoError(ref e))
+                    if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    writeln!(io::stderr(),
+                             "warning: sccache server looks like it shut down \
+                              unexpectedly, compiling locally instead").unwrap();
+                }
+
+                Err(e) => return Err(e).chain_err(|| {
+                    //TODO: something better here?
+                    "error reading compile response from server"
+                })
             }
         }
         CompileResponse::UnhandledCompile(_) => {
             debug!("Server sent UnhandledCompile");
-            //TODO: possibly capture output here for testing.
-            let mut cmd = creator.new_command_sync(exe);
-            cmd.args(&cmdline)
-                .current_dir(cwd);
-            if log_enabled!(Trace) {
-                trace!("running command: {:?}", cmd);
-            }
-            let output = try!(core.run(run_input_output(cmd, None)));
-            if !output.stdout.is_empty() {
-                try!(stdout.write_all(&output.stdout));
-            }
-            if !output.stderr.is_empty() {
-                try!(stderr.write_all(&output.stderr));
-            }
-            Ok(output.status.code().unwrap_or_else(|| {
-                if let Some(sig) = status_signal(output.status) {
-                   println!("Compile terminated by signal {}", sig);
-                }
-                // Arbitrary.
-                2
-            }))
         }
+    };
+
+    //TODO: possibly capture output here for testing.
+    let mut cmd = creator.new_command_sync(exe);
+    cmd.args(&cmdline)
+        .current_dir(cwd);
+    if log_enabled!(Trace) {
+        trace!("running command: {:?}", cmd);
     }
+    let output = try!(core.run(run_input_output(cmd, None)));
+    if !output.stdout.is_empty() {
+        try!(stdout.write_all(&output.stdout));
+    }
+    if !output.stderr.is_empty() {
+        try!(stderr.write_all(&output.stderr));
+    }
+    Ok(output.status.code().unwrap_or_else(|| {
+        if let Some(sig) = status_signal(output.status) {
+           println!("Compile terminated by signal {}", sig);
+        }
+        // Arbitrary.
+        2
+    }))
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
