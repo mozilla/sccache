@@ -31,7 +31,7 @@ use std::process::{self, Stdio};
 use std::slice;
 use std::time::Instant;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, sha1_digest};
+use util::{fmt_duration_as_secs, os_str_bytes, sha1_digest};
 
 use errors::*;
 
@@ -550,8 +550,21 @@ impl<T> CompilerHasher<T> for RustHasher
             for h in source_hashes.into_iter().chain(extern_hashes) {
                 m.update(h.as_bytes());
             }
-            // 6. TODO: Environment variables: CARGO_* at the very least.
-            // https://github.com/mozilla/sccache/issues/89
+            // 6. Environment variables. Ideally we'd use anything referenced
+            // via env! in the program, but we don't have a way to determine that
+            // currently, and hashing all environment variables is too much, so
+            // we'll just hash the CARGO_ env vars and hope that's sufficient.
+            // Upstream Rust issue tracking getting information about env! usage:
+            // https://github.com/rust-lang/rust/issues/40364
+            let mut env_vars = env_vars.clone();
+            env_vars.sort();
+            for &(ref var, ref val) in env_vars.iter() {
+                if var.to_str().map(|s| s.starts_with("CARGO_")).unwrap_or(false) {
+                    m.update(os_str_bytes(var));
+                    m.update(b"=");
+                    m.update(os_str_bytes(val));
+                }
+            }
             // 7. TODO: native libraries being linked.
             // https://github.com/mozilla/sccache/issues/88
             // Turn arguments into a simple Vec<String> for compilation.
@@ -847,7 +860,9 @@ bar.rs:
         let pool = CpuPool::new(1);
         let res = hasher.generate_hash_key(&creator,
                                            &f.tempdir.path().to_string_lossy(),
-                                           &vec![],
+                                           &[(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
+                                             (OsString::from("FOO"), OsString::from("bar")),
+                                             (OsString::from("CARGO_BLAH"), OsString::from("abc"))],
                                            &pool).wait().unwrap();
         let mut m = sha1::Sha1::new();
         // Version.
@@ -862,6 +877,9 @@ bar.rs:
         m.update(EMPTY_DIGEST.as_bytes());
         // bar.rlib (extern crate, from externs)
         m.update(EMPTY_DIGEST.as_bytes());
+        // Env vars
+        m.update(b"CARGO_BLAH=abc");
+        m.update(b"CARGO_PKG_NAME=foo");
         let digest = m.digest().to_string();
         match res {
             HashResult::Ok { key, compilation } => {
