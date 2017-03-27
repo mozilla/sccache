@@ -51,11 +51,7 @@ use futures::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{
-    self,
-    Read,
-    Write,
-};
+use std::io;
 use std::path::Path;
 use std::process::{
     Command,
@@ -72,15 +68,16 @@ use tokio_process::{
     CommandExt,
 };
 use tokio_core::reactor::Handle;
+use tokio_io::{AsyncRead, AsyncWrite};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 pub trait CommandChild {
     /// The type of the process' standard input.
-    type I: Write + Sync + Send + 'static;
+    type I: AsyncWrite + Sync + Send + 'static;
     /// The type of the process' standard output.
-    type O: Read + Sync + Send + 'static;
+    type O: AsyncRead + Sync + Send + 'static;
     /// The type of the process' standard error.
-    type E: Read + Sync + Send + 'static;
+    type E: AsyncRead + Sync + Send + 'static;
 
     /// Take the stdin object from the process, if available.
     fn take_stdin(&mut self) -> Option<Self::I>;

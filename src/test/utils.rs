@@ -15,14 +15,13 @@
 #[cfg(unix)]
 use libc;
 use mock_command::*;
-use protocol::CacheStats;
+use protocol::{CacheStats, CacheStat};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
-
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
 use tokio_core::reactor::Core;
@@ -175,15 +174,8 @@ impl TestFixture {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum CacheStat {
-    Count(u64),
-    String(String),
-    Size(u64),
-}
-
-pub fn cache_stats_map(mut stats: CacheStats) -> HashMap<String, CacheStat> {
-    stats.take_stats().into_iter().map(|mut s| (s.take_name(), if s.has_count() { CacheStat::Count(s.get_count()) } else if s.has_size() { CacheStat::Size(s.get_size()) } else { CacheStat::String(s.take_str()) })).collect()
+pub fn cache_stats_map(stats: CacheStats) -> HashMap<String, CacheStat> {
+    stats.stats.into_iter().map(|s| (s.name, s.value)).collect()
 }
 
 #[test]

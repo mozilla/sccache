@@ -35,42 +35,27 @@ use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
 };
-use protobuf::{
-    self,
-    ProtobufError,
-    RepeatedField,
-    parse_length_delimited_from_bytes,
-};
-use protocol::{
-    ClientRequest,
-    CacheStats,
-    CacheStatistic,
-    Compile,
-    CompileFinished,
-    CompileStarted,
-    ServerResponse,
-    ShuttingDown,
-    UnhandledCompile,
-    UnknownCommand,
-};
-use std::collections::HashMap;
+use protocol::{Compile, CompileFinished, CompileResponse};
+use protocol::{Request, Response, CacheStats, CacheStat, CacheStatistic};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::metadata;
 use std::io::{self, Write};
-use std::marker;
 use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
-use std::process::Output;
+use std::process::{Output, ExitStatus};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_core::reactor::{Handle, Core, Timeout};
-use tokio_core::io::{Codec, EasyBuf, Io, Framed};
 use tokio_core::net::TcpListener;
+use tokio_core::reactor::{Handle, Core, Timeout};
+use tokio_io::codec::length_delimited::Framed;
+use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_proto::BindServer;
 use tokio_proto::streaming::pipeline::{Frame, ServerProto, Transport};
 use tokio_proto::streaming::{Body, Message};
+use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
 use util::fmt_duration_as_secs;
 
@@ -323,8 +308,8 @@ struct SccacheService<C: CommandCreatorSync> {
     info: ActiveInfo,
 }
 
-type SccacheRequest = Message<ClientRequest, Body<(), Error>>;
-type SccacheResponse = Message<ServerResponse, Body<ServerResponse, Error>>;
+type SccacheRequest = Message<Request, Body<(), Error>>;
+type SccacheResponse = Message<Response, Body<Response, Error>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -347,7 +332,6 @@ impl<C> Service for SccacheService<C>
     type Future = SFuture<Self::Response>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        let mut req = req.into_inner();
         trace!("handle_client");
 
         // Opportunistically let channel know that we've received a request. We
@@ -355,36 +339,32 @@ impl<C> Service for SccacheService<C>
         // that every message is received.
         drop(self.tx.clone().start_send(ServerMessage::Request));
 
-        if req.has_compile() {
-            debug!("handle_client: compile");
-            self.stats.borrow_mut().compile_requests += 1;
-            self.handle_compile(req.take_compile())
-        } else {
-            // Simple requests that can generate responses right away.
-            let mut res = ServerResponse::new();
-            if req.has_get_stats() {
+        let res = match req.into_inner() {
+            Request::Compile(compile) => {
+                debug!("handle_client: compile");
+                self.stats.borrow_mut().compile_requests += 1;
+                return self.handle_compile(compile)
+            }
+            Request::GetStats => {
                 debug!("handle_client: get_stats");
-                res.set_stats(self.get_stats());
-            } else if req.has_zero_stats() {
+                Response::Stats(self.get_stats())
+            }
+            Request::ZeroStats => {
                 debug!("handle_client: zero_stats");
-                res.set_stats(self.zero_stats());
-            } else if req.has_shutdown() {
+                Response::Stats(self.zero_stats())
+            }
+            Request::Shutdown => {
                 debug!("handle_client: shutdown");
                 let future = self.tx.clone().send(ServerMessage::Shutdown);
                 let me = self.clone();
                 return Box::new(future.then(move |_| {
-                    let mut shutting_down = ShuttingDown::new();
-                    shutting_down.set_stats(me.get_stats());
-                    res.set_shutting_down(shutting_down);
-                    Ok(Message::WithoutBody(res))
+                    let stats = me.get_stats();
+                    Ok(Message::WithoutBody(Response::ShuttingDown(stats)))
                 }))
-            } else {
-                warn!("handle_client: unknown command");
-                res.set_unknown(UnknownCommand::new());
             }
+        };
 
-            f_ok(Message::WithoutBody(res))
-        }
+        f_ok(Message::WithoutBody(res))
     }
 }
 
@@ -411,26 +391,26 @@ impl<C> SccacheService<C>
 
     /// Get stats about the cache.
     fn get_stats(&self) -> CacheStats {
-        let mut stats = CacheStats::new();
-        let mut stats_vec = self.stats.borrow().to_cache_statistics();
+        let mut stats = CacheStats {
+            stats: self.stats.borrow().to_cache_statistics(),
+        };
 
-        let mut stat = CacheStatistic::new();
-        stat.set_name(String::from("Cache location"));
-        stat.set_str(self.storage.location());
-        stats_vec.insert(0, stat);
+        stats.stats.push(CacheStatistic {
+            name: String::from("Cache location"),
+            value: CacheStat::String(self.storage.location()),
+        });
 
         for &(s, v) in [("Cache size", self.storage.current_size()),
                        ("Max cache size", self.storage.max_size())].iter() {
             v.map(|val| {
-                let mut stat = CacheStatistic::new();
-                stat.set_name(String::from(s));
-                stat.set_size(val as u64);
-                stats_vec.insert(0, stat);
+                stats.stats.push(CacheStatistic {
+                    name: String::from(s),
+                    value: CacheStat::Size(val as u64),
+                });
             });
         }
 
-        stats.set_stats(RepeatedField::from_vec(stats_vec));
-        stats
+        return stats
     }
 
     /// Zero and return stats about the cache.
@@ -445,12 +425,12 @@ impl<C> SccacheService<C>
     /// This will handle a compile request entirely, generating a response with
     /// the inital information and an optional body which will eventually
     /// contain the results of the compilation.
-    fn handle_compile(&self, mut compile: Compile)
+    fn handle_compile(&self, compile: Compile)
                       -> SFuture<SccacheResponse>
     {
-        let exe = compile.take_exe();
-        let cmd = compile.take_command().into_vec();
-        let cwd = compile.take_cwd();
+        let exe = compile.exe;
+        let cmd = compile.args;
+        let cwd = compile.cwd;
         let me = self.clone();
         Box::new(self.compiler_info(exe).map(move |info| {
             me.check_compiler(info, cmd, cwd)
@@ -502,7 +482,6 @@ impl<C> SccacheService<C>
                       cmd: Vec<String>,
                       cwd: String)
                       -> SccacheResponse {
-        let mut res = ServerResponse::new();
         let mut stats = self.stats.borrow_mut();
         match compiler {
             None => {
@@ -517,10 +496,10 @@ impl<C> SccacheService<C>
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok");
                         stats.requests_executed += 1;
-                        res.set_compile_started(CompileStarted::new());
                         let (tx, rx) = Body::pair();
                         self.start_compile_task(hasher, cmd, cwd, tx);
-                        return Message::WithBody(res, rx)
+                        let res = CompileResponse::CompileStarted;
+                        return Message::WithBody(Response::Compile(res), rx)
                     }
                     CompilerArguments::CannotCache => {
                         debug!("parse_arguments: CannotCache");
@@ -534,8 +513,8 @@ impl<C> SccacheService<C>
             }
         }
 
-        res.set_unhandled_compile(UnhandledCompile::new());
-        Message::WithoutBody(res)
+        let res = CompileResponse::UnhandledCompile;
+        Message::WithoutBody(Response::Compile(res))
     }
 
     /// Given compiler arguments `arguments`, look up
@@ -545,7 +524,7 @@ impl<C> SccacheService<C>
                           hasher: Box<CompilerHasher<C>>,
                           arguments: Vec<String>,
                           cwd: String,
-                          tx: mpsc::Sender<Result<ServerResponse>>) {
+                          tx: mpsc::Sender<Result<Response>>) {
         let cache_control = if self.force_recache {
             CacheControl::ForceRecache
         } else {
@@ -561,10 +540,9 @@ impl<C> SccacheService<C>
                                                   self.handle.clone());
         let me = self.clone();
         let task = result.then(move |result| {
-            let mut res = ServerResponse::new();
-            let mut finish = CompileFinished::new();
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
+            let mut res = CompileFinished::default();
             match result {
                 Ok((compiled, out)) => {
                     match compiled {
@@ -601,13 +579,23 @@ impl<C> SccacheService<C>
                         }
                     };
                     let Output { status, stdout, stderr } = out;
-                    status.code()
-                        .map_or_else(
-                            || trace!("CompileFinished missing retcode"),
-                            |s| { trace!("CompileFinished retcode: {}", s); finish.set_retcode(s) });
-                    //TODO: sort out getting signal return on Unix
-                    finish.set_stdout(stdout);
-                    finish.set_stderr(stderr);
+                    trace!("CompileFinished retcode: {}", status);
+                    match status.code() {
+                        Some(code) => res.retcode = Some(code),
+                        None => res.signal = Some(get_signal(status)),
+                    };
+                    res.stdout = stdout;
+                    res.stderr = stderr;
+
+                    #[cfg(unix)]
+                    fn get_signal(status: ExitStatus) -> i32 {
+                        use std::os::unix::prelude::*;
+                        status.signal().expect("must have signal")
+                    }
+                    #[cfg(windows)]
+                    fn get_signal(_status: ExitStatus) -> i32 {
+                        panic!("no signals on windows")
+                    }
                 }
                 Err(err) => {
                     debug!("[{:?}] compilation failed: {:?}",
@@ -618,11 +606,10 @@ impl<C> SccacheService<C>
                     }
                     stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?
-                    finish.set_retcode(-2);
+                    res.retcode = Some(-2);
                 }
             };
-            res.set_compile_finished(finish);
-            let send = tx.send(Ok(res));
+            let send = tx.send(Ok(Response::CompileFinished(res)));
 
             let me = me.clone();
             let cache_write = cache_write.then(move |result| {
@@ -716,24 +703,25 @@ impl ServerStats {
     fn to_cache_statistics(&self) -> Vec<CacheStatistic> {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
-                let mut stat = CacheStatistic::new();
-                stat.set_name(String::from($name));
-                stat.set_count($var);
-                $vec.push(stat);
+                $vec.push(CacheStatistic {
+                    name: String::from($name),
+                    value: CacheStat::Count($var),
+                });
             }};
         }
 
         macro_rules! set_duration_stat {
             ($vec:ident, $dur:expr, $num:expr, $name:expr) => {{
-                let mut stat = CacheStatistic::new();
-                stat.set_name(String::from($name));
-                if $num > 0 {
+                let s = if $num > 0 {
                     let duration = $dur / $num as u32;
-                    stat.set_str(fmt_duration_as_secs(&duration));
+                    fmt_duration_as_secs(&duration)
                 } else {
-                    stat.set_str("0.000s".to_owned());
-                }
-                $vec.push(stat);
+                    "0.000s".to_owned()
+                };
+                $vec.push(CacheStatistic {
+                    name: String::from($name),
+                    value: CacheStat::String(s),
+                });
             }};
         }
 
@@ -762,37 +750,50 @@ impl ServerStats {
 struct SccacheProto;
 
 impl<I> ServerProto<I> for SccacheProto
-    where I: Io + 'static,
+    where I: AsyncRead + AsyncWrite + 'static,
 {
-    type Request = ClientRequest;
+    type Request = Request;
     type RequestBody = ();
-    type Response = ServerResponse;
-    type ResponseBody = ServerResponse;
+    type Response = Response;
+    type ResponseBody = Response;
     type Error = Error;
     type Transport = SccacheTransport<I>;
     type BindTransport = future::FutureResult<Self::Transport, io::Error>;
 
     fn bind_transport(&self, io: I) -> Self::BindTransport {
         future::ok(SccacheTransport {
-            inner: io.framed(ProtobufCodec::new()),
+            inner: WriteBincode::new(ReadBincode::new(Framed::new(io))),
         })
     }
 }
 
-/// Implementation of `Stream + Sink` that tokio-proto is expecting. This takes
-/// a `Framed` instance using `ProtobufCodec` and performs a simple map
-/// operation on the sink/stream halves to translate the protobuf message types
-/// to the `Frame` types that tokio-proto expects.
-struct SccacheTransport<I> {
-    inner: Framed<I, ProtobufCodec<ClientRequest, ServerResponse>>,
+/// Implementation of `Stream + Sink` that tokio-proto is expecting
+///
+/// This type is composed of a few layers:
+///
+/// * First there's `I`, the I/O object implementing `AsyncRead` and
+///   `AsyncWrite`
+/// * Next that's framed using the `length_delimited` module in tokio-io giving
+///   us a `Sink` and `Stream` of `BytesMut`.
+/// * Next that sink/stream is wrapped in `ReadBincode` which will cause the
+///   `Stream` implementation to switch from `BytesMut` to `Request` by parsing
+///   the bytes  bincode.
+/// * Finally that sink/stream is wrapped in `WriteBincode` which will cause the
+///   `Sink` implementation to switch from `BytesMut` to `Response` meaning that
+///   all `Response` types pushed in will be converted to `BytesMut` and pushed
+///   below.
+struct SccacheTransport<I: AsyncRead + AsyncWrite> {
+    inner: WriteBincode<ReadBincode<Framed<I>, Request>, Response>,
 }
 
-impl<I: Io> Stream for SccacheTransport<I> {
-    type Item = Frame<ClientRequest, (), Error>;
+impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
+    type Item = Frame<Request, (), Error>;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
-        let msg = try_ready!(self.inner.poll());
+        let msg = try_ready!(self.inner.poll().map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, e)
+        }));
         Ok(msg.map(|m| {
             Frame::Message {
                 message: m,
@@ -802,8 +803,8 @@ impl<I: Io> Stream for SccacheTransport<I> {
     }
 }
 
-impl<I: Io> Sink for SccacheTransport<I> {
-    type SinkItem = Frame<ServerResponse, ServerResponse, Error>;
+impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
+    type SinkItem = Frame<Response, Response, Error>;
     type SinkError = io::Error;
 
     fn start_send(&mut self, item: Self::SinkItem)
@@ -844,68 +845,13 @@ impl<I: Io> Sink for SccacheTransport<I> {
     fn poll_complete(&mut self) -> Poll<(), io::Error> {
         self.inner.poll_complete()
     }
-}
 
-impl<I: Io + 'static> Transport for SccacheTransport<I> {}
-
-/// Simple tokio-core `Codec` which uses stock protobuf functions to
-/// decode/encode protobuf messages.
-struct ProtobufCodec<Request, Response> {
-    _marker: marker::PhantomData<fn() -> (Request, Response)>,
-}
-
-impl<Request, Response> ProtobufCodec<Request, Response>
-    where Request: protobuf::Message + protobuf::MessageStatic,
-          Response: protobuf::Message,
-{
-    fn new() -> ProtobufCodec<Request, Response> {
-        ProtobufCodec { _marker: marker::PhantomData }
+    fn close(&mut self) -> Poll<(), io::Error> {
+        self.inner.close()
     }
 }
 
-impl<Request, Response> Codec for ProtobufCodec<Request, Response>
-    where Request: protobuf::Message + protobuf::MessageStatic,
-          Response: protobuf::Message,
-{
-    type In = Request;
-    type Out = Response;
-
-    fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Request>> {
-        if buf.as_slice().len() == 0 {
-            return Ok(None)
-        }
-        match parse_length_delimited_from_bytes::<Request>(buf.as_slice()) {
-            Ok(req) => {
-                let size = req.write_length_delimited_to_bytes().unwrap().len();
-                buf.drain_to(size);
-                Ok(Some(req))
-            }
-            // Unexpected EOF is OK, just means we haven't read enough
-            // bytes. It would be nice if this were discriminated more
-            // usefully.
-            // Issue filed: https://github.com/stepancheg/rust-protobuf/issues/154
-            Err(ProtobufError::WireError(s)) => {
-                if s == "truncated message" {
-                    Ok(None)
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, s))
-                }
-            }
-            Err(ProtobufError::IoError(ioe)) => Err(ioe),
-            Err(ProtobufError::MessageNotInitialized { message }) => {
-                Err(io::Error::new(io::ErrorKind::Other, message))
-            }
-        }
-    }
-
-    fn encode(&mut self, msg: Response, buf: &mut Vec<u8>) -> io::Result<()> {
-        let bytes = msg.write_length_delimited_to_bytes().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, e)
-        })?;
-        buf.extend_from_slice(&bytes);
-        Ok(())
-    }
-}
+impl<I: AsyncRead + AsyncWrite + 'static> Transport for SccacheTransport<I> {}
 
 struct ShutdownOrInactive {
     rx: mpsc::Receiver<ServerMessage>,

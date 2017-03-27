@@ -582,7 +582,7 @@ pub fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
                                  -> SFuture<process::Output>
     where T: CommandChild + 'static,
 {
-    use tokio_core::io::{write_all, read_to_end};
+    use tokio_io::io::{write_all, read_to_end};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|stdin| {
             write_all(stdin, i)
