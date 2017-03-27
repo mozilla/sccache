@@ -430,13 +430,19 @@ fn print_stats(stats: CacheStats) -> Result<()> {
 }
 
 /// Send a `Compile` request to the server, and return the server response if successful.
-fn request_compile<W: AsRef<Path>, X: AsRef<OsStr>, Y: AsRef<Path>>(conn: &mut ServerConnection, exe: W, args: &Vec<X>, cwd: Y) -> Result<CompileResponse> {
+fn request_compile<W, X, Y>(conn: &mut ServerConnection, exe: W, args: &Vec<X>, cwd: Y,
+                            env_vars: Vec<(OsString, OsString)>) -> Result<CompileResponse>
+    where W: AsRef<Path>,
+          X: AsRef<OsStr>,
+          Y: AsRef<Path>,
+{
     let req = Request::Compile(Compile {
         exe: exe.as_ref().to_str().ok_or("bad exe")?.to_owned(),
         cwd: cwd.as_ref().to_str().ok_or("bad cwd")?.to_owned(),
         args: args.iter().map(|a| {
-            a.as_ref().to_str().ok_or("bad cwd".into()).map(|s| s.to_owned())
+            a.as_ref().to_str().ok_or("bad arg".into()).map(|s| s.to_owned())
         }).collect::<Result<_>>()?,
+        env_vars: env_vars,
     });
     trace!("request_compile: {:?}", req);
     //TODO: better error mapping?
@@ -567,13 +573,14 @@ pub fn do_compile<T>(creator: T,
                      cmdline: Vec<OsString>,
                      cwd: &Path,
                      path: Option<OsString>,
+                     env_vars: Vec<(OsString, OsString)>,
                      stdout: &mut Write,
                      stderr: &mut Write) -> Result<i32>
-    where T : CommandCreatorSync,
+    where T: CommandCreatorSync,
 {
     trace!("do_compile");
     let exe_path = which_in(exe, path, &cwd)?;
-    let res = request_compile(&mut conn, &exe_path, &cmdline, &cwd)?;
+    let res = request_compile(&mut conn, &exe_path, &cmdline, &cwd, env_vars)?;
     handle_compile_response(creator, core, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr)
 }
 
@@ -620,7 +627,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let stats = request_shutdown(server)?;
             print_stats(stats)?
         }
-        Command::Compile { exe, cmdline, cwd } => {
+        Command::Compile { exe, cmdline, cwd, env_vars } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             let conn = connect_or_start_server(get_port())?;
             let mut core = Core::new()?;
@@ -631,6 +638,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                                  cmdline,
                                  &cwd,
                                  env::var_os("PATH"),
+                                 env_vars,
                                  &mut io::stdout(),
                                  &mut io::stderr());
             return res.chain_err(|| {

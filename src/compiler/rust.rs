@@ -22,6 +22,7 @@ use sha1;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
 use std::iter::FromIterator;
@@ -144,7 +145,9 @@ fn hash_all(files: Vec<String>, pool: &CpuPool) -> SFuture<Vec<String>>
 }
 
 /// Calculate SHA-1 digests for all source files listed in rustc's dep-info output.
-fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, arguments: &[String], cwd: &str, pool: &CpuPool) -> SFuture<Vec<String>>
+fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, arguments: &[String],
+                        cwd: &str, env_vars: &[(OsString, OsString)], pool: &CpuPool)
+                        -> SFuture<Vec<String>>
     where T: CommandCreatorSync,
 {
     let start = Instant::now();
@@ -159,6 +162,8 @@ fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, argumen
         .args(&["--emit", "dep-info"])
         .arg("-o")
         .arg(&dep_file)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     let dep_info = run_input_output(cmd, None);
@@ -215,12 +220,15 @@ fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
 }
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
-fn get_compiler_outputs<T>(creator: &T, executable: &str, arguments: &[String], cwd: &str) -> SFuture<Vec<String>>
+fn get_compiler_outputs<T>(creator: &T, executable: &str, arguments: &[String], cwd: &str,
+                           env_vars: &[(OsString, OsString)]) -> SFuture<Vec<String>>
     where T: CommandCreatorSync,
 {
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", cmd);
@@ -482,6 +490,7 @@ impl<T> CompilerHasher<T> for RustHasher
     fn generate_hash_key(self: Box<Self>,
                          creator: &T,
                          cwd: &str,
+                         env_vars: &[(OsString, OsString)],
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
@@ -500,7 +509,7 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
-        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, cwd, pool);
+        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, cwd, env_vars, pool);
         // Hash the contents of the externs listed on the commandline.
         let cwp = Path::new(cwd);
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
@@ -510,6 +519,7 @@ impl<T> CompilerHasher<T> for RustHasher
                                      &pool);
         let creator = creator.clone();
         let cwd = cwd.to_owned();
+        let env_vars = env_vars.to_vec();
         let hashes = source_hashes.join(extern_hashes);
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes)| -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
@@ -548,7 +558,7 @@ impl<T> CompilerHasher<T> for RustHasher
             let arguments = arguments.into_iter()
                 .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
                 .collect::<Vec<_>>();
-            Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd).map(move |outputs| {
+            Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd, &env_vars).map(move |outputs| {
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.
                 let mut outputs = outputs.into_iter()
@@ -589,6 +599,7 @@ impl<T> Compilation<T> for RustCompilation
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &str,
+               env_vars: &[(OsString, OsString)],
                _pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>
     {
@@ -597,6 +608,8 @@ impl<T> Compilation<T> for RustCompilation
         trace!("[{}]: compile", crate_name);
         let mut cmd = creator.clone().new_command_sync(&executable);
         cmd.args(&arguments)
+            .env_clear()
+            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
             .current_dir(cwd);
         trace!("compile: {:?}", cmd);
         Box::new(run_input_output(cmd, None).map(|output| {
@@ -723,7 +736,7 @@ mod test {
     fn test_get_compiler_outputs() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\nbaz", "")));
-        let outputs = get_compiler_outputs(&creator, "rustc", &stringvec!("a", "b"), "cwd").wait().unwrap();
+        let outputs = get_compiler_outputs(&creator, "rustc", &stringvec!("a", "b"), "cwd", &[]).wait().unwrap();
         assert_eq!(outputs, &["foo", "bar", "baz"]);
     }
 
@@ -731,7 +744,7 @@ mod test {
     fn test_get_compiler_outputs_fail() {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "error")));
-        assert!(get_compiler_outputs(&creator, "rustc", &stringvec!("a", "b"), "cwd").wait().is_err());
+        assert!(get_compiler_outputs(&creator, "rustc", &stringvec!("a", "b"), "cwd", &[]).wait().is_err());
     }
 
     #[test]
@@ -834,6 +847,7 @@ bar.rs:
         let pool = CpuPool::new(1);
         let res = hasher.generate_hash_key(&creator,
                                            &f.tempdir.path().to_string_lossy(),
+                                           &vec![],
                                            &pool).wait().unwrap();
         let mut m = sha1::Sha1::new();
         // Version.

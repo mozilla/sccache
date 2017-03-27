@@ -28,7 +28,7 @@ use mock_command::{
     RunCommand,
 };
 use std::collections::{HashMap,HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{
     self,
@@ -62,10 +62,11 @@ impl CCompilerImpl for MSVC {
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        preprocess(creator, executable, parsed_args, cwd, &self.includes_prefix, pool)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix, pool)
     }
 
     fn compile<T>(&self,
@@ -74,11 +75,12 @@ impl CCompilerImpl for MSVC {
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
+                  env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -294,6 +296,7 @@ pub fn preprocess<T>(creator: &T,
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      includes_prefix: &str,
                      _pool: &CpuPool)
                      -> SFuture<process::Output>
@@ -304,6 +307,8 @@ pub fn preprocess<T>(creator: &T,
         .arg(&parsed_args.input)
         .arg("-nologo")
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
     if parsed_args.depfile.is_some() {
         cmd.arg("-showIncludes");
@@ -361,6 +366,7 @@ fn compile<T>(creator: &T,
               preprocessor_output: Vec<u8>,
               parsed_args: &ParsedArguments,
               cwd: &str,
+              env_vars: &[(OsString, OsString)],
               pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
@@ -399,6 +405,8 @@ fn compile<T>(creator: &T,
     cmd.arg("-c")
         .arg(&format!("-Fo{}", out_file))
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
     let output = write.and_then(move |(tempdir, input)| {
         cmd.arg(input);
@@ -419,6 +427,8 @@ fn compile<T>(creator: &T,
         .arg(&parsed_args.input)
         .arg(&format!("-Fo{}", out_file))
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
     Box::new(output.and_then(move |output| -> SFuture<_> {
         if output.status.success() {
@@ -593,6 +603,7 @@ mod test {
                                      vec!(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
+                                     &[],
                                      &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
@@ -623,6 +634,7 @@ mod test {
                                      vec!(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
+                                     &[],
                                      &pool).wait().unwrap();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
@@ -652,6 +664,7 @@ mod test {
                                      vec!(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
+                                     &[],
                                      &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
