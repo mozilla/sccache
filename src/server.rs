@@ -431,9 +431,10 @@ impl<C> SccacheService<C>
         let exe = compile.exe;
         let cmd = compile.args;
         let cwd = compile.cwd;
+        let env_vars = compile.env_vars;
         let me = self.clone();
         Box::new(self.compiler_info(exe).map(move |info| {
-            me.check_compiler(info, cmd, cwd)
+            me.check_compiler(info, cmd, cwd, env_vars)
         }))
     }
 
@@ -480,8 +481,9 @@ impl<C> SccacheService<C>
     fn check_compiler(&self,
                       compiler: Option<Box<Compiler<C>>>,
                       cmd: Vec<String>,
-                      cwd: String)
-                      -> SccacheResponse {
+                      cwd: String,
+                      env_vars: Vec<(OsString, OsString)>) -> SccacheResponse
+    {
         let mut stats = self.stats.borrow_mut();
         match compiler {
             None => {
@@ -497,7 +499,7 @@ impl<C> SccacheService<C>
                         debug!("parse_arguments: Ok");
                         stats.requests_executed += 1;
                         let (tx, rx) = Body::pair();
-                        self.start_compile_task(hasher, cmd, cwd, tx);
+                        self.start_compile_task(hasher, cmd, cwd, env_vars, tx);
                         let res = CompileResponse::CompileStarted;
                         return Message::WithBody(Response::Compile(res), rx)
                     }
@@ -524,6 +526,7 @@ impl<C> SccacheService<C>
                           hasher: Box<CompilerHasher<C>>,
                           arguments: Vec<String>,
                           cwd: String,
+                          env_vars: Vec<(OsString, OsString)>,
                           tx: mpsc::Sender<Result<Response>>) {
         let cache_control = if self.force_recache {
             CacheControl::ForceRecache
@@ -535,6 +538,7 @@ impl<C> SccacheService<C>
                                                   self.storage.clone(),
                                                   arguments,
                                                   cwd,
+                                                  env_vars,
                                                   cache_control,
                                                   self.pool.clone(),
                                                   self.handle.clone());

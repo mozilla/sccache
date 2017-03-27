@@ -90,6 +90,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     fn generate_hash_key(self: Box<Self>,
                          creator: &T,
                          cwd: &str,
+                         env_vars: &[(OsString, OsString)],
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>;
     /// Look up a cached compile result in `storage`. If not found, run the
@@ -99,6 +100,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                              storage: Arc<Storage>,
                              arguments: Vec<String>,
                              cwd: String,
+                             env_vars: Vec<(OsString, OsString)>,
                              cache_control: CacheControl,
                              pool: CpuPool,
                              handle: Handle)
@@ -110,7 +112,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
             debug!("[{}]: get_cached_or_compile: {}", out_file, cmd_str);
         }
         let start = Instant::now();
-        let result = self.generate_hash_key(&creator, &cwd, &pool);
+        let result = self.generate_hash_key(&creator, &cwd, &env_vars, &pool);
         Box::new(result.and_then(move |hash_res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_file, fmt_duration_as_secs(&start.elapsed()));
             let (key, compilation) = match hash_res {
@@ -194,7 +196,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 // Cache miss, so compile it.
                 let start = Instant::now();
                 let out_file = out_file.clone();
-                let compile = compilation.compile(&creator, &cwd, &pool);
+                let compile = compilation.compile(&creator, &cwd, &env_vars, &pool);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
@@ -276,6 +278,7 @@ pub trait Compilation<T>
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &str,
+               env_vars: &[(OsString, OsString)],
                pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>;
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a String)> + 'a>;
@@ -777,6 +780,7 @@ mod test {
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.clone(),
+                                                         vec![],
                                                          CacheControl::Default,
                                                          pool.clone(),
                                                          handle.clone()).wait().unwrap();
@@ -801,6 +805,7 @@ mod test {
                                                           storage.clone(),
                                                           arguments,
                                                           cwd,
+                                                          vec![],
                                                           CacheControl::Default,
                                                           pool.clone(),
                                                           handle).wait().unwrap();
@@ -856,6 +861,7 @@ mod test {
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.clone(),
+                                                         vec![],
                                                          CacheControl::Default,
                                                          pool.clone(),
                                                          handle.clone()).wait().unwrap();
@@ -881,6 +887,7 @@ mod test {
                                                           storage,
                                                           arguments,
                                                           cwd,
+                                                          vec![],
                                                           CacheControl::Default,
                                                           pool,
                                                           handle).wait().unwrap();
@@ -940,6 +947,7 @@ mod test {
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.clone(),
+                                                         vec![],
                                                          CacheControl::Default,
                                                          pool.clone(),
                                                          handle.clone()).wait().unwrap();
@@ -961,6 +969,7 @@ mod test {
                                                           storage,
                                                           arguments,
                                                           cwd,
+                                                          vec![],
                                                           CacheControl::ForceRecache,
                                                           pool,
                                                           handle).wait().unwrap();
@@ -1009,6 +1018,7 @@ mod test {
                                                          storage,
                                                          arguments,
                                                          cwd,
+                                                         vec![],
                                                          CacheControl::Default,
                                                          pool,
                                                          handle).wait().unwrap();

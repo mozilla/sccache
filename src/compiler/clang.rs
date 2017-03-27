@@ -29,6 +29,7 @@ use mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{
     self,
@@ -57,10 +58,11 @@ impl CCompilerImpl for Clang {
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        gcc::preprocess(creator, executable, parsed_args, cwd, pool)
+        gcc::preprocess(creator, executable, parsed_args, cwd, env_vars, pool)
     }
 
     fn compile<T>(&self,
@@ -69,11 +71,12 @@ impl CCompilerImpl for Clang {
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
+                  env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -90,6 +93,7 @@ fn compile<T>(creator: &T,
               preprocessor_output: Vec<u8>,
               parsed_args: &ParsedArguments,
               cwd: &str,
+              env_vars: &[(OsString, OsString)],
               pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync,
@@ -117,6 +121,8 @@ fn compile<T>(creator: &T,
         .arg("-o")
         .arg(&out_file)
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
     let output = write.and_then(move |(tempdir, input)| {
         attempt.arg(&input);
@@ -141,6 +147,8 @@ fn compile<T>(creator: &T,
         .arg("-o")
         .arg(&out_file)
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
     Box::new(output.and_then(move |output| -> SFuture<_> {
         if !output.status.success() {
@@ -223,6 +231,7 @@ mod test {
                                      vec!(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
+                                     &[],
                                      &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
@@ -252,6 +261,7 @@ mod test {
                                           vec!(),
                                           &parsed_args,
                                           f.tempdir.path().to_str().unwrap(),
+                                          &[],
                                           &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         assert_eq!(exit_status(0), output.status);

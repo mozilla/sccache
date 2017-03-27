@@ -18,12 +18,12 @@ use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
 use sha1;
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::env;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::Path;
 use std::process;
-use util::sha1_digest;
+use util::{os_str_bytes, sha1_digest};
 
 use errors::*;
 
@@ -106,6 +106,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync;
     /// Run the C compiler with the specified set of arguments, using the
@@ -116,6 +117,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
+                  env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync;
@@ -167,13 +169,15 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
     fn generate_hash_key(self: Box<Self>,
                          creator: &T,
                          cwd: &str,
+                         env_vars: &[(OsString, OsString)],
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
         let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
-        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, pool);
+        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, env_vars, pool);
         let out_file = parsed_args.output_file().into_owned();
+        let env_vars = env_vars.to_vec();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_file, e);
             e
@@ -202,7 +206,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     .filter(|a| **a != out_file)
                     .map(|a| a.as_str())
                     .collect::<String>();
-                hash_key(&executable_digest, &arguments, &preprocessor_result.stdout)
+                hash_key(&executable_digest, &arguments, &env_vars, &preprocessor_result.stdout)
             };
             HashResult::Ok {
                 key: key,
@@ -231,12 +235,14 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &str,
+               env_vars: &[(OsString, OsString)],
                pool: &CpuPool)
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
         let CCompilation { parsed_args, executable, preprocessor_output, compiler } = me;
-        compiler.compile(creator, &executable, preprocessor_output, &parsed_args, cwd, pool)
+        compiler.compile(creator, &executable, preprocessor_output, &parsed_args, cwd, env_vars,
+                         pool)
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a String)> + 'a>
@@ -255,19 +261,21 @@ pub const CACHED_ENV_VARS : &'static [&'static str] = &[
 ];
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
-pub fn hash_key(compiler_digest: &str, arguments: &str, preprocessor_output: &[u8]) -> String {
+pub fn hash_key(compiler_digest: &str, arguments: &str, env_vars: &[(OsString, OsString)],
+                preprocessor_output: &[u8]) -> String
+{
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
     let mut m = sha1::Sha1::new();
     m.update(compiler_digest.as_bytes());
     m.update(CACHE_VERSION);
     m.update(arguments.as_bytes());
-    //TODO: should propogate these over from the client.
-    // https://github.com/glandium/sccache/issues/5
-    for var in CACHED_ENV_VARS.iter() {
-        if let Ok(val) = env::var(var) {
-            m.update(var.as_bytes());
+    //TODO: use lazy_static.
+    let cached_env_vars: HashSet<OsString> = CACHED_ENV_VARS.iter().map(|v| OsStr::new(v).to_os_string()).collect();
+    for &(ref var, ref val) in env_vars.iter() {
+        if cached_env_vars.contains(var) {
+            m.update(os_str_bytes(var));
             m.update(&b"="[..]);
-            m.update(val.as_bytes());
+            m.update(os_str_bytes(val));
         }
     }
     m.update(preprocessor_output);
@@ -277,35 +285,34 @@ pub fn hash_key(compiler_digest: &str, arguments: &str, preprocessor_output: &[u
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::env;
 
     #[test]
     fn test_hash_key_executable_contents_differs() {
         let args = "a b c";
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key("abcd", &args, &PREPROCESSED),
-                    hash_key("wxyz", &args, &PREPROCESSED));
+        assert_neq!(hash_key("abcd", &args, &[], &PREPROCESSED),
+                    hash_key("wxyz", &args, &[], &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_args_differs() {
         let digest = "abcd";
         const PREPROCESSED: &'static [u8] = b"hello world";
-        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
-                    hash_key(digest, "x y z", &PREPROCESSED));
+        assert_neq!(hash_key(digest, "a b c", &[], &PREPROCESSED),
+                    hash_key(digest, "x y z", &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
-                    hash_key(digest, "a b", &PREPROCESSED));
+        assert_neq!(hash_key(digest, "a b c", &[], &PREPROCESSED),
+                    hash_key(digest, "a b", &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, "a b c", &PREPROCESSED),
-                    hash_key(digest, "a", &PREPROCESSED));
+        assert_neq!(hash_key(digest, "a b c", &[], &PREPROCESSED),
+                    hash_key(digest, "a", &[], &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let args = "a b c";
-        assert_neq!(hash_key("abcd", &args, &b"hello world"[..]),
-                    hash_key("abcd", &args, &b"goodbye"[..]));
+        assert_neq!(hash_key("abcd", &args, &[], &b"hello world"[..]),
+                    hash_key("abcd", &args, &[], &b"goodbye"[..]));
     }
 
     #[test]
@@ -314,17 +321,11 @@ mod test {
         let digest = "abcd";
         const PREPROCESSED: &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let old = env::var_os(var);
-            env::remove_var(var);
-            let h1 = hash_key(digest, &args, &PREPROCESSED);
-            env::set_var(var, "something");
-            let h2 = hash_key(digest, &args, &PREPROCESSED);
-            env::set_var(var, "something else");
-            let h3 = hash_key(digest, &args, &PREPROCESSED);
-            match old {
-                Some(val) => env::set_var(var, val),
-                None => env::remove_var(var),
-            }
+            let h1 = hash_key(digest, &args, &[], &PREPROCESSED);
+            let vars = vec![(OsString::from(var), OsString::from("something"))];
+            let h2 = hash_key(digest, &args, &vars, &PREPROCESSED);
+            let vars = vec![(OsString::from(var), OsString::from("something else"))];
+            let h3 = hash_key(digest, &args, &vars, &PREPROCESSED);
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }

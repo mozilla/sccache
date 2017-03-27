@@ -166,7 +166,7 @@ fn test_server_unsupported_compiler() {
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
     let mut core = Core::new().unwrap();
-    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, vec![], &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(0, client_creator.lock().unwrap().children.len());
@@ -222,7 +222,7 @@ fn test_server_compile() {
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
     let mut core = Core::new().unwrap();
-    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, &mut stdout, &mut stderr).unwrap());
+    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, vec![], &mut stdout, &mut stderr).unwrap());
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
     assert_eq!(STDOUT, stdout.into_inner().as_slice());

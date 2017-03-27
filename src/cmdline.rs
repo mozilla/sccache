@@ -43,6 +43,8 @@ pub enum Command {
         cmdline: Vec<OsString>,
         /// The directory in which to execute the command.
         cwd: PathBuf,
+        /// The environment variables to use for execution.
+        env_vars: Vec<(OsString, OsString)>,
     },
 }
 
@@ -146,6 +148,7 @@ pub fn parse() -> Result<Command> {
                 exe: exe.to_owned(),
                 cmdline: cmdline,
                 cwd: cwd,
+                env_vars: env::vars_os().collect(),
             })
         } else {
             bail!("No compile command");

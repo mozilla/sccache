@@ -14,6 +14,7 @@
 
 use futures_cpupool::CpuPool;
 use sha1;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
@@ -48,4 +49,27 @@ pub fn sha1_digest<T>(path: T, pool: &CpuPool) -> SFuture<String>
 pub fn fmt_duration_as_secs(duration: &Duration) -> String
 {
     format!("{}.{:03}s", duration.as_secs(), duration.subsec_nanos() / 1000_000)
+}
+
+
+#[cfg(unix)]
+pub fn os_str_bytes(s: &OsStr) -> &[u8]
+{
+    use std::os::unix::ffi::OsStrExt;
+    s.as_bytes()
+}
+
+#[cfg(windows)]
+pub fn os_str_bytes(s: &OsStr) -> &[u8]
+{
+    use std::mem;
+    unsafe { mem::transmute(s) }
+}
+
+#[test]
+fn test_os_str_bytes() {
+    // Just very basic sanity checks in case anyone changes the underlying
+    // representation of OsStr on Windows.
+    assert_eq!(os_str_bytes(OsStr::new("hello")), b"hello");
+    assert_eq!(os_str_bytes(OsStr::new("你好")), "你好".as_bytes());
 }

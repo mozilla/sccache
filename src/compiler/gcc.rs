@@ -27,6 +27,7 @@ use mock_command::{
 };
 use std::collections::HashMap;
 use std::io::Read;
+use std::ffi::OsString;
 use std::fs::File;
 use std::path::Path;
 use std::process;
@@ -51,10 +52,11 @@ impl CCompilerImpl for GCC {
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        preprocess(creator, executable, parsed_args, cwd, pool)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, pool)
     }
 
     fn compile<T>(&self,
@@ -63,11 +65,12 @@ impl CCompilerImpl for GCC {
                   preprocessor_output: Vec<u8>,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
+                  env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_output, parsed_args, cwd, pool)
+        compile(creator, executable, preprocessor_output, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -232,6 +235,7 @@ pub fn preprocess<T>(creator: &T,
                      executable: &str,
                      parsed_args: &ParsedArguments,
                      cwd: &str,
+                     env_vars: &[(OsString, OsString)],
                      _pool: &CpuPool)
                      -> SFuture<process::Output>
     where T: CommandCreatorSync
@@ -242,6 +246,8 @@ pub fn preprocess<T>(creator: &T,
         .arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
@@ -254,6 +260,7 @@ fn compile<T>(creator: &T,
               preprocessor_output: Vec<u8>,
               parsed_args: &ParsedArguments,
               cwd: &str,
+              env_vars: &[(OsString, OsString)],
               _pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
@@ -279,6 +286,8 @@ fn compile<T>(creator: &T,
         })
         .args(&["-", "-o", &output.clone()])
         .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
     Box::new(run_input_output(cmd, Some(preprocessor_output)).map(|output| {
         (Cacheable::Yes, output)
