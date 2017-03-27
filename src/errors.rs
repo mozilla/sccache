@@ -19,20 +19,26 @@ use std::io;
 use bincode;
 use futures::Future;
 use futures::future;
+#[cfg(feature = "hyper")]
 use hyper;
 use lru_disk_cache;
+#[cfg(feature = "serde_json")]
 use serde_json;
+#[cfg(feature = "redis")]
+use redis;
 
 error_chain! {
     foreign_links {
+        Hyper(hyper::Error) #[cfg(feature = "hyper")];
         Io(io::Error);
-        Hyper(hyper::Error);
         Lru(lru_disk_cache::Error);
-        Json(serde_json::Error);
+        Json(serde_json::Error) #[cfg(feature = "serde_json")];
         Bincode(bincode::Error);
+        Redis(redis::RedisError) #[cfg(feature = "redis")];
     }
 
     errors {
+        #[cfg(feature = "hyper")]
         BadHTTPStatus(status: hyper::status::StatusCode) {
             description("failed to get a successful HTTP status")
             display("didn't get a successful HTTP status, got `{}`", status)

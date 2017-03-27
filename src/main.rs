@@ -15,8 +15,10 @@
 extern crate app_dirs;
 extern crate bincode;
 extern crate byteorder;
+#[cfg(feature = "chrono")]
 extern crate chrono;
 extern crate clap;
+#[cfg(feature = "rust-crypto")]
 extern crate crypto;
 #[cfg(unix)]
 extern crate daemonize;
@@ -27,7 +29,9 @@ extern crate filetime;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
+#[cfg(feature = "hyper")]
 extern crate hyper;
+#[cfg(feature = "hyper-tls")]
 extern crate hyper_tls;
 #[cfg(windows)]
 extern crate kernel32;
@@ -40,9 +44,12 @@ extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate number_prefix;
+#[cfg(feature = "redis")]
+extern crate redis;
 extern crate regex;
 extern crate retry;
 extern crate rustc_serialize;
+#[cfg(feature = "serde_json")]
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
@@ -77,6 +84,7 @@ mod compiler;
 mod mock_command;
 mod protocol;
 mod server;
+#[cfg(feature = "simple-s3")]
 mod simples3;
 mod util;
 
