@@ -447,6 +447,7 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
     drop(input);
     req!(output_dir);
     req!(emit);
+    req!(crate_name);
     // We won't cache invocations that are not producing
     // binary output.
     if !emit.is_empty() && !emit.contains("link") {
@@ -462,11 +463,7 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
     }
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
-        if let (Some(crate_name), Some(extra_filename)) = (crate_name, extra_filename) {
-            Some([crate_name, extra_filename, ".d"].iter().map(|s| *s).collect::<String>())
-        } else {
-            None
-        }
+        Some(Some(crate_name).into_iter().chain(extra_filename).chain(Some(".d")).collect::<String>())
     } else {
         None
     };
@@ -479,7 +476,7 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
         arguments: arguments,
         output_dir: output_dir.to_owned(),
         externs: externs,
-        crate_name: crate_name.unwrap_or("<unknown>").to_string(),
+        crate_name: crate_name.to_string(),
         dep_info: dep_info,
     })
 }
@@ -672,25 +669,26 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple() {
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
         assert_eq!(h.output_dir, "out");
         assert!(h.dep_info.is_none());
         assert!(h.externs.is_empty());
-        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out");
+        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
         assert_eq!(h.output_dir, "out");
         assert!(h.dep_info.is_none());
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo");
         assert_eq!(h.output_dir, "out");
         let h = parses!("--emit", "link,dep-info", "foo.rs", "--out-dir", "out",
                         "--crate-name", "my_crate",
                         "-C", "extra-filename=-abcxyz");
         assert_eq!(h.output_dir, "out");
         assert_eq!(h.dep_info.unwrap(), "my_crate-abcxyz.d");
-        fails!("--emit", "link", "--out-dir", "out");
-        fails!("--emit", "link", "foo.rs");
-        fails!("--emit", "asm", "foo.rs", "--out-dir", "out");
-        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out");
-        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out");
+        fails!("--emit", "link", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "link", "foo.rs", "--crate-name=foo");
+        fails!("--emit", "asm", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "link", "foo.rs", "--out-dir", "out");
         // From an actual cargo compilation, with some args shortened:
         let h = parses!("--crate-name", "foo", "src/lib.rs",
                         "--crate-type", "lib", "--emit=dep-info,link",
@@ -704,6 +702,14 @@ mod test {
         assert_eq!(h.crate_name, "foo");
         assert_eq!(h.dep_info.unwrap(), "foo-d6ae26f5bcfb7733.d");
         assert_eq!(h.externs, &["/foo/target/debug/deps/liblibc-89a24418d48d484a.rlib", "/foo/target/debug/deps/liblog-2f7366be74992849.rlib"]);
+    }
+
+    #[test]
+    fn test_parse_arguments_dep_info_no_extra_filename() {
+        let h = parses!("--crate-name", "foo", "src/lib.rs",
+                        "--emit=dep-info,link",
+                        "--out-dir", "/out");
+        assert_eq!(h.dep_info, Some("foo.d".to_string()));
     }
 
     #[test]
