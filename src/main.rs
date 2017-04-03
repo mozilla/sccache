@@ -40,6 +40,8 @@ extern crate local_encoding;
 extern crate log;
 extern crate lru_disk_cache;
 extern crate fern;
+#[cfg(test)]
+extern crate itertools;
 extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;

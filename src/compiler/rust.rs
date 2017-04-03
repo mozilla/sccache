@@ -531,13 +531,15 @@ impl<T> CompilerHasher<T> for RustHasher
             // 3. The full commandline (self.arguments)
             // TODO: there will be full paths here, it would be nice to
             // normalize them so we can get cross-machine cache hits.
-            // Sort --extern args because cargo does not provide them in
-            // a deterministic order.
+            // A few argument types are not passed in a deterministic order
+            // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
+            // and append them to the rest of the arguments.
             let args = {
-                let (mut extern_args, rest): (Vec<_>, Vec<_>) = arguments.iter()
-                    .partition(|&&(ref arg, ref _v)| arg == "--extern");
-                extern_args.sort();
-                rest.into_iter().chain(extern_args)
+                let (mut sortables, rest): (Vec<_>, Vec<_>) = arguments.iter()
+                    .partition(|&&(ref arg, ref _v)| arg == "--extern" || arg == "-L" || arg == "--cfg");
+                sortables.sort();
+                rest.into_iter()
+                    .chain(sortables)
                     .flat_map(|&(ref arg, ref val)| Some(arg).into_iter().chain(val))
                     .map(|s| s.as_str()).collect::<String>()
             };
@@ -637,10 +639,12 @@ mod test {
     use super::*;
 
     use ::compiler::*;
+    use itertools::Itertools;
     use mock_command::*;
     use sha1;
     use std::fs::File;
     use std::io::Write;
+    use std::sync::{Arc,Mutex};
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments>
@@ -813,6 +817,37 @@ bar.rs:
                    parse_dep_info(&deps, "/bar/"));
     }
 
+    fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str])
+    {
+        // Mock the `rustc --emit=dep-info` process by writing
+        // a dep-info file.
+        let mut sorted_deps = dep_srcs.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        sorted_deps.sort();
+        next_command_calls(creator, move |args| {
+            let mut dep_info_path = None;
+            let mut it = args.iter();
+            while let Some(a) = it.next() {
+                if a == "-o" {
+                    dep_info_path = it.next();
+                    break;
+                }
+            }
+            let dep_info_path = dep_info_path.unwrap();
+            let mut f = File::create(dep_info_path)?;
+            writeln!(f, "blah: {}", sorted_deps.iter().join(" "))?;
+            for d in sorted_deps.iter() {
+                writeln!(f, "{}:", d)?;
+            }
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+    }
+
+    fn mock_file_names(creator: &Arc<Mutex<MockCommandCreator>>, filenames: &[&str])
+    {
+        // Mock the `rustc --print=file-names` process output.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), filenames.iter().join("\n"), "")));
+    }
+
     #[test]
     fn test_generate_hash_key() {
         use env_logger;
@@ -841,28 +876,8 @@ bar.rs:
             }
         });
         let creator = new_creator();
-        // Mock the `rustc --emit=dep-info` process by writing
-        // a dep-info file.
-        next_command_calls(&creator, |args| {
-            let mut dep_info_path = None;
-            let mut it = args.iter();
-            while let Some(a) = it.next() {
-                if a == "-o" {
-                    dep_info_path = it.next();
-                    break;
-                }
-            }
-            let dep_info_path = dep_info_path.unwrap();
-            let mut f = File::create(dep_info_path)?;
-            f.write_all(b"blah: foo.rs bar.rs
-
-foo.rs:
-bar.rs:
-")?;
-            Ok(MockChild::new(exit_status(0), "", ""))
-        });
-        // Mock the `rustc --print=file-names` process output.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "foo.rlib\nfoo.a", "")));
+        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
+        mock_file_names(&creator, &["foo.rlib", "foo.a"]);
         let pool = CpuPool::new(1);
         let res = hasher.generate_hash_key(&creator,
                                            &f.tempdir.path().to_string_lossy(),
@@ -896,5 +911,56 @@ bar.rs:
             }
             _ => panic!("generate_hash_key returned Error!"),
         }
+    }
+
+    fn hash_key(args: &[String], env_vars: &[(OsString, OsString)]) -> String {
+        let f = TestFixture::new();
+        let parsed_args = match parse_arguments(args, &f.tempdir.path()) {
+            CompilerArguments::Ok(parsed_args) => parsed_args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        // Just use empty files for sources.
+        for src in ["foo.rs"].iter() {
+            let s = format!("Failed to create {}", src);
+            f.touch(src).expect(&s);
+        }
+        // as well as externs
+        for e in parsed_args.externs.iter() {
+            let s = format!("Failed to create {}", e);
+            f.touch(e).expect(&s);
+        }
+        let hasher = Box::new(RustHasher {
+            executable: "rustc".to_string(),
+            compiler_shlibs_digests: vec![],
+            parsed_args: parsed_args,
+        });
+
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        mock_dep_info(&creator, &["foo.rs"]);
+        mock_file_names(&creator, &["foo.rlib"]);
+        let hash = match hasher.generate_hash_key(&creator, &f.tempdir.path().to_string_lossy(), env_vars, &pool).wait().unwrap() {
+            HashResult::Ok { key, .. } => key,
+            _ => panic!("generate_hash_key failed"),
+        };
+        hash
+    }
+
+    #[test]
+    fn test_equal_hashes_externs() {
+        assert_eq!(hash_key(&stringvec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir", "out", "--crate-name", "foo", "--extern", "b=b.rlib"], &vec![]),
+                   hash_key(&stringvec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
+    }
+
+    #[test]
+    fn test_equal_hashes_link_paths() {
+        assert_eq!(hash_key(&stringvec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "-L", "y=y"], &vec![]),
+                   hash_key(&stringvec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
+    }
+
+    #[test]
+    fn test_equal_hashes_cfg_features() {
+        assert_eq!(hash_key(&stringvec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--cfg", "feature=b"], &vec![]),
+                   hash_key(&stringvec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
     }
 }
