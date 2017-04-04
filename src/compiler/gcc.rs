@@ -15,7 +15,6 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
-    run_input_output,
 };
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use log::LogLevel::Trace;
@@ -31,6 +30,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::path::Path;
 use std::process;
+use util::run_input_output;
 
 use errors::*;
 

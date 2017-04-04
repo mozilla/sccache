@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use compiler::{Cacheable, Compiler, CompilerArguments, CompilerHasher, CompilerKind, Compilation,
-               HashResult, run_input_output};
+               HashResult};
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
@@ -31,7 +31,7 @@ use std::process::{self, Stdio};
 use std::slice;
 use std::time::Instant;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, os_str_bytes, sha1_digest};
+use util::{fmt_duration_as_secs, os_str_bytes, run_input_output, sha1_digest};
 
 use errors::*;
 
@@ -187,7 +187,9 @@ fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, argumen
                 hash_all(files, &pool)
             }))
         } else {
-            f_err(format!("Failed run rustc --dep-info. rustc stderr: `{}`",
+            //TODO: use a distinct error type so we can return `HashResult::Error`
+            f_err(format!("[{}]: Failed run rustc --dep-info. rustc stderr: `{}`",
+                          crate_name,
                           String::from_utf8_lossy(&output.stderr)))
         }
     }))
@@ -239,6 +241,7 @@ fn get_compiler_outputs<T>(creator: &T, executable: &str, arguments: &[String], 
             let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing rustc output")?;
             Ok(outstr.lines().map(|l| l.to_owned()).collect())
         } else {
+            //TODO: use a distinct error type so we can return `HashResult::Error`
             bail!("Failed to run `rustc --print file-names`");
         }
     }))
@@ -506,6 +509,8 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
+        //TODO: handle rustc execution failures with a distinct error type,
+        // return `HashResult::Error`.
         let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, cwd, env_vars, pool);
         // Hash the contents of the externs listed on the commandline.
         let cwp = Path::new(cwd);
@@ -570,6 +575,8 @@ impl<T> CompilerHasher<T> for RustHasher
             let arguments = arguments.into_iter()
                 .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
                 .collect::<Vec<_>>();
+            //TODO: handle rustc execution failures with a distinct error type,
+            // return `HashResult::Error`.
             Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd, &env_vars).map(move |outputs| {
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.

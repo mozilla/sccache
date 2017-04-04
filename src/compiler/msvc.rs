@@ -15,7 +15,6 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
-    run_input_output,
     write_temp_file,
 };
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
@@ -36,6 +35,7 @@ use std::io::{
 };
 use std::path::Path;
 use std::process::{self,Stdio};
+use util::run_input_output;
 
 use errors::*;
 

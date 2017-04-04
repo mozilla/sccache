@@ -18,9 +18,6 @@ use client::{
     ServerConnection,
 };
 use cmdline::Command;
-use compiler::{
-    run_input_output,
-};
 use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
@@ -49,6 +46,7 @@ use std::path::{
 };
 use std::process;
 use tokio_core::reactor::Core;
+use util::run_input_output;
 use which::which_in;
 
 use errors::*;
