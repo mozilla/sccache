@@ -182,19 +182,23 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             debug!("[{}]: preprocessor failed: {:?}", out_file, e);
             e
         });
-        Box::new(result.map(move |preprocessor_result| {
-            // If the preprocessor failed, just return that result.
-            if !preprocessor_result.status.success() {
-                debug!("[{}]: preprocessor returned error status {:?}",
-                       parsed_args.output_file(),
-                       preprocessor_result.status.code());
-                // Drop the stdout since it's the preprocessor output, just hand back stderr and the exit status.
-                let output = process::Output {
-                    stdout: vec!(),
-                    .. preprocessor_result
-                };
-                return HashResult::Error { output: output };
+        let out_file = parsed_args.output_file().into_owned();
+        Box::new(result.or_else(move |err| {
+            match err {
+                Error(ErrorKind::ProcessError(output), _) => {
+                    debug!("[{}]: preprocessor returned error status {:?}",
+                           out_file,
+                           output.status.code());
+                    // Drop the stdout since it's the preprocessor output, just hand back stderr and
+                    // the exit status.
+                    bail!(ErrorKind::ProcessError(process::Output {
+                        stdout: vec!(),
+                        .. output
+                    }))
+                }
+                e @ _ => Err(e),
             }
+        }).and_then(move |preprocessor_result| {
             trace!("[{}]: Preprocessor output is {} bytes",
                    parsed_args.output_file(),
                    preprocessor_result.stdout.len());
@@ -208,7 +212,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     .collect::<String>();
                 hash_key(&executable_digest, &arguments, &env_vars, &preprocessor_result.stdout)
             };
-            HashResult::Ok {
+            Ok(HashResult {
                 key: key,
                 compilation: Box::new(CCompilation {
                     parsed_args: parsed_args,
@@ -216,7 +220,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     preprocessor_output: preprocessor_result.stdout,
                     compiler: compiler,
                 }),
-            }
+            })
         }))
     }
 

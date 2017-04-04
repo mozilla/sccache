@@ -15,6 +15,7 @@
 use std::boxed::Box;
 use std::error;
 use std::io;
+use std::process;
 
 use bincode;
 use futures::Future;
@@ -43,6 +44,7 @@ error_chain! {
             description("failed to get a successful HTTP status")
             display("didn't get a successful HTTP status, got `{}`", status)
         }
+        ProcessError(output: process::Output)
     }
 }
 

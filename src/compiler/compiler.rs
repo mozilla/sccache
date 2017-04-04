@@ -112,13 +112,14 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         }
         let start = Instant::now();
         let result = self.generate_hash_key(&creator, &cwd, &env_vars, &pool);
-        Box::new(result.and_then(move |hash_res| -> SFuture<_> {
+        Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_file, fmt_duration_as_secs(&start.elapsed()));
-            let (key, compilation) = match hash_res {
-                HashResult::Error { output } => {
+            let (key, compilation) = match res {
+                Err(Error(ErrorKind::ProcessError(output), _)) => {
                     return f_ok((CompileResult::Error, output));
                 }
-                HashResult::Ok { key, compilation } => (key, compilation),
+                Err(e) => return f_err(e),
+                Ok(HashResult { key, compilation }) => (key, compilation),
             };
             trace!("[{}]: Hash key: {}", out_file, key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -284,19 +285,11 @@ pub trait Compilation<T>
 }
 
 /// Result of generating a hash from a compiler command.
-pub enum HashResult<T: CommandCreatorSync> {
-    /// Successful.
-    Ok {
-        /// The hash key of the inputs.
-        key: String,
-        /// An object to use for the actual compilation, if necessary.
-        compilation: Box<Compilation<T> + 'static>,
-    },
-    /// Something failed.
-    Error {
-        /// The error output and return code.
-        output: process::Output,
-    },
+pub struct HashResult<T: CommandCreatorSync> {
+    /// The hash key of the inputs.
+    pub key: String,
+    /// An object to use for the actual compilation, if necessary.
+    pub compilation: Box<Compilation<T> + 'static>,
 }
 
 /// Possible results of parsing compiler arguments.
@@ -403,7 +396,7 @@ fn set_file_mode(_path: &Path, _mode: u32) -> Result<()>
 }
 
 /// Can this result be stored in cache?
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Cacheable {
     Yes,
     No,

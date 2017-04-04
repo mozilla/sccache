@@ -543,20 +543,24 @@ fn handle_compile_response<T>(mut creator: T,
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    let output = core.run(run_input_output(cmd, None))?;
-    if !output.stdout.is_empty() {
-        stdout.write_all(&output.stdout)?;
-    }
-    if !output.stderr.is_empty() {
-        stderr.write_all(&output.stderr)?;
-    }
-    Ok(output.status.code().unwrap_or_else(|| {
-        if let Some(sig) = status_signal(output.status) {
-           println!("Compile terminated by signal {}", sig);
+    match core.run(run_input_output(cmd, None)) {
+        Ok(output) | Err(Error(ErrorKind::ProcessError(output), _)) => {
+            if !output.stdout.is_empty() {
+                stdout.write_all(&output.stdout)?;
+            }
+            if !output.stderr.is_empty() {
+                stderr.write_all(&output.stderr)?;
+            }
+            Ok(output.status.code().unwrap_or_else(|| {
+                if let Some(sig) = status_signal(output.status) {
+                    println!("Compile terminated by signal {}", sig);
+                }
+                // Arbitrary.
+                2
+            }))
         }
-        // Arbitrary.
-        2
-    }))
+        Err(e) => Err(e),
+    }
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.

@@ -411,9 +411,9 @@ fn compile<T>(creator: &T,
     let output = write.and_then(move |(tempdir, input)| {
         cmd.arg(input);
         debug!("compile: {:?}", cmd);
-        run_input_output(cmd, None).map(|e| {
+        run_input_output(cmd, None).map(move |e| {
             drop(tempdir);
-            e
+            (cacheable, e)
         })
     });
 
@@ -430,14 +430,17 @@ fn compile<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
-    Box::new(output.and_then(move |output| -> SFuture<_> {
-        if output.status.success() {
-            f_ok((cacheable, output))
-        } else {
-            debug!("compile: {:?}", cmd);
-            Box::new(run_input_output(cmd, None).map(|output| {
-                (cacheable, output)
-            }))
+    Box::new(output.or_else(move |err| -> SFuture<_> {
+        match err {
+            // If compiling from the preprocessed source failed, try
+            // again from the original source.
+            Error(ErrorKind::ProcessError(_), _) => {
+                debug!("compile: {:?}", cmd);
+                Box::new(run_input_output(cmd, None).map(move |output| {
+                    (cacheable, output)
+                }))
+            }
+            e @ _ => f_err(e),
         }
     }))
 }

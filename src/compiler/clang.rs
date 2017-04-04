@@ -126,9 +126,9 @@ fn compile<T>(creator: &T,
         .current_dir(&cwd);
     let output = write.and_then(move |(tempdir, input)| {
         attempt.arg(&input);
-        run_input_output(attempt, None).map(|e| {
+        run_input_output(attempt, None).map(|output| {
             drop(tempdir);
-            e
+            (Cacheable::Yes, output)
         })
     });
 
@@ -138,7 +138,7 @@ fn compile<T>(creator: &T,
     //
     // Otherwise if -Werror is missing we can just use the first instance.
     if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
-        return Box::new(output.map(|output| (Cacheable::Yes, output)))
+        return Box::new(output)
     }
 
     let mut cmd = creator.clone().new_command_sync(executable);
@@ -150,13 +150,16 @@ fn compile<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    Box::new(output.and_then(move |output| -> SFuture<_> {
-        if !output.status.success() {
-            Box::new(run_input_output(cmd, None).map(|output| {
-                (Cacheable::Yes, output)
-            }))
-        } else {
-            f_ok((Cacheable::Yes, output))
+    Box::new(output.or_else(move |err| -> SFuture<_> {
+        match err {
+            // If compiling from the preprocessed source failed, try
+            // again from the original source.
+            Error(ErrorKind::ProcessError(_), _) => {
+                Box::new(run_input_output(cmd, None).map(|output| {
+                    (Cacheable::Yes, output)
+                }))
+            }
+            e @ _ => f_err(e),
         }
     }))
 }

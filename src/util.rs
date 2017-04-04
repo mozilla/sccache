@@ -107,6 +107,9 @@ fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
 }
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
+///
+/// If the command returns a non-successful exit status, an error of `ErrorKind::ProcessError`
+/// will be returned containing the process output.
 pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
                            -> SFuture<process::Output>
     where C: RunCommand
@@ -120,7 +123,15 @@ pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
         .chain_err(|| "failed to spawn child");
 
     Box::new(future::result(child)
-                .and_then(|child| wait_with_input_output(child, input)))
+             .and_then(|child| {
+                 wait_with_input_output(child, input).and_then(|output| {
+                     if output.status.success() {
+                         f_ok(output)
+                     } else {
+                         f_err(ErrorKind::ProcessError(output))
+                     }
+                 })
+             }))
 }
 
 #[test]

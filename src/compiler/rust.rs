@@ -171,27 +171,20 @@ fn hash_source_files<T>(creator: &T, crate_name: &str, executable: &str, argumen
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     let crate_name = crate_name.to_owned();
-    Box::new(dep_info.and_then(move |output| -> SFuture<_> {
-        if output.status.success() {
-            let name2 = crate_name.clone();
-            let parsed = pool.spawn_fn(move || {
-                parse_dep_file(&dep_file, &cwd).chain_err(|| {
-                    format!("Failed to parse dep info for {}", name2)
-                })
-            });
-            Box::new(parsed.and_then(move |files| {
-                trace!("[{}]: got {} source files from dep-info in {}", crate_name,
-                       files.len(), fmt_duration_as_secs(&start.elapsed()));
-                // Just to make sure we capture temp_dir.
-                drop(temp_dir);
-                hash_all(files, &pool)
-            }))
-        } else {
-            //TODO: use a distinct error type so we can return `HashResult::Error`
-            f_err(format!("[{}]: Failed run rustc --dep-info. rustc stderr: `{}`",
-                          crate_name,
-                          String::from_utf8_lossy(&output.stderr)))
-        }
+    Box::new(dep_info.and_then(move |_| -> SFuture<_> {
+        let name2 = crate_name.clone();
+        let parsed = pool.spawn_fn(move || {
+            parse_dep_file(&dep_file, &cwd).chain_err(|| {
+                format!("Failed to parse dep info for {}", name2)
+            })
+        });
+        Box::new(parsed.and_then(move |files| {
+            trace!("[{}]: got {} source files from dep-info in {}", crate_name,
+                   files.len(), fmt_duration_as_secs(&start.elapsed()));
+            // Just to make sure we capture temp_dir.
+            drop(temp_dir);
+            hash_all(files, &pool)
+        }))
     }))
 }
 
@@ -237,13 +230,8 @@ fn get_compiler_outputs<T>(creator: &T, executable: &str, arguments: &[String], 
     }
     let outputs = run_input_output(cmd, None);
     Box::new(outputs.and_then(move |output| -> Result<_> {
-        if output.status.success() {
-            let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing rustc output")?;
-            Ok(outstr.lines().map(|l| l.to_owned()).collect())
-        } else {
-            //TODO: use a distinct error type so we can return `HashResult::Error`
-            bail!("Failed to run `rustc --print file-names`");
-        }
+        let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing rustc output")?;
+        Ok(outstr.lines().map(|l| l.to_owned()).collect())
     }))
 }
 
@@ -259,9 +247,6 @@ impl Rust {
             .arg("--print=sysroot");
         let output = run_input_output(cmd, None);
         let libs = output.and_then(move |output| -> Result<_> {
-            if !output.status.success() {
-                bail!("Failed to determine sysroot");
-            }
             let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing sysroot")?;
             let libs_path = Path::new(outstr.trim_right()).join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path).chain_err(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?.filter_map(|e| {
@@ -509,8 +494,6 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
-        //TODO: handle rustc execution failures with a distinct error type,
-        // return `HashResult::Error`.
         let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, cwd, env_vars, pool);
         // Hash the contents of the externs listed on the commandline.
         let cwp = Path::new(cwd);
@@ -575,8 +558,6 @@ impl<T> CompilerHasher<T> for RustHasher
             let arguments = arguments.into_iter()
                 .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
                 .collect::<Vec<_>>();
-            //TODO: handle rustc execution failures with a distinct error type,
-            // return `HashResult::Error`.
             Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd, &env_vars).map(move |outputs| {
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.
@@ -590,7 +571,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info).to_string_lossy().into_owned();
                     outputs.insert(dep_info, p);
                 }
-                HashResult::Ok {
+                HashResult {
                     key: m.digest().to_string(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
@@ -909,15 +890,10 @@ bar.rs:
         m.update(b"CARGO_BLAH=abc");
         m.update(b"CARGO_PKG_NAME=foo");
         let digest = m.digest().to_string();
-        match res {
-            HashResult::Ok { key, compilation } => {
-                assert_eq!(key, digest);
-                let mut out = compilation.outputs().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
-                out.sort();
-                assert_eq!(out, vec!["foo.a", "foo.rlib"]);
-            }
-            _ => panic!("generate_hash_key returned Error!"),
-        }
+        assert_eq!(res.key, digest);
+        let mut out = res.compilation.outputs().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
+        out.sort();
+        assert_eq!(out, vec!["foo.a", "foo.rlib"]);
     }
 
     fn hash_key(args: &[String], env_vars: &[(OsString, OsString)]) -> String {
@@ -946,11 +922,7 @@ bar.rs:
         let pool = CpuPool::new(1);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        let hash = match hasher.generate_hash_key(&creator, &f.tempdir.path().to_string_lossy(), env_vars, &pool).wait().unwrap() {
-            HashResult::Ok { key, .. } => key,
-            _ => panic!("generate_hash_key failed"),
-        };
-        hash
+        hasher.generate_hash_key(&creator, &f.tempdir.path().to_string_lossy(), env_vars, &pool).wait().unwrap().key
     }
 
     #[test]
