@@ -15,15 +15,14 @@
 #![allow(dead_code, unused_imports)]
 
 use client::connect_with_retry;
-use commands::{
-    DEFAULT_PORT,
-    request_stats,
-};
 use env_logger;
 use log::LogLevel::Trace;
+use serde_json;
+use server::ServerInfo;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};
+use std::fmt;
 use std::fs;
 use std::io::{
     self,
@@ -67,6 +66,14 @@ fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> Output {
         .unwrap()
 }
 
+fn run_stdout<T>(exe: &Path, args: &[T], cwd: &Path) -> String
+    where T: AsRef<OsStr> + fmt::Debug,
+{
+    let output = do_run(exe, args, cwd);
+    assert!(output.status.success(), "Failed to run {:?} {:?}", exe, args);
+    String::from_utf8(output.stdout).expect("Couldn't convert stdout to String")
+}
+
 fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> bool {
     let output = do_run(exe, args, cwd);
     if output.status.success() {
@@ -96,6 +103,11 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     }
+}
+
+fn get_stats(sccache: &Path, cwd: &Path) -> ServerInfo {
+    let output = run_stdout(sccache, &["--show-stats", "--stats-format=json"], cwd);
+    serde_json::from_str(&output).expect("Failed to parse JSON stats")
 }
 
 fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe: T, tempdir: &Path) {
@@ -129,10 +141,8 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     trace!("compile");
     assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
-    trace!("connect");
-    let conn = connect_with_retry(DEFAULT_PORT).unwrap();
     trace!("request stats");
-    let info = request_stats(conn).unwrap();
+    let info = get_stats(sccache, tempdir);
     assert_eq!(1, info.stats.compile_requests);
     assert_eq!(1, info.stats.requests_executed);
     assert_eq!(0, info.stats.cache_hits);
@@ -141,10 +151,8 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     fs::remove_file(&out_file).unwrap();
     assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
-    trace!("connect");
-    let conn = connect_with_retry(DEFAULT_PORT).unwrap();
     trace!("request stats");
-    let info = request_stats(conn).unwrap();
+    let info = get_stats(sccache, tempdir);
     assert_eq!(2, info.stats.compile_requests);
     assert_eq!(2, info.stats.requests_executed);
     assert_eq!(1, info.stats.cache_hits);

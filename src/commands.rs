@@ -17,7 +17,7 @@ use client::{
     connect_with_retry,
     ServerConnection,
 };
-use cmdline::Command;
+use cmdline::{Command, StatsFormat};
 use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
@@ -25,6 +25,7 @@ use mock_command::{
     RunCommand,
 };
 use protocol::{Request, Response, CompileResponse, CompileFinished, Compile};
+use serde_json;
 use server::{self, ServerInfo};
 use std::env;
 use std::ffi::{OsStr,OsString};
@@ -557,13 +558,16 @@ pub fn do_compile<T>(creator: T,
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
-        Command::ShowStats => {
-            trace!("Command::ShowStats");
+        Command::ShowStats(fmt) => {
+            trace!("Command::ShowStats({:?})", fmt);
             let srv = connect_or_start_server(get_port())?;
             let stats = request_stats(srv).chain_err(|| {
                 "failed to get stats from server"
             })?;
-            stats.print();
+            match fmt {
+                StatsFormat::text => stats.print(),
+                StatsFormat::json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+            }
         }
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");

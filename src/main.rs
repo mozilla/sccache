@@ -17,6 +17,7 @@ extern crate bincode;
 extern crate byteorder;
 #[cfg(feature = "chrono")]
 extern crate chrono;
+#[macro_use]
 extern crate clap;
 #[cfg(feature = "rust-crypto")]
 extern crate crypto;

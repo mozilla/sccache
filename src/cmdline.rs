@@ -23,10 +23,19 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use which::which_in;
 
+arg_enum!{
+    #[derive(Debug)]
+    #[allow(non_camel_case_types)]
+    pub enum StatsFormat {
+        text,
+        json
+    }
+}
+
 /// A specific command to run.
 pub enum Command {
     /// Show cache statistics and exit.
-    ShowStats,
+    ShowStats(StatsFormat),
     /// Zero cache statistics and exit.
     ZeroStats,
     /// Run background server.
@@ -64,6 +73,9 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
              --start-server  'start background server'
              --stop-server   'stop background server'"
                 )
+        .arg(Arg::from_usage("--stats-format  'set output format of statistics'")
+             .possible_values(&StatsFormat::variants())
+             .default_value("text"))
         .arg(
             Arg::with_name("cmd")
                 .multiple(true)
@@ -134,7 +146,9 @@ pub fn parse() -> Result<Command> {
     if internal_start_server {
         Ok(Command::InternalStartServer)
     } else if show_stats {
-        Ok(Command::ShowStats)
+        let fmt = value_t!(matches.value_of("stats-format"), StatsFormat)
+            .unwrap_or_else(|e| e.exit());
+        Ok(Command::ShowStats(fmt))
     } else if start_server {
         Ok(Command::StartServer)
     } else if stop_server {
