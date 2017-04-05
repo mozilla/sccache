@@ -12,7 +12,7 @@ app_dirs = "1.1.1"
 bincode = { git = 'https://github.com/TyOverby/bincode' }
 byteorder = "1.0"
 chrono = { version = "0.2.25", optional = true }
-clap = "2.3.0"
+clap = "~2.23.0"
 env_logger = "0.3.3"
 error-chain = { version = "0.7.2", default-features = false }
 fern = "0.3.5"
