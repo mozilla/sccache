@@ -61,7 +61,7 @@ winapi = "0.2"
 mio-named-pipes = "0.1"
 
 [features]
-default = []
+default = ["s3"]
 all = ["redis", "s3"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "serde_json", "simple-s3"]
 simple-s3 = []
