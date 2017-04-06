@@ -174,11 +174,11 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                         depfile = Some(v[5..].to_owned());
                     }
                     // Arguments we can't handle.
-                    "-showIncludes" => return CompilerArguments::CannotCache,
-                    a if a.starts_with('@') => return CompilerArguments::CannotCache,
+                    "-showIncludes" => return CompilerArguments::CannotCache("-showIncludes"),
+                    a if a.starts_with('@') => return CompilerArguments::CannotCache("@file"),
                     // Arguments we can't handle because they output more files.
                     // TODO: support more multi-file outputs.
-                    "-FA" | "-Fa" | "-Fe" | "-Fm" | "-Fp" | "-FR" | "-Fx" => return CompilerArguments::CannotCache,
+                    "-FA" | "-Fa" | "-Fe" | "-Fm" | "-Fp" | "-FR" | "-Fx" => return CompilerArguments::CannotCache("multi-file output"),
                     "-Zi" => {
                         debug_info = true;
                         common_args.push(arg.clone());
@@ -195,7 +195,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                     v => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            return CompilerArguments::CannotCache;
+                            return CompilerArguments::CannotCache("multiple input files");
                         }
                         input_arg = Some(v);
                     }
@@ -214,17 +214,17 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                 Some(e) => (i.to_owned(), e.to_owned()),
                 _ => {
                     trace!("Bad or missing source extension: {:?}", i);
-                    return CompilerArguments::CannotCache;
+                    return CompilerArguments::CannotCache("unknown source extension");
                 }
             }
         }
         // We can't cache compilation without an input.
-        None => return CompilerArguments::CannotCache,
+        None => return CompilerArguments::CannotCache("no input file"),
     };
     let mut outputs = HashMap::new();
     match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => return CompilerArguments::CannotCache,
+        None => return CompilerArguments::CannotCache("no output file"),
         Some(o) => {
             outputs.insert("obj", o.to_owned());
             // -Fd is not taken into account unless -Zi is given
@@ -235,7 +235,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                         // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
                         // MSVC version), and that's used for all compilations with the same
                         // working directory. We can't cache such a pdb.
-                        return CompilerArguments::CannotCache;
+                        return CompilerArguments::CannotCache("shared pdb");
                     }
                 };
             }
@@ -556,31 +556,31 @@ mod test {
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("multiple input files"),
                    parse_arguments(&stringvec!["-c", "foo.c", "-Fofoo.obj", "bar.c"]));
     }
 
     #[test]
     fn test_parse_arguments_unsupported() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
                    parse_arguments(&stringvec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
 
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
                    parse_arguments(&stringvec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
 
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
                    parse_arguments(&stringvec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("@file"),
                    parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_missing_pdb() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("shared pdb"),
                    parse_arguments(&stringvec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
     }
 

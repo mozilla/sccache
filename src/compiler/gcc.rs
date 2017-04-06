@@ -153,14 +153,14 @@ fn _parse_arguments(arguments: &[String],
             }
             "-MT" => dep_target = it.next(),
             // Can't cache Clang modules.
-            "-fcxx-modules" => return CompilerArguments::CannotCache,
-            "-fmodules" => return CompilerArguments::CannotCache,
+            "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
+            "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
             // Can't cache PGO profiled output.
-            "-fprofile-use" => return CompilerArguments::CannotCache,
+            "-fprofile-use" => return CompilerArguments::CannotCache("pgo"),
             // We already expanded `@` files we could through
             // `ExpandIncludeFile` above, so if one of those arguments now
             // makes it this far we won't understand it.
-            v if v.starts_with('@') => return CompilerArguments::CannotCache,
+            v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
             "-M" | "-MM" | "-MD" | "-MMD" => {
                 // If one of the above options is on the command line, we'll
                 // need -MT on the preprocessor command line, whether it's
@@ -177,7 +177,7 @@ fn _parse_arguments(arguments: &[String],
                 if input_arg.is_some() || arg == "-" {
                     // Can't cache compilations with multiple inputs
                     // or compilation from stdin.
-                    return CompilerArguments::CannotCache;
+                    return CompilerArguments::CannotCache("multiple input files");
                 }
                 input_arg = Some(arg.clone());
             }
@@ -195,17 +195,17 @@ fn _parse_arguments(arguments: &[String],
                 Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
                 e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
-                    return CompilerArguments::CannotCache;
+                    return CompilerArguments::CannotCache("unknown source extension");
                 }
             }
         }
         // We can't cache compilation without an input.
-        None => return CompilerArguments::CannotCache,
+        None => return CompilerArguments::CannotCache("no input file"),
     };
     let mut outputs = HashMap::new();
     match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => return CompilerArguments::CannotCache,
+        None => return CompilerArguments::CannotCache("no output file"),
         Some(o) => {
             outputs.insert("obj", o.to_owned());
             if split_dwarf {
@@ -520,27 +520,27 @@ mod test {
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("multiple input files"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"]));
     }
 
     #[test]
     fn test_parse_arguments_clangmodules() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("clang modules"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("clang modules"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
     }
 
     #[test]
     fn test_parse_arguments_pgo() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("pgo"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache,
+        assert_eq!(CompilerArguments::CannotCache("@file"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
     }
 

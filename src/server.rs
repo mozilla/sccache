@@ -505,8 +505,9 @@ impl<C> SccacheService<C>
                         let res = CompileResponse::CompileStarted;
                         return Message::WithBody(Response::Compile(res), rx)
                     }
-                    CompilerArguments::CannotCache => {
-                        debug!("parse_arguments: CannotCache");
+                    CompilerArguments::CannotCache(why) => {
+                        //TODO: save counts of why
+                        debug!("parse_arguments: CannotCache({})", why);
                         stats.requests_not_cacheable += 1;
                     }
                     CompilerArguments::NotCompilation => {

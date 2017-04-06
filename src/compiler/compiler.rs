@@ -301,7 +301,7 @@ pub enum CompilerArguments<T>
     /// Commandline can be handled.
     Ok(T),
     /// Cannot cache this compilation.
-    CannotCache,
+    CannotCache(&'static str),
     /// This commandline is not a compile.
     NotCompilation,
 }

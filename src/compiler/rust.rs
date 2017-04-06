@@ -303,7 +303,7 @@ impl<T> Compiler<T> for Rust
                 }))
             }
             CompilerArguments::NotCompilation => CompilerArguments::NotCompilation,
-            CompilerArguments::CannotCache => CompilerArguments::CannotCache,
+            CompilerArguments::CannotCache(why) => CompilerArguments::CannotCache(why),
         }
     }
 
@@ -365,16 +365,16 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
             // Various non-compilation options.
             "--help" | "-V" | "--version" | "--print" | "--explain" | "--pretty" | "--unpretty" => return CompilerArguments::NotCompilation,
             // Could support `-o file` but it'd be more complicated.
-            "-o" => return CompilerArguments::CannotCache,
+            "-o" => return CompilerArguments::CannotCache("-o"),
             //TODO: support linking against native libraries. This
             // will require replicating the linker search strategy
             // so we can *find* them.
             // https://github.com/mozilla/sccache/issues/88
-            "-l" => return CompilerArguments::CannotCache,
+            "-l" => return CompilerArguments::CannotCache("-l"),
             "--emit" => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
-                    return CompilerArguments::CannotCache;
+                    return CompilerArguments::CannotCache("more than one --emit");
                 }
                 emit = val.map(|a| a.split(",").collect());
             }
@@ -406,13 +406,13 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
                 }
             }
             // Can't cache compilation from stdin.
-            "-" => return CompilerArguments::CannotCache,
+            "-" => return CompilerArguments::CannotCache("stdin"),
             _ => {
                 if !arg.starts_with("-") {
                     // Anything else is an input file.
                     if input.is_some() {
                         // Can't cache compilations with multiple inputs.
-                        return CompilerArguments::CannotCache;
+                        return CompilerArguments::CannotCache("multiple input files");
                     }
                     input = Some(arg);
                 }
@@ -426,7 +426,7 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
                 $x
             } else {
                 debug!("Can't cache compilation, missing `{}`", stringify!($x));
-                return CompilerArguments::CannotCache;
+                return CompilerArguments::CannotCache(concat!("missing ", stringify!($x)));
             };
         }
     };
@@ -447,7 +447,7 @@ fn parse_arguments(arguments: &[String], _cwd: &Path) -> CompilerArguments<Parse
     let allowed_emit = HashSet::from_iter(ALLOWED_EMIT.iter().map(|v| *v));
     let l = allowed_emit.len();
     if emit.union(&allowed_emit).count() > l {
-        return CompilerArguments::CannotCache;
+        return CompilerArguments::CannotCache("unsupported --emit");
     }
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
