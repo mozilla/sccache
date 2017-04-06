@@ -81,7 +81,12 @@ impl CCompilerImpl for Clang {
 }
 
 /// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
-const ARGS_WITH_VALUE: &'static [&'static str] = &["-arch"];
+const ARGS_WITH_VALUE: &'static [&'static str] = &[
+    "-arch",
+    "-B",
+    "-target",
+    "-Xclang",
+];
 
 /// Return true if `arg` is a clang commandline argument that takes a value.
 pub fn argument_takes_value(arg: &str) -> bool {
@@ -176,41 +181,47 @@ mod test {
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, ".".as_ref(), argument_takes_value)
+        Clang.parse_arguments(arguments, ".".as_ref())
+    }
+
+    macro_rules! parses {
+        ( $( $s:expr ),* ) => {
+            match _parse_arguments(&[ $( $s.to_string(), )* ]) {
+                CompilerArguments::Ok(a) => a,
+                o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            }
+        }
     }
 
     #[test]
     fn test_parse_arguments_simple() {
-        match _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
-                assert_eq!("c", extension);
-                assert_map_contains!(outputs, ("obj", "foo.o"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(1, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert!(common_args.is_empty());
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let a = parses!("-c", "foo.c", "-o", "foo.o");
+        assert_eq!("foo.c", a.input);
+        assert_eq!("c", a.extension);
+        assert_map_contains!(a.outputs, ("obj", "foo.o"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, a.outputs.len());
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
     }
 
     #[test]
     fn test_parse_arguments_values() {
-        match _parse_arguments(&stringvec!["-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.cxx", input);
-                assert_eq!("cxx", extension);
-                assert_map_contains!(outputs, ("obj", "foo.o"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(1, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert_eq!(stringvec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], common_args);
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let a = parses!("-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file");
+        assert_eq!("foo.cxx", a.input);
+        assert_eq!("cxx", a.extension);
+        assert_map_contains!(a.outputs, ("obj", "foo.o"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, a.outputs.len());
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(stringvec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_others() {
+        parses!("-c", "foo.c", "-Xclang", "-load", "-Xclang", "moz-check", "-o", "foo.o");
+        parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
+        parses!("-c", "foo.c", "-target", "x86_64-apple-darwin11", "-o", "foo.o");
     }
 
     #[test]

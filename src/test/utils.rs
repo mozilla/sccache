@@ -49,7 +49,7 @@ macro_rules! assert_neq {
 
 /// Assert that `map` contains all of the (`key`, `val`) pairs specified.
 macro_rules! assert_map_contains {
-    ( $map:ident , $( ($key:expr, $val:expr) ),* ) => {
+    ( $map:expr , $( ($key:expr, $val:expr) ),* ) => {
         $(
             match $map.get(&$key) {
                 Some(&ref v) =>
