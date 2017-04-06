@@ -16,15 +16,15 @@ mkdir $stagedir
 case $system in
     MINGW*|MSYS_NT*)
 	system=Windows
-        rm -rf target/release
-        rustup run nightly cargo build --release --target=x86_64-pc-windows-msvc --features="all unstable" && rustup run nightly cargo test --release
-        cp target/release/sccache.exe "$stagedir"
+        rm -rf target/x86_64-pc-windows-msvc/release
+        cargo build --release --target=x86_64-pc-windows-msvc --features=all && cargo test --release --target=x86_64-pc-windows-msvc --features=all
+        cp target/x86_64-pc-windows-msvc/release/sccache.exe "$stagedir"
         compress=bz2
         ;;
     Linux)
         # Build using rust-musl-builder
         rm -rf target/x86_64-unknown-linux-musl/release
-        docker run --rm -it -v "$(pwd)":/home/rust/src -v ~/.cargo/git:/home/rust/.cargo/git -v ~/.cargo/registry:/home/rust/.cargo/registry ekidd/rust-musl-builder sh -c "cargo build --release --features=all && cargo test --features=all --release"
+        docker run --rm -it -v "$(pwd)":/home/rust/src -v ~/.cargo/git:/home/rust/.cargo/git -v ~/.cargo/registry:/home/rust/.cargo/registry ekidd/rust-musl-builder sh -c "cargo build --release --features=all && cargo test --release --features=all"
         cp target/x86_64-unknown-linux-musl/release/sccache "$stagedir"
         strip "$stagedir/sccache"
         compress=xz
@@ -32,7 +32,7 @@ case $system in
     Darwin)
         rm -rf target/release
         export MACOSX_DEPLOYMENT_TARGET=10.7 OPENSSL_STATIC=1
-        cargo build --release && cargo test --release
+        cargo build --release --features=all && cargo test --release --features=all
         cp target/release/sccache "$stagedir"
         strip "$stagedir/sccache"
         compress=bz2
