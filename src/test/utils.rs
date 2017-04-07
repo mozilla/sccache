@@ -134,6 +134,7 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 pub fn mk_bin_contents<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, contents: F) -> io::Result<PathBuf> {
     create_file(dir,  Path::new(path).with_extension(env::consts::EXE_EXTENSION).to_str().unwrap(), contents)
 }

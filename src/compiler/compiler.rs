@@ -35,7 +35,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self,File};
+#[cfg(unix)]
+use std::fs;
+use std::fs::File;
 use std::io::prelude::*;
 use std::io;
 use std::path::{Path, PathBuf};

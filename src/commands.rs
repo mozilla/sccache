@@ -249,7 +249,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use std::time::Duration;
-    use tokio_core::io::read_exact;
+    use tokio_io::io::read_exact;
     use tokio_core::reactor::{Core, Timeout, PollEvented};
     use uuid::Uuid;
     use winapi::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
