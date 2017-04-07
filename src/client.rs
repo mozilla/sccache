@@ -61,7 +61,7 @@ impl ServerConnection {
     pub fn read_one_response(&mut self) -> Result<Response> {
         trace!("ServerConnection::read_one_response");
         let mut bytes = [0; 4];
-        self.reader.read_exact(&mut bytes)?;
+        self.reader.read_exact(&mut bytes).chain_err(|| "Failed to read response header")?;
         let len = BigEndian::read_u32(&bytes);
         trace!("Should read {} more bytes", len);
         let mut data = vec![0; len as usize];

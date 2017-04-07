@@ -99,6 +99,7 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(port: u16) -> Result<()> {
+    trace!("start_server");
     let core = Core::new()?;
     let pool = CpuPool::new(20);
     let storage = storage_from_environment(&pool, &core.handle());
@@ -207,6 +208,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections in separate tasks.
         let handle = core.handle();
         let server = listener.incoming().for_each(move |(socket, _addr)| {
+            trace!("incoming connection");
             SccacheProto.bind_server(&handle, socket, service.clone());
             Ok(())
         });
@@ -796,6 +798,7 @@ impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
         let msg = try_ready!(self.inner.poll().map_err(|e| {
+            error!("SccacheTransport::poll failed: {}", e);
             io::Error::new(io::ErrorKind::Other, e)
         }));
         Ok(msg.map(|m| {

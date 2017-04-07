@@ -195,7 +195,7 @@ fn test_sccache_command() {
     let sccache = find_sccache_binary();
     let compilers = find_compilers();
     if compilers.is_empty() {
-        assert!(true, "No compilers found, skipping test");
+        warn!("No compilers found, skipping test");
     } else {
         for (compiler, path) in compilers {
             run_sccache_command_test(&sccache, compiler, path, tempdir.path())
