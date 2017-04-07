@@ -35,8 +35,8 @@ use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
 };
-use protocol::{Compile, CompileFinished, CompileResponse};
-use protocol::{Request, Response, CacheStats, CacheStat, CacheStatistic};
+use number_prefix::{binary_prefix, Prefixed, Standalone};
+use protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -349,19 +349,19 @@ impl<C> Service for SccacheService<C>
             }
             Request::GetStats => {
                 debug!("handle_client: get_stats");
-                Response::Stats(self.get_stats())
+                Response::Stats(self.get_info())
             }
             Request::ZeroStats => {
                 debug!("handle_client: zero_stats");
-                Response::Stats(self.zero_stats())
+                self.zero_stats();
+                Response::Stats(self.get_info())
             }
             Request::Shutdown => {
                 debug!("handle_client: shutdown");
                 let future = self.tx.clone().send(ServerMessage::Shutdown);
-                let me = self.clone();
+                let info = self.get_info();
                 return Box::new(future.then(move |_| {
-                    let stats = me.get_stats();
-                    Ok(Message::WithoutBody(Response::ShuttingDown(stats)))
+                    Ok(Message::WithoutBody(Response::ShuttingDown(info)))
                 }))
             }
         };
@@ -391,34 +391,19 @@ impl<C> SccacheService<C>
         }
     }
 
-    /// Get stats about the cache.
-    fn get_stats(&self) -> CacheStats {
-        let mut stats = CacheStats {
-            stats: self.stats.borrow().to_cache_statistics(),
-        };
-
-        stats.stats.push(CacheStatistic {
-            name: String::from("Cache location"),
-            value: CacheStat::String(self.storage.location()),
-        });
-
-        for &(s, v) in [("Cache size", self.storage.current_size()),
-                       ("Max cache size", self.storage.max_size())].iter() {
-            v.map(|val| {
-                stats.stats.push(CacheStatistic {
-                    name: String::from(s),
-                    value: CacheStat::Size(val as u64),
-                });
-            });
+    /// Get info and stats about the cache.
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            stats: self.stats.borrow().clone(),
+            cache_location: self.storage.location(),
+            cache_size: self.storage.current_size(),
+            max_cache_size: self.storage.max_size(),
         }
-
-        return stats
     }
 
-    /// Zero and return stats about the cache.
-    fn zero_stats(&self) -> CacheStats {
+    /// Zero stats about the cache.
+    fn zero_stats(&self) {
         *self.stats.borrow_mut() = ServerStats::default();
-        self.get_stats()
     }
 
 
@@ -644,8 +629,9 @@ impl<C> SccacheService<C>
     }
 }
 
-/// Statistics about the cache.
-struct ServerStats {
+/// Statistics about the server.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ServerStats {
     /// The count of client compile requests.
     pub compile_requests: u64,
     /// The count of client requests that used an unsupported compiler.
@@ -682,6 +668,15 @@ struct ServerStats {
     pub compile_fails: u64,
 }
 
+/// Info and stats about the server.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ServerInfo {
+    pub stats: ServerStats,
+    pub cache_location: String,
+    pub cache_size: Option<usize>,
+    pub max_cache_size: Option<usize>,
+}
+
 impl Default for ServerStats {
     fn default() -> ServerStats {
         ServerStats {
@@ -707,32 +702,31 @@ impl Default for ServerStats {
 }
 
 impl ServerStats {
-    fn to_cache_statistics(&self) -> Vec<CacheStatistic> {
+    /// Print stats to stdout in a human-readable format.
+    ///
+    /// Return the formatted width of each of the (name, value) columns.
+    fn print(&self) -> (usize, usize) {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
-                $vec.push(CacheStatistic {
-                    name: String::from($name),
-                    value: CacheStat::Count($var),
-                });
+                // name, value, suffix length
+                $vec.push(($name, $var.to_string(), 0));
             }};
         }
 
         macro_rules! set_duration_stat {
             ($vec:ident, $dur:expr, $num:expr, $name:expr) => {{
                 let s = if $num > 0 {
-                    let duration = $dur / $num as u32;
-                    fmt_duration_as_secs(&duration)
+                    $dur / $num as u32
                 } else {
-                    "0.000s".to_owned()
+                    Default::default()
                 };
-                $vec.push(CacheStatistic {
-                    name: String::from($name),
-                    value: CacheStat::String(s),
-                });
+                // name, value, suffix length
+                $vec.push(($name, fmt_duration_as_secs(&s), 2));
             }};
         }
 
         let mut stats_vec = vec!();
+        //TODO: this would be nice to replace with a custom derive implementation.
         set_stat!(stats_vec, self.compile_requests, "Compile requests");
         set_stat!(stats_vec, self.requests_executed, "Compile requests executed");
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
@@ -742,14 +736,37 @@ impl ServerStats {
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
         set_stat!(stats_vec, self.cache_errors, "Cache errors");
-        set_stat!(stats_vec, self.non_cacheable_compilations, "Successful compilations which could not be cached");
+        set_stat!(stats_vec, self.non_cacheable_compilations, "Non-cacheable compilations");
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
         set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
         set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
         set_duration_stat!(stats_vec, self.cache_write_duration, self.cache_writes, "Average cache write");
         set_duration_stat!(stats_vec, self.cache_read_miss_duration, self.cache_misses, "Average cache read miss");
         set_duration_stat!(stats_vec, self.cache_read_hit_duration, self.cache_hits, "Average cache read hit");
-        stats_vec
+        let name_width = stats_vec.iter().map(|&(ref n, _, _)| n.len()).max().unwrap();
+        let stat_width = stats_vec.iter().map(|&(_, ref s, _)| s.len()).max().unwrap();
+        for (name, stat, suffix_len) in stats_vec {
+            println!("{:<name_width$} {:>stat_width$}", name, stat, name_width=name_width, stat_width=stat_width + suffix_len);
+        }
+        (name_width, stat_width)
+    }
+}
+
+impl ServerInfo {
+    /// Print info to stdout in a human-readable format.
+    pub fn print(&self) {
+        let (name_width, stat_width) = self.stats.print();
+        println!("{:<name_width$} {}", "Cache location", self.cache_location, name_width=name_width);
+        for &(name, val) in &[("Cache size", &self.cache_size),
+                             ("Max cache size", &self.max_cache_size)] {
+            if let &Some(val) = val {
+                let (val, suffix) = match binary_prefix(val as f64) {
+                    Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
+                    Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
+                };
+                println!("{:<name_width$} {:>stat_width$} {}", name, val, suffix, name_width=name_width, stat_width=stat_width);
+            }
+        }
     }
 }
 

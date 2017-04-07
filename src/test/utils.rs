@@ -15,7 +15,6 @@
 #[cfg(unix)]
 use libc;
 use mock_command::*;
-use protocol::{CacheStats, CacheStat};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
@@ -175,13 +174,9 @@ impl TestFixture {
     }
 }
 
-pub fn cache_stats_map(stats: CacheStats) -> HashMap<String, CacheStat> {
-    stats.stats.into_iter().map(|s| (s.name, s.value)).collect()
-}
 
 #[test]
 fn test_map_contains_ok() {
-    use std::collections::HashMap;
     let mut m = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
@@ -191,7 +186,6 @@ fn test_map_contains_ok() {
 #[test]
 #[should_panic]
 fn test_map_contains_missing_key() {
-    use std::collections::HashMap;
     let mut m = HashMap::new();
     m.insert("a", 1);
     assert_map_contains!(m, ("a", 1), ("b", 2));
@@ -200,7 +194,6 @@ fn test_map_contains_missing_key() {
 #[test]
 #[should_panic]
 fn test_map_contains_wrong_value() {
-    use std::collections::HashMap;
     let mut m = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 3);

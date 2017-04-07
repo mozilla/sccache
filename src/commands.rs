@@ -24,14 +24,8 @@ use mock_command::{
     ProcessCommandCreator,
     RunCommand,
 };
-use number_prefix::{
-    binary_prefix,
-    Prefixed,
-    Standalone,
-};
-use protocol::{Request, Response, CacheStats, CompileResponse, CompileFinished};
-use protocol::{Compile, CacheStat};
-use server;
+use protocol::{Request, Response, CompileResponse, CompileFinished, Compile};
+use server::{self, ServerInfo};
 use std::env;
 use std::ffi::{OsStr,OsString};
 use std::fs::{File, OpenOptions};
@@ -361,10 +355,9 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
     }
 }
 
-/// Send a `ZeroStats` request to the server, and return the `CacheStats` request if successful.
-pub fn request_zero_stats(mut conn : ServerConnection) -> Result<CacheStats> {
+/// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
+pub fn request_zero_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
-    //TODO: better error mapping
     let response = conn.request(Request::ZeroStats).chain_err(|| {
         "failed to send zero statistics command to server or failed to receive respone"
     })?;
@@ -375,10 +368,9 @@ pub fn request_zero_stats(mut conn : ServerConnection) -> Result<CacheStats> {
     }
 }
 
-/// Send a `GetStats` request to the server, and return the `CacheStats` request if successful.
-pub fn request_stats(mut conn : ServerConnection) -> Result<CacheStats> {
+/// Send a `GetStats` request to the server, and return the `ServerInfo` request if successful.
+pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
-    //TODO: better error mapping
     let response = conn.request(Request::GetStats).chain_err(|| {
         "Failed to send data to or receive data from server"
     })?;
@@ -389,8 +381,8 @@ pub fn request_stats(mut conn : ServerConnection) -> Result<CacheStats> {
     }
 }
 
-/// Send a `Shutdown` request to the server, and return the `CacheStats` contained within the response if successful.
-pub fn request_shutdown(mut conn : ServerConnection) -> Result<CacheStats> {
+/// Send a `Shutdown` request to the server, and return the `ServerInfo` contained within the response if successful.
+pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_shutdown");
     //TODO: better error mapping
     let response = conn.request(Request::Shutdown).chain_err(|| {
@@ -401,30 +393,6 @@ pub fn request_shutdown(mut conn : ServerConnection) -> Result<CacheStats> {
     } else {
         bail!("Unexpected server response!")
     }
-}
-
-/// Print `stats` to stdout.
-fn print_stats(stats: CacheStats) -> Result<()> {
-    let formatted = stats.stats.into_iter()
-        .map(|s| {
-            (s.name, match s.value {
-                CacheStat::Count(c) => c.to_string(),
-                CacheStat::String(s) => s,
-                CacheStat::Size(size) => {
-                    match binary_prefix(size as f64) {
-                        Standalone(bytes) => format!("{} bytes", bytes),
-                        Prefixed(prefix, n) => format!("{:.0} {}B", n, prefix),
-                    }
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let name_width = formatted.iter().map(|&(ref n, _)| n.len()).max().unwrap();
-    let stat_width = formatted.iter().map(|&(_, ref s)| s.len()).max().unwrap();
-    for (name, stat) in formatted {
-        println!("{:<name_width$} {:>stat_width$}", name, stat, name_width=name_width, stat_width=stat_width);
-    }
-    Ok(())
 }
 
 /// Send a `Compile` request to the server, and return the server response if successful.
@@ -592,10 +560,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::ShowStats => {
             trace!("Command::ShowStats");
             let srv = connect_or_start_server(get_port())?;
-            let response = request_stats(srv).chain_err(|| {
+            let stats = request_stats(srv).chain_err(|| {
                 "failed to get stats from server"
             })?;
-            print_stats(response)?;
+            stats.print();
         }
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
@@ -627,7 +595,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 "couldn't connect to server"
             })?;
             let stats = request_shutdown(server)?;
-            print_stats(stats)?
+            stats.print();
         }
         Command::Compile { exe, cmdline, cwd, env_vars } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
@@ -653,7 +621,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let stats = request_zero_stats(conn).chain_err(|| {
                 "couldn't zero stats on server"
             })?;
-            print_stats(stats)?
+            stats.print();
         }
     }
 

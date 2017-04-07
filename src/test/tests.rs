@@ -24,7 +24,6 @@ use ::commands::{
 use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
-use protocol::CacheStat;
 use ::mock_command::*;
 use ::server::{
     ServerMessage,
@@ -129,8 +128,8 @@ fn test_server_stats() {
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
-    let stats = cache_stats_map(request_stats(conn).unwrap());
-    assert_eq!(&CacheStat::Count(0), stats.get("Compile requests").unwrap());
+    let info = request_stats(conn).unwrap();
+    assert_eq!(0, info.stats.compile_requests);
     // Now signal it to shut down.
     sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.

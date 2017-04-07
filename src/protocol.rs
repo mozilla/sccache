@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use server::ServerInfo;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]
@@ -19,9 +20,9 @@ pub enum Response {
     /// Response for `Request::Compile`.
     Compile(CompileResponse),
     /// Response for `Request::GetStats`, containing server statistics.
-    Stats(CacheStats),
+    Stats(ServerInfo),
     /// Response for `Request::Shutdown`, containing server statistics.
-    ShuttingDown(CacheStats),
+    ShuttingDown(ServerInfo),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
 }
@@ -33,33 +34,6 @@ pub enum CompileResponse {
     CompileStarted,
     /// The server could not handle this compilation request.
     UnhandledCompile,
-}
-
-/// Server statistics.
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CacheStats {
-    /// A `Vec` of individual statistics.
-    pub stats: Vec<CacheStatistic>,
-}
-
-/// A single server statistic.
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CacheStatistic {
-    /// Stat name.
-    pub name: String,
-    /// Stat value.
-    pub value: CacheStat,
-}
-
-/// A statistic value.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub enum CacheStat {
-    /// A count of occurrences.
-    Count(u64),
-    /// An opaque string, such as a name.
-    String(String),
-    /// A size in bytes.
-    Size(u64),
 }
 
 /// Information about a finished compile, either from cache or executed locally.

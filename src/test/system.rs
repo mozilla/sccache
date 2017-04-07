@@ -21,7 +21,6 @@ use commands::{
 };
 use env_logger;
 use log::LogLevel::Trace;
-use protocol::CacheStat;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};
@@ -99,12 +98,6 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
     }
 }
 
-fn print_stats(stats: &HashMap<String, CacheStat>) {
-    for (k, v) in stats.iter() {
-        trace!("  {}: {:?}", k, v);
-    }
-}
-
 fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe: T, tempdir: &Path) {
     // Ensure there's no existing sccache server running.
     trace!("stop server");
@@ -139,15 +132,11 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
     trace!("request stats");
-    let stats = cache_stats_map(request_stats(conn).unwrap());
-    if log_enabled!(Trace) {
-        trace!("stats:");
-        print_stats(&stats);
-    }
-    assert_eq!(&CacheStat::Count(1), stats.get("Compile requests").unwrap());
-    assert_eq!(&CacheStat::Count(1), stats.get("Compile requests executed").unwrap());
-    assert_eq!(&CacheStat::Count(0), stats.get("Cache hits").unwrap());
-    assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
+    let info = request_stats(conn).unwrap();
+    assert_eq!(1, info.stats.compile_requests);
+    assert_eq!(1, info.stats.requests_executed);
+    assert_eq!(0, info.stats.cache_hits);
+    assert_eq!(1, info.stats.cache_misses);
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
     assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
@@ -155,15 +144,11 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     trace!("connect");
     let conn = connect_with_retry(DEFAULT_PORT).unwrap();
     trace!("request stats");
-    let stats = cache_stats_map(request_stats(conn).unwrap());
-    if log_enabled!(Trace) {
-        trace!("stats:");
-        print_stats(&stats);
-    }
-    assert_eq!(&CacheStat::Count(2), stats.get("Compile requests").unwrap());
-    assert_eq!(&CacheStat::Count(2), stats.get("Compile requests executed").unwrap());
-    assert_eq!(&CacheStat::Count(1), stats.get("Cache hits").unwrap());
-    assert_eq!(&CacheStat::Count(1), stats.get("Cache misses").unwrap());
+    let info = request_stats(conn).unwrap();
+    assert_eq!(2, info.stats.compile_requests);
+    assert_eq!(2, info.stats.requests_executed);
+    assert_eq!(1, info.stats.cache_hits);
+    assert_eq!(1, info.stats.cache_misses);
     trace!("stop server");
     assert_eq!(true, run(sccache, &["--stop-server"], tempdir));
 }
