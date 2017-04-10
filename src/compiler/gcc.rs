@@ -155,6 +155,8 @@ fn _parse_arguments(arguments: &[String],
             // Can't cache Clang modules.
             "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
             "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
+            // Can't cache -fsyntax-only, it doesn't produce any output.
+            "-fsyntax-only" => return CompilerArguments::CannotCache("-fsyntax-only"),
             // Can't cache PGO profiled output.
             "-fprofile-use" => return CompilerArguments::CannotCache("pgo"),
             // We already expanded `@` files we could through
