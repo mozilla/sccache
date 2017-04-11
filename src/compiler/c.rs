@@ -286,6 +286,94 @@ pub fn hash_key(compiler_digest: &str, arguments: &str, env_vars: &[(OsString, O
     m.digest().to_string()
 }
 
+
+pub mod path_helper {
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::string::String;
+
+    fn get_common_prefix_path(from_path: &Path, to_path: &Path) -> PathBuf {
+        if (from_path == Path::new("/")) && (to_path == Path::new("/")) {
+            return PathBuf::new();
+        }
+
+        let mut prefix = "".to_string();
+        for (f, t) in from_path.to_str().unwrap().chars().zip(
+            to_path.to_str().unwrap().chars()) {
+            if f != t {
+                continue;
+            }
+
+            prefix.push_str(format!("{}", f).as_str());
+        }
+
+        if prefix.as_str().ends_with("/") {
+            prefix.pop();
+        }
+
+        PathBuf::from(prefix)
+    }
+
+    /// Rewrite paths to relative paths.
+    pub fn make_path_relative(start_path: &Path) -> Option<PathBuf> {
+        let ccache_basedir = match env::var("SCCACHE_BASEDIR") {
+            Ok(path) => PathBuf::from(&path),
+            _ => return None,
+        };
+
+        if !start_path.is_absolute() {
+            return None
+        }
+
+        if !start_path.starts_with(&ccache_basedir) {
+            return None
+        }
+
+        let canon_path = match fs::canonicalize(start_path) {
+            Ok(canonical_path) => canonical_path,
+            Err(_) => return None,
+        };
+
+        let cwd = env::current_dir().unwrap();
+        let prefix_path = get_common_prefix_path(&cwd, &canon_path);
+
+        let mut result_path_str = "".to_string();
+        if (prefix_path.as_path().as_os_str().len() > 0)
+            || (cwd.as_path().as_os_str() != "/") {
+                match cwd.strip_prefix(prefix_path.as_path()) {
+                    Ok(remainder) => {
+                        for _ in remainder.iter() {
+                            result_path_str = format!("../{}", result_path_str)
+                        }
+                    },
+                    Err(_) => trace!("Could not strip prefix {:?} from path {:?}", prefix_path, cwd),
+                }
+            }
+
+        let mut result_path = PathBuf::from(result_path_str);
+        let remainder = canon_path.strip_prefix(prefix_path.as_path()).unwrap();
+        for a in remainder.iter() {
+            result_path.push(a);
+        }
+
+        if result_path.as_path().as_os_str().is_empty() {
+            result_path = PathBuf::from(".");
+        }
+
+        debug!("get_relative_path rewrote {:?} to {:?}", start_path, result_path);
+        Some(result_path)
+    }
+
+    pub fn get_relative_path(path: String) -> String {
+        let p = PathBuf::from(path.clone());
+        return match make_path_relative(p.as_path()) {
+            Some(relative_path) => relative_path.as_path().to_str().unwrap().to_string(),
+            None => path,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

@@ -17,7 +17,7 @@ use ::compiler::{
     CompilerArguments,
     write_temp_file,
 };
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments, path_helper};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::Future;
@@ -167,7 +167,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                     "-FI" => {
                         common_args.push(arg.clone());
                         if let Some(arg_val) = it.next() {
-                            common_args.push(arg_val.clone());
+                            common_args.push(path_helper::get_relative_path(arg_val.clone()));
                         }
                     }
                     v @ _ if v.starts_with("-deps") => {
@@ -197,7 +197,8 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
                             // Can't cache compilations with multiple inputs.
                             return CompilerArguments::CannotCache("multiple input files");
                         }
-                        input_arg = Some(v);
+
+                        input_arg = Some(path_helper::get_relative_path(v.to_string()));
                     }
                 }
             }
@@ -210,7 +211,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
     }
     let (input, extension) = match input_arg {
         Some(i) => {
-            match Path::new(i).extension().and_then(|e| e.to_str()) {
+            match Path::new(&i).extension().and_then(|e| e.to_str()) {
                 Some(e) => (i.to_owned(), e.to_owned()),
                 _ => {
                     trace!("Bad or missing source extension: {:?}", i);
