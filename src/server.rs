@@ -94,6 +94,16 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
     notify_server_startup_internal(pipe, success)
 }
 
+#[cfg(unix)]
+fn get_signal(status: ExitStatus) -> i32 {
+    use std::os::unix::prelude::*;
+    status.signal().expect("must have signal")
+}
+#[cfg(windows)]
+fn get_signal(_status: ExitStatus) -> i32 {
+    panic!("no signals on windows")
+}
+
 /// Start an sccache server, listening on `port`.
 ///
 /// Spins an event loop handling client connections until a client
@@ -578,16 +588,16 @@ impl<C> SccacheService<C>
                     };
                     res.stdout = stdout;
                     res.stderr = stderr;
-
-                    #[cfg(unix)]
-                    fn get_signal(status: ExitStatus) -> i32 {
-                        use std::os::unix::prelude::*;
-                        status.signal().expect("must have signal")
-                    }
-                    #[cfg(windows)]
-                    fn get_signal(_status: ExitStatus) -> i32 {
-                        panic!("no signals on windows")
-                    }
+                }
+                Err(Error(ErrorKind::ProcessError(output), _)) => {
+                    debug!("Compilation failed: {:?}", output);
+                    stats.compile_fails += 1;
+                    match output.status.code() {
+                        Some(code) => res.retcode = Some(code),
+                        None => res.signal = Some(get_signal(output.status)),
+                    };
+                    res.stdout = output.stdout;
+                    res.stderr = output.stderr;
                 }
                 Err(err) => {
                     debug!("[{:?}] compilation failed: {:?}",
