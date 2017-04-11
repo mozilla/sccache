@@ -509,9 +509,9 @@ gcc
     cmd.stdout(Stdio::piped())
        .stderr(Stdio::null());
     let output = write.and_then(move |(tempdir, src)| {
-        let args = vec!(OsString::from("-E"), OsString::from(&src));
+        cmd.arg("-E").arg(src);
         trace!("compiler {:?}", cmd);
-        let child = cmd.args(&args).spawn().chain_err(|| {
+        let child = cmd.spawn().chain_err(|| {
             format!("failed to execute {:?}", cmd)
         });
         child.into_future().and_then(|child| {
@@ -551,6 +551,7 @@ gcc
                 }))
             }
         }
+        debug!("nothing useful in detection output {:?}", stdout);
         f_ok(None)
     }))
 }

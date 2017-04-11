@@ -141,6 +141,9 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
             }
         }
 
+        debug!("failed to detect showIncludes prefix without output: {}",
+               stdout);
+
         bail!("Failed to detect showIncludes prefix")
     }))
 }
@@ -313,7 +316,7 @@ pub fn preprocess<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    if parsed_args.depfile.is_some() {
+    if parsed_args.depfile.is_some() || parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
     }
 
@@ -341,10 +344,12 @@ pub fn preprocess<T>(creator: &T,
                     if deps.insert(dep.clone()) && !dep.contains(' ') {
                         write!(f, "{} ", dep)?;
                     }
-                } else {
-                    stderr_bytes.extend_from_slice(line.as_bytes());
-                    stderr_bytes.push(b'\n');
+                    if !parsed_args.msvc_show_includes {
+                        continue
+                    }
                 }
+                stderr_bytes.extend_from_slice(line.as_bytes());
+                stderr_bytes.push(b'\n');
             }
             writeln!(f, "")?;
             // Write extra rules for each dependency to handle
