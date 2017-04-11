@@ -33,6 +33,7 @@ use std::io::{
     self,
     Write,
 };
+use std::mem;
 use std::path::Path;
 use std::process::{self,Stdio};
 use util::run_input_output;
@@ -72,7 +73,7 @@ impl CCompilerImpl for MSVC {
     fn compile<T>(&self,
                   creator: &T,
                   executable: &str,
-                  preprocessor_output: Vec<u8>,
+                  preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
                   cwd: &str,
                   env_vars: &[(OsString, OsString)],
@@ -80,7 +81,7 @@ impl CCompilerImpl for MSVC {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_output, parsed_args, cwd, env_vars, pool)
+        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -152,57 +153,58 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
     let mut debug_info = false;
     let mut pdb = None;
     let mut depfile = None;
+    let mut show_includes = false;
 
-    //TODO: support arguments that start with / as well.
-    let mut it = arguments.iter();
-    loop {
-        match it.next() {
-            Some(arg) => {
-                match arg.as_ref() {
-                    "-c" => compilation = true,
-                    v if v.starts_with("-Fo") => {
-                        output_arg = Some(String::from(&v[3..]));
-                    }
-                    // Arguments that take a value.
-                    "-FI" => {
-                        common_args.push(arg.clone());
-                        if let Some(arg_val) = it.next() {
-                            common_args.push(path_helper::get_relative_path(arg_val.clone()));
-                        }
-                    }
-                    v @ _ if v.starts_with("-deps") => {
-                        depfile = Some(v[5..].to_owned());
-                    }
-                    // Arguments we can't handle.
-                    "-showIncludes" => return CompilerArguments::CannotCache("-showIncludes"),
-                    a if a.starts_with('@') => return CompilerArguments::CannotCache("@file"),
-                    // Arguments we can't handle because they output more files.
-                    // TODO: support more multi-file outputs.
-                    "-FA" | "-Fa" | "-Fe" | "-Fm" | "-Fp" | "-FR" | "-Fx" => return CompilerArguments::CannotCache("multi-file output"),
-                    "-Zi" => {
-                        debug_info = true;
-                        common_args.push(arg.clone());
-                    }
-                    v if v.starts_with("-Fd") => {
-                        pdb = Some(String::from(&v[3..]));
-                        common_args.push(arg.clone());
-                    }
-                    // Other options.
-                    v if v.starts_with('-') && v.len() > 1 => {
-                        common_args.push(arg.clone());
-                    }
-                    // Anything else is an input file.
-                    v => {
-                        if input_arg.is_some() {
-                            // Can't cache compilations with multiple inputs.
-                            return CompilerArguments::CannotCache("multiple input files");
-                        }
-
-                        input_arg = Some(path_helper::get_relative_path(v.to_string()));
-                    }
+    let mut it = arguments.iter().map(|i| {
+        if i.starts_with("/") {
+            format!("-{}", &i[1..])
+        } else {
+            i.to_string()
+        }
+    });
+    while let Some(arg) = it.next() {
+        match &arg[..] {
+            "-c" => compilation = true,
+            v if v.starts_with("-Fo") => {
+                output_arg = Some(String::from(&v[3..]));
+            }
+            // Arguments that take a value.
+            "-FI" => {
+                common_args.push(arg.clone());
+                if let Some(arg_val) = it.next() {
+                    common_args.push(path_helper::get_relative_path(arg_val.clone()));
                 }
             }
-            None => break,
+            v @ _ if v.starts_with("-deps") => {
+                depfile = Some(v[5..].to_owned());
+            }
+            "-showIncludes" => show_includes = true,
+            // Arguments we can't handle.
+            a if a.starts_with('@') => return CompilerArguments::CannotCache("@file"),
+            // Arguments we can't handle because they output more files.
+            // TODO: support more multi-file outputs.
+            "-FA" | "-Fa" | "-Fe" | "-Fm" | "-Fp" | "-FR" | "-Fx" => return CompilerArguments::CannotCache("multi-file output"),
+            "-Zi" => {
+                debug_info = true;
+                common_args.push(arg.clone());
+            }
+            v if v.starts_with("-Fd") => {
+                pdb = Some(String::from(&v[3..]));
+                common_args.push(arg.clone());
+            }
+            // Other options.
+            v if v.starts_with('-') && v.len() > 1 => {
+                common_args.push(arg.clone());
+            }
+            // Anything else is an input file.
+            v => {
+                if input_arg.is_some() {
+                    // Can't cache compilations with multiple inputs.
+                    return CompilerArguments::CannotCache("multiple input files");
+                }
+
+                input_arg = Some(path_helper::get_relative_path(v.to_string()));
+            }
         }
     }
     // We only support compilation.
@@ -249,6 +251,7 @@ pub fn parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArgument
         outputs: outputs,
         preprocessor_args: vec!(),
         common_args: common_args,
+        msvc_show_includes: show_includes,
     })
 }
 
@@ -364,7 +367,7 @@ pub fn preprocess<T>(creator: &T,
 
 fn compile<T>(creator: &T,
               executable: &str,
-              preprocessor_output: Vec<u8>,
+              preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &str,
               env_vars: &[(OsString, OsString)],
@@ -399,7 +402,7 @@ fn compile<T>(creator: &T,
             Some(name) => name,
             None => return f_err("missing input filename"),
         };
-        write_temp_file(pool, filename.as_ref(), preprocessor_output)
+        write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout)
     };
 
     let mut cmd = creator.clone().new_command_sync(executable);
@@ -431,7 +434,7 @@ fn compile<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
-    Box::new(output.or_else(move |err| -> SFuture<_> {
+    let ret = output.or_else(move |err| -> SFuture<_> {
         match err {
             // If compiling from the preprocessed source failed, try
             // again from the original source.
@@ -443,6 +446,25 @@ fn compile<T>(creator: &T,
             }
             e @ _ => f_err(e),
         }
+    });
+
+    // If the `-showIncludes` command line option was originally passed we need
+    // to be sure to ship the output from the preprocessor as the actual
+    // result of this compilation.
+    //
+    // Note, though, that when we ran the preprocessor we passed `-E` which
+    // means that the "show includes" business when to stderr. Normally, though,
+    // the compiler emits `-showIncludes` output to stdout. To handle that we
+    // take the stderr of the preprocessor and prepend it to the stdout of the
+    // compilation.
+    let mut extra_stdout = Vec::new();
+    if parsed_args.msvc_show_includes {
+        extra_stdout = preprocessor_result.stderr;
+    }
+    Box::new(ret.map(|(cacheable, mut output)| {
+        let prev = mem::replace(&mut output.stdout, extra_stdout);
+        output.stdout.extend(prev);
+        (cacheable, output)
     }))
 }
 
@@ -477,70 +499,132 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
-                assert_eq!("c", extension);
-                assert_map_contains!(outputs, ("obj", "foo.obj"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(1, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert!(common_args.is_empty());
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let args = stringvec!["-c", "foo.c", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!("foo.c", input);
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", "foo.obj"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn parse_argument_slashes() {
+        let args = stringvec!["-c", "foo.c", "/Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!("foo.c", input);
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", "foo.obj"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 
     #[test]
     fn test_parse_arguments_extra() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
-                assert_eq!("c", extension);
-                assert_map_contains!(outputs, ("obj", "foo.obj"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(1, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert_eq!(common_args, &["-foo", "-bar"]);
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let args = stringvec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!("foo.c", input);
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", "foo.obj"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, &["-foo", "-bar"]);
+        assert!(!msvc_show_includes);
     }
 
     #[test]
     fn test_parse_arguments_values() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
-                assert_eq!("c", extension);
-                assert_map_contains!(outputs, ("obj", "foo.obj"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(1, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert_eq!(common_args, &["-FI", "file"]);
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let args = stringvec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj", "/showIncludes"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!("foo.c", input);
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", "foo.obj"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, &["-FI", "file"]);
+        assert!(msvc_show_includes);
     }
 
     #[test]
     fn test_parse_arguments_pdb() {
-        match parse_arguments(&stringvec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"]) {
-            CompilerArguments::Ok(ParsedArguments { input, extension, depfile: _depfile, outputs, preprocessor_args, common_args }) => {
-                assert!(true, "Parsed ok");
-                assert_eq!("foo.c", input);
-                assert_eq!("c", extension);
-                assert_map_contains!(outputs, ("obj", "foo.obj"), ("pdb", "foo.pdb"));
-                //TODO: fix assert_map_contains to assert no extra keys!
-                assert_eq!(2, outputs.len());
-                assert!(preprocessor_args.is_empty());
-                assert_eq!(common_args, &["-Zi", "-Fdfoo.pdb"]);
-            }
-            o @ _ => assert!(false, format!("Got unexpected parse result: {:?}", o)),
-        }
+        let args = stringvec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!("foo.c", input);
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", "foo.obj"), ("pdb", "foo.pdb"));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(2, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, &["-Zi", "-Fdfoo.pdb"]);
+        assert!(!msvc_show_includes);
     }
 
     #[test]
@@ -597,6 +681,7 @@ mod test {
             outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            msvc_show_includes: false,
         };
         let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
@@ -604,7 +689,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     vec!(),
+                                     empty_output(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
                                      &[],
@@ -628,6 +713,7 @@ mod test {
                           ("pdb", pdb.to_str().unwrap().to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            msvc_show_includes: false,
         };
         let compiler = f.bins[0].to_str().unwrap();
         // Compiler invocation.
@@ -635,7 +721,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     vec!(),
+                                     empty_output(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
                                      &[],
@@ -657,6 +743,7 @@ mod test {
             outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            msvc_show_includes: false,
         };
         let compiler = f.bins[0].to_str().unwrap();
         // First compiler invocation fails.
@@ -665,7 +752,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     vec!(),
+                                     empty_output(),
                                      &parsed_args,
                                      f.tempdir.path().to_str().unwrap(),
                                      &[],
@@ -673,5 +760,38 @@ mod test {
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn preprocess_output_appended() {
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".to_owned(),
+            extension: "c".to_owned(),
+            depfile: None,
+            outputs: vec![("obj", "foo.obj".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+            msvc_show_includes: true,
+        };
+        let compiler = f.bins[0].to_str().unwrap();
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "stdout1", "stderr1")));
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
+        let mut output = empty_output();
+        output.stdout.extend(b"stdout2");
+        output.stderr.extend(b"stderr2");
+        let (_, output) = compile(&creator,
+                                  &compiler,
+                                  output,
+                                  &parsed_args,
+                                  f.tempdir.path().to_str().unwrap(),
+                                  &[],
+                                  &pool).wait().unwrap();
+        assert_eq!(0, creator.lock().unwrap().children.len());
+        assert_eq!(output.stdout, b"stderr2stdout1");
+        assert_eq!(output.stderr, b"stderr1");
     }
 }
