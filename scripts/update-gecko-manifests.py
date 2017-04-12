@@ -41,7 +41,7 @@ def update_tooltool_manifests(build_dir, gecko_dir):
     manifest = tooltool.open_manifest(new_manifest_file)
     b = io.BytesIO()
     manifest.dump(b)
-    new_data = '\n'.join(['{', '"version": "sccache rev %s",' % rev] + b.getvalue().strip(' \n[]').splitlines()[1:])
+    new_data = '\n'.join(['{', '    "version": "sccache rev %s",' % rev] + b.getvalue().strip(' \n[]').splitlines()[1:])
     for manifest_glob in PLATFORM_MANIFESTS[system]:
         for platform_manifest_file in glob.glob(os.path.join(gecko_dir, manifest_glob)):
             print(platform_manifest_file)

@@ -80,7 +80,7 @@ class MissingFileException(ExceptionWithFilename):
 class FileRecord(object):
 
     def __init__(self, filename, size, digest, algorithm, unpack=False,
-                 visibility=None, setup=None):
+                 version=None, visibility=None, setup=None):
         object.__init__(self)
         if '/' in filename or '\\' in filename:
             log.error(
@@ -91,6 +91,7 @@ class FileRecord(object):
         self.digest = digest
         self.algorithm = algorithm
         self.unpack = unpack
+        self.version = version
         self.visibility = visibility
         self.setup = setup
 
@@ -101,6 +102,7 @@ class FileRecord(object):
            self.size == other.size and \
            self.digest == other.digest and \
            self.algorithm == other.algorithm and \
+           self.version == other.version and \
            self.visibility == other.visibility:
             return True
         else:
@@ -179,6 +181,8 @@ class FileRecordJSONEncoder(json.JSONEncoder):
             }
             if obj.unpack:
                 rv['unpack'] = True
+            if obj.version:
+                rv['version'] = obj.version
             if obj.visibility is not None:
                 rv['visibility'] = obj.visibility
             if obj.setup:
@@ -226,11 +230,12 @@ class FileRecordJSONDecoder(json.JSONDecoder):
 
             if not missing:
                 unpack = obj.get('unpack', False)
+                version = obj.get('version', None)
                 visibility = obj.get('visibility', None)
                 setup = obj.get('setup')
                 rv = FileRecord(
                     obj['filename'], obj['size'], obj['digest'], obj['algorithm'],
-                    unpack, visibility, setup)
+                    unpack, version, visibility, setup)
                 log.debug("materialized %s" % rv)
                 return rv
         return obj
@@ -306,7 +311,7 @@ class Manifest(object):
         assert fmt in self.valid_formats
         if fmt == 'json':
             rv = json.dump(
-                self.file_records, output_file, indent=0, cls=FileRecordJSONEncoder,
+                self.file_records, output_file, indent=2, cls=FileRecordJSONEncoder,
                 separators=(',', ': '))
             print >> output_file, ''
             return rv
@@ -346,7 +351,7 @@ def open_manifest(manifest_file):
     """I know how to take a filename and load it into a Manifest object"""
     if os.path.exists(manifest_file):
         manifest = Manifest()
-        with open(manifest_file) as f:
+        with open(manifest_file, "rb") as f:
             manifest.load(f)
             log.debug("loaded manifest from file '%s'" % manifest_file)
         return manifest
@@ -398,7 +403,7 @@ def validate_manifest(manifest_file):
         return False
 
 
-def add_files(manifest_file, algorithm, filenames, visibility, unpack):
+def add_files(manifest_file, algorithm, filenames, version, visibility, unpack):
     # returns True if all files successfully added, False if not
     # and doesn't catch library Exceptions.  If any files are already
     # tracked in the manifest, return will be False because they weren't
@@ -415,6 +420,7 @@ def add_files(manifest_file, algorithm, filenames, visibility, unpack):
         log.debug("adding %s" % filename)
         path, name = os.path.split(filename)
         new_fr = create_file_record(filename, algorithm)
+        new_fr.version = version
         new_fr.visibility = visibility
         new_fr.unpack = unpack
         log.debug("appending a new file record to manifest file")
@@ -755,7 +761,7 @@ def _authorize(req, auth_file):
     if auth_file:
         log.debug("using bearer token in %s" % auth_file)
         req.add_unredirected_header('Authorization',
-                                    'Bearer %s' % (open(auth_file).read().strip()))
+                                    'Bearer %s' % (open(auth_file, "rb").read().strip()))
 
 
 def _send_batch(base_url, auth_file, batch, region):
@@ -781,7 +787,7 @@ def _s3_upload(filename, file):
     conn = cls(host, port)
     try:
         req_path = "%s?%s" % (url.path, url.query) if url.query else url.path
-        conn.request('PUT', req_path, open(filename),
+        conn.request('PUT', req_path, open(filename, "rb"),
                      {'Content-type': 'application/octet-stream'})
         resp = conn.getresponse()
         resp_body = resp.read()
@@ -908,7 +914,8 @@ def process_command(options, args):
         return validate_manifest(options['manifest'])
     elif cmd == 'add':
         return add_files(options['manifest'], options['algorithm'], cmd_args,
-                         options['visibility'], options['unpack'])
+                         options['version'], options['visibility'],
+                         options['unpack'])
     elif cmd == 'purge':
         if options['cache_folder']:
             purge(folder=options['cache_folder'], gigs=options['size'])
@@ -956,11 +963,16 @@ def main(argv, _skip_logging=False):
                       help='Visibility level of this file; "internal" is for '
                            'files that cannot be distributed out of the company '
                            'but not for secrets; "public" files are available to '
-                           'anyone withou trestriction')
+                           'anyone without restriction')
     parser.add_option('--unpack', default=False,
                       dest='unpack', action='store_true',
                       help='Request unpacking this file after fetch.'
                            ' This is helpful with tarballs.')
+    parser.add_option('--version', default=None,
+                      dest='version', action='store',
+                      help='Version string for this file. This annotates the '
+                           'manifest entry with a version string to help '
+                           'identify the contents.')
     parser.add_option('-o', '--overwrite', default=False,
                       dest='overwrite', action='store_true',
                       help='UNUSED; present for backward compatibility')
