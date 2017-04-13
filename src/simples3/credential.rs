@@ -286,7 +286,7 @@ impl IamProvider {
 
     fn iam_role(&self) -> SFuture<String> {
         // First get the IAM role
-        let address = "http://169.254.169.254/latest/meta-data/iam/security-credentials";
+        let address = "http://169.254.169.254/latest/meta-data/iam/security-credentials/";
         let mut req = Request::new(Method::Get, address.parse().unwrap());
         req.headers_mut().set(Connection::close());
         let response = self.client.request(req).and_then(|response| {
@@ -305,7 +305,6 @@ impl IamProvider {
             })
         }).map(move |body| {
             let mut address = address.to_string();
-            address.push_str("/");
             address.push_str(&body);
             address
         }))
