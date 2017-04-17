@@ -14,6 +14,8 @@
 
 #![allow(dead_code, unused_imports)]
 
+extern crate gcc;
+
 use client::connect_with_retry;
 use env_logger;
 use log::LogLevel::Trace;
@@ -39,6 +41,12 @@ use test::utils::*;
 use which::which_in;
 
 
+struct Compiler {
+    pub name: &'static str,
+    pub exe: OsString,
+    pub env_vars: Vec<(OsString, OsString)>,
+}
+
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os="macos")))]
 const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
@@ -47,18 +55,17 @@ const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
 #[cfg(target_os="macos")]
 const COMPILERS: &'static [&'static str] = &["clang"];
 
-// Test MSVC when targeting MSVC.
-#[cfg(target_env="msvc")]
-const COMPILERS: &'static[&'static str] = &["cl.exe"];
-
 //TODO: could test gcc when targeting mingw.
 
-fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> Output {
+fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> Output {
     let mut cmd = Command::new(exe);
     cmd.args(args)
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for &(ref k, ref v) in env_vars.iter() {
+        cmd.env(k, v);
+    }
     trace!("do_run: {:?}", cmd);
     cmd.spawn()
         .unwrap_or_else(|e| { panic!("failed to execute child: {}", e) })
@@ -66,16 +73,16 @@ fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> Output {
         .unwrap()
 }
 
-fn run_stdout<T>(exe: &Path, args: &[T], cwd: &Path) -> String
+fn run_stdout<T>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> String
     where T: AsRef<OsStr> + fmt::Debug,
 {
-    let output = do_run(exe, args, cwd);
+    let output = do_run(exe, args, cwd, env_vars);
     assert!(output.status.success(), "Failed to run {:?} {:?}", exe, args);
     String::from_utf8(output.stdout).expect("Couldn't convert stdout to String")
 }
 
-fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path) -> bool {
-    let output = do_run(exe, args, cwd);
+fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> bool {
+    let output = do_run(exe, args, cwd, env_vars);
     if output.status.success() {
         true
     } else {
@@ -106,14 +113,15 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
 }
 
 fn get_stats(sccache: &Path, cwd: &Path) -> ServerInfo {
-    let output = run_stdout(sccache, &["--show-stats", "--stats-format=json"], cwd);
+    let output = run_stdout(sccache, &["--show-stats", "--stats-format=json"], cwd, &[]);
     serde_json::from_str(&output).expect("Failed to parse JSON stats")
 }
 
-fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe: T, tempdir: &Path) {
+fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) {
+    let Compiler { name, exe, env_vars } = compiler;
     // Ensure there's no existing sccache server running.
     trace!("stop server");
-    do_run(sccache, &["--stop-server"], tempdir);
+    do_run(sccache, &["--stop-server"], tempdir, &[]);
     // Create a subdir for the cache.
     let cache = tempdir.join("cache");
     fs::create_dir_all(&cache).unwrap();
@@ -128,7 +136,7 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
             .status()
             .unwrap()
             .success());
-    trace!("run_sccache_command_test: {}", compiler);
+    trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
     let original_source_file = Path::new(file!()).parent().unwrap().join("test.c");
     // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -139,7 +147,7 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     let input = source_file.file_name().unwrap().to_str().unwrap();
     let output = out_file.file_name().unwrap().to_str().unwrap();
     trace!("compile");
-    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
+    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, &input, &output), tempdir, &env_vars));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
     let info = get_stats(sccache, tempdir);
@@ -149,7 +157,7 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     assert_eq!(1, info.stats.cache_misses);
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    assert_eq!(true, run(sccache, &compile_cmdline(compiler, exe.as_ref(), &input, &output), tempdir));
+    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, &input, &output), tempdir, &env_vars));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
     let info = get_stats(sccache, tempdir);
@@ -158,23 +166,44 @@ fn run_sccache_command_test<T: AsRef<OsStr>>(sccache: &Path, compiler: &str, exe
     assert_eq!(1, info.stats.cache_hits);
     assert_eq!(1, info.stats.cache_misses);
     trace!("stop server");
-    assert_eq!(true, run(sccache, &["--stop-server"], tempdir));
+    assert_eq!(true, run(sccache, &["--stop-server"], tempdir, &[]));
 }
 
-#[cfg(any(unix, target_env="msvc"))]
-fn find_compilers() -> Vec<(&'static str, OsString)> {
+#[cfg(unix)]
+fn find_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
     COMPILERS.iter()
         .filter_map(|c| {
             match which_in(c, env::var_os("PATH"), &cwd) {
                 Ok(full_path) => match full_path.canonicalize() {
-                    Ok(full_path_canon) => Some((*c, full_path_canon.into_os_string())),
+                    Ok(full_path_canon) => Some(Compiler {
+                        name: *c,
+                        exe: full_path_canon.into_os_string(),
+                        env_vars: vec![],
+                    }),
                     Err(_) => None,
                 },
                 Err(_) => None,
             }
         })
         .collect::<Vec<_>>()
+}
+
+#[cfg(target_env="msvc")]
+fn find_compilers() -> Vec<Compiler> {
+    let tool = gcc::Config::new()
+        .opt_level(1)
+        .host("x86_64-pc-windows-msvc")
+        .target("x86_64-pc-windows-msvc")
+        .debug(false)
+        .get_compiler();
+    vec![
+        Compiler {
+            name: "cl.exe",
+            exe: tool.path().as_os_str().to_os_string(),
+            env_vars: tool.env().to_vec(),
+        },
+    ]
 }
 
 #[test]
@@ -190,8 +219,8 @@ fn test_sccache_command() {
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");
     } else {
-        for (compiler, path) in compilers {
-            run_sccache_command_test(&sccache, compiler, path, tempdir.path())
+        for compiler in compilers {
+            run_sccache_command_test(&sccache, compiler, tempdir.path())
         }
     }
 }

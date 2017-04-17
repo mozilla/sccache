@@ -615,7 +615,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         let f = TestFixture::new();
-        let srcfile = f.touch("stdio.h").unwrap();
+        let srcfile = f.touch("test.h").unwrap();
         let mut s = srcfile.to_str().unwrap();
         if s.starts_with("\\\\?\\") {
             s = &s[4..];
