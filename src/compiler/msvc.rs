@@ -96,16 +96,28 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
 {
     let write = write_temp_file(pool,
                                 "test.c".as_ref(),
-                                b"#include <stdio.h>\n".to_vec());
+                                b"#include \"test.h\"\n".to_vec());
 
     let exe = exe.to_os_string();
     let mut creator = creator.clone();
-    let output = write.and_then(move |(tempdir, input)| {
+    let pool = pool.clone();
+    let write2 = write.and_then(move |(tempdir, input)| {
+        let header = tempdir.path().join("test.h");
+        pool.spawn_fn(move || -> Result<_> {
+            let mut file = File::create(&header)?;
+            file.write_all(b"/* empty */\n")?;
+            Ok((tempdir, input))
+        }).chain_err(|| {
+            "failed to write temporary file"
+        })
+    });
+    let output = write2.and_then(move |(tempdir, input)| {
         let mut cmd = creator.new_command_sync(&exe);
-        cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul"])
+        cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
             .arg(&input)
-            // The MSDN docs say the -showIncludes output goes to stderr,
-            // but that's not true unless running with -E.
+            .current_dir(&tempdir.path())
+        // The MSDN docs say the -showIncludes output goes to stderr,
+        // but that's not true unless running with -E.
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
@@ -114,12 +126,13 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
         }
 
         run_input_output(cmd, None).map(|e| {
-            drop(tempdir);
-            e
+            // Keep the tempdir around so test.h still exists for the
+            // checks below.
+            (e, tempdir)
         })
     });
 
-    Box::new(output.and_then(|output| {
+    Box::new(output.and_then(|(output, tempdir)| {
         if !output.status.success() {
             bail!("Failed to detect showIncludes prefix")
         }
@@ -127,7 +140,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
         let process::Output { stdout: stdout_bytes, .. } = output;
         let stdout = try!(from_local_codepage(&stdout_bytes));
         for line in stdout.lines() {
-            if line.ends_with("stdio.h") {
+            if line.ends_with("test.h") {
                 for (i, c) in line.char_indices().rev() {
                     if c == ' ' {
                         // See if the rest of this line is a full pathname.
@@ -140,8 +153,9 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
                 }
             }
         }
+        drop(tempdir);
 
-        debug!("failed to detect showIncludes prefix without output: {}",
+        debug!("failed to detect showIncludes prefix with output: {}",
                stdout);
 
         bail!("Failed to detect showIncludes prefix")
@@ -490,7 +504,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         let f = TestFixture::new();
-        let srcfile = f.touch("stdio.h").unwrap();
+        let srcfile = f.touch("test.h").unwrap();
         let mut s = srcfile.to_str().unwrap();
         if s.starts_with("\\\\?\\") {
             s = &s[4..];
