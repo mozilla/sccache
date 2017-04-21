@@ -47,6 +47,7 @@ extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate number_prefix;
+extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
@@ -56,7 +57,6 @@ extern crate rustc_serialize;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
-extern crate sha1;
 extern crate tempdir;
 extern crate time;
 extern crate tokio_core;

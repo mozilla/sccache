@@ -18,7 +18,6 @@ use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
 use mock_command::{CommandCreatorSync, RunCommand};
-use sha1;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
@@ -32,8 +31,8 @@ use std::process::{self, Stdio};
 use std::slice;
 use std::time::Instant;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, run_input_output, sha1_digest};
-use util::HashToSha1;
+use util::{fmt_duration_as_secs, run_input_output, Digest};
+use util::HashToDigest;
 
 use errors::*;
 
@@ -139,7 +138,7 @@ fn hash_all(files: Vec<String>, pool: &CpuPool) -> SFuture<Vec<String>>
     let start = Instant::now();
     let count = files.len();
     let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| sha1_digest(f, &pool)))
+    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)))
              .map(move |hashes| {
                  trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
                  hashes
@@ -539,7 +538,7 @@ impl<T> CompilerHasher<T> for RustHasher
         let hashes = source_hashes.join(extern_hashes);
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes)| -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
-            let mut m = sha1::Sha1::new();
+            let mut m = Digest::new();
             // Hash inputs:
             // 1. A version
             m.update(CACHE_VERSION);
@@ -567,9 +566,9 @@ impl<T> CompilerHasher<T> for RustHasher
                         a
                     })
             };
-            args.hash(&mut HashToSha1 { sha: &mut m });
-            // 4. The sha-1 digests of all source files (this includes src file from cmdline).
-            // 5. The sha-1 digests of all files listed on the commandline (self.externs)
+            args.hash(&mut HashToDigest { digest: &mut m });
+            // 4. The digest of all source files (this includes src file from cmdline).
+            // 5. The digest of all files listed on the commandline (self.externs)
             for h in source_hashes.into_iter().chain(extern_hashes) {
                 m.update(h.as_bytes());
             }
@@ -583,9 +582,9 @@ impl<T> CompilerHasher<T> for RustHasher
             env_vars.sort();
             for &(ref var, ref val) in env_vars.iter() {
                 if var.to_str().map(|s| s.starts_with("CARGO_")).unwrap_or(false) {
-                    var.hash(&mut HashToSha1 { sha: &mut m });
+                    var.hash(&mut HashToDigest { digest: &mut m });
                     m.update(b"=");
-                    val.hash(&mut HashToSha1 { sha: &mut m });
+                    val.hash(&mut HashToDigest { digest: &mut m });
                 }
             }
             // 7. TODO: native libraries being linked.
@@ -608,7 +607,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
                 HashResult {
-                    key: m.digest().to_string(),
+                    key: m.finish(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
                         arguments: arguments,
@@ -665,7 +664,6 @@ mod test {
     use ::compiler::*;
     use itertools::Itertools;
     use mock_command::*;
-    use sha1;
     use std::ffi::OsStr;
     use std::fs::File;
     use std::io::Write;
@@ -919,8 +917,6 @@ c:/foo/bar.rs:
         use env_logger;
         drop(env_logger::init());
         let f = TestFixture::new();
-        // SHA-1 digest of an empty file.
-        const EMPTY_DIGEST: &'static str = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
         const FAKE_DIGEST: &'static str = "abcd1234";
         // We'll just use empty files for each of these.
         for s in ["foo.rs", "bar.rs", "bar.rlib"].iter() {
@@ -951,27 +947,30 @@ c:/foo/bar.rs:
                                              (OsString::from("FOO"), OsString::from("bar")),
                                              (OsString::from("CARGO_BLAH"), OsString::from("abc"))],
                                            &pool).wait().unwrap();
-        let mut m = sha1::Sha1::new();
+        let m = Digest::new();
+        let empty_digest = m.finish();
+
+        let mut m = Digest::new();
         // Version.
         m.update(CACHE_VERSION);
         // sysroot shlibs digests.
         m.update(FAKE_DIGEST.as_bytes());
         // Arguments, with externs sorted at the end.
-        OsStr::new("ab--externabc--externxyz").hash(&mut HashToSha1 { sha: &mut m });
+        OsStr::new("ab--externabc--externxyz").hash(&mut HashToDigest { digest: &mut m });
         // bar.rs (source file, from dep-info)
-        m.update(EMPTY_DIGEST.as_bytes());
+        m.update(empty_digest.as_bytes());
         // foo.rs (source file, from dep-info)
-        m.update(EMPTY_DIGEST.as_bytes());
+        m.update(empty_digest.as_bytes());
         // bar.rlib (extern crate, from externs)
-        m.update(EMPTY_DIGEST.as_bytes());
+        m.update(empty_digest.as_bytes());
         // Env vars
-        OsStr::new("CARGO_BLAH").hash(&mut HashToSha1 { sha: &mut m });
+        OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");
-        OsStr::new("abc").hash(&mut HashToSha1 { sha: &mut m });
-        OsStr::new("CARGO_PKG_NAME").hash(&mut HashToSha1 { sha: &mut m });
+        OsStr::new("abc").hash(&mut HashToDigest { digest: &mut m });
+        OsStr::new("CARGO_PKG_NAME").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");
-        OsStr::new("foo").hash(&mut HashToSha1 { sha: &mut m });
-        let digest = m.digest().to_string();
+        OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
+        let digest = m.finish();
         assert_eq!(res.key, digest);
         let mut out = res.compilation.outputs().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
         out.sort();
