@@ -279,30 +279,60 @@ fn compile<T>(creator: &T,
 {
     trace!("compile");
 
-    let output = match parsed_args.outputs.get("obj") {
+    let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
             return future::err("Missing object file output".into()).boxed()
         }
     };
 
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&["-c", "-x"])
-        .arg(match parsed_args.extension.as_ref() {
-            "c" => "cpp-output",
-            "cc" | "cpp" | "cxx" => "c++-cpp-output",
-            e => {
-                error!("gcc::compile: Got an unexpected file extension {}", e);
-                return future::err("Unexpected file extension".into()).boxed()
-            }
-        })
-        .args(&["-", "-o"]).arg(&output)
+    let extension = match parsed_args.extension.as_ref() {
+        "c" => "cpp-output",
+        "cc" | "cpp" | "cxx" => "c++-cpp-output",
+        e => {
+            error!("gcc::compile: Got an unexpected file extension {}", e);
+            return future::err("Unexpected file extension".into()).boxed()
+        }
+    };
+
+    let mut attempt = creator.clone().new_command_sync(executable);
+    attempt.args(&["-c", "-x", extension, "-"])
+        .arg("-o").arg(&out_file)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(cwd);
-    Box::new(run_input_output(cmd, Some(preprocessor_result.stdout)).map(|output| {
-        (Cacheable::Yes, output)
+        .current_dir(&cwd);
+    let output = Box::new(run_input_output(attempt, Some(preprocessor_result.stdout)).map(|output| {
+            (Cacheable::Yes, output)
+        })
+    );
+
+    // gcc may fail when compiling preprocessor output with -Werror,
+    // so retry compilation from the original input file if it fails and
+    // -Werror is in the commandline.
+    //
+    // Otherwise if -Werror is missing we can just use the first instance.
+    if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
+        return output;
+    }
+    
+    let mut cmd = creator.clone().new_command_sync(executable);
+    cmd.arg("-c")
+        .arg(&parsed_args.input)
+        .arg("-o").arg(&out_file)
+        .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .current_dir(&cwd);
+    Box::new(output.or_else(move |err| -> SFuture<_> {
+        match err {
+            Error(ErrorKind::ProcessError(_), _) => {
+                Box::new(run_input_output(cmd, None).map(|output| {
+                    (Cacheable::Yes, output)
+                }))
+            }
+            e @ _ => f_err(e),
+        }
     }))
 }
 
