@@ -36,7 +36,7 @@ use std::io::{
 };
 use std::path::Path;
 use std::process;
-use util::run_input_output;
+use util::{run_input_output, OsStrExt};
 
 use errors::*;
 
@@ -47,7 +47,7 @@ pub struct Clang;
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind { CCompilerKind::Clang }
     fn parse_arguments(&self,
-                       arguments: &[String],
+                       arguments: &[OsString],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
         gcc::parse_arguments(arguments, cwd, argument_takes_value)
@@ -55,9 +55,9 @@ impl CCompilerImpl for Clang {
 
     fn preprocess<T>(&self,
                      creator: &T,
-                     executable: &str,
+                     executable: &Path,
                      parsed_args: &ParsedArguments,
-                     cwd: &str,
+                     cwd: &Path,
                      env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
@@ -67,10 +67,10 @@ impl CCompilerImpl for Clang {
 
     fn compile<T>(&self,
                   creator: &T,
-                  executable: &str,
+                  executable: &Path,
                   preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
-                  cwd: &str,
+                  cwd: &Path,
                   env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
@@ -94,10 +94,10 @@ pub fn argument_takes_value(arg: &str) -> bool {
 }
 
 fn compile<T>(creator: &T,
-              executable: &str,
+              executable: &Path,
               preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
-              cwd: &str,
+              cwd: &Path,
               env_vars: &[(OsString, OsString)],
               pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
@@ -177,11 +177,13 @@ mod test {
     use futures_cpupool::CpuPool;
     use mock_command::*;
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use super::*;
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
-        Clang.parse_arguments(arguments, ".".as_ref())
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        Clang.parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
@@ -197,9 +199,9 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
-        assert_eq!("foo.c", a.input);
+        assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!("c", a.extension);
-        assert_map_contains!(a.outputs, ("obj", "foo.o"));
+        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
@@ -209,13 +211,13 @@ mod test {
     #[test]
     fn test_parse_arguments_values() {
         let a = parses!("-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file");
-        assert_eq!("foo.cxx", a.input);
+        assert_eq!(Some("foo.cxx"), a.input.to_str());
         assert_eq!("cxx", a.extension);
-        assert_map_contains!(a.outputs, ("obj", "foo.o"));
+        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
-        assert_eq!(stringvec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], a.common_args);
+        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], a.common_args);
     }
 
     #[test]
@@ -231,22 +233,22 @@ mod test {
         let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
-            input: "foo.c".to_owned(),
-            extension: "c".to_owned(),
+            input: "foo.c".into(),
+            extension: "c".into(),
             depfile: None,
-            outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec!(),
             common_args: vec!(),
             msvc_show_includes: false,
         };
-        let compiler = f.bins[0].to_str().unwrap();
+        let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
                                      empty_output(),
                                      &parsed_args,
-                                     f.tempdir.path().to_str().unwrap(),
+                                     f.tempdir.path(),
                                      &[],
                                      &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
@@ -260,15 +262,15 @@ mod test {
         let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
-            input: "foo.c".to_owned(),
-            extension: "c".to_owned(),
+            input: "foo.c".into(),
+            extension: "c".into(),
             depfile: None,
-            outputs: vec![("obj", "foo.o".to_owned())].into_iter().collect::<HashMap<&'static str, String>>(),
+            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec!(),
-            common_args: stringvec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
+            common_args: ovec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
             msvc_show_includes: false,
         };
-        let compiler = f.bins[0].to_str().unwrap();
+        let compiler = &f.bins[0];
         // First compiler invocation fails.
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         // Second compiler invocation succeeds.
@@ -277,7 +279,7 @@ mod test {
                                           &compiler,
                                           empty_output(),
                                           &parsed_args,
-                                          f.tempdir.path().to_str().unwrap(),
+                                          f.tempdir.path(),
                                           &[],
                                           &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
