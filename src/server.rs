@@ -600,15 +600,20 @@ impl<C> SccacheService<C>
                     res.stderr = output.stderr;
                 }
                 Err(err) => {
-                    debug!("[{:?}] compilation failed: {:?}",
-                           err,
-                           output);
+                    use std::fmt::Write;
+
+                    error!("[{:?}] fatal error: {:?}", output, err);
+
+                    let mut error = format!("sccache: encountered fatal error");
+                    drop(writeln!(error, "sccache: error : {}", err));
                     for e in err.iter() {
                         error!("[{:?}] \t{}", e, output);
+                        drop(writeln!(error, "sccache:  cause: {}", e));
                     }
                     stats.cache_errors += 1;
                     //TODO: figure out a better way to communicate this?
                     res.retcode = Some(-2);
+                    res.stderr = error.into_bytes();
                 }
             };
             let send = tx.send(Ok(Response::CompileFinished(res)));
