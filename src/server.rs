@@ -40,7 +40,7 @@ use protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
 use std::io::{self, Write};
 use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
@@ -168,12 +168,6 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         self.timeout = timeout;
     }
 
-    /// Set the `force_recache` setting.
-    #[allow(dead_code)]
-    pub fn set_force_recache(&mut self, force_recache: bool) {
-        self.service.force_recache = force_recache;
-    }
-
     /// Set the storage this server will use.
     #[allow(dead_code)]
     pub fn set_storage(&mut self, storage: Arc<Storage>) {
@@ -292,11 +286,6 @@ struct SccacheService<C: CommandCreatorSync> {
     /// A cache of known compiler info.
     compilers: Rc<RefCell<HashMap<String, Option<(Box<Compiler<C>>, FileTime)>>>>,
 
-    /// True if all compiles should be forced, ignoring existing cache entries.
-    ///
-    /// This can be controlled with the `SCCACHE_RECACHE` environment variable.
-    force_recache: bool,
-
     /// Thread pool to execute work in
     pool: CpuPool,
 
@@ -392,7 +381,6 @@ impl<C> SccacheService<C>
             stats: Rc::new(RefCell::new(ServerStats::default())),
             storage: storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
-            force_recache: env::var("SCCACHE_RECACHE").is_ok(),
             pool: pool,
             creator: C::new(&handle),
             handle: handle,
@@ -526,7 +514,10 @@ impl<C> SccacheService<C>
                           cwd: String,
                           env_vars: Vec<(OsString, OsString)>,
                           tx: mpsc::Sender<Result<Response>>) {
-        let cache_control = if self.force_recache {
+        let force_recache = env_vars.iter().any(|&(ref k, ref _v)| {
+            k.as_os_str() == OsStr::new("SCCACHE_RECACHE")
+        });
+        let cache_control = if force_recache {
             CacheControl::ForceRecache
         } else {
             CacheControl::Default
