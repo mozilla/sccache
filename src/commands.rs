@@ -446,6 +446,8 @@ fn handle_compile_finished(response: CompileFinished,
     stdout.write_all(&response.stdout)?;
     stderr.write_all(&response.stderr)?;
 
+    print_logs(response.logs);
+
     if let Some(ret) = response.retcode {
         trace!("compiler exited with status {}", ret);
         Ok(ret)
@@ -477,7 +479,8 @@ fn handle_compile_response<T>(mut creator: T,
     where T : CommandCreatorSync,
 {
     match response {
-        CompileResponse::CompileStarted => {
+        CompileResponse::CompileStarted { logs } => {
+            print_logs(logs);
             debug!("Server sent CompileStarted");
             // Wait for CompileFinished.
             match conn.read_one_response() {
@@ -498,7 +501,8 @@ fn handle_compile_response<T>(mut creator: T,
                 }),
             }
         }
-        CompileResponse::UnhandledCompile => {
+        CompileResponse::UnhandledCompile { logs } => {
+            print_logs(logs);
             debug!("Server sent UnhandledCompile");
         }
     };
@@ -527,6 +531,13 @@ fn handle_compile_response<T>(mut creator: T,
             }))
         }
         Err(e) => Err(e),
+    }
+}
+
+fn print_logs(logs: Vec<String>) {
+    let mut out = io::stderr();
+    for log in logs {
+        drop(writeln!(out, "{}", log));
     }
 }
 

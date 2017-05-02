@@ -12,19 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::Future;
 use futures::future;
+use futures::{Future, Poll};
 use futures_cpupool::CpuPool;
+use env_logger;
+use log::{self, Log, LogRecord, LogMetadata};
 use mock_command::{CommandChild, RunCommand};
 use ring::digest::{SHA512, Context};
+use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::BufReader;
 use std::io::prelude::*;
+use std::mem;
 use std::path::PathBuf;
 use std::process::{self,Stdio};
 use std::time::Duration;
+use tokio_service::Service;
 
 use errors::*;
 
@@ -300,5 +305,142 @@ mod tests {
         assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
         assert_eq!(a.split_prefix("foo2"), None);
         assert_eq!(a.split_prefix("b"), None);
+    }
+}
+
+struct Logger {
+    logger: env_logger::Logger,
+}
+
+scoped_thread_local!(static LOG_INFO: RefCell<LoggingInfo>);
+
+impl Log for Logger {
+    fn enabled(&self, info: &LogMetadata) -> bool {
+        if LOG_INFO.is_set() {
+            LOG_INFO.with(|s| s.borrow().logger.enabled(info))
+        } else {
+            self.logger.enabled(info)
+        }
+    }
+
+    fn log(&self, record: &LogRecord) {
+        if LOG_INFO.is_set() {
+            LOG_INFO.with(|s| s.borrow_mut().log(record))
+        } else {
+            self.logger.log(record)
+        }
+    }
+}
+
+pub fn init_logging() {
+    log::set_logger(|filter| {
+        let logger = env_logger::Logger::new();
+        filter.set(logger.filter());
+        Box::new(Logger { logger: logger })
+    }).unwrap();
+}
+
+pub fn set_local_log(vars: &[(OsString, OsString)]) {
+    if !LOG_INFO.is_set() {
+        return
+    }
+
+    let mut directive = None;
+    for &(ref k, ref v) in vars {
+        if *k == *"RUST_LOG" {
+            directive = Some(v);
+            break
+        }
+    }
+    let directive = match directive {
+        Some(s) => s,
+        None => return,
+    };
+    let directive = match directive.to_str() {
+        Some(s) => s,
+        None => return,
+    };
+    let logger = env_logger::LogBuilder::new()
+                        .parse(directive)
+                        .build();
+    LOG_INFO.with(|info| {
+        info.borrow_mut().logger = logger;
+    })
+}
+
+pub fn take_local_logs() -> Vec<String> {
+    if LOG_INFO.is_set() {
+        LOG_INFO.with(|info| {
+            mem::replace(&mut info.borrow_mut().messages, Vec::new())
+        })
+    } else {
+        Vec::new()
+    }
+}
+
+pub struct LoggingFuture<F> {
+    inner: F,
+    info: RefCell<LoggingInfo>,
+}
+
+impl<F: Future> LoggingFuture<F> {
+    pub fn new(inner: F) -> LoggingFuture<F> {
+        LoggingFuture {
+            inner: inner,
+            info: RefCell::new(LoggingInfo::new()),
+        }
+    }
+}
+
+struct LoggingInfo {
+    messages: Vec<String>,
+    logger: env_logger::Logger,
+}
+
+impl<F: Future> Future for LoggingFuture<F> {
+    type Item = F::Item;
+    type Error = F::Error;
+
+    fn poll(&mut self) -> Poll<F::Item, F::Error> {
+        let inner = &mut self.inner;
+        LOG_INFO.set(&self.info, || inner.poll())
+    }
+}
+
+impl LoggingInfo {
+    fn new() -> LoggingInfo {
+        LoggingInfo {
+            messages: Vec::new(),
+            logger: env_logger::Logger::new(),
+        }
+    }
+
+    fn log(&mut self, record: &LogRecord) {
+        self.logger.log(record);
+        if self.logger.enabled(record.metadata()) {
+            let msg = format!("{}:{}: {}",
+                              record.level(),
+                              record.location().module_path(),
+                              record.args());
+            self.messages.push(msg);
+        }
+    }
+}
+
+pub struct LoggingService<S>(pub S);
+
+impl<S: Service> Service for LoggingService<S> {
+    type Request = S::Request;
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = LoggingFuture<S::Future>;
+
+    fn call(&self, request: S::Request) -> Self::Future {
+        let info = RefCell::new(LoggingInfo::new());
+        let future = LOG_INFO.set(&info, || self.0.call(request));
+        LoggingFuture {
+            inner: future,
+            info: info,
+        }
     }
 }

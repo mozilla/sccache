@@ -31,9 +31,15 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum CompileResponse {
     /// The compilation was started.
-    CompileStarted,
+    CompileStarted {
+        /// Log messages produced by the server
+        logs: Vec<String>,
+    },
     /// The server could not handle this compilation request.
-    UnhandledCompile,
+    UnhandledCompile {
+        /// Log messages produced by the server
+        logs: Vec<String>,
+    },
 }
 
 /// Information about a finished compile, either from cache or executed locally.
@@ -47,6 +53,8 @@ pub struct CompileFinished {
     pub stdout: Vec<u8>,
     /// The compiler's stderr.
     pub stderr: Vec<u8>,
+    /// Log messages produced by the server
+    pub logs: Vec<String>,
 }
 
 /// The contents of a compile request from a client.

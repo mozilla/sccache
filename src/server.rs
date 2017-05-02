@@ -26,7 +26,7 @@ use compiler::{
     get_compiler_info,
 };
 use filetime::FileTime;
-use futures::future;
+use futures::future::{self, lazy};
 use futures::sync::mpsc;
 use futures::task::{self, Task};
 use futures::{Stream, Sink, Async, AsyncSink, Poll, StartSend, Future};
@@ -58,7 +58,8 @@ use tokio_proto::streaming::pipeline::{Frame, ServerProto, Transport};
 use tokio_proto::streaming::{Body, Message};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
-use util::fmt_duration_as_secs;
+use util::{fmt_duration_as_secs, set_local_log, take_local_logs};
+use util::{LoggingFuture, LoggingService};
 
 use errors::*;
 
@@ -214,7 +215,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let handle = core.handle();
         let server = listener.incoming().for_each(move |(socket, _addr)| {
             trace!("incoming connection");
-            SccacheProto.bind_server(&handle, socket, service.clone());
+            let service = LoggingService(service.clone());
+            SccacheProto.bind_server(&handle, socket, service);
             Ok(())
         });
 
@@ -414,6 +416,8 @@ impl<C> SccacheService<C>
     fn handle_compile(&self, compile: Compile)
                       -> SFuture<SccacheResponse>
     {
+        // Configure this local task's log level based on the env vars given.
+        set_local_log(&compile.env_vars);
         let exe = compile.exe;
         let cmd = compile.args;
         let cwd = compile.cwd;
@@ -486,7 +490,9 @@ impl<C> SccacheService<C>
                         stats.requests_executed += 1;
                         let (tx, rx) = Body::pair();
                         self.start_compile_task(hasher, cmd, cwd, env_vars, tx);
-                        let res = CompileResponse::CompileStarted;
+                        let res = CompileResponse::CompileStarted {
+                            logs: take_local_logs(),
+                        };
                         return Message::WithBody(Response::Compile(res), rx)
                     }
                     CompilerArguments::CannotCache(why) => {
@@ -502,7 +508,9 @@ impl<C> SccacheService<C>
             }
         }
 
-        let res = CompileResponse::UnhandledCompile;
+        let res = CompileResponse::UnhandledCompile {
+            logs: take_local_logs(),
+        };
         Message::WithoutBody(Response::Compile(res))
     }
 
@@ -524,14 +532,18 @@ impl<C> SccacheService<C>
             CacheControl::Default
         };
         let out_pretty = hasher.output_pretty().into_owned();
-        let result = hasher.get_cached_or_compile(self.creator.clone(),
-                                                  self.storage.clone(),
-                                                  arguments,
-                                                  cwd,
-                                                  env_vars,
-                                                  cache_control,
-                                                  self.pool.clone(),
-                                                  self.handle.clone());
+        let me = self.clone();
+        let result = lazy(move || {
+            set_local_log(&env_vars);
+            hasher.get_cached_or_compile(me.creator,
+                                         me.storage,
+                                         arguments,
+                                         cwd,
+                                         env_vars,
+                                         cache_control,
+                                         me.pool,
+                                         me.handle)
+        });
         let me = self.clone();
         let task = result.then(move |result| {
             let mut cache_write = None;
@@ -608,6 +620,7 @@ impl<C> SccacheService<C>
                     res.stderr = error.into_bytes();
                 }
             };
+            res.logs = take_local_logs();
             let send = tx.send(Ok(Response::CompileFinished(res)));
 
             let me = me.clone();
@@ -634,7 +647,7 @@ impl<C> SccacheService<C>
             send.join(cache_write).then(|_| Ok(()))
         });
 
-        self.handle.spawn(task);
+        self.handle.spawn(LoggingFuture::new(task));
     }
 }
 
