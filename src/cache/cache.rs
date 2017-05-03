@@ -125,7 +125,19 @@ impl CacheWrite {
     pub fn put_object<T>(&mut self, name: &str, from: &mut T, mode: Option<u32>) -> Result<()>
         where T: Read,
     {
-        let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let method = if let Ok(ref method) = env::var("SCCACHE_COMPRESSION_METHOD") {
+            match method.to_lowercase().trim() {
+                "deflate" => CompressionMethod::Deflated,
+                "none" => CompressionMethod::Stored,
+                _ => {
+                    warn!("Unknown compression method {} using 'deflate'.", method);
+                    CompressionMethod::Deflated
+                },
+            }
+        } else {
+          CompressionMethod::Deflated
+        };
+        let opts = FileOptions::default().compression_method(method);
         let opts = if let Some(mode) = mode { opts.unix_permissions(mode) } else { opts };
         self.zip.start_file(name, opts).chain_err(|| {
             "Failed to start cache entry object"
