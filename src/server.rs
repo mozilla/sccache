@@ -604,7 +604,7 @@ impl<C> SccacheService<C>
 
                     error!("[{:?}] fatal error: {:?}", output, err);
 
-                    let mut error = format!("sccache: encountered fatal error");
+                    let mut error = format!("sccache: encountered fatal error\n");
                     drop(writeln!(error, "sccache: error : {}", err));
                     for e in err.iter() {
                         error!("[{:?}] \t{}", e, output);
