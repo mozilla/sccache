@@ -22,8 +22,12 @@ use futures::Future;
 use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
+#[cfg(feature = "jsonwebtoken")]
+use jwt;
 use lru_disk_cache;
 use native_tls;
+#[cfg(feature = "openssl")]
+use openssl;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
@@ -35,8 +39,11 @@ error_chain! {
         Io(io::Error);
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
+        Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
+        Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
         Bincode(bincode::Error);
         Redis(redis::RedisError) #[cfg(feature = "redis")];
+        StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         Tls(native_tls::Error);
     }

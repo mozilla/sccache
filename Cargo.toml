@@ -28,12 +28,14 @@ futures = "0.1.11"
 futures-cpupool = "0.1"
 hyper = { version = "0.11", optional = true }
 hyper-tls = { version = "0.1", optional = true }
+jsonwebtoken = { version = "2.0", optional = true }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache" }
 native-tls = "0.1"
 number_prefix = "0.2.5"
+openssl = { version = "0.9", optional = true }
 redis = { version = "0.8.0", optional = true }
 regex = "0.2"
 retry = "0.4.0"
@@ -53,6 +55,7 @@ tokio-serde-bincode = { git = "https://github.com/alexcrichton/tokio-serde-binco
 tokio-service = "0.1"
 tokio-tls = "0.1"
 uuid = { version = "0.5", features = ["v4"] }
+url = { version = "1.0", optional = true }
 which = "1.0"
 zip = { version = "0.2", default-features = false }
 
@@ -74,6 +77,7 @@ default = ["s3"]
 all = ["redis", "s3"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "simple-s3"]
 simple-s3 = []
+gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 

@@ -22,6 +22,8 @@ use cache::disk::DiskCache;
 use cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use cache::s3::S3Cache;
+#[cfg(feature = "gcs")]
+use cache::gcs::{GCSCache, GCSCredentialProvider};
 use futures_cpupool::CpuPool;
 use regex::Regex;
 use std::env;
@@ -223,6 +225,33 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                     return Arc::new(s);
                 }
                 Err(e) => warn!("Failed to create RedisCache: {:?}", e),
+            }
+        }
+    }
+
+    if cfg!(feature = "gcs") {
+        if let (Ok(bucket), Ok(key_path)) =
+            (env::var("SCCACHE_GCS_BUCKET"), env::var("SCCACHE_GCS_KEY_PATH"))
+        {
+            let base_url = match env::var("SSCACHE_GCS_BASE_URL") {
+                Ok(base_url) => base_url,
+                _ => {
+                    let default = "https://www.googleapis.com";
+                    warn!("No SSCACHE_GCS_BASE_URl specified, using default: {}", default);
+                    default.to_owned()
+                }
+            };
+            debug!("Trying GCS({})", base_url);
+            #[cfg(feature = "gcs")]
+            {
+                let gcs_cred_provider = GCSCredentialProvider::new(false, key_path);
+                match GCSCache::new(bucket, base_url, gcs_cred_provider, _handle) {
+                    Ok(s) => {
+                        trace!("Using GCSCache");
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
+                }
             }
         }
     }
