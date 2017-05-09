@@ -147,7 +147,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
             });
 
             // Check the result of the cache lookup.
-            Box::new(cache_status.and_then(move |result| {
+            Box::new(cache_status.then(move |result| {
                 let duration = start.elapsed();
                 let pwd = Path::new(&cwd);
                 let outputs = compilation.outputs()
@@ -155,7 +155,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                     .collect::<HashMap<_, _>>();
 
                 let miss_type = match result {
-                    Some(Cache::Hit(mut entry)) => {
+                    Ok(Some(Cache::Hit(mut entry))) => {
                         debug!("[{}]: Cache hit in {}", out_file, fmt_duration_as_secs(&duration));
                         let mut stdout = io::Cursor::new(vec!());
                         let mut stderr = io::Cursor::new(vec!());
@@ -181,17 +181,24 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                             (result, output)
                         })) as SFuture<_>
                     }
-                    Some(Cache::Miss) => {
+                    Ok(Some(Cache::Miss)) => {
                         debug!("[{}]: Cache miss", out_file);
                         MissType::Normal
                     }
-                    Some(Cache::Recache) => {
+                    Ok(Some(Cache::Recache)) => {
                         debug!("[{}]: Cache recache", out_file);
                         MissType::ForcedRecache
                     }
-                    None => {
+                    Ok(None) => {
                         debug!("[{}]: Cache timed out", out_file);
                         MissType::TimedOut
+                    }
+                    Err(err) => {
+                        error!("[{}]: Cache read error: {}", out_file, err);
+                        for e in err.iter() {
+                            error!("[{:?}] \t{}", out_file, e);
+                        }
+                        MissType::CacheReadError
                     }
                 };
 
@@ -315,6 +322,8 @@ pub enum MissType {
     ForcedRecache,
     /// Cache took too long to respond.
     TimedOut,
+    /// Error reading from cache
+    CacheReadError,
 }
 
 /// Information about a successful cache write.
@@ -575,7 +584,7 @@ pub fn get_compiler_info<T>(creator: &T, executable: &str, pool: &CpuPool)
 #[cfg(test)]
 mod test {
     use super::*;
-    use cache::Storage;
+    use cache::{CacheWrite,Storage};
     use cache::disk::DiskCache;
     use futures::Future;
     use futures_cpupool::CpuPool;
@@ -585,6 +594,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
     use std::usize;
+    use test::mock_storage::MockStorage;
     use test::utils::*;
     use tokio_core::reactor::Core;
 
@@ -836,6 +846,72 @@ mod test {
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(exit_status(0), res.status);
+        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    /// Test that a cache read that results in an error is treated as a cache
+    /// miss.
+    fn test_compiler_get_cached_or_compile_cache_error() {
+        use env_logger;
+        drop(env_logger::init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let pool = CpuPool::new(1);
+        let core = Core::new().unwrap();
+        let handle = core.handle();
+        let storage = MockStorage::new();
+        let storage: Arc<MockStorage> = Arc::new(storage);
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(&creator,
+                                  f.bins[0].to_str().unwrap(),
+                                  &pool).wait().unwrap();
+        // The preprocessor invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+        // The compiler invocation.
+        const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
+        const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
+        let obj = f.tempdir.path().join("foo.o");
+        let o = obj.clone();
+        next_command_calls(&creator, move |_| {
+            // Pretend to compile something.
+            match File::create(&o)
+                .and_then(|mut f| f.write_all(b"file contents")) {
+                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
+                    Err(e) => Err(e),
+                }
+        });
+        let cwd = f.tempdir.path().to_str().unwrap().to_string();
+        let arguments = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
+            CompilerArguments::Ok(h) => h,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        // The cache will return an error.
+        storage.next_get(f_err("Some Error"));
+        // Storing the result should be OK though.
+        storage.next_put(Ok(CacheWrite::new()));
+        let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
+                                                         storage.clone(),
+                                                         arguments.clone(),
+                                                         cwd.clone(),
+                                                         vec![],
+                                                         CacheControl::Default,
+                                                         pool.clone(),
+                                                         handle.clone()).wait().unwrap();
+        // Ensure that the object file was created.
+        assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+        match cached {
+            CompileResult::CacheMiss(MissType::CacheReadError, _, f) => {
+                // wait on cache write future so we don't race with it!
+                f.wait().unwrap();
+            }
+            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+        }
+
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());

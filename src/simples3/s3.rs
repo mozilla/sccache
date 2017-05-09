@@ -77,20 +77,32 @@ impl Bucket {
     pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {
         let url = format!("{}{}", self.base_url, key);
         debug!("GET {}", url);
+        let url2 = url.clone();
         Box::new(self.client.get(url.parse().unwrap()).chain_err(move || {
             format!("failed GET: {}", url)
         }).and_then(|res| {
             if res.status().class() == hyper::status::StatusClass::Success {
-                Ok(res.body())
+                let content_length = res.headers().get::<header::ContentLength>()
+                    .map(|&header::ContentLength(len)| len);
+                Ok((res.body(), content_length))
             } else {
                 Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
             }
-        }).and_then(|body| {
+        }).and_then(|(body, content_length)| {
             body.fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
                 Ok::<_, hyper::Error>(body)
             }).chain_err(|| {
                 "failed to read HTTP body"
+            }).and_then(move |bytes| {
+                if let Some(len) = content_length {
+                    if len != bytes.len() as u64 {
+                        bail!(format!("Bad HTTP body size read: {}, expected {}", bytes.len(), len));
+                    } else {
+                        info!("Read {} bytes from {}", bytes.len(), url2);
+                    }
+                }
+                Ok(bytes)
             })
         }))
     }
