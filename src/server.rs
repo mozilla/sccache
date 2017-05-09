@@ -548,18 +548,18 @@ impl<C> SccacheService<C>
                         },
                         CompileResult::CacheMiss(miss_type, duration, future) => {
                             match miss_type {
-                                MissType::Normal => {
-                                    stats.cache_misses += 1;
-                                }
+                                MissType::Normal => {}
                                 MissType::ForcedRecache => {
-                                    stats.cache_misses += 1;
                                     stats.forced_recaches += 1;
                                 }
                                 MissType::TimedOut => {
-                                    stats.cache_misses += 1;
                                     stats.cache_timeouts += 1;
                                 }
+                                MissType::CacheReadError => {
+                                    stats.cache_errors += 1;
+                                }
                             }
+                            stats.cache_misses += 1;
                             stats.cache_read_miss_duration += duration;
                             cache_write = Some(future);
                         }
@@ -656,6 +656,8 @@ pub struct ServerStats {
     pub cache_misses: u64,
     /// The count of cache misses because the cache took too long to respond.
     pub cache_timeouts: u64,
+    /// The count of errors reading cache entries.
+    pub cache_read_errors: u64,
     /// The count of compilations which were successful but couldn't be cached.
     pub non_cacheable_compilations: u64,
     /// The count of compilations which forcibly ignored the cache.
@@ -695,6 +697,7 @@ impl Default for ServerStats {
             cache_hits: u64::default(),
             cache_misses: u64::default(),
             cache_timeouts: u64::default(),
+            cache_read_errors: u64::default(),
             non_cacheable_compilations: u64::default(),
             forced_recaches: u64::default(),
             cache_write_errors: u64::default(),
@@ -738,6 +741,7 @@ impl ServerStats {
         set_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_stat!(stats_vec, self.cache_misses, "Cache misses");
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
+        set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
