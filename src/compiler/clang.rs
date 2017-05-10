@@ -109,64 +109,21 @@ fn compile<T>(creator: &T,
     let write = {
         let filename = match Path::new(&parsed_args.input).file_name() {
             Some(name) => name,
-            None => return future::err("missing input filename".into()).boxed(),
+            None => return future::err("Missing input filename".into()).boxed(),
         };
-        write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout)
+
+        Box::new(
+            write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout.clone())
+                 .and_then(move |(tempdir, input)| {
+                     match input.into_os_string().into_string() {
+                         Ok(p) => future::ok((None, vec!(p), Some(tempdir))),
+                         Err(_) => future::err("Failed to write input file".into()),
+                     }
+                 })
+        )
     };
-    let input = parsed_args.input.clone();
-    let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => obj,
-        None => {
-            return future::err("Missing object file output".into()).boxed()
-        }
-    };
 
-    let mut attempt = creator.clone().new_command_sync(executable);
-    attempt.arg("-c")
-        .arg("-o")
-        .arg(&out_file)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
-    let output = write.and_then(move |(tempdir, input)| {
-        attempt.arg(&input);
-        run_input_output(attempt, None).map(|output| {
-            drop(tempdir);
-            (Cacheable::Yes, output)
-        })
-    });
-
-    // clang may fail when compiling preprocessor output with -Werror,
-    // so retry compilation from the original input file if it fails and
-    // -Werror is in the commandline.
-    //
-    // Otherwise if -Werror is missing we can just use the first instance.
-    if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
-        return Box::new(output)
-    }
-
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-c")
-        .arg(&parsed_args.input)
-        .arg("-o")
-        .arg(&out_file)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
-    Box::new(output.or_else(move |err| -> SFuture<_> {
-        match err {
-            // If compiling from the preprocessed source failed, try
-            // again from the original source.
-            Error(ErrorKind::ProcessError(_), _) => {
-                Box::new(run_input_output(cmd, None).map(|output| {
-                    (Cacheable::Yes, output)
-                }))
-            }
-            e @ _ => f_err(e),
-        }
-    }))
+    gcc::compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool, Some(write))
 }
 
 #[cfg(test)]

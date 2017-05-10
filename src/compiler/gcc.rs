@@ -30,6 +30,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
+use tempdir::TempDir;
 use util::{run_input_output, OsStrExt};
 
 use errors::*;
@@ -70,7 +71,7 @@ impl CCompilerImpl for GCC {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
+        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool, None)
     }
 }
 
@@ -266,13 +267,14 @@ pub fn preprocess<T>(creator: &T,
     run_input_output(cmd, None)
 }
 
-fn compile<T>(creator: &T,
+pub fn compile<T>(creator: &T,
               executable: &Path,
               preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &Path,
               env_vars: &[(OsString, OsString)],
-              _pool: &CpuPool)
+              pool: &CpuPool,
+              pre: Option<SFuture<(Option<Vec<u8>>, Vec<String>, Option<TempDir>)>>)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
@@ -285,36 +287,46 @@ fn compile<T>(creator: &T,
         }
     };
 
-    let extension = match parsed_args.extension.as_ref() {
-        "c" => "cpp-output",
-        "cc" | "cpp" | "cxx" => "c++-cpp-output",
-        e => {
-            error!("gcc::compile: Got an unexpected file extension {}", e);
-            return future::err("Unexpected file extension".into()).boxed()
-        }
-    };
-
     let mut attempt = creator.clone().new_command_sync(executable);
-    attempt.args(&["-c", "-x", extension, "-"])
+    attempt.arg("-c")
         .arg("-o").arg(&out_file)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    let output = Box::new(run_input_output(attempt, Some(preprocessor_result.stdout)).map(|output| {
-            (Cacheable::Yes, output)
-        })
-    );
 
-    // gcc may fail when compiling preprocessor output with -Werror,
+    // When reading from stdin the language argument is needed
+    let extension = parsed_args.extension.clone();
+    let pre = pre.unwrap_or(Box::new(pool.spawn_fn(move || {
+        let extension = match extension.as_ref() {
+            "c" => "cpp-output".to_owned(),
+            "cc" | "cpp" | "cxx" => "c++-cpp-output".to_owned(),
+            e => {
+                error!("gcc::compile: Got an unexpected file extension {}", e);
+                return Err("Unexpected file extension".into())
+            }
+        };
+        let args = vec!("-x".to_owned(), extension, "-".to_owned());
+        Ok((Some(preprocessor_result.stdout), args, None))
+    })));
+
+    let output = pre.and_then(move |(stdin, args, tempdir)| {
+            attempt.args(&args);
+            run_input_output(attempt, stdin).map(|output| {
+                    drop(tempdir);
+                    (Cacheable::Yes, output)
+                })
+        });
+
+    // gcc/clang may fail when compiling preprocessor output with -Werror,
     // so retry compilation from the original input file if it fails and
     // -Werror is in the commandline.
     //
     // Otherwise if -Werror is missing we can just use the first instance.
     if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
-        return output;
+        return Box::new(output);
     }
-    
+
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-c")
         .arg(&parsed_args.input)
