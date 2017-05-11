@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{Cache,CacheWrite,Storage};
+use cache::{Cache, CacheWrite, Storage};
 use errors::*;
 use std::cell::RefCell;
 use std::time::Duration;
@@ -20,7 +20,6 @@ use std::time::Duration;
 /// A mock `Storage` implementation.
 pub struct MockStorage {
     gets: RefCell<Vec<SFuture<Cache>>>,
-    puts: RefCell<Vec<Result<CacheWrite>>>,
 }
 
 impl MockStorage {
@@ -28,18 +27,12 @@ impl MockStorage {
     pub fn new() -> MockStorage {
         MockStorage {
             gets: RefCell::new(vec![]),
-            puts: RefCell::new(vec![]),
         }
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
     pub fn next_get(&self, res: SFuture<Cache>) {
         self.gets.borrow_mut().push(res)
-    }
-
-    /// Queue up `res` to be returned as the next result from `Storage::start_put`.
-    pub fn next_put(&self, res: Result<CacheWrite>) {
-        self.puts.borrow_mut().push(res)
     }
 }
 
@@ -49,12 +42,7 @@ impl Storage for MockStorage {
         assert!(g.len() > 0, "MockStorage get called, but no get results available");
         g.remove(0)
     }
-    fn start_put(&self, _key: &str) -> Result<CacheWrite> {
-        let mut p = self.puts.borrow_mut();
-        assert!(p.len() > 0, "MockStorage start_put called, but no put results available");
-        p.remove(0)
-    }
-    fn finish_put(&self, _key: &str, _entry: CacheWrite) -> SFuture<Duration> {
+    fn put(&self, _key: &str, _entry: CacheWrite) -> SFuture<Duration> {
         f_ok(Duration::from_secs(0))
     }
     fn location(&self) -> String { "Mock Storage".to_string() }

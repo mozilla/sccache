@@ -154,14 +154,11 @@ pub trait Storage {
     /// return a `Cache::Hit`.
     fn get(&self, key: &str) -> SFuture<Cache>;
 
-    /// Get a cache entry for `key` that can be filled with data.
-    fn start_put(&self, key: &str) -> Result<CacheWrite>;
-
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
+    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
 
     /// Get the storage location.
     fn location(&self) -> String;

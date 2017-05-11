@@ -81,12 +81,7 @@ impl Storage for DiskCache {
         }).boxed()
     }
 
-    fn start_put(&self, key: &str) -> Result<CacheWrite> {
-        trace!("DiskCache::start_put({})", key);
-        Ok(CacheWrite::new())
-    }
-
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
