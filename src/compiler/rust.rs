@@ -204,10 +204,19 @@ fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
     where T: AsRef<Path>
 {
     let cwd = cwd.as_ref();
-    let mut deps = dep_info.lines()
-        // The first line is the dependencies on the dep file itself.
-        .skip(1)
-        .filter_map(|l| if l.is_empty() { None } else { l.split(":").next() })
+    // Just parse the first line, which should have the dep-info file and all
+    // source files.
+    let line = match dep_info.lines().next() {
+        None => return vec![],
+        Some(l) => l,
+    };
+    let pos = match line.find(": ") {
+        None => return vec![],
+        Some(p) => p,
+    };
+    let mut deps = line[pos + 2..]
+        .split(' ')
+        .map(|s| s.trim()).filter(|s| !s.is_empty())
         .map(|s| cwd.join(s).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     deps.sort();
@@ -803,6 +812,37 @@ bar.rs:
 ";
         assert_eq!(stringvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
                    parse_dep_info(&deps, "/bar/"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_dep_info_cwd() {
+        let deps = "foo: baz.rs abc.rs bar.rs
+
+baz.rs:
+
+abc.rs:
+
+bar.rs:
+";
+        assert_eq!(stringvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
+                   parse_dep_info(&deps, "foo/"));
+
+        assert_eq!(stringvec!["c:/foo/bar/abc.rs", "c:/foo/bar/bar.rs", "c:/foo/bar/baz.rs"],
+                   parse_dep_info(&deps, "c:/foo/bar/"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_dep_info_abs_paths() {
+        let deps = "c:/foo/foo: c:/foo/baz.rs c:/foo/abc.rs c:/foo/bar.rs
+
+c:/foo/baz.rs: c:/foo/bar.rs
+c:/foo/abc.rs:
+c:/foo/bar.rs:
+";
+        assert_eq!(stringvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
+                   parse_dep_info(&deps, "c:/bar/"));
     }
 
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str])
