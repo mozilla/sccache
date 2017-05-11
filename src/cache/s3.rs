@@ -85,12 +85,7 @@ impl Storage for S3Cache {
         }))
     }
 
-    fn start_put(&self, _key: &str) -> Result<CacheWrite> {
-        // Just hand back an in-memory buffer.
-        Ok(CacheWrite::new())
-    }
-
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         let key = normalize_key(&key);
         let start = Instant::now();
         let data = match entry.finish() {

@@ -14,6 +14,7 @@
 
 use cache::{
     Cache,
+    CacheWrite,
     Storage,
 };
 use compiler::msvc;
@@ -216,11 +217,8 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         return f_ok((CompileResult::NotCacheable, compiler_result))
                     }
                     debug!("[{}]: Compiled in {}, storing in cache", out_pretty, fmt_duration_as_secs(&duration));
-                    let mut entry = match storage.start_put(&key) {
-                        Ok(entry) => entry,
-                        Err(e) => return f_err(e)
-                    };
                     let write = pool.spawn_fn(move || -> Result<_> {
+                        let mut entry = CacheWrite::new();
                         for (key, path) in &outputs {
                             let mut f = File::open(&path)?;
                             let mode = get_file_mode(&path)?;
@@ -245,7 +243,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         // Try to finish storing the newly-written cache
                         // entry. We'll get the result back elsewhere.
                         let out_pretty = out_pretty.clone();
-                        let future = storage.finish_put(&key, entry)
+                        let future = storage.put(&key, entry)
                             .then(move |res| {
                                 match res {
                                     Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty),
@@ -587,7 +585,7 @@ pub fn get_compiler_info<T>(creator: &T, executable: &Path, pool: &CpuPool)
 #[cfg(test)]
 mod test {
     use super::*;
-    use cache::{CacheWrite,Storage};
+    use cache::Storage;
     use cache::disk::DiskCache;
     use futures::Future;
     use futures_cpupool::CpuPool;
@@ -895,8 +893,6 @@ mod test {
         };
         // The cache will return an error.
         storage.next_get(f_err("Some Error"));
-        // Storing the result should be OK though.
-        storage.next_put(Ok(CacheWrite::new()));
         let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
                                                          storage.clone(),
                                                          arguments.clone(),
