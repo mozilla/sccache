@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::future;
 use futures::Future;
+use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
 use sha1;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::prelude::*;
+use std::hash::Hasher;
 use std::io::BufReader;
+use std::io::prelude::*;
 use std::path::PathBuf;
 use std::process::{self,Stdio};
 use std::time::Duration;
@@ -53,21 +54,6 @@ pub fn sha1_digest<T>(path: T, pool: &CpuPool) -> SFuture<String>
 pub fn fmt_duration_as_secs(duration: &Duration) -> String
 {
     format!("{}.{:03} s", duration.as_secs(), duration.subsec_nanos() / 1000_000)
-}
-
-
-#[cfg(unix)]
-pub fn os_str_bytes(s: &OsStr) -> &[u8]
-{
-    use std::os::unix::ffi::OsStrExt;
-    s.as_bytes()
-}
-
-#[cfg(windows)]
-pub fn os_str_bytes(s: &OsStr) -> &[u8]
-{
-    use std::mem;
-    unsafe { mem::transmute(s) }
 }
 
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
@@ -134,10 +120,151 @@ pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
              }))
 }
 
-#[test]
-fn test_os_str_bytes() {
-    // Just very basic sanity checks in case anyone changes the underlying
-    // representation of OsStr on Windows.
-    assert_eq!(os_str_bytes(OsStr::new("hello")), b"hello");
-    assert_eq!(os_str_bytes(OsStr::new("你好")), "你好".as_bytes());
+pub trait OsStrExt {
+    fn starts_with(&self, s: &str) -> bool;
+    fn split_prefix(&self, s: &str) -> Option<OsString>;
+}
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt as _OsStrExt;
+
+#[cfg(unix)]
+impl OsStrExt for OsStr {
+    fn starts_with(&self, s: &str) -> bool {
+        self.as_bytes().starts_with(s.as_bytes())
+    }
+
+    fn split_prefix(&self, s: &str) -> Option<OsString> {
+        let bytes = self.as_bytes();
+        if bytes.starts_with(s.as_bytes()) {
+            Some(OsStr::from_bytes(&bytes[s.len()..]).to_owned())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt as _OsStrExt, OsStringExt};
+
+#[cfg(windows)]
+impl OsStrExt for OsStr {
+    fn starts_with(&self, s: &str) -> bool {
+        // Attempt to interpret this OsStr as utf-16. This is a pretty "poor
+        // man's" implementation, however, as it only handles a subset of
+        // unicode characters in `s`. Currently that's sufficient, though, as
+        // we're only calling `starts_with` with ascii string literals.
+        let mut u16s = self.encode_wide();
+        let mut utf8 = s.chars();
+
+        while let Some(codepoint) = u16s.next() {
+            let to_match = match utf8.next() {
+                Some(ch) => ch,
+                None => return true,
+            };
+
+            let to_match = to_match as u32;
+            let codepoint = codepoint as u32;
+
+            // UTF-16 encodes codepoints < 0xd7ff as just the raw value as a
+            // u16, and that's all we're matching against. If the codepoint in
+            // `s` is *over* this value then just assume it's not in `self`.
+            //
+            // If `to_match` is the same as the `codepoint` coming out of our
+            // u16 iterator we keep going, otherwise we've found a mismatch.
+            if to_match < 0xd7ff {
+                if to_match != codepoint {
+                    return false
+                }
+            } else {
+                return false
+            }
+        }
+
+        // If we ran out of characters to match, then the strings should be
+        // equal, otherwise we've got more data to match in `s` so we didn't
+        // start with `s`
+        utf8.next().is_none()
+    }
+
+    fn split_prefix(&self, s: &str) -> Option<OsString> {
+        // See comments in the above implementation for what's going on here
+        let mut u16s = self.encode_wide().peekable();
+        let mut utf8 = s.chars();
+
+        while let Some(&codepoint) = u16s.peek() {
+            let to_match = match utf8.next() {
+                Some(ch) => ch,
+                None => {
+                    let codepoints = u16s.collect::<Vec<_>>();
+                    return Some(OsString::from_wide(&codepoints))
+                }
+            };
+
+            let to_match = to_match as u32;
+            let codepoint = codepoint as u32;
+
+            if to_match < 0xd7ff {
+                if to_match != codepoint {
+                    return None
+                }
+            } else {
+                return None
+            }
+            u16s.next();
+        }
+
+        if utf8.next().is_none() {
+            Some(OsString::new())
+        } else {
+            None
+        }
+    }
+}
+
+pub struct HashToSha1<'a> {
+    pub sha: &'a mut sha1::Sha1,
+}
+
+impl<'a> Hasher for HashToSha1<'a> {
+    fn write(&mut self, bytes: &[u8]) {
+        self.sha.update(bytes)
+    }
+
+    fn finish(&self) -> u64 {
+        panic!("not supposed to be called");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::{OsStr, OsString};
+    use super::OsStrExt;
+
+    #[test]
+    fn simple_starts_with() {
+        let a: &OsStr = "foo".as_ref();
+        assert!(a.starts_with(""));
+        assert!(a.starts_with("f"));
+        assert!(a.starts_with("fo"));
+        assert!(a.starts_with("foo"));
+        assert!(!a.starts_with("foo2"));
+        assert!(!a.starts_with("b"));
+        assert!(!a.starts_with("b"));
+
+        let a: &OsStr = "".as_ref();
+        assert!(!a.starts_with("a"))
+    }
+
+    #[test]
+    fn simple_strip_prefix() {
+        let a: &OsStr = "foo".as_ref();
+
+        assert_eq!(a.split_prefix(""), Some(OsString::from("foo")));
+        assert_eq!(a.split_prefix("f"), Some(OsString::from("oo")));
+        assert_eq!(a.split_prefix("fo"), Some(OsString::from("o")));
+        assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
+        assert_eq!(a.split_prefix("foo2"), None);
+        assert_eq!(a.split_prefix("b"), None);
+    }
 }

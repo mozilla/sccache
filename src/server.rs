@@ -44,6 +44,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
 use std::io::{self, Write};
 use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
+use std::path::PathBuf;
 use std::process::{Output, ExitStatus};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -284,7 +285,7 @@ struct SccacheService<C: CommandCreatorSync> {
     storage: Arc<Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<HashMap<String, Option<(Box<Compiler<C>>, FileTime)>>>>,
+    compilers: Rc<RefCell<HashMap<PathBuf, Option<(Box<Compiler<C>>, FileTime)>>>>,
 
     /// Thread pool to execute work in
     pool: CpuPool,
@@ -418,14 +419,14 @@ impl<C> SccacheService<C>
         let cwd = compile.cwd;
         let env_vars = compile.env_vars;
         let me = self.clone();
-        Box::new(self.compiler_info(exe).map(move |info| {
-            me.check_compiler(info, cmd, cwd, env_vars)
+        Box::new(self.compiler_info(exe.into()).map(move |info| {
+            me.check_compiler(info, cmd, cwd.into(), env_vars)
         }))
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
-    fn compiler_info(&self, path: String)
+    fn compiler_info(&self, path: PathBuf)
                      -> SFuture<Option<Box<Compiler<C>>>> {
         trace!("compiler_info");
         let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
@@ -465,8 +466,8 @@ impl<C> SccacheService<C>
     /// If so, run `start_compile_task` to execute it.
     fn check_compiler(&self,
                       compiler: Option<Box<Compiler<C>>>,
-                      cmd: Vec<String>,
-                      cwd: String,
+                      cmd: Vec<OsString>,
+                      cwd: PathBuf,
                       env_vars: Vec<(OsString, OsString)>) -> SccacheResponse
     {
         let mut stats = self.stats.borrow_mut();
@@ -479,7 +480,7 @@ impl<C> SccacheService<C>
                 debug!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
-                match c.parse_arguments(&cmd, cwd.as_ref()) {
+                match c.parse_arguments(&cmd, &cwd) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok");
                         stats.requests_executed += 1;
@@ -510,8 +511,8 @@ impl<C> SccacheService<C>
     /// the result in the cache.
     fn start_compile_task(&self,
                           hasher: Box<CompilerHasher<C>>,
-                          arguments: Vec<String>,
-                          cwd: String,
+                          arguments: Vec<OsString>,
+                          cwd: PathBuf,
                           env_vars: Vec<(OsString, OsString)>,
                           tx: mpsc::Sender<Result<Response>>) {
         let force_recache = env_vars.iter().any(|&(ref k, ref _v)| {
@@ -522,7 +523,7 @@ impl<C> SccacheService<C>
         } else {
             CacheControl::Default
         };
-        let output = hasher.output_file().into_owned();
+        let out_pretty = hasher.output_pretty().into_owned();
         let result = hasher.get_cached_or_compile(self.creator.clone(),
                                                   self.storage.clone(),
                                                   arguments,
@@ -593,12 +594,12 @@ impl<C> SccacheService<C>
                 Err(err) => {
                     use std::fmt::Write;
 
-                    error!("[{:?}] fatal error: {:?}", output, err);
+                    error!("[{:?}] fatal error: {}", out_pretty, err);
 
                     let mut error = format!("sccache: encountered fatal error\n");
                     drop(writeln!(error, "sccache: error : {}", err));
                     for e in err.iter() {
-                        error!("[{:?}] \t{}", e, output);
+                        error!("[{:?}] \t{}", out_pretty, e);
                         drop(writeln!(error, "sccache:  cause: {}", e));
                     }
                     stats.cache_errors += 1;
@@ -618,7 +619,9 @@ impl<C> SccacheService<C>
                     }
                     //TODO: save cache stats!
                     Ok(Some(info)) => {
-                        debug!("[{}]: Cache write finished in {}", info.object_file, fmt_duration_as_secs(&info.duration));
+                        debug!("[{}]: Cache write finished in {}",
+                               info.object_file_pretty,
+                               fmt_duration_as_secs(&info.duration));
                         me.stats.borrow_mut().cache_writes += 1;
                         me.stats.borrow_mut().cache_write_duration += info.duration;
                     }

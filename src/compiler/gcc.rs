@@ -28,9 +28,9 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::ffi::OsString;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
-use util::run_input_output;
+use util::{run_input_output, OsStrExt};
 
 use errors::*;
 
@@ -41,7 +41,7 @@ pub struct GCC;
 impl CCompilerImpl for GCC {
     fn kind(&self) -> CCompilerKind { CCompilerKind::GCC }
     fn parse_arguments(&self,
-                       arguments: &[String],
+                       arguments: &[OsString],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
         parse_arguments(arguments, cwd, argument_takes_value)
@@ -49,9 +49,9 @@ impl CCompilerImpl for GCC {
 
     fn preprocess<T>(&self,
                      creator: &T,
-                     executable: &str,
+                     executable: &Path,
                      parsed_args: &ParsedArguments,
-                     cwd: &str,
+                     cwd: &Path,
                      env_vars: &[(OsString, OsString)],
                      pool: &CpuPool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
@@ -61,10 +61,10 @@ impl CCompilerImpl for GCC {
 
     fn compile<T>(&self,
                   creator: &T,
-                  executable: &str,
+                  executable: &Path,
                   preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
-                  cwd: &str,
+                  cwd: &Path,
                   env_vars: &[(OsString, OsString)],
                   pool: &CpuPool)
                   -> SFuture<(Cacheable, process::Output)>
@@ -103,14 +103,14 @@ pub fn argument_takes_value(arg: &str) -> bool {
 /// Otherwise, return `CompilerArguments::Ok(ParsedArguments)`, with
 /// the `ParsedArguments` struct containing information parsed from
 /// `arguments`.
-pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[String],
+pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[OsString],
                                             cwd: &Path,
                                             argument_takes_value: F)
                                             -> CompilerArguments<ParsedArguments> {
     _parse_arguments(arguments, cwd, &argument_takes_value)
 }
 
-fn _parse_arguments(arguments: &[String],
+fn _parse_arguments(arguments: &[OsString],
                     cwd: &Path,
                     argument_takes_value: &Fn(&str) -> bool) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
@@ -125,66 +125,77 @@ fn _parse_arguments(arguments: &[String],
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
     let mut it = ExpandIncludeFile {
-        stack: arguments.iter().rev().cloned().collect(),
+        stack: arguments.iter().rev().map(|a| a.to_owned()).collect(),
         cwd: cwd,
     };
     while let Some(arg) = it.next() {
-        match arg.as_ref() {
-            "-c" => compilation = true,
-            "-o" => output_arg = it.next(),
-            "-gsplit-dwarf" => {
-                split_dwarf = true;
-                common_args.push(arg.clone());
-            }
-            // Arguments that take a value.
-            // -MF and -MQ are in this set but are handled separately
-            // because they are also preprocessor options.
-            a if argument_takes_value(a) => {
-                common_args.push(arg.clone());
-                if let Some(arg_val) = it.next() {
-                    common_args.push(arg_val);
+        if let Some(s) = arg.to_str() {
+            let mut handled = true;
+            match s {
+                "-c" => compilation = true,
+                "-o" => output_arg = it.next(),
+                "-gsplit-dwarf" => {
+                    split_dwarf = true;
+                    common_args.push(arg.clone());
                 }
-            },
-            "-MF" | "-MQ" => {
-                preprocessor_args.push(arg.clone());
-                if let Some(arg_val) = it.next() {
-                    preprocessor_args.push(arg_val);
+                // Arguments that take a value.
+                // -MF and -MQ are in this set but are handled separately
+                // because they are also preprocessor options.
+                a if argument_takes_value(a) => {
+                    common_args.push(arg.clone());
+                    if let Some(arg_val) = it.next() {
+                        common_args.push(arg_val);
+                    }
+                },
+                "-MF" |
+                "-MQ" => {
+                    preprocessor_args.push(arg.clone());
+                    if let Some(arg_val) = it.next() {
+                        preprocessor_args.push(arg_val);
+                    }
                 }
-            }
-            "-MT" => dep_target = it.next(),
-            // Can't cache Clang modules.
-            "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
-            "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
-            // Can't cache -fsyntax-only, it doesn't produce any output.
-            "-fsyntax-only" => return CompilerArguments::CannotCache("-fsyntax-only"),
-            // Can't cache PGO profiled output.
-            "-fprofile-use" => return CompilerArguments::CannotCache("pgo"),
-            // We already expanded `@` files we could through
-            // `ExpandIncludeFile` above, so if one of those arguments now
-            // makes it this far we won't understand it.
-            v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
-            "-M" | "-MM" | "-MD" | "-MMD" => {
-                // If one of the above options is on the command line, we'll
-                // need -MT on the preprocessor command line, whether it's
-                // been passed already or not
-                need_explicit_dep_target = true;
-                preprocessor_args.push(arg.clone());
-            }
-            // Other options.
-            v if v.starts_with('-') && v.len() > 1 => {
-                common_args.push(arg.clone());
-            }
-            // Anything else is an input file.
-            _ => {
-                if input_arg.is_some() || arg == "-" {
-                    // Can't cache compilations with multiple inputs
-                    // or compilation from stdin.
-                    return CompilerArguments::CannotCache("multiple input files");
+                "-MT" => dep_target = it.next(),
+                // Can't cache Clang modules.
+                "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
+                "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
+                // Can't cache -fsyntax-only, it doesn't produce any output.
+                "-fsyntax-only" => return CompilerArguments::CannotCache("-fsyntax-only"),
+                // Can't cache PGO profiled output.
+                "-fprofile-use" => return CompilerArguments::CannotCache("pgo"),
+                // We already expanded `@` files we could through
+                // `ExpandIncludeFile` above, so if one of those arguments now
+                // makes it this far we won't understand it.
+                v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
+                "-M" |
+                "-MM" |
+                "-MD" |
+                "-MMD" => {
+                    // If one of the above options is on the command line, we'll
+                    // need -MT on the preprocessor command line, whether it's
+                    // been passed already or not
+                    need_explicit_dep_target = true;
+                    preprocessor_args.push(arg.clone());
                 }
-                input_arg = Some(arg.clone());
+                _ => handled = false,
+            }
+            if handled {
+                continue
             }
         }
+
+        if arg.starts_with("-") && arg.len() > 1 {
+            common_args.push(arg);
+        } else {
+            // Anything else is an input file.
+            if input_arg.is_some() || arg.as_os_str() == "-" {
+                // Can't cache compilations with multiple inputs
+                // or compilation from stdin.
+                return CompilerArguments::CannotCache("multiple input files");
+            }
+            input_arg = Some(arg);
+        }
     }
+
     // We only support compilation.
     if !compilation {
         return CompilerArguments::NotCompilation;
@@ -209,22 +220,20 @@ fn _parse_arguments(arguments: &[String],
         // We can't cache compilation that doesn't go to a file
         None => return CompilerArguments::CannotCache("no output file"),
         Some(o) => {
-            outputs.insert("obj", o.to_owned());
             if split_dwarf {
-                Path::new(&o)
-                    .with_extension("dwo")
-                    //TODO: should really be dealing with OsStr everywhere.
-                    .to_str()
-                    .and_then(|dwo| outputs.insert("dwo", dwo.to_owned()));
+                let dwo = Path::new(&o).with_extension("dwo");
+                outputs.insert("dwo", dwo);
             }
             if need_explicit_dep_target {
-                preprocessor_args.extend_from_slice(&["-MT".to_owned(), dep_target.unwrap_or(o).to_owned()]);
+                preprocessor_args.push("-MT".into());
+                preprocessor_args.push(dep_target.unwrap_or(o.clone()));
             }
+            outputs.insert("obj", PathBuf::from(o));
         }
     }
 
     CompilerArguments::Ok(ParsedArguments {
-        input: input,
+        input: input.into(),
         extension: extension,
         depfile: None,
         outputs: outputs,
@@ -235,9 +244,9 @@ fn _parse_arguments(arguments: &[String],
 }
 
 pub fn preprocess<T>(creator: &T,
-                     executable: &str,
+                     executable: &Path,
                      parsed_args: &ParsedArguments,
-                     cwd: &str,
+                     cwd: &Path,
                      env_vars: &[(OsString, OsString)],
                      _pool: &CpuPool)
                      -> SFuture<process::Output>
@@ -259,10 +268,10 @@ pub fn preprocess<T>(creator: &T,
 }
 
 fn compile<T>(creator: &T,
-              executable: &str,
+              executable: &Path,
               preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
-              cwd: &str,
+              cwd: &Path,
               env_vars: &[(OsString, OsString)],
               _pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
@@ -287,7 +296,7 @@ fn compile<T>(creator: &T,
                 return future::err("Unexpected file extension".into()).boxed()
             }
         })
-        .args(&["-", "-o", &output.clone()])
+        .args(&["-", "-o"]).arg(&output)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
@@ -299,22 +308,21 @@ fn compile<T>(creator: &T,
 
 struct ExpandIncludeFile<'a> {
     cwd: &'a Path,
-    stack: Vec<String>,
+    stack: Vec<OsString>,
 }
 
 impl<'a> Iterator for ExpandIncludeFile<'a> {
-    type Item = String;
+    type Item = OsString;
 
-    fn next(&mut self) -> Option<String> {
+    fn next(&mut self) -> Option<OsString> {
         loop {
             let arg = match self.stack.pop() {
                 Some(arg) => arg,
                 None => return None,
             };
-            let file = if arg.starts_with("@") {
-                self.cwd.join(&arg[1..])
-            } else {
-                return Some(arg)
+            let file = match arg.split_prefix("@") {
+                Some(arg) => self.cwd.join(&arg),
+                None => return Some(arg),
             };
 
             // According to gcc [1], @file means:
@@ -355,7 +363,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 return Some(arg)
             }
             let new_args = contents.split_whitespace().collect::<Vec<_>>();
-            self.stack.extend(new_args.iter().rev().map(|s| s.to_string()));
+            self.stack.extend(new_args.iter().rev().map(|s| s.into()));
         }
     }
 }
@@ -370,7 +378,8 @@ mod test {
     use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, ".".as_ref(), argument_takes_value)
+        let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        parse_arguments(&args, ".".as_ref(), argument_takes_value)
     }
 
     #[test]
@@ -389,9 +398,9 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
@@ -415,13 +424,15 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.cpp", input);
+        assert_eq!(Some("foo.cpp"), input.to_str());
         assert_eq!("cpp", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"), ("dwo", "foo.dwo"));
+        assert_map_contains!(outputs,
+                             ("obj", PathBuf::from("foo.o")),
+                             ("dwo", PathBuf::from("foo.dwo")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(2, outputs.len());
         assert!(preprocessor_args.is_empty());
-        assert_eq!(stringvec!["-gsplit-dwarf"], common_args);
+        assert_eq!(ovec!["-gsplit-dwarf"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -441,13 +452,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.cc", input);
+        assert_eq!(Some("foo.cc"), input.to_str());
         assert_eq!("cc", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
-        assert_eq!(stringvec!["-fabc", "-mxyz"], common_args);
+        assert_eq!(ovec!["-fabc", "-mxyz"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -467,13 +478,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.cxx", input);
+        assert_eq!(Some("foo.cxx"), input.to_str());
         assert_eq!("cxx", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
-        assert_eq!(stringvec!["-fabc", "-I", "include", "-include", "file"], common_args);
+        assert_eq!(ovec!["-fabc", "-I", "include", "-include", "file"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -493,13 +504,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(stringvec!["-MF", "file", "-MQ", "abc"], preprocessor_args);
-        assert_eq!(stringvec!["-fabc"], common_args);
+        assert_eq!(ovec!["-MF", "file", "-MQ", "abc"], preprocessor_args);
+        assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -519,13 +530,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(stringvec!["-MF", "file"], preprocessor_args);
-        assert_eq!(stringvec!["-fabc"], common_args);
+        assert_eq!(ovec!["-MF", "file"], preprocessor_args);
+        assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -545,13 +556,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(stringvec!["-MF", "file", "-MD", "-MT", "depfile"], preprocessor_args);
-        assert_eq!(stringvec!["-fabc"], common_args);
+        assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "depfile"], preprocessor_args);
+        assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -571,13 +582,13 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(stringvec!["-MF", "file", "-MD", "-MT", "foo.o"], preprocessor_args);
-        assert_eq!(stringvec!["-fabc"], common_args);
+        assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], preprocessor_args);
+        assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -639,9 +650,9 @@ mod test {
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
-        assert_eq!("foo.c", input);
+        assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!("c", extension);
-        assert_map_contains!(outputs, ("obj", "foo.o"));
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());

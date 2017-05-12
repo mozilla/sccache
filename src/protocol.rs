@@ -53,11 +53,11 @@ pub struct CompileFinished {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Compile {
     /// The full path to the compiler executable.
-    pub exe: String,
+    pub exe: OsString,
     /// The current working directory in which to execute the compile.
-    pub cwd: String,
+    pub cwd: OsString,
     /// The commandline arguments passed to the compiler.
-    pub args: Vec<String>,
+    pub args: Vec<OsString>,
     /// The environment variables present when the compiler was executed, as (var, val).
     pub env_vars: Vec<(OsString, OsString)>,
 }
