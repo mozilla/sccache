@@ -16,7 +16,7 @@ use futures::Future;
 use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
-use sha1;
+use ring::digest::{SHA512, Context};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
@@ -28,26 +28,60 @@ use std::time::Duration;
 
 use errors::*;
 
-/// Calculate the SHA-1 digest of the contents of `path`, running
-/// the actual hash computation on a background thread in `pool`.
-pub fn sha1_digest<T>(path: T, pool: &CpuPool) -> SFuture<String>
-    where T: Into<PathBuf>
-{
-    let path = path.into();
-    Box::new(pool.spawn_fn(move || -> Result<_> {
-        let f = File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
-        let mut m = sha1::Sha1::new();
-        let mut reader = BufReader::new(f);
-        loop {
-            let mut buffer = [0; 1024];
-            let count = reader.read(&mut buffer[..])?;
-            if count == 0 {
-                break;
+pub struct Digest {
+    inner: Context,
+}
+
+impl Digest {
+    pub fn new() -> Digest {
+        Digest { inner: Context::new(&SHA512) }
+    }
+
+    /// Calculate the SHA-512 digest of the contents of `path`, running
+    /// the actual hash computation on a background thread in `pool`.
+    pub fn file<T>(path: T, pool: &CpuPool) -> SFuture<String>
+        where T: Into<PathBuf>
+    {
+        let path = path.into();
+        Box::new(pool.spawn_fn(move || -> Result<_> {
+            let f = File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
+            let mut m = Digest::new();
+            let mut reader = BufReader::new(f);
+            loop {
+                let mut buffer = [0; 1024];
+                let count = reader.read(&mut buffer[..])?;
+                if count == 0 {
+                    break;
+                }
+                m.update(&buffer[..count]);
             }
-            m.update(&buffer[..count]);
+            Ok(m.finish())
+        }))
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+
+    pub fn finish(self) -> String {
+        hex(self.inner.finish().as_ref())
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        s.push(hex(byte & 0xf));
+        s.push(hex((byte >> 4)& 0xf));
+    }
+    return s;
+
+    fn hex(byte: u8) -> char {
+        match byte {
+            0...9 => (b'0' + byte) as char,
+            _ => (b'a' + byte) as char,
         }
-        Ok(m.digest().to_string())
-    }))
+    }
 }
 
 /// Format `duration` as seconds with a fractional component.
@@ -222,13 +256,13 @@ impl OsStrExt for OsStr {
     }
 }
 
-pub struct HashToSha1<'a> {
-    pub sha: &'a mut sha1::Sha1,
+pub struct HashToDigest<'a> {
+    pub digest: &'a mut Digest,
 }
 
-impl<'a> Hasher for HashToSha1<'a> {
+impl<'a> Hasher for HashToDigest<'a> {
     fn write(&mut self, bytes: &[u8]) {
-        self.sha.update(bytes)
+        self.digest.update(bytes)
     }
 
     fn finish(&self) -> u64 {

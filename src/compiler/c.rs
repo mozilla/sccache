@@ -16,7 +16,6 @@ use compiler::{Cacheable, Compiler, CompilerArguments, CompilerHasher, CompilerK
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
-use sha1;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -24,7 +23,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{HashToSha1, sha1_digest};
+use util::{HashToDigest, Digest};
 
 use errors::*;
 
@@ -134,7 +133,7 @@ impl <I> CCompiler<I>
 {
     pub fn new(compiler: I, executable: PathBuf, pool: &CpuPool) -> SFuture<CCompiler<I>>
     {
-        Box::new(sha1_digest(executable.clone(), &pool).map(move |digest| {
+        Box::new(Digest::file(executable.clone(), &pool).map(move |digest| {
             CCompiler {
                 executable: executable,
                 executable_digest: digest,
@@ -274,23 +273,23 @@ pub fn hash_key(compiler_digest: &str,
                 preprocessor_output: &[u8]) -> String
 {
     // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
-    let mut m = sha1::Sha1::new();
+    let mut m = Digest::new();
     m.update(compiler_digest.as_bytes());
     m.update(CACHE_VERSION);
     for arg in arguments {
-        arg.hash(&mut HashToSha1 { sha: &mut m });
+        arg.hash(&mut HashToDigest { digest: &mut m });
     }
     //TODO: use lazy_static.
     let cached_env_vars: HashSet<OsString> = CACHED_ENV_VARS.iter().map(|v| OsStr::new(v).to_os_string()).collect();
     for &(ref var, ref val) in env_vars.iter() {
         if cached_env_vars.contains(var) {
-            var.hash(&mut HashToSha1 { sha: &mut m });
+            var.hash(&mut HashToDigest { digest: &mut m });
             m.update(&b"="[..]);
-            val.hash(&mut HashToSha1 { sha: &mut m });
+            val.hash(&mut HashToDigest { digest: &mut m });
         }
     }
     m.update(preprocessor_output);
-    m.digest().to_string()
+    m.finish()
 }
 
 #[cfg(test)]
