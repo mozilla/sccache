@@ -490,6 +490,9 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
         .collect::<Vec<_>>();
     // We'll figure out the source files and outputs later in
     // `generate_hash_key` where we can run rustc.
+    // Cargo doesn't deterministically order --externs, and we need the hash inputs in a
+    // deterministic order.
+    externs.sort();
     CompilerArguments::Ok(ParsedArguments {
         arguments: arguments,
         output_dir: output_dir.into(),
@@ -977,7 +980,10 @@ c:/foo/bar.rs:
         assert_eq!(out, vec!["foo.a", "foo.rlib"]);
     }
 
-    fn hash_key(args: &[OsString], env_vars: &[(OsString, OsString)]) -> String {
+    fn hash_key<'a, F>(args: &[OsString], env_vars: &[(OsString, OsString)], pre_func: F)
+                   -> String
+        where F: Fn(&Path) -> Result<()>
+    {
         let f = TestFixture::new();
         let parsed_args = match parse_arguments(args, &f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
@@ -993,6 +999,7 @@ c:/foo/bar.rs:
             let s = format!("Failed to create {:?}", e);
             f.touch(e.to_str().unwrap()).expect(&s);
         }
+        pre_func(&f.tempdir.path()).expect("Failed to execute pre_func");
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             compiler_shlibs_digests: vec![],
@@ -1006,21 +1013,40 @@ c:/foo/bar.rs:
         hasher.generate_hash_key(&creator, f.tempdir.path(), env_vars, &pool).wait().unwrap().key
     }
 
+    fn nothing(_path: &Path) -> Result<()> { Ok(()) }
+
     #[test]
     fn test_equal_hashes_externs() {
-        assert_eq!(hash_key(&ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir", "out", "--crate-name", "foo", "--extern", "b=b.rlib"], &vec![]),
-                   hash_key(&ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
+        // Put some content in the extern rlibs so we can verify that the content hashes are
+        // used in the right order.
+        fn mk_files(tempdir: &Path) -> Result<()> {
+            create_file(tempdir, "a.rlib", |mut f| f.write_all(b"this is a.rlib"))?;
+            create_file(tempdir, "b.rlib", |mut f| f.write_all(b"this is b.rlib"))?;
+            Ok(())
+        }
+        assert_eq!(hash_key(&ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
+                                   "out", "--crate-name", "foo", "--extern", "b=b.rlib"], &vec![],
+                            &mk_files),
+                   hash_key(&ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                            &mk_files));
     }
 
     #[test]
     fn test_equal_hashes_link_paths() {
-        assert_eq!(hash_key(&ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "-L", "y=y"], &vec![]),
-                   hash_key(&ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
+        assert_eq!(hash_key(&ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
+                                   "--crate-name", "foo", "-L", "y=y"], &vec![], nothing),
+                   hash_key(&ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
+                                   "--out-dir", "out", "--crate-name", "foo"], &vec![], nothing));
     }
 
     #[test]
     fn test_equal_hashes_cfg_features() {
-        assert_eq!(hash_key(&ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--cfg", "feature=b"], &vec![]),
-                   hash_key(&ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![]));
+        assert_eq!(hash_key(&ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
+                                   "out", "--crate-name", "foo", "--cfg", "feature=b"], &vec![],
+                            nothing),
+                   hash_key(&ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                            nothing));
     }
 }
