@@ -48,6 +48,7 @@ use std::time::{
     Instant,
 };
 use tempdir::TempDir;
+use tempfile::NamedTempFile;
 use util::fmt_duration_as_secs;
 use tokio_core::reactor::{Handle, Timeout};
 
@@ -159,8 +160,16 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         drop(entry.get_object("stderr", &mut stderr));
                         let write = pool.spawn_fn(move ||{
                             for (key, path) in &outputs {
-                                let mut f = File::create(&path)?;
-                                let mode = entry.get_object(&key, &mut f)?;
+                                let dir = match path.parent() {
+                                    Some(d) => d,
+                                    None => bail!("Output file without a parent directory!"),
+                                };
+                                // Write the cache entry to a tempfile and then atomically
+                                // move it to its final location so that other rustc invocations
+                                // happening in parallel don't see a partially-written file.
+                                let mut tmp = NamedTempFile::new_in(dir)?;
+                                let mode = entry.get_object(&key, &mut tmp)?;
+                                tmp.persist(path)?;
                                 if let Some(mode) = mode {
                                     set_file_mode(&path, mode)?;
                                 }
