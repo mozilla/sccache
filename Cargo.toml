@@ -9,12 +9,12 @@ repository = "https://github.com/mozilla/sccache/"
 
 [dependencies]
 app_dirs = "1.1.1"
-bincode = { git = 'https://github.com/TyOverby/bincode' }
+bincode = "0.8"
 byteorder = "1.0"
-chrono = { version = "0.2.25", optional = true }
-clap = "~2.23.0"
-env_logger = "0.3.3"
-error-chain = { version = "0.7.2", default-features = false }
+chrono = { version = "0.3", optional = true }
+clap = "2.23.0"
+env_logger = "0.4"
+error-chain = { version = "0.10", default-features = false }
 fern = "0.3.5"
 filetime = "0.1"
 futures = "0.1.11"
@@ -27,14 +27,14 @@ log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache" }
 number_prefix = "0.2.5"
 redis = { version = "0.8.0", optional = true }
-regex = "0.1.65"
+regex = "0.2"
 retry = "0.4.0"
 ring = "0.9.0"
 rust-crypto = { version = "0.2.36", optional = true }
 rustc-serialize = "0.3"
-serde = "0.9"
-serde_derive = "0.9"
-serde_json = { version = "0.9.0", optional = true }
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = { version = "1.0", optional = true }
 tempdir = "0.3.4"
 tempfile = "2.1.5"
 time = "0.1.35"
@@ -45,13 +45,13 @@ tokio-proto = "0.1"
 tokio-serde-bincode = { git = "https://github.com/alexcrichton/tokio-serde-bincode" }
 tokio-service = "0.1"
 tokio-tls = "0.1"
-uuid = { version = "0.3.1", features = ["v4"] }
-which = "0.2.1"
+uuid = { version = "0.5", features = ["v4"] }
+which = "1.0"
 zip = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 gcc = "0.3"
-itertools = "0.5.10"
+itertools = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"

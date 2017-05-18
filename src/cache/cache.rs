@@ -173,9 +173,13 @@ pub trait Storage {
 fn parse_size(val: &str) -> Option<usize> {
     let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
     re.captures(val)
-        .and_then(|caps| caps.at(1).and_then(|size| usize::from_str(size).ok()).and_then(|size| Some((size, caps.at(2)))))
+        .and_then(|caps| {
+            caps.get(1)
+                .and_then(|size| usize::from_str(size.as_str()).ok())
+                .and_then(|size| Some((size, caps.get(2))))
+        })
         .and_then(|(size, suffix)| {
-            match suffix {
+            match suffix.map(|s| s.as_str()) {
                 Some("K") => Some(1024 * size),
                 Some("M") => Some(1024 * 1024 * size),
                 Some("G") => Some(1024 * 1024 * 1024 * size),

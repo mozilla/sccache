@@ -231,7 +231,7 @@ fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredent
             secret_key = None;
 
             let caps = profile_regex.captures(&unwrapped_line).unwrap();
-            profile_name = Some(caps.at(1).unwrap().to_string());
+            profile_name = Some(caps.get(1).unwrap().as_str().to_string());
             continue;
         }
 

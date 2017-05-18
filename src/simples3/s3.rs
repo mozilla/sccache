@@ -81,7 +81,7 @@ impl Bucket {
         Box::new(self.client.get(url.parse().unwrap()).chain_err(move || {
             format!("failed GET: {}", url)
         }).and_then(|res| {
-            if res.status().class() == hyper::status::StatusClass::Success {
+            if res.status().is_success() {
                 let content_length = res.headers().get::<header::ContentLength>()
                     .map(|&header::ContentLength(len)| len);
                 Ok((res.body(), content_length))
@@ -142,7 +142,7 @@ impl Bucket {
         Box::new(self.client.request(request).then(|result| {
             match result {
                 Ok(res) => {
-                    if res.status().class() == hyper::status::StatusClass::Success {
+                    if res.status().is_success() {
                         trace!("PUT succeeded");
                         Ok(())
                     } else {
