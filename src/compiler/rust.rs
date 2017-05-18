@@ -408,6 +408,15 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
                 }
                 emit = val.map(|a| a.split(",").collect());
             }
+            "--crate-type" => {
+                // We can't cache non-rlib/staticlib crates, because rustc invokes the
+                // system linker to link them, and we don't know about all the linker inputs.
+                if let Some(v) = val {
+                    if v.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
+                        return CompilerArguments::CannotCache("crate-type");
+                    }
+                }
+            }
             "--out-dir" => {
                 output_dir = val;
             }
@@ -749,6 +758,22 @@ mod test {
         //TODO: deal with native libs
         // https://github.com/mozilla/sccache/issues/88
         fails!("--emit", "link", "-l", "bar", "foo.rs", "--out-dir", "out");
+    }
+
+    #[test]
+    fn test_parse_arguments_non_rlib_crate() {
+        parses!("--crate-type", "rlib", "--emit", "link", "foo.rs", "--out-dir", "out",
+                "--crate-name", "foo");
+        parses!("--crate-type", "lib", "--emit", "link", "foo.rs", "--out-dir", "out",
+                "--crate-name", "foo");
+        parses!("--crate-type", "staticlib", "--emit", "link", "foo.rs", "--out-dir", "out",
+                "--crate-name", "foo");
+        parses!("--crate-type", "rlib,staticlib", "--emit", "link", "foo.rs", "--out-dir", "out",
+                "--crate-name", "foo");
+        fails!("--crate-type", "bin", "--emit", "link", "foo.rs", "--out-dir", "out",
+               "--crate-name", "foo");
+        fails!("--crate-type", "rlib,dylib", "--emit", "link", "foo.rs", "--out-dir", "out",
+               "--crate-name", "foo");
     }
 
     #[test]
