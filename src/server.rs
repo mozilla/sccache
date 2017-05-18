@@ -482,7 +482,7 @@ impl<C> SccacheService<C>
                 // the provided commandline.
                 match c.parse_arguments(&cmd, &cwd) {
                     CompilerArguments::Ok(hasher) => {
-                        debug!("parse_arguments: Ok");
+                        debug!("parse_arguments: Ok: {:?}", cmd);
                         stats.requests_executed += 1;
                         let (tx, rx) = Body::pair();
                         self.start_compile_task(hasher, cmd, cwd, env_vars, tx);
@@ -491,11 +491,11 @@ impl<C> SccacheService<C>
                     }
                     CompilerArguments::CannotCache(why) => {
                         //TODO: save counts of why
-                        debug!("parse_arguments: CannotCache({})", why);
+                        debug!("parse_arguments: CannotCache({}): {:?}", why, cmd);
                         stats.requests_not_cacheable += 1;
                     }
                     CompilerArguments::NotCompilation => {
-                        debug!("parse_arguments: NotCompilation");
+                        debug!("parse_arguments: NotCompilation: {:?}", cmd);
                         stats.requests_not_compile += 1;
                     }
                 }
