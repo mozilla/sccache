@@ -22,6 +22,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::env::consts::DLL_EXTENSION;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
 use std::io::Read;
@@ -71,6 +72,8 @@ pub struct ParsedArguments {
     output_dir: PathBuf,
     /// Paths to extern crates used in the compile.
     externs: Vec<PathBuf>,
+    /// Static libraries linked to in the compile.
+    staticlibs: Vec<PathBuf>,
     /// The crate name passed to --crate-name.
     crate_name: String,
     /// If dependency info is being emitted, the name of the dep info file.
@@ -366,7 +369,7 @@ impl<'a, 'b> Iterator for ArgsIter<'a, 'b> {
     }
 }
 
-fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<ParsedArguments>
+fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments>
 {
     // While we could go the extra mile here and handle non-utf8 `OsString`
     // instances the rustc compiler certainly does not. With that knowledge
@@ -388,6 +391,8 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
     let mut crate_name = None;
     let mut extra_filename = None;
     let mut externs = vec![];
+    let mut static_lib_names = vec![];
+    let mut static_link_paths: Vec<PathBuf> = vec![];
 
     let it = ArgsIter::new(&args, &args_with_val);
     for (arg, val) in it {
@@ -396,11 +401,35 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
             "--help" | "-V" | "--version" | "--print" | "--explain" | "--pretty" | "--unpretty" => return CompilerArguments::NotCompilation,
             // Could support `-o file` but it'd be more complicated.
             "-o" => return CompilerArguments::CannotCache("-o"),
-            //TODO: support linking against native libraries. This
-            // will require replicating the linker search strategy
-            // so we can *find* them.
-            // https://github.com/mozilla/sccache/issues/88
-            "-l" => return CompilerArguments::CannotCache("-l"),
+            "-l" => {
+                if let Some(v) = val {
+                    let mut split_it = v.splitn(2, "=");
+                    let (libtype, lib) = match (split_it.next(), split_it.next()) {
+                        (Some(libtype), Some(lib)) => (libtype, lib),
+                        // If no kind is specified, the default is dylib.
+                        (Some(lib), None) => ("dylib", lib),
+                        // Anything else shouldn't happen.
+                        _ => return CompilerArguments::CannotCache("-l"),
+                    };
+                    if libtype == "static" {
+                        static_lib_names.push(lib.to_string());
+                    }
+                }
+            }
+            "-L" => {
+                if let Some(v) = val {
+                    let mut split_it = v.splitn(2, "=");
+                    match (split_it.next(), split_it.next()) {
+                        // For locating static libraries, we only care about `-L native=path`
+                        // and `-L path`.
+                        (Some("native"), Some(path)) | (Some(path), None) => {
+                            static_link_paths.push(cwd.join(path));
+                        }
+                        // Just ignore anything else.
+                        _ => {}
+                    }
+                }
+            }
             "--emit" => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
@@ -494,6 +523,21 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
     } else {
         None
     };
+    // Locate all static libs specified on the commandline.
+    let staticlibs = static_lib_names.into_iter().filter_map(|name| {
+        for path in static_link_paths.iter() {
+            for f in &[format_args!("lib{}.a", name), format_args!("{}.lib", name),
+                         format_args!("{}.a", name)] {
+                let lib_path = path.join(fmt::format(*f));
+                if lib_path.exists() {
+                    return Some(lib_path);
+                }
+            }
+        }
+        // rustc will just error if there's a missing static library, so don't worry about
+        // it too much.
+        None
+    }).collect();
     let arguments = ArgsIter::new(&args, &args_with_val)
         .map(|(arg, val)| (arg.into(), val.map(|v| v.into())))
         .collect::<Vec<_>>();
@@ -506,6 +550,7 @@ fn parse_arguments(arguments: &[OsString], _cwd: &Path) -> CompilerArguments<Par
         arguments: arguments,
         output_dir: output_dir.into(),
         externs: externs,
+        staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
     })
@@ -522,7 +567,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
-        let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_name, dep_info } } = me;
+        let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // filtered_arguments omits --emit and --out-dir arguments.
         let filtered_arguments = arguments.iter()
@@ -544,11 +589,18 @@ impl<T> CompilerHasher<T> for RustHasher
                                      .map(|e| cwp.join(e).to_string_lossy().into_owned())
                                      .collect(),
                                      &pool);
+        // Hash the contents of the staticlibs listed on the commandline.
+        trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
+        let staticlib_hashes = hash_all(staticlibs.into_iter()
+                                        .map(|s| s.to_string_lossy().into_owned())
+                                        .collect(),
+                                        &pool);
         let creator = creator.clone();
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_vec();
-        let hashes = source_hashes.join(extern_hashes);
-        Box::new(hashes.and_then(move |(source_hashes, extern_hashes)| -> SFuture<_> {
+        let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
+        Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
+                                        -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
             let mut m = Digest::new();
             // Hash inputs:
@@ -580,11 +632,12 @@ impl<T> CompilerHasher<T> for RustHasher
             };
             args.hash(&mut HashToDigest { digest: &mut m });
             // 4. The digest of all source files (this includes src file from cmdline).
-            // 5. The digest of all files listed on the commandline (self.externs)
-            for h in source_hashes.into_iter().chain(extern_hashes) {
+            // 5. The digest of all files listed on the commandline (self.externs).
+            // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
+            for h in source_hashes.into_iter().chain(extern_hashes).chain(staticlib_hashes) {
                 m.update(h.as_bytes());
             }
-            // 6. Environment variables. Ideally we'd use anything referenced
+            // 7. Environment variables. Ideally we'd use anything referenced
             // via env! in the program, but we don't have a way to determine that
             // currently, and hashing all environment variables is too much, so
             // we'll just hash the CARGO_ env vars and hope that's sufficient.
@@ -599,8 +652,6 @@ impl<T> CompilerHasher<T> for RustHasher
                     val.hash(&mut HashToDigest { digest: &mut m });
                 }
             }
-            // 7. TODO: native libraries being linked.
-            // https://github.com/mozilla/sccache/issues/88
             // Turn arguments into a simple Vec<String> for compilation.
             let arguments = arguments.into_iter()
                 .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
@@ -755,9 +806,11 @@ mod test {
 
     #[test]
     fn test_parse_arguments_native_libs() {
-        //TODO: deal with native libs
-        // https://github.com/mozilla/sccache/issues/88
-        fails!("--emit", "link", "-l", "bar", "foo.rs", "--out-dir", "out");
+        parses!("--crate-name", "foo", "--emit", "link", "-l", "bar", "foo.rs", "--out-dir", "out");
+        parses!("--crate-name", "foo", "--emit", "link", "-l", "static=bar", "foo.rs", "--out-dir",
+                "out");
+        parses!("--crate-name", "foo", "--emit", "link", "-l", "dylib=bar", "foo.rs", "--out-dir",
+                "out");
     }
 
     #[test]
@@ -947,7 +1000,7 @@ c:/foo/bar.rs:
         let f = TestFixture::new();
         const FAKE_DIGEST: &'static str = "abcd1234";
         // We'll just use empty files for each of these.
-        for s in ["foo.rs", "bar.rs", "bar.rlib"].iter() {
+        for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
             f.touch(s).unwrap();
         }
         let hasher = Box::new(RustHasher {
@@ -961,6 +1014,7 @@ c:/foo/bar.rs:
                                 ],
                 output_dir: "foo/".into(),
                 externs: vec!["bar.rlib".into()],
+                staticlibs: vec![f.tempdir.path().join("libbaz.a")],
                 crate_name: "foo".into(),
                 dep_info: None,
             }
@@ -990,6 +1044,8 @@ c:/foo/bar.rs:
         // foo.rs (source file, from dep-info)
         m.update(empty_digest.as_bytes());
         // bar.rlib (extern crate, from externs)
+        m.update(empty_digest.as_bytes());
+        // libbaz.a (static library, from staticlibs)
         m.update(empty_digest.as_bytes());
         // Env vars
         OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
