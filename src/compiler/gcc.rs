@@ -216,21 +216,21 @@ fn _parse_arguments(arguments: &[OsString],
         None => return CompilerArguments::CannotCache("no input file"),
     };
     let mut outputs = HashMap::new();
-    match output_arg {
+    let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => return CompilerArguments::CannotCache("no output file"),
-        Some(o) => {
-            if split_dwarf {
-                let dwo = Path::new(&o).with_extension("dwo");
-                outputs.insert("dwo", dwo);
-            }
-            if need_explicit_dep_target {
-                preprocessor_args.push("-MT".into());
-                preprocessor_args.push(dep_target.unwrap_or(o.clone()));
-            }
-            outputs.insert("obj", PathBuf::from(o));
-        }
+        None => OsString::from(input.to_str().unwrap().to_owned() + ".o"),
+        Some(o) =>  o
+    };
+    if split_dwarf {
+        let dwo = Path::new(&output).with_extension("dwo");
+        outputs.insert("dwo", dwo);
     }
+    if need_explicit_dep_target {
+        preprocessor_args.push("-MT".into());
+        preprocessor_args.push(dep_target.unwrap_or(output.clone()));
+    }
+    
+    outputs.insert("obj", PathBuf::from(output));
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),

@@ -303,23 +303,25 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     };
     let mut outputs = HashMap::new();
     match output_arg {
-        // We can't cache compilation that doesn't go to a file
-        None => return CompilerArguments::CannotCache("no output file"),
+        // If output file name is not given, use default naming rule
+        None => {
+            outputs.insert("obj", Path::new(&input).with_extension(".obj"));
+        },
         Some(o) => {
             outputs.insert("obj", PathBuf::from(o));
-            // -Fd is not taken into account unless -Zi is given
-            if debug_info {
-                match pdb {
-                    Some(p) => outputs.insert("pdb", PathBuf::from(p)),
-                    None => {
-                        // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
-                        // MSVC version), and that's used for all compilations with the same
-                        // working directory. We can't cache such a pdb.
-                        return CompilerArguments::CannotCache("shared pdb");
-                    }
-                };
+        },
+    }
+    // -Fd is not taken into account unless -Zi is given
+    if debug_info {
+        match pdb {
+            Some(p) => outputs.insert("pdb", PathBuf::from(p)),
+            None => {
+                // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
+                // MSVC version), and that's used for all compilations with the same
+                // working directory. We can't cache such a pdb.
+                return CompilerArguments::CannotCache("shared pdb");
             }
-        }
+        };
     }
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
