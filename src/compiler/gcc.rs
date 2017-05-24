@@ -216,21 +216,21 @@ fn _parse_arguments(arguments: &[OsString],
         None => return CompilerArguments::CannotCache("no input file"),
     };
     let mut outputs = HashMap::new();
-    match output_arg {
+    let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => return CompilerArguments::CannotCache("no output file"),
-        Some(o) => {
-            if split_dwarf {
-                let dwo = Path::new(&o).with_extension("dwo");
-                outputs.insert("dwo", dwo);
-            }
-            if need_explicit_dep_target {
-                preprocessor_args.push("-MT".into());
-                preprocessor_args.push(dep_target.unwrap_or(o.clone()));
-            }
-            outputs.insert("obj", PathBuf::from(o));
-        }
+        None => OsString::from(Path::new(&input).with_extension("o")),
+        Some(o) =>  o
+    };
+    if split_dwarf {
+        let dwo = Path::new(&output).with_extension("dwo");
+        outputs.insert("dwo", dwo);
     }
+    if need_explicit_dep_target {
+        preprocessor_args.push("-MT".into());
+        preprocessor_args.push(dep_target.unwrap_or(output.clone()));
+    }
+    
+    outputs.insert("obj", PathBuf::from(output));
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
@@ -385,6 +385,32 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_default_name() {
+        let args = stringvec!["-c", "foo.c"];
         let ParsedArguments {
             input,
             extension,
