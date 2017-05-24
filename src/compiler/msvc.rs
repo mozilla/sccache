@@ -305,7 +305,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     match output_arg {
         // If output file name is not given, use default naming rule
         None => {
-            outputs.insert("obj", Path::new(&input).with_extension(".obj"));
+            outputs.insert("obj", Path::new(&input).with_extension("obj"));
         },
         Some(o) => {
             outputs.insert("obj", PathBuf::from(o));
@@ -589,6 +589,32 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_default_name() {
+        let args = ovec!["-c", "foo.c"];
         let ParsedArguments {
             input,
             extension,

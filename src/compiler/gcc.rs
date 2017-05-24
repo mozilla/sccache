@@ -218,7 +218,7 @@ fn _parse_arguments(arguments: &[OsString],
     let mut outputs = HashMap::new();
     let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => OsString::from(input.to_str().unwrap().to_owned() + ".o"),
+        None => OsString::from(Path::new(&input).with_extension("o")),
         Some(o) =>  o
     };
     if split_dwarf {
@@ -385,6 +385,32 @@ mod test {
     #[test]
     fn test_parse_arguments_simple() {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            extension,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!("c", extension);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_default_name() {
+        let args = stringvec!["-c", "foo.c"];
         let ParsedArguments {
             input,
             extension,
