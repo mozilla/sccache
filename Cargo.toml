@@ -1,11 +1,17 @@
 [package]
 name = "sccache"
 version = "0.2.0-pre"
-authors = ["Ted Mielczarek <ted@mielczarek.org>"]
+authors = ["Ted Mielczarek <ted@mielczarek.org>", "Alex Crichton <alex@alexcrichton.com>"]
 license = "Apache-2.0"
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API."
 repository = "https://github.com/mozilla/sccache/"
+readme = "README.md"
+categories = ["command-line-utilities", "development-tools::build-utils"]
+keywords = ["ccache"]
 
+[badges]
+travis-ci = { repository = "mozilla/sccache" }
+appveyor = { repository = "mozilla/sccache" }
 
 [dependencies]
 app_dirs = "1.1.1"

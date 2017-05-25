@@ -12,8 +12,8 @@ It works as a client-server. The client spawns a server if one is not running al
 Sccache can also be used with local storage instead of remote.
 
 
-Requirements
-------------
+Build Requirements
+------------------
 
 sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.17**.
 
