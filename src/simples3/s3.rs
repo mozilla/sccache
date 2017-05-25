@@ -4,6 +4,7 @@
 use std::ascii::AsciiExt;
 use std::fmt;
 
+use base64;
 use crypto::digest::Digest;
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
@@ -13,7 +14,6 @@ use hyper::{self, header};
 use hyper::Method;
 use hyper::client::{Client, Request};
 use hyper_tls::HttpsConnector;
-use rustc_serialize::base64::{ToBase64, STANDARD};
 use simples3::credential::*;
 use time;
 use tokio_core::reactor::Handle;
@@ -46,7 +46,8 @@ fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
-    hmac(Sha1::new(), signing_key.as_bytes(), string_to_sign.as_bytes()).to_base64(STANDARD)
+    let s = hmac(Sha1::new(), signing_key.as_bytes(), string_to_sign.as_bytes());
+    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
 }
 
 /// An S3 bucket.

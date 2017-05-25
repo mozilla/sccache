@@ -13,6 +13,7 @@
 // limitations under the License.
 
 extern crate app_dirs;
+extern crate base64;
 extern crate bincode;
 extern crate byteorder;
 #[cfg(feature = "chrono")]
@@ -52,7 +53,6 @@ extern crate ring;
 extern crate redis;
 extern crate regex;
 extern crate retry;
-extern crate rustc_serialize;
 #[cfg(feature = "serde_json")]
 extern crate serde_json;
 #[macro_use]
