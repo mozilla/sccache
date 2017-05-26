@@ -82,10 +82,10 @@ impl CCompilerImpl for Clang {
 
 /// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
 const ARGS_WITH_VALUE: &'static [&'static str] = &[
-    "-arch",
     "-B",
     "-target",
     "-Xclang",
+    "--serialize-diagnostics",
 ];
 
 /// Return true if `arg` is a clang commandline argument that takes a value.
