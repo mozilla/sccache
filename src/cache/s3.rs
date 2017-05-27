@@ -18,7 +18,7 @@ use cache::{
     CacheWrite,
     Storage,
 };
-use futures::future::{self, Future};
+use futures::future::Future;
 use simples3::{
     AutoRefreshingProvider,
     Bucket,
@@ -90,7 +90,7 @@ impl Storage for S3Cache {
         let start = Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,
-            Err(e) => return future::err(e.into()).boxed(),
+            Err(e) => return f_err(e),
         };
         let credentials = self.provider.credentials().chain_err(|| {
             "failed to get AWS credentials"
