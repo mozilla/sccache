@@ -18,7 +18,7 @@ use ::compiler::{
 };
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use log::LogLevel::Trace;
-use futures::future::{self, Future};
+use futures::future::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
@@ -283,7 +283,7 @@ pub fn compile<T>(creator: &T,
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return future::err("Missing object file output".into()).boxed()
+            return f_err("Missing object file output")
         }
     };
 
