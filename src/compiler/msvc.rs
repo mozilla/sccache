@@ -237,7 +237,16 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
                     }
                 }
                 "-showIncludes" => show_includes = true,
-                "-Fo" => output_arg = arg.take(),
+                "-Fo" => {
+                    output_arg = arg.take();
+                    // Can't usefully cache output that goes to nul anyway,
+                    // and it breaks reading entries from cache.
+                    if let Some(ref out) = output_arg {
+                        if out == "nul" {
+                            return CompilerArguments::CannotCache("output to nul")
+                        }
+                    }
+                }
                 "-deps" => depfile = arg.take(),
                 "-Fd" => {
                     let mut common = OsString::from("-Fd");
