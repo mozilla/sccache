@@ -145,16 +145,8 @@ pub struct GCSCredentialProvider {
 
 #[derive(Debug, Deserialize)]
 struct ServiceAccountKey {
-    #[serde(rename = "type")]
-    _type: String,
-    project_id: String,
-    private_key_id: String,
     private_key: String,
     client_email: String,
-    client_id: String,
-    auth_uri: String,
-    token_uri: String,
-    auth_provider_x509_cert_url: String,
 }
 
 #[derive(Serialize)]
@@ -173,8 +165,6 @@ struct JwtClaims {
 #[derive(Deserialize)]
 struct TokenMsg {
     access_token: String,
-    token_type: String,
-    expires_in: usize,
 }
 
 #[derive(Clone)]
