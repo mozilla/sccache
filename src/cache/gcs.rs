@@ -67,7 +67,7 @@ impl Bucket {
         Ok(Bucket { name, base_url, client })
     }
 
-    fn get(&self, key: &str, cred_provider: &GCSCredentialProvider) -> SFuture<Vec<u8>> {
+    fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<Vec<u8>> {
         let url = format!("{}/download/storage/v1/b/{}/o/{}?alt=media",
                     self.base_url,
                     percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
@@ -75,10 +75,18 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        Box::new(cred_provider.credentials(&self.client).and_then(move |creds| {
+        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+            future::Either::A(cred_provider.credentials(&self.client).map(Some))
+        } else {
+            future::Either::B(future::ok(None))
+        };
+
+        Box::new(creds_opt_future.and_then(move |creds_opt| {
             let mut request = Request::new(Method::Get, url.parse().unwrap());
-            request.headers_mut()
-                .set(Authorization(Bearer { token: creds.token }));
+            if let Some(creds) = creds_opt {
+                request.headers_mut()
+                    .set(Authorization(Bearer { token: creds.token }));
+            }
             client.request(request).chain_err(move || {
                 format!("failed GET: {}", url)
             }).and_then(|res| {
@@ -98,7 +106,7 @@ impl Bucket {
         }))
     }
 
-    fn put(&self, key: &str, content: Vec<u8>, cred_provider: &GCSCredentialProvider) -> SFuture<()> {
+    fn put(&self, key: &str, content: Vec<u8>, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<()> {
         let url = format!("{}/upload/storage/v1/b/{}/o?name={}&uploadType=media",
                     self.base_url,
                     percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
@@ -106,11 +114,19 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        Box::new(cred_provider.credentials(&client).and_then(move |creds| {
+        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+            future::Either::A(cred_provider.credentials(&self.client).map(Some))
+        } else {
+            future::Either::B(future::ok(None))
+        };
+
+        Box::new(creds_opt_future.and_then(move |creds_opt| {
             let mut request = Request::new(Method::Post, url.parse().unwrap());
             {
                 let mut headers = request.headers_mut();
-                headers.set(Authorization(Bearer { token: creds.token }));
+                if let Some(creds) = creds_opt {
+                    headers.set(Authorization(Bearer { token: creds.token }));
+                }
                 headers.set(ContentType("application/octet-stream".parse().unwrap()));
                 headers.set(ContentLength(content.len() as u64));
             }
@@ -138,7 +154,7 @@ impl Bucket {
 }
 
 pub struct GCSCredentialProvider {
-    read_only: bool,
+    rw_mode: RWMode,
     credentials_path: String,
     cached_credentials: RefCell<Option<Shared<SFuture<GCSCredential>>>>,
 }
@@ -167,6 +183,12 @@ struct TokenMsg {
     access_token: String,
 }
 
+#[derive(Copy, Clone)]
+pub enum RWMode {
+    ReadOnly,
+    ReadWrite,
+}
+
 #[derive(Clone)]
 pub struct GCSCredential {
     token: String,
@@ -174,9 +196,9 @@ pub struct GCSCredential {
 }
 
 impl GCSCredentialProvider {
-    pub fn new(read_only: bool, credentials_path: String) -> Self {
+    pub fn new(rw_mode: RWMode, credentials_path: String) -> Self {
         GCSCredentialProvider {
-            read_only,
+            rw_mode,
             credentials_path,
             cached_credentials: RefCell::new(None),
         }
@@ -194,10 +216,9 @@ impl GCSCredentialProvider {
         file.read_to_string(&mut service_account_json)?;
         let sa_key: ServiceAccountKey = serde_json::from_str(&service_account_json)?;
 
-        let scope = (if self.read_only {
-            "https://www.googleapis.com/auth/devstorage.readonly"
-        } else {
-            "https://www.googleapis.com/auth/devstorage.read_write"
+        let scope = (match self.rw_mode {
+            RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
+            RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         }).to_owned();
 
         let jwt_claims = JwtClaims {
@@ -289,18 +310,22 @@ pub struct GCSCache {
     /// The GCS bucket
     bucket: Rc<Bucket>,
     /// Credential provider for GCS
-    credential_provider: GCSCredentialProvider,
+    credential_provider: Option<GCSCredentialProvider>,
+    /// Read-only or not
+    rw_mode: RWMode,
 }
 
 impl GCSCache {
     /// Create a new `GCSCache` storing data in `bucket`
     pub fn new(bucket: String,
                endpoint: String,
-               credential_provider: GCSCredentialProvider,
+               credential_provider: Option<GCSCredentialProvider>,
+               rw_mode: RWMode,
                handle: &Handle) -> Result<GCSCache>
     {
         Ok(GCSCache {
             bucket: Rc::new(Bucket::new(bucket, endpoint, handle)?),
+            rw_mode: rw_mode,
             credential_provider: credential_provider,
         })
     }
@@ -323,6 +348,10 @@ impl Storage for GCSCache {
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<time::Duration> {
+        if let RWMode::ReadOnly = self.rw_mode {
+            return Box::new(future::ok(time::Duration::new(0, 0)));
+        }
+
         let start = time::Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,

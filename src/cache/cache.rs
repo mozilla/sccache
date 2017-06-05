@@ -23,7 +23,7 @@ use cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
-use cache::gcs::{GCSCache, GCSCredentialProvider};
+use cache::gcs::{GCSCache, GCSCredentialProvider, RWMode};
 use futures_cpupool::CpuPool;
 use regex::Regex;
 use std::env;
@@ -230,22 +230,44 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
     }
 
     if cfg!(feature = "gcs") {
-        if let (Ok(bucket), Ok(key_path)) =
-            (env::var("SCCACHE_GCS_BUCKET"), env::var("SCCACHE_GCS_KEY_PATH"))
+        if let Ok(bucket) = env::var("SCCACHE_GCS_BUCKET")
         {
-            let base_url = match env::var("SSCACHE_GCS_BASE_URL") {
-                Ok(base_url) => base_url,
-                _ => {
-                    let default = "https://www.googleapis.com";
-                    warn!("No SSCACHE_GCS_BASE_URl specified, using default: {}", default);
-                    default.to_owned()
-                }
-            };
-            debug!("Trying GCS({})", base_url);
+            debug!("Trying GCS bucket({})", bucket);
             #[cfg(feature = "gcs")]
             {
-                let gcs_cred_provider = GCSCredentialProvider::new(false, key_path);
-                match GCSCache::new(bucket, base_url, gcs_cred_provider, _handle) {
+                let base_url = match env::var("SSCACHE_GCS_BASE_URL") {
+                    Ok(base_url) => base_url,
+                    _ => {
+                        let default = "https://www.googleapis.com";
+                        warn!("No SCCACHE_GCS_BASE_URl specified, using default: {}", default);
+                        default.to_owned()
+                    }
+                };
+
+                let cred_path = match env::var("SCCACHE_GCS_KEY_PATH") {
+                    Ok(cred_location) => Some(cred_location),
+                    _ => {
+                        warn!(
+                          "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
+                        None
+                    }
+                };
+
+                let rw_mode = match env::var("SCCACHE_RW_MODE").as_ref().map(String::as_str) {
+                    Ok("READ_ONLY") => RWMode::ReadOnly,
+                    Ok("READ_WRITE") => RWMode::ReadWrite,
+                    Ok(_) => {
+                        warn!("Invalid SCCACHE_RW_MODE-- defaulting to READ_ONLY.");
+                        RWMode::ReadOnly
+                    },
+                    _ => {
+                        warn!("No SCCACHE_RW_MODE specified-- defaulting to READ_ONLY.");
+                        RWMode::ReadOnly
+                    }
+                };
+
+                let gcs_cred_provider = cred_path.map(|path| GCSCredentialProvider::new(rw_mode, path));
+                match GCSCache::new(bucket, base_url, gcs_cred_provider, rw_mode, _handle) {
                     Ok(s) => {
                         trace!("Using GCSCache");
                         return Arc::new(s);
