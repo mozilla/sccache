@@ -48,28 +48,26 @@ type HyperClient = Client<HttpsConnector<HttpConnector>>;
 /// A GCS bucket
 struct Bucket {
     name: String,
-    base_url: String,
     client: HyperClient,
 }
 
 impl fmt::Display for Bucket {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Bucket(name={}, base_url={})", self.name, self.base_url)
+        write!(f, "Bucket(name={})", self.name)
     }
 }
 
 impl Bucket {
-    pub fn new(name: String, base_url: String, handle: &Handle) -> Result<Bucket> {
+    pub fn new(name: String, handle: &Handle) -> Result<Bucket> {
         let client = Client::configure()
                         .connector(HttpsConnector::new(1, handle)?)
                         .build(handle);
 
-        Ok(Bucket { name, base_url, client })
+        Ok(Bucket { name, client })
     }
 
     fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<Vec<u8>> {
-        let url = format!("{}/download/storage/v1/b/{}/o/{}?alt=media",
-                    self.base_url,
+        let url = format!("https://www.googleapis.com/download/storage/v1/b/{}/o/{}?alt=media",
                     percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
                     percent_encode(key.as_bytes(), PATH_SEGMENT_ENCODE_SET));
 
@@ -107,8 +105,7 @@ impl Bucket {
     }
 
     fn put(&self, key: &str, content: Vec<u8>, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<()> {
-        let url = format!("{}/upload/storage/v1/b/{}/o?name={}&uploadType=media",
-                    self.base_url,
+        let url = format!("https://www.googleapis.com/upload/storage/v1/b/{}/o?name={}&uploadType=media",
                     percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
                     percent_encode(key.as_bytes(), QUERY_ENCODE_SET));
 
@@ -318,13 +315,12 @@ pub struct GCSCache {
 impl GCSCache {
     /// Create a new `GCSCache` storing data in `bucket`
     pub fn new(bucket: String,
-               endpoint: String,
                credential_provider: Option<GCSCredentialProvider>,
                rw_mode: RWMode,
                handle: &Handle) -> Result<GCSCache>
     {
         Ok(GCSCache {
-            bucket: Rc::new(Bucket::new(bucket, endpoint, handle)?),
+            bucket: Rc::new(Bucket::new(bucket, handle)?),
             rw_mode: rw_mode,
             credential_provider: credential_provider,
         })
