@@ -308,13 +308,13 @@ pub mod path_helper {
         for (f, t) in from_path.to_str().unwrap().chars().zip(
             to_path.to_str().unwrap().chars()) {
             if f != t {
-                if prefix.is_empty() { continue; } else { break; }
+                break;
             }
 
             prefix.push_str(format!("{}", f).as_str());
         }
 
-        if prefix.as_str().ends_with("/") {
+        if prefix.as_str().ends_with("/") && prefix.len() > 1 {
             prefix.pop();
         }
 

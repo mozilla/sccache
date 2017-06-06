@@ -28,7 +28,6 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::ffi::OsString;
 use std::fs::File;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use tempdir::TempDir;
@@ -200,7 +199,8 @@ fn _parse_arguments(arguments: &[OsString],
 
         if arg.starts_with("-") && arg.len() > 1 {
             if arg.starts_with("-I") {
-                let path_arg = OsString::from_vec(arg.into_vec().split_off(2));
+                let path_vector = arg.into_string().unwrap().into_bytes().split_off(2);
+                let path_arg = OsString::from(String::from_utf8(path_vector).unwrap());
                 let rewritten_path = path_helper::get_relative_path(cwd, path_arg);
                 let mut new_arg = OsString::from("-I");
                 new_arg.push(rewritten_path);
