@@ -4,7 +4,6 @@ version = "0.1.0"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
 [dependencies]
-env_logger = "0.3.3"
 filetime = "0.1"
 log = "0.3.6"
 lru-cache = { git = "https://github.com/luser/lru-cache", branch = "non-mut-get" }

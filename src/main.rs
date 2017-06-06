@@ -13,6 +13,7 @@
 // limitations under the License.
 
 extern crate app_dirs;
+extern crate base64;
 extern crate bincode;
 extern crate byteorder;
 #[cfg(feature = "chrono")]
@@ -47,17 +48,17 @@ extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate number_prefix;
+extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
 extern crate retry;
-extern crate rustc_serialize;
 #[cfg(feature = "serde_json")]
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
-extern crate sha1;
 extern crate tempdir;
+extern crate tempfile;
 extern crate time;
 extern crate tokio_core;
 extern crate tokio_io;

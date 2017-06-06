@@ -154,14 +154,11 @@ pub trait Storage {
     /// return a `Cache::Hit`.
     fn get(&self, key: &str) -> SFuture<Cache>;
 
-    /// Get a cache entry for `key` that can be filled with data.
-    fn start_put(&self, key: &str) -> Result<CacheWrite>;
-
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    fn finish_put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
+    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
 
     /// Get the storage location.
     fn location(&self) -> String;
@@ -176,9 +173,13 @@ pub trait Storage {
 fn parse_size(val: &str) -> Option<usize> {
     let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
     re.captures(val)
-        .and_then(|caps| caps.at(1).and_then(|size| usize::from_str(size).ok()).and_then(|size| Some((size, caps.at(2)))))
+        .and_then(|caps| {
+            caps.get(1)
+                .and_then(|size| usize::from_str(size.as_str()).ok())
+                .and_then(|size| Some((size, caps.get(2))))
+        })
         .and_then(|(size, suffix)| {
-            match suffix {
+            match suffix.map(|s| s.as_str()) {
                 Some("K") => Some(1024 * size),
                 Some("M") => Some(1024 * 1024 * size),
                 Some("G") => Some(1024 * 1024 * 1024 * size),

@@ -7,5 +7,6 @@ sccache now includes experimental support for caching Rust compilation. This inc
 * Compilation from stdin is not supported, a source file must be provided.
 * Values from `env!` will not be tracked in caching.
 * Procedural macros that read files from the filesystem may not be cached properly
-* The system linker is not factored in as a cache input, so changing the linker may produce incorrect cached results.
 * Target specs aren't hashed (e.g. custom target specs)
+
+If you are using Rust 1.18 or later, you can ask cargo to wrap all compilation with sccache by setting `RUSTC_WRAPPER=sccache` in your build environment.

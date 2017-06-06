@@ -34,6 +34,13 @@ macro_rules! stringvec {
     };
 }
 
+/// Return a `Vec` with each listed entry converted to an owned `OsString`.
+macro_rules! ovec {
+    ( $( $x:expr ),* ) => {
+        vec!($( ::std::ffi::OsString::from($x), )*)
+    };
+}
+
 /// Assert that `left != right`.
 macro_rules! assert_neq {
     ($left:expr , $right:expr) => ({
@@ -101,7 +108,9 @@ pub struct TestFixture {
 pub const SUBDIRS: &'static [&'static str] = &["a", "b", "c"];
 pub const BIN_NAME: &'static str = "bin";
 
-pub fn create_file<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf> {
+pub fn create_file<F>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf>
+    where F: FnOnce(File) -> io::Result<()>
+{
     let b = dir.join(path);
     let parent = b.parent().unwrap();
     fs::create_dir_all(&parent)?;

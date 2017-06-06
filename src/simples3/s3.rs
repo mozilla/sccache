@@ -4,6 +4,7 @@
 use std::ascii::AsciiExt;
 use std::fmt;
 
+use base64;
 use crypto::digest::Digest;
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
@@ -13,7 +14,6 @@ use hyper::{self, header};
 use hyper::Method;
 use hyper::client::{Client, Request};
 use hyper_tls::HttpsConnector;
-use rustc_serialize::base64::{ToBase64, STANDARD};
 use simples3::credential::*;
 use time;
 use tokio_core::reactor::Handle;
@@ -46,7 +46,8 @@ fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
-    hmac(Sha1::new(), signing_key.as_bytes(), string_to_sign.as_bytes()).to_base64(STANDARD)
+    let s = hmac(Sha1::new(), signing_key.as_bytes(), string_to_sign.as_bytes());
+    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
 }
 
 /// An S3 bucket.
@@ -77,20 +78,32 @@ impl Bucket {
     pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {
         let url = format!("{}{}", self.base_url, key);
         debug!("GET {}", url);
+        let url2 = url.clone();
         Box::new(self.client.get(url.parse().unwrap()).chain_err(move || {
             format!("failed GET: {}", url)
         }).and_then(|res| {
-            if res.status().class() == hyper::status::StatusClass::Success {
-                Ok(res.body())
+            if res.status().is_success() {
+                let content_length = res.headers().get::<header::ContentLength>()
+                    .map(|&header::ContentLength(len)| len);
+                Ok((res.body(), content_length))
             } else {
                 Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
             }
-        }).and_then(|body| {
+        }).and_then(|(body, content_length)| {
             body.fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
                 Ok::<_, hyper::Error>(body)
             }).chain_err(|| {
                 "failed to read HTTP body"
+            }).and_then(move |bytes| {
+                if let Some(len) = content_length {
+                    if len != bytes.len() as u64 {
+                        bail!(format!("Bad HTTP body size read: {}, expected {}", bytes.len(), len));
+                    } else {
+                        info!("Read {} bytes from {}", bytes.len(), url2);
+                    }
+                }
+                Ok(bytes)
             })
         }))
     }
@@ -130,7 +143,7 @@ impl Bucket {
         Box::new(self.client.request(request).then(|result| {
             match result {
                 Ok(res) => {
-                    if res.status().class() == hyper::status::StatusClass::Success {
+                    if res.status().is_success() {
                         trace!("PUT succeeded");
                         Ok(())
                     } else {

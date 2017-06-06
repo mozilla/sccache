@@ -27,6 +27,7 @@ use lru_disk_cache;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
+use tempfile;
 
 error_chain! {
     foreign_links {
@@ -36,6 +37,7 @@ error_chain! {
         Json(serde_json::Error) #[cfg(feature = "serde_json")];
         Bincode(bincode::Error);
         Redis(redis::RedisError) #[cfg(feature = "redis")];
+        TempfilePersist(tempfile::PersistError);
     }
 
     errors {

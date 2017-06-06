@@ -404,11 +404,9 @@ fn request_compile<W, X, Y>(conn: &mut ServerConnection, exe: W, args: &Vec<X>, 
           Y: AsRef<Path>,
 {
     let req = Request::Compile(Compile {
-        exe: exe.as_ref().to_str().ok_or("bad exe")?.to_owned(),
-        cwd: cwd.as_ref().to_str().ok_or("bad cwd")?.to_owned(),
-        args: args.iter().map(|a| {
-            a.as_ref().to_str().ok_or("bad arg".into()).map(|s| s.to_owned())
-        }).collect::<Result<_>>()?,
+        exe: exe.as_ref().to_owned().into(),
+        cwd: cwd.as_ref().to_owned().into(),
+        args: args.iter().map(|a| a.as_ref().to_owned()).collect(),
         env_vars: env_vars,
     });
     trace!("request_compile: {:?}", req);
