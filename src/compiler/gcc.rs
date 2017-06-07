@@ -83,7 +83,8 @@ pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
     "-iframework", "-imacros", "-imultilib", "-include",
     "-install_name", "-iprefix", "-iquote", "-isysroot",
     "-isystem", "-iwithprefix", "-iwithprefixbefore",
-    "-u", "-x", "-arch",
+    "-u", "-x", "-arch", "--serialize-diagnostics",
+    "--sysroot"
     ];
 
 
