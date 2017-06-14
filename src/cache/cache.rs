@@ -235,16 +235,14 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
             debug!("Trying GCS bucket({})", bucket);
             #[cfg(feature = "gcs")]
             {
-                let cred_path = match env::var("SCCACHE_GCS_KEY_PATH") {
-                    Ok(cred_location) => Some(cred_location),
-                    _ => {
-                        warn!(
-                          "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
-                        None
-                    }
-                };
+                let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
+                if cred_path.is_none() {
+                    warn!("No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
+                }
 
-                let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
+                let gcs_read_write_mode = match env::var("SCCACHE_GCS_RW_MODE")
+                                          .as_ref().map(String::as_str)
+                {
                     Ok("READ_ONLY") => RWMode::ReadOnly,
                     Ok("READ_WRITE") => RWMode::ReadWrite,
                     Ok(_) => {
@@ -258,8 +256,8 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                 };
 
                 let gcs_cred_provider =
-                    cred_path.map(|path| GCSCredentialProvider::new(rw_mode, path));
-                match GCSCache::new(bucket, gcs_cred_provider, rw_mode, _handle) {
+                    cred_path.map(|path| GCSCredentialProvider::new(gcs_read_write_mode, path));
+                match GCSCache::new(bucket, gcs_cred_provider, gcs_read_write_mode, _handle) {
                     Ok(s) => {
                         trace!("Using GCSCache");
                         return Arc::new(s);
