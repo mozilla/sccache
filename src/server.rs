@@ -958,7 +958,7 @@ impl Drop for ActiveInfo {
         info.active -= 1;
         if info.active == 0 {
             if let Some(task) = info.blocker.take() {
-                task.unpark();
+                task.notify();
             }
         }
     }
@@ -973,7 +973,7 @@ impl Future for WaitUntilZero {
         if info.active == 0 {
             Ok(().into())
         } else {
-            info.blocker = Some(task::park());
+            info.blocker = Some(task::current());
             Ok(Async::NotReady)
         }
     }

@@ -42,7 +42,7 @@ error_chain! {
 
     errors {
         #[cfg(feature = "hyper")]
-        BadHTTPStatus(status: hyper::status::StatusCode) {
+        BadHTTPStatus(status: hyper::StatusCode) {
             description("failed to get a successful HTTP status")
             display("didn't get a successful HTTP status, got `{}`", status)
         }
