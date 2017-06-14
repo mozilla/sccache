@@ -47,6 +47,7 @@ extern crate itertools;
 extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
+extern crate native_tls;
 extern crate number_prefix;
 extern crate ring;
 #[cfg(feature = "redis")]

@@ -12,7 +12,7 @@ use crypto::sha1::Sha1;
 use futures::{Future, Stream};
 use hyper::{self, header};
 use hyper::Method;
-use hyper::client::{Client, Request};
+use hyper::client::{Client, Request, HttpConnector};
 use hyper_tls::HttpsConnector;
 use simples3::credential::*;
 use time;
@@ -54,7 +54,7 @@ fn signature(string_to_sign: &str, signing_key: &str) -> String {
 pub struct Bucket {
     name: String,
     base_url: String,
-    client: Client<HttpsConnector>,
+    client: Client<HttpsConnector<HttpConnector>>,
 }
 
 impl fmt::Display for Bucket {
@@ -64,15 +64,17 @@ impl fmt::Display for Bucket {
 }
 
 impl Bucket {
-    pub fn new(name: &str, endpoint: &str, ssl: Ssl, handle: &Handle) -> Bucket {
+    pub fn new(name: &str, endpoint: &str, ssl: Ssl, handle: &Handle)
+        -> Result<Bucket>
+    {
         let base_url = base_url(&endpoint, ssl);
-        Bucket {
+        Ok(Bucket {
             name: name.to_owned(),
             base_url: base_url,
             client: Client::configure()
-                        .connector(HttpsConnector::new(1, handle))
+                        .connector(HttpsConnector::new(1, handle)?)
                         .build(handle),
-        }
+        })
     }
 
     pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {

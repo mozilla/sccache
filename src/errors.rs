@@ -23,6 +23,7 @@ use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
 use lru_disk_cache;
+use native_tls;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
@@ -37,6 +38,7 @@ error_chain! {
         Bincode(bincode::Error);
         Redis(redis::RedisError) #[cfg(feature = "redis")];
         TempfilePersist(tempfile::PersistError);
+        Tls(native_tls::Error);
     }
 
     errors {
