@@ -35,7 +35,7 @@ log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache" }
 native-tls = "0.1"
 number_prefix = "0.2.5"
-openssl = { version = "0.9", optional = true }
+pem-parser= { version = "0.1.1", optional = true }
 redis = { version = "0.8.0", optional = true }
 regex = "0.2"
 retry = "0.4.0"
@@ -77,7 +77,7 @@ default = ["s3"]
 all = ["redis", "s3"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "simple-s3"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
+gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "pem-parser", "url"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 

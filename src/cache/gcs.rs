@@ -34,7 +34,7 @@ use hyper::Method;
 use hyper::client::{Client, HttpConnector, Request};
 use hyper_tls::HttpsConnector;
 use jwt;
-use openssl;
+use pem_parser;
 use serde_json;
 use tokio_core::reactor::Handle;
 use url::form_urlencoded;
@@ -229,9 +229,7 @@ impl GCSCredentialProvider {
             issued_at: chrono::UTC::now().timestamp(),
         };
 
-        let binary_key = openssl::rsa::Rsa::private_key_from_pem(
-            self.sa_key.private_key.as_bytes()
-        )?.private_key_to_der()?;
+        let binary_key = pem_parser::pem_to_der(&self.sa_key.private_key);
 
         let auth_request_jwt = jwt::encode(
             &jwt::Header::new(jwt::Algorithm::RS256),
