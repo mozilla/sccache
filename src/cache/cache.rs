@@ -248,16 +248,12 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                     if let Ok(cred_path) = cred_path_res
                 {
                     // Attempt to read the service account key from file
-                    let service_account_key_res: Result<gcs::ServiceAccountKey> =
-                        File::open(&cred_path)
-                            .map_err(Into::into)
-                            .and_then(|mut file| {
-                                let mut service_account_json = String::new();
-                                file.read_to_string(&mut service_account_json)?;
-                                Ok(service_account_json)
-                            }).and_then(|service_account_json|
-                                serde_json::from_str(&service_account_json).map_err(Into::into)
-                            );
+                    let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
+                        let mut file = File::open(&cred_path)?;
+                        let mut service_account_json = String::new();
+                        file.read_to_string(&mut service_account_json)?;
+                        Ok(serde_json::from_str(&service_account_json)?)
+                    })();
 
                     // warn! if an error was encountered reading the key from the file
                     if let Err(ref e) = service_account_key_res {
