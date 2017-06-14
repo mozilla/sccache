@@ -53,8 +53,8 @@ extern crate libc;
 extern crate mio_named_pipes;
 extern crate native_tls;
 extern crate number_prefix;
-#[cfg(feature = "openssl")]
-extern crate openssl;
+#[cfg(feature = "pem-parser")]
+extern crate pem_parser;
 extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
