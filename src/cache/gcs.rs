@@ -15,8 +15,7 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io;
 use std::rc::Rc;
 use std::time;
 
@@ -156,7 +155,7 @@ impl Bucket {
 /// calls to GCS APIs don't need to request new tokens.
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
-    credentials_path: String,
+    sa_key: ServiceAccountKey,
     cached_credentials: RefCell<Option<Shared<SFuture<GCSCredential>>>>,
 }
 
@@ -165,7 +164,7 @@ pub struct GCSCredentialProvider {
 /// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
 /// structure minimal and not list all the fields present in a service account credential file.
 #[derive(Debug, Deserialize)]
-struct ServiceAccountKey {
+pub struct ServiceAccountKey {
     private_key: String,
     client_email: String,
 }
@@ -208,33 +207,22 @@ pub struct GCSCredential {
 }
 
 impl GCSCredentialProvider {
-    pub fn new(rw_mode: RWMode, credentials_path: String) -> Self {
+    pub fn new(rw_mode: RWMode, sa_key: ServiceAccountKey) -> Self {
         GCSCredentialProvider {
             rw_mode,
-            credentials_path,
+            sa_key,
             cached_credentials: RefCell::new(None),
         }
     }
 
     fn auth_request_jwt(&self, expire_at: &chrono::DateTime<chrono::UTC>) -> Result<String> {
-        let metadata = fs::metadata(&self.credentials_path).chain_err(|| {
-            "Couldn't stat GCS credentials file"
-        })?;
-        if !metadata.is_file() {
-            bail!("Couldn't open GCS credentials file.");
-        }
-        let mut file = File::open(&self.credentials_path)?;
-        let mut service_account_json = String::new();
-        file.read_to_string(&mut service_account_json)?;
-        let sa_key: ServiceAccountKey = serde_json::from_str(&service_account_json)?;
-
         let scope = (match self.rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         }).to_owned();
 
         let jwt_claims = JwtClaims {
-            issuer: sa_key.client_email,
+            issuer: self.sa_key.client_email.clone(),
             scope: scope,
             audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
             expiration: expire_at.timestamp(),
@@ -242,7 +230,7 @@ impl GCSCredentialProvider {
         };
 
         let binary_key = openssl::rsa::Rsa::private_key_from_pem(
-            sa_key.private_key.as_bytes()
+            self.sa_key.private_key.as_bytes()
         )?.private_key_to_der()?;
 
         let auth_request_jwt = jwt::encode(
