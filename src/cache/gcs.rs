@@ -124,7 +124,7 @@ impl Bucket {
                 if let Some(creds) = creds_opt {
                     headers.set(Authorization(Bearer { token: creds.token }));
                 }
-                headers.set(ContentType("application/octet-stream".parse().unwrap()));
+                headers.set(ContentType::octet_stream());
                 headers.set(ContentLength(content.len() as u64));
             }
             request.set_body(content);
@@ -254,6 +254,53 @@ impl GCSCredentialProvider {
         Ok(auth_request_jwt)
     }
 
+    fn request_new_token(&self, client: &HyperClient) -> SFuture<GCSCredential> {
+        let client = client.clone();
+        let expires_at = chrono::UTC::now() + chrono::Duration::minutes(59);
+        let auth_jwt = self.auth_request_jwt(&expires_at);
+
+        // Request credentials
+        Box::new(future::result(auth_jwt).and_then(move |auth_jwt| {
+            let url = "https://www.googleapis.com/oauth2/v4/token";
+            let params = form_urlencoded::Serializer::new(String::new())
+                .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+                .append_pair("assertion", &auth_jwt)
+                .finish();
+
+            let mut request = Request::new(Method::Post, url.parse().unwrap());
+            {
+                let mut headers = request.headers_mut();
+                headers.set(ContentType::form_url_encoded());
+                headers.set(ContentLength(params.len() as u64));
+            }
+            request.set_body(params);
+
+            client.request(request).map_err(Into::into)
+        }).and_then(move |res| {
+            if res.status().is_success() {
+                Ok(res.body())
+            } else {
+                Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+            }
+        }).and_then(move |body| {
+            // Concatenate body chunks into a single Vec<u8>
+            body.fold(Vec::new(), |mut body, chunk| {
+                body.extend_from_slice(&chunk);
+                Ok::<_, hyper::Error>(body)
+            }).chain_err(|| {
+                "failed to read HTTP body"
+            })
+        }).and_then(move |body| {
+            // Convert body to string and parse the token out of the response
+            let body_str = String::from_utf8(body)?;
+            let token_msg: TokenMsg = serde_json::from_str(&body_str)?;
+            Ok(GCSCredential {
+                token: token_msg.access_token,
+                expiration_time: expires_at,
+            })
+        }))
+    }
+
     pub fn credentials(&self, client: &HyperClient) -> SFuture<GCSCredential> {
         let mut future_opt = self.cached_credentials.borrow_mut();
 
@@ -264,47 +311,7 @@ impl GCSCredentialProvider {
         };
 
         if needs_refresh {
-            let client = client.clone();
-            let expires_at = chrono::UTC::now() + chrono::Duration::minutes(59);
-            let auth_jwt = self.auth_request_jwt(&expires_at);
-            let credentials: SFuture<_> = Box::new(future::result(auth_jwt).and_then(move |auth_jwt| {
-                let url = "https://www.googleapis.com/oauth2/v4/token";
-                let params = form_urlencoded::Serializer::new(String::new())
-                    .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
-                    .append_pair("assertion", &auth_jwt)
-                    .finish();
-
-                let mut request = Request::new(Method::Post, url.parse().unwrap());
-                {
-                    let mut headers = request.headers_mut();
-                    headers.set(ContentType("application/x-www-form-urlencoded".parse().unwrap()));
-                    headers.set(ContentLength(params.len() as u64));
-                }
-                request.set_body(params);
-
-                client.request(request).map_err(Into::into)
-            }).and_then(move |res| {
-                if res.status().is_success() {
-                    Ok(res.body())
-                } else {
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
-                }
-            }).and_then(move |body| {
-                body.fold(Vec::new(), |mut body, chunk| {
-                    body.extend_from_slice(&chunk);
-                    Ok::<_, hyper::Error>(body)
-                }).chain_err(|| {
-                    "failed to read HTTP body"
-                })
-            }).and_then(move |body| {
-                let body_str = String::from_utf8(body)?;
-                let token_msg: TokenMsg = serde_json::from_str(&body_str)?;
-                Ok(GCSCredential {
-                    token: token_msg.access_token,
-                    expiration_time: expires_at,
-                })
-            }));
-
+            let credentials = self.request_new_token(client);
             *future_opt = Some(credentials.shared());
         };
 
