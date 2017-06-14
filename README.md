@@ -3,7 +3,7 @@
 sccache - Shared Compilation Cache
 ==================================
 
-Sccache is a [ccache](https://ccache.samba.org/)-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API, the GCS API, or Redis.
+Sccache is a [ccache](https://ccache.samba.org/)-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the Amazon Simple Cloud Storage Service (S3) API, the Google Cloud Storage (GCS) API, or Redis.
 
 Sccache now includes [experimental Rust support](docs/Rust.md).
 
@@ -51,7 +51,7 @@ If you want to use S3 storage for the sccache cache, you need to set the `SCCACH
 
 Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance.
 
-To use [GCS](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
+To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
 If you're using authentication, set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials.
 By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
 
