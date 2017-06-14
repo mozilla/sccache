@@ -23,9 +23,11 @@ use cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
-use cache::gcs::{GCSCache, GCSCredentialProvider, RWMode};
+use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
 use futures_cpupool::CpuPool;
 use regex::Regex;
+#[cfg(feature = "gcs")]
+use serde_json;
 use std::env;
 use std::fmt;
 use std::io::{
@@ -34,6 +36,8 @@ use std::io::{
     Seek,
     Write,
 };
+#[cfg(feature = "gcs")]
+use std::fs::File;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -235,10 +239,34 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
             debug!("Trying GCS bucket({})", bucket);
             #[cfg(feature = "gcs")]
             {
-                let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
-                if cred_path.is_none() {
+                let cred_path_res = env::var("SCCACHE_GCS_KEY_PATH");
+                if cred_path_res.is_err() {
                     warn!("No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
                 }
+
+                let service_account_key_opt: Option<gcs::ServiceAccountKey> =
+                    if let Ok(cred_path) = cred_path_res
+                {
+                    // Attempt to read the service account key from file
+                    let service_account_key_res: Result<gcs::ServiceAccountKey> =
+                        File::open(&cred_path)
+                            .map_err(Into::into)
+                            .and_then(|mut file| {
+                                let mut service_account_json = String::new();
+                                file.read_to_string(&mut service_account_json)?;
+                                Ok(service_account_json)
+                            }).and_then(|service_account_json|
+                                serde_json::from_str(&service_account_json).map_err(Into::into)
+                            );
+
+                    // warn! if an error was encountered reading the key from the file
+                    if let Err(ref e) = service_account_key_res {
+                        warn!("Failed to parse service account credentials from file: {:?}. \
+                            Continuing without authentication.", e);
+                    }
+
+                    service_account_key_res.ok()
+                } else { None };
 
                 let gcs_read_write_mode = match env::var("SCCACHE_GCS_RW_MODE")
                                           .as_ref().map(String::as_str)
@@ -256,7 +284,9 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                 };
 
                 let gcs_cred_provider =
-                    cred_path.map(|path| GCSCredentialProvider::new(gcs_read_write_mode, path));
+                    service_account_key_opt.map(|path|
+                        GCSCredentialProvider::new(gcs_read_write_mode, path));
+
                 match GCSCache::new(bucket, gcs_cred_provider, gcs_read_write_mode, _handle) {
                     Ok(s) => {
                         trace!("Using GCSCache");
