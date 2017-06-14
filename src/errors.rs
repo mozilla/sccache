@@ -23,7 +23,6 @@ use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
 use lru_disk_cache;
-#[cfg(feature = "serde_json")]
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
@@ -34,7 +33,7 @@ error_chain! {
         Hyper(hyper::Error) #[cfg(feature = "hyper")];
         Io(io::Error);
         Lru(lru_disk_cache::Error);
-        Json(serde_json::Error) #[cfg(feature = "serde_json")];
+        Json(serde_json::Error);
         Bincode(bincode::Error);
         Redis(redis::RedisError) #[cfg(feature = "redis")];
         TempfilePersist(tempfile::PersistError);
