@@ -45,7 +45,7 @@ use errors::*;
 
 type HyperClient = Client<HttpsConnector<HttpConnector>>;
 
-/// A GCS bucket
+/// GCS bucket
 struct Bucket {
     name: String,
     client: HyperClient,
@@ -150,18 +150,27 @@ impl Bucket {
     }
 }
 
+/// GCSCredentialProvider provides GCS OAUTH tokens.
+///
+/// It uses service account credentials to request tokens, and caches the result so that successive
+/// calls to GCS APIs don't need to request new tokens.
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
     credentials_path: String,
     cached_credentials: RefCell<Option<Shared<SFuture<GCSCredential>>>>,
 }
 
+/// ServiceAccountKey is a subset of the information in the JSON service account credentials.
+///
+/// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
+/// structure minimal and not list all the fields present in a service account credential file.
 #[derive(Debug, Deserialize)]
 struct ServiceAccountKey {
     private_key: String,
     client_email: String,
 }
 
+/// JwtClaims are the required claims that must be present in the OAUTH token request JWT.
 #[derive(Serialize)]
 struct JwtClaims {
     #[serde(rename = "iss")]
@@ -175,17 +184,23 @@ struct JwtClaims {
     issued_at: i64,
 }
 
+/// TokenMsg is a subset of the information provided by GCS in response to an OAUTH token request.
+///
+/// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
+/// structure minimal and not list all the fields present in the response.
 #[derive(Deserialize)]
 struct TokenMsg {
     access_token: String,
 }
 
+/// RWMode describes whether or not to attempt cache writes.
 #[derive(Copy, Clone)]
 pub enum RWMode {
     ReadOnly,
     ReadWrite,
 }
 
+/// GCSCredential is a GCS OAUTH token paired with an expiration time.
 #[derive(Clone)]
 pub struct GCSCredential {
     token: String,
