@@ -169,6 +169,7 @@ fn _parse_arguments(arguments: &[OsString],
                 v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
                 "-M" |
                 "-MM" |
+                "-MP" |
                 "-MD" |
                 "-MMD" => {
                     // If one of the above options is on the command line, we'll
@@ -331,6 +332,7 @@ pub fn compile<T>(creator: &T,
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg("-o").arg(&out_file)
+        .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
