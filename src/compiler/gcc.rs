@@ -211,7 +211,7 @@ fn _parse_arguments(arguments: &[OsString],
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
             match Path::new(&i).extension().and_then(|e| e.to_str()) {
-                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
+                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") | Some(e @ "m") | Some(e @ "mm") => (i.to_owned(), e.to_owned()),
                 e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                     return CompilerArguments::CannotCache("unknown source extension");
@@ -306,6 +306,7 @@ pub fn compile<T>(creator: &T,
         let extension = match extension.as_ref() {
             "c" => "cpp-output".to_owned(),
             "cc" | "cpp" | "cxx" => "c++-cpp-output".to_owned(),
+            "m" | "mm" => "objc-cpp-output".to_owned(),
             e => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
                 return Err("Unexpected file extension".into())
