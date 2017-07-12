@@ -120,6 +120,7 @@ fn _parse_arguments(arguments: &[OsString],
     let mut common_args = vec!();
     let mut preprocessor_args = vec!();
     let mut compilation = false;
+    let mut multiple_input = false;
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
 
@@ -190,9 +191,7 @@ fn _parse_arguments(arguments: &[OsString],
         } else {
             // Anything else is an input file.
             if input_arg.is_some() || arg.as_os_str() == "-" {
-                // Can't cache compilations with multiple inputs
-                // or compilation from stdin.
-                return CompilerArguments::CannotCache("multiple input files");
+                multiple_input = true;
             }
             input_arg = Some(arg);
         }
@@ -201,6 +200,11 @@ fn _parse_arguments(arguments: &[OsString],
     // We only support compilation.
     if !compilation {
         return CompilerArguments::NotCompilation;
+    }
+    // Can't cache compilations with multiple inputs
+    // or compilation from stdin.
+    if multiple_input {
+        return CompilerArguments::CannotCache("multiple input files");
     }
     let (input, extension) = match input_arg {
         Some(i) => {
