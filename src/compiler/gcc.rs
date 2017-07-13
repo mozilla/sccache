@@ -120,6 +120,7 @@ fn _parse_arguments(arguments: &[OsString],
     let mut common_args = vec!();
     let mut preprocessor_args = vec!();
     let mut compilation = false;
+    let mut multiple_input = false;
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
 
@@ -190,9 +191,7 @@ fn _parse_arguments(arguments: &[OsString],
         } else {
             // Anything else is an input file.
             if input_arg.is_some() || arg.as_os_str() == "-" {
-                // Can't cache compilations with multiple inputs
-                // or compilation from stdin.
-                return CompilerArguments::CannotCache("multiple input files");
+                multiple_input = true;
             }
             input_arg = Some(arg);
         }
@@ -202,12 +201,17 @@ fn _parse_arguments(arguments: &[OsString],
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
+    // Can't cache compilations with multiple inputs
+    // or compilation from stdin.
+    if multiple_input {
+        return CompilerArguments::CannotCache("multiple input files");
+    }
     let (input, extension) = match input_arg {
         Some(i) => {
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
             match Path::new(&i).extension().and_then(|e| e.to_str()) {
-                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
+                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") | Some(e @ "m") | Some(e @ "mm") => (i.to_owned(), e.to_owned()),
                 e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                     return CompilerArguments::CannotCache("unknown source extension");
@@ -302,6 +306,7 @@ pub fn compile<T>(creator: &T,
         let extension = match extension.as_ref() {
             "c" => "cpp-output".to_owned(),
             "cc" | "cpp" | "cxx" => "c++-cpp-output".to_owned(),
+            "m" | "mm" => "objc-cpp-output".to_owned(),
             e => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
                 return Err("Unexpected file extension".into())

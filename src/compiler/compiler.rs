@@ -187,15 +187,15 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         })) as SFuture<_>
                     }
                     Ok(Some(Cache::Miss)) => {
-                        debug!("[{}]: Cache miss", out_pretty);
+                        debug!("[{}]: Cache miss in {}", out_pretty, fmt_duration_as_secs(&duration));
                         MissType::Normal
                     }
                     Ok(Some(Cache::Recache)) => {
-                        debug!("[{}]: Cache recache", out_pretty);
+                        debug!("[{}]: Cache recache in {}", out_pretty, fmt_duration_as_secs(&duration));
                         MissType::ForcedRecache
                     }
                     Ok(None) => {
-                        debug!("[{}]: Cache timed out", out_pretty);
+                        debug!("[{}]: Cache timed out {}", out_pretty, fmt_duration_as_secs(&duration));
                         MissType::TimedOut
                     }
                     Err(err) => {
