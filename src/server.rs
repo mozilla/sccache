@@ -49,6 +49,7 @@ use std::process::{Output, ExitStatus};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use std::u64;
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::{Handle, Core, Timeout};
 use tokio_io::codec::length_delimited::Framed;
@@ -62,8 +63,17 @@ use util::fmt_duration_as_secs;
 
 use errors::*;
 
-/// If the server is idle for this many milliseconds, shut down.
-const DEFAULT_IDLE_TIMEOUT: u64 = 600_000;
+/// If the server is idle for this many seconds, shut down.
+const DEFAULT_IDLE_TIMEOUT: u64 = 600;
+
+/// Get the time the server should idle for before shutting down.
+fn get_idle_timeout() -> u64 {
+    // A value of 0 disables idle shutdown entirely.
+    env::var("SCCACHE_IDLE_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT)
+}
 
 fn notify_server_startup_internal<W: Write>(mut w: W, success: bool) -> io::Result<()> {
     let data = [ if success { 0 } else { 1 }; 1];
@@ -158,7 +168,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             listener: listener,
             rx: rx,
             service: service,
-            timeout: Duration::from_millis(DEFAULT_IDLE_TIMEOUT),
+            timeout: Duration::from_secs(get_idle_timeout()),
             wait: wait,
         })
     }
@@ -230,29 +240,33 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // inactivity, and this is then select'd with the `shutdown` future
         // passed to this function.
         let handle = core.handle();
-        let shutdown_idle = ShutdownOrInactive {
-            rx: rx,
-            timeout: Timeout::new(timeout, &handle)?,
-            handle: handle.clone(),
-            timeout_dur: timeout,
-        };
-        let shutdown_idle = shutdown_idle.map(|a| {
-            info!("shutting down due to being idle");
-            a
-        });
 
         let shutdown = shutdown.map(|a| {
             info!("shutting down due to explicit signal");
             a
         });
 
-        let server = future::select_all(vec![
+	let mut futures = vec![
             Box::new(server) as Box<Future<Item=_, Error=_>>,
-            Box::new(shutdown_idle),
             Box::new(shutdown.map_err(|()| {
                 io::Error::new(io::ErrorKind::Other, "shutdown signal failed")
             })),
-        ]);
+        ];
+
+	if timeout != Duration::new(0, 0) {
+            let shutdown_idle = ShutdownOrInactive {
+                rx: rx,
+                timeout: Timeout::new(timeout, &handle)?,
+                handle: handle.clone(),
+                timeout_dur: timeout,
+            };
+            futures.push(Box::new(shutdown_idle.map(|a| {
+                info!("shutting down due to being idle");
+                a
+            })));
+        }
+
+        let server = future::select_all(futures);
         core.run(server)
             .map_err(|p| p.0)?;
 
