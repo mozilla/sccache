@@ -5,8 +5,10 @@ authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
 [dependencies]
 filetime = "0.1"
+linked-hash-map = "0.2"
 log = "0.3.6"
-lru-cache = { git = "https://github.com/luser/lru-cache", branch = "non-mut-get" }
+# This is currently vendored to allow publishing on crates.io.
+#lru-cache = { git = "https://github.com/luser/lru-cache", branch = "non-mut-get" }
 walkdir = "1"
 
 [dev-dependencies]
