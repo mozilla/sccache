@@ -1,7 +1,9 @@
 extern crate filetime;
 #[macro_use]
 extern crate log;
-extern crate lru_cache;
+//extern crate lru_cache;
+extern crate linked_hash_map;
+mod lru_cache;
 extern crate walkdir;
 
 #[cfg(test)]
