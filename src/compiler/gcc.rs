@@ -144,9 +144,14 @@ fn _parse_arguments(arguments: &[OsString],
                 // -MF and -MQ are in this set but are handled separately
                 // because they are also preprocessor options.
                 a if argument_takes_value(a) => {
-                    common_args.push(arg.clone());
+                    let args = if a == "-include" {
+                        &mut preprocessor_args
+                    } else {
+                        &mut common_args
+                    };
+                    args.push(arg.clone());
                     if let Some(arg_val) = it.next() {
-                        common_args.push(arg_val);
+                        args.push(arg_val);
                     }
                 },
                 "-MF" |
@@ -557,8 +562,8 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fabc", "-I", "include", "-include", "file"], common_args);
+        assert_eq!(ovec!["-include", "file"], preprocessor_args);
+        assert_eq!(ovec!["-fabc", "-I", "include"], common_args);
         assert!(!msvc_show_includes);
     }
 

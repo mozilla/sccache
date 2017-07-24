@@ -173,8 +173,8 @@ mod test {
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
-        assert!(a.preprocessor_args.is_empty());
-        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], a.common_args);
+        assert_eq!(ovec!["-include", "file"], a.preprocessor_args);
+        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include"], a.common_args);
     }
 
     #[test]
