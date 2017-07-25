@@ -2,17 +2,17 @@ language: rust
 cache: cargo
 
 rust:
-  - 1.17.0
   - stable
   - beta
   - nightly
+  - 1.17.0 # Oldest supported version. Keep in sync with README.md.
 
 before_script:
-  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES=unstable export CARGO_TEST_EXTRA="--all"; fi
+  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES=unstable; fi
 
 script:
   - cargo build --verbose --features="all ${EXTRA_FEATURES}"
-  - RUST_BACKTRACE=1 cargo test --verbose --features="all ${EXTRA_FEATURES}" ${CARGO_TEST_EXTRA}
+  - RUST_BACKTRACE=1 cargo test --all --verbose --features="all ${EXTRA_FEATURES}"
 
 os:
   - linux
