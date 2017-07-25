@@ -271,7 +271,7 @@ mod tests {
     fn set_mtime_back<T: AsRef<Path>>(path: T, seconds: usize) {
         let m = fs::metadata(path.as_ref()).unwrap();
         let t = FileTime::from_last_modification_time(&m);
-        let t = FileTime::from_seconds_since_1970(t.seconds() - seconds as u64, t.nanoseconds());
+        let t = FileTime::from_seconds_since_1970(t.seconds_relative_to_1970() - seconds as u64, t.nanoseconds());
         set_file_times(path, t, t).unwrap();
     }
 
