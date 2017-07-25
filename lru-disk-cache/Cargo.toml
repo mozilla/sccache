@@ -2,6 +2,9 @@
 name = "lru-disk-cache"
 version = "0.1.0"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
+license = "Apache-2.0"
+description = "A LRU cache for files on disk."
+repository = "https://github.com/mozilla/sccache/"
 
 [dependencies]
 filetime = "0.1"
