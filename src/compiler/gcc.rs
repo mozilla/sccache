@@ -18,7 +18,7 @@ use ::compiler::{
 };
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments, path_helper};
 use log::LogLevel::Trace;
-use futures::future::{self, Future};
+use futures::future::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandCreatorSync,
@@ -83,7 +83,7 @@ pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
     "-iframework", "-imacros", "-imultilib", "-include",
     "-install_name", "-iprefix", "-iquote", "-isysroot",
     "-isystem", "-iwithprefix", "-iwithprefixbefore",
-    "-u", "-x", "-arch",
+    "-u", "-x", "-arch", "--sysroot"
     ];
 
 
@@ -120,6 +120,7 @@ fn _parse_arguments(arguments: &[OsString],
     let mut common_args = vec!();
     let mut preprocessor_args = vec!();
     let mut compilation = false;
+    let mut multiple_input = false;
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
 
@@ -146,10 +147,15 @@ fn _parse_arguments(arguments: &[OsString],
                 // -MF and -MQ are in this set but are handled separately
                 // because they are also preprocessor options.
                 a if argument_takes_value(a) => {
-                    common_args.push(arg.clone());
+                    let args = if a == "-include" {
+                        &mut preprocessor_args
+                    } else {
+                        &mut common_args
+                    };
+                    args.push(arg.clone());
                     if let Some(arg_val) = it.next() {
                         let relative_path = path_helper::get_relative_path(cwd, arg_val);
-                        common_args.push(relative_path);
+                        args.push(relative_path);
                     }
                 },
                 "-MF" |
@@ -182,6 +188,7 @@ fn _parse_arguments(arguments: &[OsString],
                 v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
                 "-M" |
                 "-MM" |
+                "-MP" |
                 "-MD" |
                 "-MMD" => {
                     // If one of the above options is on the command line, we'll
@@ -211,9 +218,7 @@ fn _parse_arguments(arguments: &[OsString],
         } else {
             // Anything else is an input file.
             if input_arg.is_some() || arg.as_os_str() == "-" {
-                // Can't cache compilations with multiple inputs
-                // or compilation from stdin.
-                return CompilerArguments::CannotCache("multiple input files");
+                multiple_input = true;
             }
             input_arg = Some(path_helper::get_relative_path(cwd, arg));
         }
@@ -223,12 +228,17 @@ fn _parse_arguments(arguments: &[OsString],
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
+    // Can't cache compilations with multiple inputs
+    // or compilation from stdin.
+    if multiple_input {
+        return CompilerArguments::CannotCache("multiple input files");
+    }
     let (input, extension) = match input_arg {
         Some(i) => {
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
             match Path::new(&i).extension().and_then(|e| e.to_str()) {
-                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") => (i.to_owned(), e.to_owned()),
+                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") | Some(e @ "m") | Some(e @ "mm") => (i.to_owned(), e.to_owned()),
                 e => {
                     trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                     return CompilerArguments::CannotCache("unknown source extension");
@@ -305,7 +315,7 @@ pub fn compile<T>(creator: &T,
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return future::err("Missing object file output".into()).boxed()
+            return f_err("Missing object file output")
         }
     };
 
@@ -323,6 +333,7 @@ pub fn compile<T>(creator: &T,
         let extension = match extension.as_ref() {
             "c" => "cpp-output".to_owned(),
             "cc" | "cpp" | "cxx" => "c++-cpp-output".to_owned(),
+            "m" | "mm" => "objc-cpp-output".to_owned(),
             e => {
                 error!("gcc::compile: Got an unexpected file extension {}", e);
                 return Err("Unexpected file extension".into())
@@ -353,6 +364,7 @@ pub fn compile<T>(creator: &T,
     cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg("-o").arg(&out_file)
+        .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
@@ -572,8 +584,8 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fabc", "-I", "include", "-include", "file"], common_args);
+        assert_eq!(ovec!["-include", "file"], preprocessor_args);
+        assert_eq!(ovec!["-fabc", "-I", "include"], common_args);
         assert!(!msvc_show_includes);
     }
 

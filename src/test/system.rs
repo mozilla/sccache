@@ -25,11 +25,8 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};
 use std::fmt;
-use std::fs;
-use std::io::{
-    self,
-    Write,
-};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::path::{Path,PathBuf};
 use std::process::{
     Command,
@@ -138,16 +135,20 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
             .success());
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
-    let original_source_file = Path::new(file!()).parent().unwrap().join("test.c");
-    // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
-    let source_file = tempdir.join("test.c");
-    trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
-    fs::copy(&original_source_file, &source_file).unwrap();
+    const INPUT: &'static str = "test.c";
+    const INPUT_ERR: &'static str = "test_err.c";
+    const OUTPUT: &'static str = "test.o";
+    // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
+    for f in &[INPUT, INPUT_ERR] {
+        let original_source_file = Path::new(file!()).parent().unwrap().join(f);
+        let source_file = tempdir.join(f);
+        trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
+        fs::copy(&original_source_file, &source_file).unwrap();
+    }
+
     let out_file = tempdir.join("test.o");
-    let input = source_file.file_name().unwrap().to_str().unwrap();
-    let output = out_file.file_name().unwrap().to_str().unwrap();
     trace!("compile");
-    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, &input, &output), tempdir, &env_vars));
+    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, INPUT, OUTPUT), tempdir, &env_vars));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
     let info = get_stats(sccache, tempdir);
@@ -157,7 +158,7 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
     assert_eq!(1, info.stats.cache_misses);
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, &input, &output), tempdir, &env_vars));
+    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, INPUT, OUTPUT), tempdir, &env_vars));
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
     let info = get_stats(sccache, tempdir);
@@ -165,6 +166,33 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
     assert_eq!(2, info.stats.requests_executed);
     assert_eq!(1, info.stats.cache_hits);
     assert_eq!(1, info.stats.cache_misses);
+    if name == "cl.exe" {
+        // Check that -deps works.
+        trace!("compile with -deps");
+        let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
+        args.push("-depstest.d".into());
+        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
+        // Check the contents
+        let mut f = File::open(tempdir.join("test.d")).expect("Failed to open dep file");
+        let mut buf = String::new();
+        // read_to_string should be safe because we're supplying all the filenames here,
+        // and there are no absolute paths.
+        f.read_to_string(&mut buf).expect("Failed to read dep file");
+        let lines: Vec<_> = buf.lines().map(|l| l.trim_right()).collect();
+        let expected = format!("{output}: {input}\n{input}:\n", output=OUTPUT, input=INPUT);
+        let expected_lines: Vec<_> = expected.lines().collect();
+        assert_eq!(lines, expected_lines);
+    }
+    if name == "gcc" {
+        trace!("test -MP with -Werror");
+        let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
+        args.extend(vec_from!(OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"));
+        let output = do_run(sccache, &args, tempdir, &env_vars);
+        assert!(!output.status.success());
+        // This should fail, but the error should be from the #error!
+        let stderr = String::from_utf8(output.stderr).expect("Couldn't convert stderr to String");
+        assert!(stderr.find("to generate dependencies you must specify either -M or -MM").is_none(), "Should not have complained about commandline arguments");
+    }
     trace!("stop server");
     assert_eq!(true, run(sccache, &["--stop-server"], tempdir, &[]));
 }

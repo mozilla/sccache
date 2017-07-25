@@ -109,9 +109,9 @@ fn compile<T>(creator: &T,
     let write = {
         let filename = match Path::new(&parsed_args.input).file_name() {
             Some(name) => name,
-            None => return future::err("Missing input filename".into()).boxed(),
+            None => return f_err("Missing input filename"),
         };
-
+  
         Box::new(
             write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout.clone())
                  .and_then(move |(tempdir, input)| {
@@ -120,7 +120,7 @@ fn compile<T>(creator: &T,
                          Err(_) => future::err("Failed to write input file".into()),
                      }
                  })
-        )
+)
     };
 
     gcc::compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool, Some(write))
@@ -173,8 +173,8 @@ mod test {
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
-        assert!(a.preprocessor_args.is_empty());
-        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include", "-include", "file"], a.common_args);
+        assert_eq!(ovec!["-include", "file"], a.preprocessor_args);
+        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include"], a.common_args);
     }
 
     #[test]

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![recursion_limit="128"]
+
 extern crate app_dirs;
 extern crate base64;
 extern crate bincode;
@@ -35,6 +37,8 @@ extern crate futures_cpupool;
 extern crate hyper;
 #[cfg(feature = "hyper-tls")]
 extern crate hyper_tls;
+#[cfg(feature = "jsonwebtoken")]
+extern crate jsonwebtoken as jwt;
 #[cfg(windows)]
 extern crate kernel32;
 extern crate local_encoding;
@@ -47,13 +51,15 @@ extern crate itertools;
 extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
+extern crate native_tls;
 extern crate number_prefix;
+#[cfg(feature = "pem-parser")]
+extern crate pem_parser;
 extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
 extern crate retry;
-#[cfg(feature = "serde_json")]
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
@@ -66,6 +72,8 @@ extern crate tokio_process;
 extern crate tokio_proto;
 extern crate tokio_service;
 extern crate tokio_serde_bincode;
+#[cfg(feature = "gcs")]
+extern crate url;
 extern crate uuid;
 #[cfg(windows)]
 extern crate winapi;

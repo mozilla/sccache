@@ -2,38 +2,15 @@ os: Visual Studio 2015
 
 environment:
   matrix:
-  # Stable 64-bit MSVC
     - channel: stable
       target: x86_64-pc-windows-msvc
-  # Beta 64-bit MSVC
     - channel: beta
       target: x86_64-pc-windows-msvc
-  # Nightly 64-bit MSVC
     - channel: nightly
       target: x86_64-pc-windows-msvc
       EXTRA_FEATURES: unstable
-      CARGO_TEST_EXTRA: --all
-
-### GNU Toolchains ###
-#TODO: figure out how to get mingw64 working on appveyor
-  # Stable 64-bit GNU
-  #   - channel: stable
-  #     target: x86_64-pc-windows-gnu
-  # Stable 32-bit GNU
-  #  - channel: stable
-  #    target: i686-pc-windows-gnu
-  # Beta 64-bit GNU
-  #  - channel: beta
-  #    target: x86_64-pc-windows-gnu
-  # Beta 32-bit GNU
-  #  - channel: beta
-  #    target: i686-pc-windows-gnu
-  # Nightly 64-bit GNU
-  #   - channel: nightly
-  #     target: x86_64-pc-windows-gnu
-  # Nightly 32-bit GNU
-  #  - channel: nightly
-  #    target: i686-pc-windows-gnu
+    - channel: 1.17.0 # Oldest supported version. Keep in sync with README.md.
+      target: x86_64-pc-windows-msvc
 
 matrix:
   allow_failures:
@@ -50,7 +27,7 @@ build_script:
 - cmd: cargo build --verbose --features="all %EXTRA_FEATURES%"
 
 test_script:
-- cmd: cargo test --verbose --features="all %EXTRA_FEATURES%" %CARGO_TEST_EXTRA%
+- cmd: cargo test --all --verbose --features="all %EXTRA_FEATURES%"
 
 branches:
   only:

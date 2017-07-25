@@ -22,8 +22,10 @@ use futures::Future;
 use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
+#[cfg(feature = "jsonwebtoken")]
+use jwt;
 use lru_disk_cache;
-#[cfg(feature = "serde_json")]
+use native_tls;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
@@ -34,15 +36,18 @@ error_chain! {
         Hyper(hyper::Error) #[cfg(feature = "hyper")];
         Io(io::Error);
         Lru(lru_disk_cache::Error);
-        Json(serde_json::Error) #[cfg(feature = "serde_json")];
+        Json(serde_json::Error);
+        Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
         Bincode(bincode::Error);
         Redis(redis::RedisError) #[cfg(feature = "redis")];
+        StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
+        Tls(native_tls::Error);
     }
 
     errors {
         #[cfg(feature = "hyper")]
-        BadHTTPStatus(status: hyper::status::StatusCode) {
+        BadHTTPStatus(status: hyper::StatusCode) {
             description("failed to get a successful HTTP status")
             display("didn't get a successful HTTP status, got `{}`", status)
         }

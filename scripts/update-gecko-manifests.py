@@ -10,7 +10,7 @@ import sys
 import tooltool
 
 PLATFORM_MANIFESTS = {
-    'Linux': ['browser/config/tooltool-manifests/linux32/*.manifest', 'browser/config/tooltool-manifests/linux64/*.manifest', 'browser/config/tooltool-manifests/macosx64/cross-releng.manifest', 'mobile/android/config/tooltool-manifests/*/*.manifest'],
+    'Linux': ['browser/config/tooltool-manifests/linux32/*.manifest', 'browser/config/tooltool-manifests/linux64/*.manifest*', 'browser/config/tooltool-manifests/macosx64/cross-*.manifest', 'mobile/android/config/tooltool-manifests/*/*.manifest'],
     # Don't include cross-releng.manifest here.
     'Darwin': ['browser/config/tooltool-manifests/macosx64/asan.manifest', 'browser/config/tooltool-manifests/macosx64/clang.manifest', 'browser/config/tooltool-manifests/macosx64/releng.manifest'],
     'Windows': ['browser/config/tooltool-manifests/win32/*.manifest', 'browser/config/tooltool-manifests/win64/*.manifest'],

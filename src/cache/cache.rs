@@ -22,8 +22,12 @@ use cache::disk::DiskCache;
 use cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use cache::s3::S3Cache;
+#[cfg(feature = "gcs")]
+use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
 use futures_cpupool::CpuPool;
 use regex::Regex;
+#[cfg(feature = "gcs")]
+use serde_json;
 use std::env;
 use std::fmt;
 use std::io::{
@@ -32,6 +36,8 @@ use std::io::{
     Seek,
     Write,
 };
+#[cfg(feature = "gcs")]
+use std::fs::File;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -223,6 +229,67 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                     return Arc::new(s);
                 }
                 Err(e) => warn!("Failed to create RedisCache: {:?}", e),
+            }
+        }
+    }
+
+    if cfg!(feature = "gcs") {
+        if let Ok(bucket) = env::var("SCCACHE_GCS_BUCKET")
+        {
+            debug!("Trying GCS bucket({})", bucket);
+            #[cfg(feature = "gcs")]
+            {
+                let cred_path_res = env::var("SCCACHE_GCS_KEY_PATH");
+                if cred_path_res.is_err() {
+                    warn!("No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
+                }
+
+                let service_account_key_opt: Option<gcs::ServiceAccountKey> =
+                    if let Ok(cred_path) = cred_path_res
+                {
+                    // Attempt to read the service account key from file
+                    let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
+                        let mut file = File::open(&cred_path)?;
+                        let mut service_account_json = String::new();
+                        file.read_to_string(&mut service_account_json)?;
+                        Ok(serde_json::from_str(&service_account_json)?)
+                    })();
+
+                    // warn! if an error was encountered reading the key from the file
+                    if let Err(ref e) = service_account_key_res {
+                        warn!("Failed to parse service account credentials from file: {:?}. \
+                            Continuing without authentication.", e);
+                    }
+
+                    service_account_key_res.ok()
+                } else { None };
+
+                let gcs_read_write_mode = match env::var("SCCACHE_GCS_RW_MODE")
+                                          .as_ref().map(String::as_str)
+                {
+                    Ok("READ_ONLY") => RWMode::ReadOnly,
+                    Ok("READ_WRITE") => RWMode::ReadWrite,
+                    Ok(_) => {
+                        warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
+                        RWMode::ReadOnly
+                    },
+                    _ => {
+                        warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
+                        RWMode::ReadOnly
+                    }
+                };
+
+                let gcs_cred_provider =
+                    service_account_key_opt.map(|path|
+                        GCSCredentialProvider::new(gcs_read_write_mode, path));
+
+                match GCSCache::new(bucket, gcs_cred_provider, gcs_read_write_mode, _handle) {
+                    Ok(s) => {
+                        trace!("Using GCSCache");
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
+                }
             }
         }
     }

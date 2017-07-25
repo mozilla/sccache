@@ -65,7 +65,8 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
         .after_help(concat!(
                 "Enabled features:\n",
                 "    S3:    ", cfg!(feature = "s3"), "\n",
-                "    Redis: ", cfg!(feature = "redis"), "\n")
+                "    Redis: ", cfg!(feature = "redis"), "\n",
+                "    GCS:   ", cfg!(feature = "gcs"), "\n")
                 )
         .args_from_usage(
             "-s --show-stats 'show cache statistics'

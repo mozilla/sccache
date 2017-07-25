@@ -139,7 +139,8 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
         }
 
         let process::Output { stdout: stdout_bytes, .. } = output;
-        let stdout = try!(from_local_codepage(&stdout_bytes));
+        let stdout = from_local_codepage(&stdout_bytes)
+            .chain_err(|| "Failed to convert compiler stdout while detecting showIncludes prefix")?;
         for line in stdout.lines() {
             if line.ends_with("test.h") {
                 for (i, c) in line.char_indices().rev() {
@@ -175,13 +176,11 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
 fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
     use std::os::windows::prelude::*;
     use local_encoding::windows::wide_char_to_multi_byte;
-    use winapi::{CP_OEMCP, DWORD};
-
-    const WC_ERR_INVALID_CHARS: DWORD = 0x80;
+    use winapi::CP_OEMCP;
 
     let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
     let (bytes, _) = wide_char_to_multi_byte(CP_OEMCP,
-                                             WC_ERR_INVALID_CHARS,
+                                             0,
                                              &points,
                                              None,    // default_char
                                              false)?; // use_default_char_flag
@@ -420,12 +419,12 @@ pub fn preprocess<T>(creator: &T,
             let f = File::create(cwd.join(depfile))?;
             let mut f = BufWriter::new(f);
 
-            encode_path(&mut f, &objfile)?;
+            encode_path(&mut f, &objfile).chain_err(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
             write!(f, ": ")?;
-            encode_path(&mut f, &parsed_args.input)?;
+            encode_path(&mut f, &parsed_args.input).chain_err(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
             write!(f, " ")?;
             let process::Output { status, stdout, stderr: stderr_bytes } = output;
-            let stderr = from_local_codepage(&stderr_bytes)?;
+            let stderr = from_local_codepage(&stderr_bytes).chain_err(|| "Failed to convert preprocessor stderr")?;
             let mut deps = HashSet::new();
             let mut stderr_bytes = vec!();
             for line in stderr.lines() {
@@ -445,7 +444,7 @@ pub fn preprocess<T>(creator: &T,
             writeln!(f, "")?;
             // Write extra rules for each dependency to handle
             // removed files.
-            encode_path(&mut f, &parsed_args.input)?;
+            encode_path(&mut f, &parsed_args.input).chain_err(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
             writeln!(f, ":")?;
             let mut sorted = deps.into_iter().collect::<Vec<_>>();
             sorted.sort();
