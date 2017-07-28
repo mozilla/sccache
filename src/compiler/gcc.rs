@@ -77,7 +77,7 @@ impl CCompilerImpl for GCC {
 
 /// Arguments that take a value. Shared with clang.
 pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
-    "--param", "-A", "-D", "-F", "-G", "-I", "-L",
+    "--param", "-A", "-B", "-D", "-F", "-G", "-I", "-L",
     "-U", "-V", "-Xassembler", "-Xlinker",
     "-Xpreprocessor", "-aux-info", "-b", "-idirafter",
     "-iframework", "-imacros", "-imultilib", "-include",
