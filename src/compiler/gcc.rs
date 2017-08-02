@@ -16,7 +16,7 @@ use ::compiler::{
     Cacheable,
     CompilerArguments,
 };
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments, path_helper};
 use log::LogLevel::Trace;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
@@ -135,11 +135,14 @@ fn _parse_arguments(arguments: &[OsString],
             let mut handled = true;
             match s {
                 "-c" => compilation = true,
-                "-o" => output_arg = it.next(),
+                "-o" => output_arg = match it.next() {
+                    Some(path) => Some(path_helper::get_relative_path(cwd, path)),
+                    None => None,
+                },
                 "-gsplit-dwarf" => {
                     split_dwarf = true;
                     common_args.push(arg.clone());
-                }
+                },
                 // Arguments that take a value.
                 // -MF and -MQ are in this set but are handled separately
                 // because they are also preprocessor options.
@@ -151,17 +154,27 @@ fn _parse_arguments(arguments: &[OsString],
                     };
                     args.push(arg.clone());
                     if let Some(arg_val) = it.next() {
-                        args.push(arg_val);
+                        let relative_path = path_helper::get_relative_path(cwd, arg_val);
+                        args.push(relative_path);
                     }
                 },
                 "-MF" |
                 "-MQ" => {
                     preprocessor_args.push(arg.clone());
                     if let Some(arg_val) = it.next() {
-                        preprocessor_args.push(arg_val);
+                        let relative_path = path_helper::get_relative_path(cwd, arg_val);
+                        preprocessor_args.push(relative_path);
                     }
-                }
-                "-MT" => dep_target = it.next(),
+                },
+                "-MT" => dep_target = {
+                    match it.next() {
+                        Some(arg_val) => {
+                            let relative_path = path_helper::get_relative_path(cwd, arg_val);
+                            Some(relative_path)
+                        },
+                        None => None,
+                    }
+                },
                 // Can't cache Clang modules.
                 "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
                 "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
@@ -192,13 +205,22 @@ fn _parse_arguments(arguments: &[OsString],
         }
 
         if arg.starts_with("-") && arg.len() > 1 {
-            common_args.push(arg);
+            if arg.starts_with("-I") {
+                let path_vector = arg.into_string().unwrap().into_bytes().split_off(2);
+                let path_arg = OsString::from(String::from_utf8(path_vector).unwrap());
+                let rewritten_path = path_helper::get_relative_path(cwd, path_arg);
+                let mut new_arg = OsString::from("-I");
+                new_arg.push(rewritten_path);
+                common_args.push(new_arg);
+            } else {
+                common_args.push(arg);
+            }
         } else {
             // Anything else is an input file.
             if input_arg.is_some() || arg.as_os_str() == "-" {
                 multiple_input = true;
             }
-            input_arg = Some(arg);
+            input_arg = Some(path_helper::get_relative_path(cwd, arg));
         }
     }
 

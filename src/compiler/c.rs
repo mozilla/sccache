@@ -292,6 +292,91 @@ pub fn hash_key(compiler_digest: &str,
     m.finish()
 }
 
+
+pub mod path_helper {
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn get_common_prefix_path(from_path: &Path, to_path: &Path) -> PathBuf {
+        if (from_path == Path::new("/")) && (to_path == Path::new("/")) {
+            return PathBuf::new();
+        }
+
+        let mut prefix = "".to_string();
+        for (f, t) in from_path.to_str().unwrap().chars().zip(
+            to_path.to_str().unwrap().chars()) {
+            if f != t {
+                break;
+            }
+
+            prefix.push_str(format!("{}", f).as_str());
+        }
+
+        if prefix.as_str().ends_with("/") && prefix.len() > 1 {
+            prefix.pop();
+        }
+
+        PathBuf::from(prefix)
+    }
+
+    /// Rewrite paths to relative paths.
+    pub fn make_path_relative(cwd: &Path, start_path: &Path) -> Option<PathBuf> {
+        let ccache_basedir = match env::var("SCCACHE_BASEDIR") {
+            Ok(path) => PathBuf::from(&path),
+            _ => return None,
+        };
+
+        if !start_path.is_absolute() {
+            return None
+        }
+
+        if !start_path.starts_with(&ccache_basedir) {
+            return None
+        }
+
+        let canon_path = match fs::canonicalize(start_path) {
+            Ok(canonical_path) => canonical_path,
+            Err(_) => return None,
+        };
+
+        let prefix_path = get_common_prefix_path(cwd, &canon_path);
+        let mut result_path_str = "".to_string();
+        if (prefix_path.as_path().as_os_str().len() > 0)
+            || (cwd.as_os_str() != "/") {
+                match cwd.strip_prefix(prefix_path.as_path()) {
+                    Ok(remainder) => {
+                        for _ in remainder.iter() {
+                            result_path_str = format!("../{}", result_path_str);
+                        }
+                    },
+                    Err(_) => trace!("Could not strip prefix {:?} from path {:?}", prefix_path, cwd),
+                }
+            }
+
+        let mut result_path = PathBuf::from(result_path_str);
+        let remainder = canon_path.strip_prefix(prefix_path.as_path()).unwrap();
+        for a in remainder.iter() {
+            result_path.push(a);
+        }
+
+        if result_path.as_path().as_os_str().is_empty() {
+            result_path = PathBuf::from(".");
+        }
+
+        Some(result_path)
+    }
+
+    pub fn get_relative_path(cwd: &Path, path: OsString) -> OsString {
+        let p = PathBuf::from(path.clone());
+        return match make_path_relative(cwd, p.as_path()) {
+            Some(relative_path) => relative_path.into_os_string(),
+            None => path,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -343,5 +428,75 @@ mod test {
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
+    }
+
+    #[test]
+    fn test_env_changes_make_path_relative() {
+        use std::env;
+
+        env::remove_var("SCCACHE_BASEDIR");
+        let p = OsString::from("anything");
+        let cwd_path = env::current_dir().unwrap();
+        let cwd = cwd_path.as_path();
+        assert_eq!(p, path_helper::get_relative_path(cwd, p.clone()));
+        assert_eq!(None, path_helper::make_path_relative(cwd, PathBuf::from(p).as_path()));
+    }
+
+    #[test]
+    fn test_path_rewrite_relative_path() {
+        use std::env;
+
+        env::set_var("SCCACHE_BASEDIR", "true");
+        let p = OsString::from("relative/path");
+        let cwd_path = env::current_dir().unwrap();
+        let cwd = cwd_path.as_path();
+        assert_eq!(p, path_helper::get_relative_path(cwd, p.clone()));
+        assert_eq!(None, path_helper::make_path_relative(cwd, PathBuf::from(p).as_path()));
+        env::remove_var("SCCACHE_BASEDIR");
+    }
+
+    #[test]
+    fn test_path_rewrite_not_under_basedir() {
+        use std::env;
+
+        env::set_var("SCCACHE_BASEDIR", "/starter/path");
+        let p = OsString::from("/nonstarter/path");
+        let cwd_path = env::current_dir().unwrap();
+        let cwd = cwd_path.as_path();
+        assert_eq!(p, path_helper::get_relative_path(cwd, p.clone()));
+        assert_eq!(None, path_helper::make_path_relative(cwd, PathBuf::from(p).as_path()));
+        env::remove_var("SCCACHE_BASEDIR");
+    }
+
+    #[test]
+    fn test_path_rewrite_not_canonicalizable() {
+        use std::env;
+
+        env::set_var("SCCACHE_BASEDIR", "/starter/path");
+        let p = OsString::from("/starter/path/this/path.txt/will/not/resolve");
+        let cwd_path = env::current_dir().unwrap();
+        let cwd = cwd_path.as_path();
+        assert_eq!(p, path_helper::get_relative_path(cwd, p.clone()));
+        assert_eq!(None, path_helper::make_path_relative(cwd, PathBuf::from(p).as_path()));
+        env::remove_var("SCCACHE_BASEDIR");
+    }
+
+    #[test]
+    fn test_path_rewrite_real_file() {
+        use std::env;
+        use std::fs;
+
+        let cwd = env::current_dir().unwrap();
+        let basedir = cwd.join("..");
+        let dir_path = cwd.join("..").join("newdir");
+        let _ = fs::create_dir_all(dir_path.clone());
+        env::set_var("SCCACHE_BASEDIR", basedir);
+
+        let p = fs::canonicalize(dir_path.clone()).unwrap();
+        let p_string = p.as_os_str();
+        assert_eq!(p_string, path_helper::get_relative_path(cwd.as_path(), p_string.clone().to_os_string()));
+
+        let _ = fs::remove_dir_all(dir_path);
+        env::remove_var("SCCACHE_BASEDIR");
     }
 }

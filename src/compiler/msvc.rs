@@ -17,7 +17,7 @@ use ::compiler::{
     CompilerArguments,
     write_temp_file,
 };
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments, path_helper};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::Future;
@@ -54,9 +54,9 @@ impl CCompilerImpl for MSVC {
     fn kind(&self) -> CCompilerKind { CCompilerKind::MSVC }
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       _cwd: &Path) -> CompilerArguments<ParsedArguments>
+                       cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
-        parse_arguments(arguments)
+        parse_arguments(arguments, cwd)
     }
 
     fn preprocess<T>(&self,
@@ -187,7 +187,7 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
     dst.write_all(&bytes)
 }
 
-pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
+pub fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec!();
@@ -289,7 +289,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
                 // Can't cache compilations with multiple inputs.
                 return CompilerArguments::CannotCache("multiple input files")
             }
-            input_arg = Some(flag);
+            input_arg = Some(path_helper::get_relative_path(cwd, flag));
         }
     }
     // We only support compilation.
@@ -596,6 +596,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
         let ParsedArguments {
             input,
@@ -605,7 +607,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -622,6 +624,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_default_name() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c"];
         let ParsedArguments {
             input,
@@ -631,7 +635,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -648,6 +652,8 @@ mod test {
 
     #[test]
     fn parse_argument_slashes() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c", "/Fofoo.obj"];
         let ParsedArguments {
             input,
@@ -657,7 +663,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -674,6 +680,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_extra() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"];
         let ParsedArguments {
             input,
@@ -683,7 +691,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -700,6 +708,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj", "/showIncludes"];
         let ParsedArguments {
             input,
@@ -709,7 +719,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -726,6 +736,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_pdb() {
+        use std::env;
+
         let args = ovec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"];
         let ParsedArguments {
             input,
@@ -735,7 +747,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match parse_arguments(&args, env::current_dir().unwrap().as_path()) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -755,43 +767,43 @@ mod test {
     #[test]
     fn test_parse_arguments_empty_args() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&vec!()));
+                   parse_arguments(&vec!(), Path::new("/")));
     }
 
     #[test]
     fn test_parse_arguments_not_compile() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&ovec!["-Fofoo", "foo.c"]));
+                   parse_arguments(&ovec!["-Fofoo", "foo.c"], Path::new("/")));
     }
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(CompilerArguments::CannotCache("multiple input files"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"]));
+                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"], Path::new("/")));
     }
 
     #[test]
     fn test_parse_arguments_unsupported() {
         assert_eq!(CompilerArguments::CannotCache("multi-file output"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
+                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"], Path::new("/")));
 
         assert_eq!(CompilerArguments::CannotCache("multi-file output"),
-                   parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
+                   parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"], Path::new("/")));
 
         assert_eq!(CompilerArguments::CannotCache("multi-file output"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
+                   parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"], Path::new("/")));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
         assert_eq!(CompilerArguments::CannotCache("@file"),
-                   parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
+                   parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"], Path::new("/")));
     }
 
     #[test]
     fn test_parse_arguments_missing_pdb() {
         assert_eq!(CompilerArguments::CannotCache("shared pdb"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
+                   parse_arguments(&ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"], Path::new("/")));
     }
 
     #[test]
