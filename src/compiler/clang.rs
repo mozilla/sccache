@@ -20,7 +20,9 @@ use ::compiler::{
     CompilerArguments,
     write_temp_file,
 };
+use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::gcc::GCCArgAttribute::*;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -50,7 +52,7 @@ impl CCompilerImpl for Clang {
                        arguments: &[OsString],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
-        gcc::parse_arguments(arguments, cwd, argument_takes_value)
+        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]))
     }
 
     fn preprocess<T>(&self,
@@ -80,18 +82,15 @@ impl CCompilerImpl for Clang {
     }
 }
 
-/// Arguments that take a value that aren't in `gcc::ARGS_WITH_VALUE`.
-const ARGS_WITH_VALUE: &'static [&'static str] = &[
-    "-B",
-    "-target",
-    "-Xclang",
-    "--serialize-diagnostics",
+static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 7] = [
+    take_arg!("--serialize-diagnostics", String, Separated, PassThrough),
+    take_arg!("--target", String, Separated, PassThrough),
+    take_arg!("-Xclang", String, Separated, PassThrough),
+    flag!("-fcxx-modules", TooHard),
+    flag!("-fmodules", TooHard),
+    take_arg!("-include-pch", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-target", String, Separated, PassThrough),
 ];
-
-/// Return true if `arg` is a clang commandline argument that takes a value.
-pub fn argument_takes_value(arg: &str) -> bool {
-    gcc::ARGS_WITH_VALUE.contains(&arg) || ARGS_WITH_VALUE.contains(&arg)
-}
 
 fn compile<T>(creator: &T,
               executable: &Path,
@@ -173,8 +172,8 @@ mod test {
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
-        assert_eq!(ovec!["-include", "file"], a.preprocessor_args);
-        assert_eq!(ovec!["-arch", "xyz", "-fabc", "-I", "include"], a.common_args);
+        assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
+        assert_eq!(ovec!["-arch", "xyz", "-fabc"], a.common_args);
     }
 
     #[test]
@@ -243,5 +242,13 @@ mod test {
         assert_eq!(exit_status(0), output.status);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_parse_arguments_clangmodules() {
+        assert_eq!(CompilerArguments::CannotCache("-fcxx-modules"),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
+        assert_eq!(CompilerArguments::CannotCache("-fmodules"),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
     }
 }
