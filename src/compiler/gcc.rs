@@ -16,6 +16,7 @@ use ::compiler::{
     Cacheable,
     CompilerArguments,
 };
+use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use log::LogLevel::Trace;
 use futures::future::Future;
@@ -45,7 +46,7 @@ impl CCompilerImpl for GCC {
                        arguments: &[OsString],
                        cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
-        parse_arguments(arguments, cwd, argument_takes_value)
+        parse_arguments(arguments, cwd, &ARGS[..])
     }
 
     fn preprocess<T>(&self,
@@ -75,27 +76,86 @@ impl CCompilerImpl for GCC {
     }
 }
 
-/// Arguments that take a value. Shared with clang.
-pub const ARGS_WITH_VALUE: &'static [&'static str] = &[
-    "--param", "-A", "-B", "-D", "-F", "-G", "-I", "-L",
-    "-U", "-V", "-Xassembler", "-Xlinker",
-    "-Xpreprocessor", "-aux-info", "-b", "-idirafter",
-    "-iframework", "-imacros", "-imultilib", "-include",
-    "-install_name", "-iprefix", "-iquote", "-isysroot",
-    "-isystem", "-iwithprefix", "-iwithprefixbefore",
-    "-u", "-x", "-arch", "--sysroot"
-    ];
-
-
-/// Return true if `arg` is a GCC commandline argument that takes a value.
-pub fn argument_takes_value(arg: &str) -> bool {
-    ARGS_WITH_VALUE.contains(&arg)
+#[derive(Clone, Debug)]
+pub enum GCCArgAttribute {
+    TooHard,
+    PassThrough,
+    PreprocessorArgument,
+    DoCompilation,
+    Output,
+    NeedDepTarget,
+    DepTarget,
+    Language,
+    SplitDwarf,
 }
 
+use self::GCCArgAttribute::*;
+
+// Mostly taken from https://github.com/ccache/ccache/blob/master/compopt.c#L32-L84
+pub static ARGS: [(ArgInfo, GCCArgAttribute); 60] = [
+    flag!("-", TooHard),
+    take_arg!("--param", String, Separated, PassThrough),
+    flag!("--save-temps", TooHard),
+    take_arg!("--serialize-diagnostics", Path, Separated, PassThrough),
+    take_arg!("--sysroot", Path, Separated, PassThrough),
+    take_arg!("-A", String, Separated, PassThrough),
+    take_arg!("-B", Path, CanBeSeparated, PassThrough),
+    take_arg!("-D", String, CanBeSeparated, PreprocessorArgument),
+    flag!("-E", TooHard),
+    take_arg!("-F", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-G", String, Separated, PassThrough),
+    take_arg!("-I", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-L", String, Separated, PassThrough),
+    flag!("-M", NeedDepTarget),
+    flag!("-MD", NeedDepTarget),
+    take_arg!("-MF", Path, Separated, PreprocessorArgument),
+    flag!("-MM", NeedDepTarget),
+    flag!("-MMD", NeedDepTarget),
+    flag!("-MP", NeedDepTarget),
+    take_arg!("-MQ", String, Separated, PreprocessorArgument),
+    take_arg!("-MT", String, Separated, DepTarget),
+    flag!("-P", TooHard),
+    take_arg!("-U", String, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-V", String, Separated, PassThrough),
+    take_arg!("-Xassembler", String, Separated, PassThrough),
+    take_arg!("-Xlinker", String, Separated, PassThrough),
+    take_arg!("-Xpreprocessor", String, Separated, PreprocessorArgument),
+    take_arg!("-arch", String, Separated, PassThrough),
+    take_arg!("-aux-info", String, Separated, PassThrough),
+    take_arg!("-b", String, Separated, PassThrough),
+    flag!("-c", DoCompilation),
+    flag!("-fno-working-directory", PreprocessorArgument),
+    flag!("-fplugin=libcc1plugin", TooHard),
+    flag!("-fprofile-use", TooHard),
+    flag!("-frepo", TooHard),
+    flag!("-fsyntax-only", TooHard),
+    flag!("-fworking-directory", PreprocessorArgument),
+    flag!("-gsplit-dwarf", SplitDwarf),
+    take_arg!("-idirafter", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-iframework", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-imacros", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-imultilib", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-include", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-install_name", String, Separated, PassThrough),
+    take_arg!("-iprefix", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-iquote", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-isysroot", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-isystem", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-iwithprefix", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-iwithprefixbefore", Path, CanBeSeparated, PreprocessorArgument),
+    flag!("-nostdinc", PreprocessorArgument),
+    flag!("-nostdinc++", PreprocessorArgument),
+    take_arg!("-o", Path, Separated, Output),
+    flag!("-remap", PreprocessorArgument),
+    flag!("-save-temps", TooHard),
+    take_arg!("-stdlib", String, Concatenated('='), PreprocessorArgument),
+    flag!("-trigraphs", PreprocessorArgument),
+    take_arg!("-u", String, CanBeSeparated, PassThrough),
+    take_arg!("-x", String, CanBeSeparated, Language),
+    take_arg!("@", String, Concatenated, TooHard),
+];
+
 /// Parse `arguments`, determining whether it is supported.
-///
-/// `argument_takes_value` should return `true` when called with
-/// a compiler option that takes a value.
 ///
 /// If any of the entries in `arguments` result in a compilation that
 /// cannot be cached, return `CompilerArguments::CannotCache`.
@@ -104,16 +164,14 @@ pub fn argument_takes_value(arg: &str) -> bool {
 /// Otherwise, return `CompilerArguments::Ok(ParsedArguments)`, with
 /// the `ParsedArguments` struct containing information parsed from
 /// `arguments`.
-pub fn parse_arguments<F: Fn(&str) -> bool>(arguments: &[OsString],
-                                            cwd: &Path,
-                                            argument_takes_value: F)
-                                            -> CompilerArguments<ParsedArguments> {
-    _parse_arguments(arguments, cwd, &argument_takes_value)
-}
-
-fn _parse_arguments(arguments: &[OsString],
-                    cwd: &Path,
-                    argument_takes_value: &Fn(&str) -> bool) -> CompilerArguments<ParsedArguments> {
+pub fn parse_arguments<S>(
+    arguments: &[OsString],
+    cwd: &Path,
+    arg_info: S,
+) -> CompilerArguments<ParsedArguments>
+where
+    S: SearchableArgInfo<Info = (ArgInfo, GCCArgAttribute)>,
+{
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;
@@ -126,88 +184,81 @@ fn _parse_arguments(arguments: &[OsString],
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
-    let mut it = ExpandIncludeFile {
+    let it = ExpandIncludeFile {
         stack: arguments.iter().rev().map(|a| a.to_owned()).collect(),
         cwd: cwd,
     };
-    while let Some(arg) = it.next() {
-        if let Some(s) = arg.to_str() {
-            let mut handled = true;
-            match s {
-                "-c" => compilation = true,
-                "-o" => output_arg = it.next(),
-                "-gsplit-dwarf" => {
-                    split_dwarf = true;
-                    common_args.push(arg.clone());
-                }
-                // Arguments that take a value.
-                // -MF and -MQ are in this set but are handled separately
-                // because they are also preprocessor options.
-                a if argument_takes_value(a) => {
-                    let args = if a == "-include" {
-                        &mut preprocessor_args
-                    } else {
-                        &mut common_args
-                    };
-                    args.push(arg.clone());
-                    if let Some(arg_val) = it.next() {
-                        args.push(arg_val);
-                    }
-                },
-                "-MF" |
-                "-MQ" => {
-                    preprocessor_args.push(arg.clone());
-                    if let Some(arg_val) = it.next() {
-                        preprocessor_args.push(arg_val);
-                    }
-                }
-                "-MT" => dep_target = it.next(),
-                // Can't cache Clang modules.
-                "-fcxx-modules" => return CompilerArguments::CannotCache("clang modules"),
-                "-fmodules" => return CompilerArguments::CannotCache("clang modules"),
-                // Can't cache -fsyntax-only, it doesn't produce any output.
-                "-fsyntax-only" => return CompilerArguments::CannotCache("-fsyntax-only"),
-                // Can't cache PGO profiled output.
-                "-fprofile-use" => return CompilerArguments::CannotCache("pgo"),
-                // We already expanded `@` files we could through
-                // `ExpandIncludeFile` above, so if one of those arguments now
-                // makes it this far we won't understand it.
-                v if v.starts_with('@') => return CompilerArguments::CannotCache("@file"),
-                "-M" |
-                "-MM" |
-                "-MP" |
-                "-MD" |
-                "-MMD" => {
-                    // If one of the above options is on the command line, we'll
-                    // need -MT on the preprocessor command line, whether it's
-                    // been passed already or not
-                    need_explicit_dep_target = true;
-                    preprocessor_args.push(arg.clone());
-                }
-                _ => handled = false,
-            }
-            if handled {
-                continue
-            }
-        }
 
-        if arg.starts_with("-") && arg.len() > 1 {
-            common_args.push(arg);
-        } else {
-            // Anything else is an input file.
-            if input_arg.is_some() || arg.as_os_str() == "-" {
-                multiple_input = true;
+    for item in ArgsIter::new(it, arg_info) {
+        // Refuse to cache arguments such as "-include@foo" because they're a
+        // mess. See https://github.com/mozilla/sccache/issues/150#issuecomment-318586953
+        if let Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) = item.arg {
+            if OsString::from(v.clone()).starts_with("@") {
+                return CompilerArguments::CannotCache("@");
             }
-            input_arg = Some(arg);
         }
+        match item.data {
+            Some(TooHard) => {
+                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+                    "Can't be Argument::Raw/UnknownFlag",
+                ))
+            }
+            Some(SplitDwarf) => split_dwarf = true,
+            Some(DoCompilation) => compilation = true,
+            Some(Output) => output_arg = item.arg.get_value().map(|s| s.unwrap_path()),
+            Some(NeedDepTarget) => need_explicit_dep_target = true,
+            Some(DepTarget) => dep_target = item.arg.get_value().map(OsString::from),
+            Some(PreprocessorArgument) |
+            Some(PassThrough) |
+            Some(Language) => {}
+            None => {
+                match item.arg {
+                    Argument::Raw(ref val) => {
+                        if input_arg.is_some() {
+                            multiple_input = true;
+                        }
+                        input_arg = Some(val.clone());
+                    }
+                    Argument::UnknownFlag(_) => {}
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let args = match item.data {
+            Some(SplitDwarf) |
+            Some(PassThrough) |
+            Some(Language) => Some(&mut common_args),
+            Some(PreprocessorArgument) |
+            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+            Some(DoCompilation) |
+            Some(Output) |
+            Some(DepTarget) => None,
+            Some(TooHard) => unreachable!(),
+            None => {
+                match item.arg {
+                    Argument::Raw(_) => None,
+                    Argument::UnknownFlag(_) => Some(&mut common_args),
+                    _ => unreachable!(),
+                }
+            }
+        };
+        if let Some(args) = args {
+            // Normalize attributes such as "-I foo", "-D FOO=bar", as
+            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+            // "-include foo", "-idirafter bar", etc.
+            let norm = match item.arg.to_str() {
+                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+                _ => NormalizedDisposition::Separated,
+            };
+            args.extend(item.arg.normalize(norm));
+        };
     }
 
     // We only support compilation.
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
-    // Can't cache compilations with multiple inputs
-    // or compilation from stdin.
+    // Can't cache compilations with multiple inputs.
     if multiple_input {
         return CompilerArguments::CannotCache("multiple input files");
     }
@@ -432,7 +483,7 @@ mod test {
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&args, ".".as_ref(), argument_takes_value)
+        parse_arguments(&args, ".".as_ref(), &ARGS[..])
     }
 
     #[test]
@@ -562,8 +613,8 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(ovec!["-include", "file"], preprocessor_args);
-        assert_eq!(ovec!["-fabc", "-I", "include"], common_args);
+        assert_eq!(ovec!["-Iinclude", "-include", "file"], preprocessor_args);
+        assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
 
@@ -696,22 +747,14 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_clangmodules() {
-        assert_eq!(CompilerArguments::CannotCache("clang modules"),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
-        assert_eq!(CompilerArguments::CannotCache("clang modules"),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
-    }
-
-    #[test]
     fn test_parse_arguments_pgo() {
-        assert_eq!(CompilerArguments::CannotCache("pgo"),
+        assert_eq!(CompilerArguments::CannotCache("-fprofile-use"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache("@file"),
+        assert_eq!(CompilerArguments::CannotCache("@"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
     }
 

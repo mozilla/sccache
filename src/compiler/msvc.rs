@@ -17,6 +17,7 @@ use ::compiler::{
     CompilerArguments,
     write_temp_file,
 };
+use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
@@ -187,6 +188,43 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
     dst.write_all(&bytes)
 }
 
+#[derive(Clone, Debug)]
+enum MSVCArgAttribute {
+    TooHard,
+    PreprocessorArgument,
+    DoCompilation,
+    ShowIncludes,
+    Output,
+    DepFile,
+    ProgramDatabase,
+    DebugInfo,
+}
+
+use self::MSVCArgAttribute::*;
+
+static ARGS: [(ArgInfo, MSVCArgAttribute); 20] = [
+    take_arg!("-D", String, Concatenated, PreprocessorArgument),
+    take_arg!("-FA", String, Concatenated, TooHard),
+    take_arg!("-FI", Path, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-FR", Path, Concatenated, TooHard),
+    take_arg!("-Fa", Path, Concatenated, TooHard),
+    take_arg!("-Fd", Path, Concatenated, ProgramDatabase),
+    take_arg!("-Fe", Path, Concatenated, TooHard),
+    take_arg!("-Fi", Path, Concatenated, TooHard),
+    take_arg!("-Fm", Path, Concatenated, TooHard),
+    take_arg!("-Fo", Path, Concatenated, Output),
+    take_arg!("-Fp", Path, Concatenated, TooHard),
+    take_arg!("-Fr", Path, Concatenated, TooHard),
+    flag!("-Fx", TooHard),
+    take_arg!("-I", Path, Concatenated, PreprocessorArgument),
+    take_arg!("-U", String, Concatenated, PreprocessorArgument),
+    flag!("-Zi", DebugInfo),
+    flag!("-c", DoCompilation),
+    take_arg!("-deps", Path, Concatenated, DepFile),
+    flag!("-showIncludes", ShowIncludes),
+    take_arg!("@", Path, Concatenated, TooHard),
+];
+
 pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
@@ -208,88 +246,48 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
         }
     });
 
-    // Next split off arguments with a value, creating an iterator of tuples
-    let mut it = it.map(|arg| {
-        if let Some(arg) = arg.split_prefix("-Fo") {
-            ("-Fo".into(), Some(arg))
-        } else if let Some(arg) = arg.split_prefix("-deps") {
-            ("-deps".into(), Some(arg))
-        } else if let Some(p) = arg.split_prefix("-Fd") {
-            ("-Fd".into(), Some(p))
-        } else {
-            (arg, None)
-        }
-    });
-
-    while let Some((flag, mut arg)) = it.next() {
-        if let Some(s) = flag.to_str() {
-            let mut handled = true;
-            match s {
-                "-c" => compilation = true,
-                "-FI" => {
-                    common_args.push("-FI".into());
-                    if let Some((arg_val, flag)) = it.next() {
-                        if flag.is_some() {
-                            return CompilerArguments::CannotCache("extra -FI arg")
-                        }
-                        common_args.push(arg_val);
+    for item in ArgsIter::new(it, &ARGS[..]) {
+        match item.data {
+            Some(TooHard) => {
+                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+                    "Can't be Argument::Raw/UnknownFlag",
+                ))
+            }
+            Some(DoCompilation) => compilation = true,
+            Some(ShowIncludes) => show_includes = true,
+            Some(Output) => {
+                output_arg = item.arg.get_value().map(OsString::from);
+                // Can't usefully cache output that goes to nul anyway,
+                // and it breaks reading entries from cache.
+                if let Some(ref out) = output_arg {
+                    if out == "nul" {
+                        return CompilerArguments::CannotCache("output to nul")
                     }
                 }
-                "-showIncludes" => show_includes = true,
-                "-Fo" => {
-                    output_arg = arg.take();
-                    // Can't usefully cache output that goes to nul anyway,
-                    // and it breaks reading entries from cache.
-                    if let Some(ref out) = output_arg {
-                        if out == "nul" {
-                            return CompilerArguments::CannotCache("output to nul")
+            }
+            Some(DepFile) => depfile = item.arg.get_value().map(|s| s.unwrap_path()),
+            Some(ProgramDatabase) => pdb = item.arg.get_value().map(|s| s.unwrap_path()),
+            Some(DebugInfo) => debug_info = true,
+            Some(PreprocessorArgument) => {}
+            None => {
+                match item.arg {
+                    Argument::Raw(ref val) => {
+                        if input_arg.is_some() {
+                            // Can't cache compilations with multiple inputs.
+                            return CompilerArguments::CannotCache("multiple input files");
                         }
+                        input_arg = Some(val.clone());
                     }
+                    Argument::UnknownFlag(ref flag) => common_args.push(flag.clone()),
+                    _ => unreachable!(),
                 }
-                "-deps" => depfile = arg.take(),
-                "-Fd" => {
-                    let mut common = OsString::from("-Fd");
-                    let arg = arg.take().unwrap();
-                    common.push(&arg);
-                    pdb = Some(arg);
-                    common_args.push(common);
-                }
-                // Arguments we can't handle because they output more files.
-                // TODO: support more multi-file outputs.
-                "-FA" |
-                "-Fa" |
-                "-Fe" |
-                "-Fm" |
-                "-Fp" |
-                "-FR" |
-                "-Fx" => return CompilerArguments::CannotCache("multi-file output"),
-                "-Zi" => {
-                    debug_info = true;
-                    common_args.push("-Zi".into());
-                }
-                _ => handled = false,
-            }
-            if handled {
-                continue
             }
         }
-        assert!(arg.is_none());
-
-        // Arguments we can't handle.
-        if flag.starts_with("@") {
-            return CompilerArguments::CannotCache("@file")
-        }
-
-        // Other options.
-        if flag.starts_with("-") && flag.len() > 1 {
-            common_args.push(flag);
-        } else {
-            // Anything else is an input file.
-            if input_arg.is_some() {
-                // Can't cache compilations with multiple inputs.
-                return CompilerArguments::CannotCache("multiple input files")
-            }
-            input_arg = Some(flag);
+        match item.data {
+            Some(PreprocessorArgument) |
+            Some(ProgramDatabase) |
+            Some(DebugInfo) => common_args.extend(item.arg.normalize(NormalizedDisposition::Concatenated)),
+            _ => {}
         }
     }
     // We only support compilation.
@@ -322,7 +320,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     // -Fd is not taken into account unless -Zi is given
     if debug_info {
         match pdb {
-            Some(p) => outputs.insert("pdb", PathBuf::from(p)),
+            Some(p) => outputs.insert("pdb", p),
             None => {
                 // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
@@ -720,7 +718,7 @@ mod test {
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
-        assert_eq!(common_args, ovec!["-FI", "file"]);
+        assert_eq!(common_args, ovec!["-FIfile"]);
         assert!(msvc_show_includes);
     }
 
@@ -772,19 +770,19 @@ mod test {
 
     #[test]
     fn test_parse_arguments_unsupported() {
-        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
+        assert_eq!(CompilerArguments::CannotCache("-FA"),
                    parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
 
-        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
+        assert_eq!(CompilerArguments::CannotCache("-Fa"),
                    parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
 
-        assert_eq!(CompilerArguments::CannotCache("multi-file output"),
+        assert_eq!(CompilerArguments::CannotCache("-FR"),
                    parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache("@file"),
+        assert_eq!(CompilerArguments::CannotCache("@"),
                    parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
     }
 

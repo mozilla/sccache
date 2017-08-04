@@ -14,6 +14,7 @@
 
 use compiler::{Cacheable, Compiler, CompilerArguments, CompilerHasher, CompilerKind, Compilation,
                HashResult};
+use compiler::args::*;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
@@ -29,7 +30,6 @@ use std::io::Read;
 use std::iter::{self, FromIterator};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
-use std::slice;
 use std::time::Instant;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
@@ -93,46 +93,11 @@ pub struct RustCompilation {
     crate_name: String,
 }
 
-/// Arguments that take a value.
-const ARGS_WITH_VALUE: &'static [&'static str] = &[
-    // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
-    "--cfg",
-    "-L",
-    "-l",
-    "--crate-type",
-    "--crate-name",
-    "--emit",
-    "--print",
-    "-o",
-    "--out-dir",
-    "--explain",
-    "--target",
-    "-W", "--warn",
-    "-A", "--allow",
-    "-D", "--deny",
-    "-F", "--forbid",
-    "--cap-lints",
-    "-C", "--codegen",
-    "--extern",
-    "--sysroot",
-    "-Z",
-    "--error-format",
-    "--color",
-    "--pretty",
-    "--unpretty",
-];
-
 /// Emit types that we will cache.
 const ALLOWED_EMIT: &'static [&'static str] = &["link", "dep-info"];
 
 /// Version number for cache key.
 const CACHE_VERSION: &'static [u8] = b"2";
-
-/// Return true if `arg` is in the set of arguments `set`.
-fn arg_in(arg: &str, set: &HashSet<&str>) -> bool
-{
-    set.contains(arg) || set.iter().any(|a| arg.starts_with(a))
-}
 
 /// Calculate the SHA-1 digest of each file in `files` on background threads
 /// in `pool`.
@@ -334,58 +299,65 @@ impl<T> Compiler<T> for Rust
     }
 }
 
-/// An iterator over (argument, argument value) pairs.
-struct ArgsIter<'a, 'b: 'a> {
-    arguments: slice::Iter<'a, &'b str>,
-    args_with_val: &'a HashSet<&'static str>,
+#[derive(Clone, Debug)]
+enum RustArgAttribute {
+    TooHard,
+    NotCompilation,
+    LinkLibrary,
+    LinkPath,
+    Emit,
+    Extern,
+    CrateName,
+    CrateType,
+    OutDir,
+    CodeGen,
+    PassThrough,
 }
 
-impl<'a, 'b> ArgsIter<'a, 'b> {
-    fn new(arguments: &'a [&'b str], args_with_val: &'a HashSet<&'static str>) -> ArgsIter<'a, 'b> {
-        ArgsIter {
-            arguments: arguments.iter(),
-            args_with_val: args_with_val,
-        }
-    }
-}
+use self::RustArgAttribute::*;
 
-impl<'a, 'b> Iterator for ArgsIter<'a, 'b> {
-    type Item = (&'a str, Option<&'a str>);
-
-    fn next(&mut self) -> Option<(&'a str, Option<&'a str>)> {
-        if let Some(arg) = self.arguments.next() {
-            if arg_in(arg, &self.args_with_val) {
-                if let Some(i) = arg.find('=') {
-                    Some((&arg[..i], Some(&arg[i+1..])))
-                } else {
-                    Some((arg, self.arguments.next().map(|v| *v)))
-                }
-            } else {
-                Some((arg, None))
-            }
-        } else {
-            None
-        }
-    }
-}
+// These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
+static ARGS: [(ArgInfo, RustArgAttribute); 33] = [
+    flag!("-", TooHard),
+    take_arg!("--allow", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--cap-lints", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--cfg", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--codegen", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("--color", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
+    take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
+    take_arg!("--deny", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--emit", String, CanBeSeparated('='), Emit),
+    take_arg!("--error-format", String, CanBeSeparated('='), PassThrough),
+    take_arg!("--explain", String, CanBeSeparated('='), NotCompilation),
+    take_arg!("--extern", String, CanBeSeparated('='), Extern),
+    take_arg!("--forbid", Path, CanBeSeparated('='), PassThrough),
+    flag!("--help", NotCompilation),
+    take_arg!("--out-dir", String, CanBeSeparated('='), OutDir),
+    take_arg!("--pretty", String, CanBeSeparated('='), NotCompilation),
+    take_arg!("--print", String, CanBeSeparated('='), NotCompilation),
+    take_arg!("--sysroot", String, CanBeSeparated('='), NotCompilation),
+    take_arg!("--target", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--unpretty", String, CanBeSeparated('='), NotCompilation),
+    flag!("--version", NotCompilation),
+    take_arg!("--warn", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("-A", Path, CanBeSeparated('='), LinkPath),
+    take_arg!("-C", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("-D", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("-F", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("-L", Path, CanBeSeparated('='), LinkPath),
+    flag!("-V", NotCompilation),
+    take_arg!("-W", Path, CanBeSeparated('='), LinkPath),
+    take_arg!("-Z", Path, CanBeSeparated('='), LinkPath),
+    take_arg!("-l", Path, CanBeSeparated('='), LinkLibrary),
+    take_arg!("-o", Path, CanBeSeparated('='), TooHard),
+];
 
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments>
 {
-    // While we could go the extra mile here and handle non-utf8 `OsString`
-    // instances the rustc compiler certainly does not. With that knowledge
-    // we just validate that everything's utf-8 and ship everything else
-    // to the compiler as "not cacheable".
-    let mut args = Vec::with_capacity(arguments.len());
-    for arg in arguments {
-        match arg.to_str() {
-            Some(s) => args.push(s),
-            None => return CompilerArguments::CannotCache("not utf-8"),
-        }
-    }
+    let mut args = vec![];
 
-    //TODO: use lazy_static for this.
-    let args_with_val: HashSet<&'static str> = HashSet::from_iter(ARGS_WITH_VALUE.iter().map(|v| *v));
-    let mut emit: Option<HashSet<&str>> = None;
+    let mut emit: Option<HashSet<String>> = None;
     let mut input = None;
     let mut output_dir = None;
     let mut crate_name = None;
@@ -394,99 +366,115 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_lib_names = vec![];
     let mut static_link_paths: Vec<PathBuf> = vec![];
 
-    let it = ArgsIter::new(&args, &args_with_val);
-    for (arg, val) in it {
-        match arg {
-            // Various non-compilation options.
-            "--help" | "-V" | "--version" | "--print" | "--explain" | "--pretty" | "--unpretty" => return CompilerArguments::NotCompilation,
-            // Could support `-o file` but it'd be more complicated.
-            "-o" => return CompilerArguments::CannotCache("-o"),
-            "-l" => {
-                if let Some(v) = val {
-                    let mut split_it = v.splitn(2, "=");
-                    let (libtype, lib) = match (split_it.next(), split_it.next()) {
-                        (Some(libtype), Some(lib)) => (libtype, lib),
-                        // If no kind is specified, the default is dylib.
-                        (Some(lib), None) => ("dylib", lib),
-                        // Anything else shouldn't happen.
-                        _ => return CompilerArguments::CannotCache("-l"),
-                    };
-                    if libtype == "static" {
-                        static_lib_names.push(lib.to_string());
-                    }
+    for item in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
+        let arg = item.arg.to_os_string();
+        let value = match item.arg.get_value() {
+            Some(v) => {
+                if let Ok(v) = OsString::from(v).into_string() {
+                    Some(v)
+                } else {
+                    return CompilerArguments::CannotCache("not utf-8");
                 }
             }
-            "-L" => {
-                if let Some(v) = val {
+            None => None,
+        };
+        args.push((arg, item.arg.get_value().map(|s| s.into())));
+        match item.data {
+            Some(TooHard) => {
+                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+                    "Can't be Argument::Raw/UnknownFlag",
+                ))
+            }
+            Some(NotCompilation) => return CompilerArguments::NotCompilation,
+            Some(LinkLibrary) |
+            Some(LinkPath) => {
+                if let Some(v) = value {
                     let mut split_it = v.splitn(2, "=");
-                    match (split_it.next(), split_it.next()) {
-                        // For locating static libraries, we only care about `-L native=path`
-                        // and `-L path`.
-                        (Some("native"), Some(path)) | (Some(path), None) => {
-                            static_link_paths.push(cwd.join(path));
+                    match item.data {
+                        Some(LinkLibrary) => {
+                            let (libtype, lib) = match (split_it.next(), split_it.next()) {
+                                (Some(libtype), Some(lib)) => (libtype, lib),
+                                // If no kind is specified, the default is dylib.
+                                (Some(lib), None) => ("dylib", lib),
+                                // Anything else shouldn't happen.
+                                _ => return CompilerArguments::CannotCache("-l"),
+                            };
+                            if libtype == "static" {
+                                static_lib_names.push(lib.to_string());
+                            }
                         }
-                        // Just ignore anything else.
-                        _ => {}
+                        Some(LinkPath) => {
+                            match (split_it.next(), split_it.next()) {
+                                // For locating static libraries, we only care about `-L native=path`
+                                // and `-L path`.
+                                (Some("native"), Some(path)) |
+                                (Some(path), None) => {
+                                    static_link_paths.push(cwd.join(path));
+                                }
+                                // Just ignore anything else.
+                                _ => {}
+                            }
+                        }
+                        _ => unreachable!(),
                     }
                 }
             }
-            "--emit" => {
+            Some(Emit) => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
                     return CompilerArguments::CannotCache("more than one --emit");
                 }
-                emit = val.map(|a| a.split(",").collect());
+                emit = value.map(|a| a.split(",").map(&str::to_owned).collect());
             }
-            "--crate-type" => {
+            Some(CrateType) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
-                if let Some(v) = val {
+                if let Some(v) = value {
                     if v.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
                         return CompilerArguments::CannotCache("crate-type");
                     }
                 }
             }
-            "--out-dir" => {
-                output_dir = val;
-            }
-            "--crate-name" => {
-                crate_name = val;
-            }
-            "--extern" => {
-                if let Some(val) = val {
+            Some(CrateName) => crate_name = value,
+            Some(OutDir) => output_dir = value,
+            Some(Extern) => {
+                if let Some(val) = value {
                     if let Some(crate_file) = val.splitn(2, "=").nth(1) {
                         externs.push(PathBuf::from(crate_file));
                     }
                 }
             }
-            "-C" | "--codegen" => {
+            Some(CodeGen) => {
                 // We want to capture some info from codegen options.
-                if let Some(codegen_arg) = val {
+                if let Some(codegen_arg) = value {
                     let mut split_it = codegen_arg.splitn(2, "=");
                     let name = split_it.next();
                     let val = split_it.next();
                     if let (Some(name), Some(val)) = (name, val) {
                         match name {
-                            "extra-filename" => extra_filename = Some(val),
+                            "extra-filename" => extra_filename = Some(val.to_owned()),
                             _ => {},
                         }
                     }
                 }
             }
-            // Can't cache compilation from stdin.
-            "-" => return CompilerArguments::CannotCache("stdin"),
-            _ => {
-                if !arg.starts_with("-") {
-                    // Anything else is an input file.
-                    if input.is_some() {
-                        // Can't cache compilations with multiple inputs.
-                        return CompilerArguments::CannotCache("multiple input files");
+            Some(PassThrough) => {}
+            None => {
+                match item.arg {
+                    Argument::Raw(ref val) => {
+                        if input.is_some() {
+                            // Can't cache compilations with multiple inputs.
+                            return CompilerArguments::CannotCache("multiple input files");
+                        }
+                        input = Some(val.clone());
                     }
-                    input = Some(arg);
+                    Argument::UnknownFlag(_) => {}
+                    _ => unreachable!(),
                 }
             }
         }
     }
+
     // Unwrap required values.
     macro_rules! req {
         ($x:ident) => {
@@ -512,14 +500,19 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
     //TODO: use lazy_static for this.
-    let allowed_emit = HashSet::from_iter(ALLOWED_EMIT.iter().map(|v| *v));
+    let allowed_emit = HashSet::from_iter(ALLOWED_EMIT.iter().map(|v| (*v).to_owned()));
     let l = allowed_emit.len();
     if emit.union(&allowed_emit).count() > l {
         return CompilerArguments::CannotCache("unsupported --emit");
     }
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
-        Some(Some(crate_name).into_iter().chain(extra_filename).chain(Some(".d")).collect::<String>())
+        let mut dep_info = crate_name.clone();
+        if let Some(extra_filename) = extra_filename {
+            dep_info.push_str(&extra_filename[..]);
+        }
+        dep_info.push_str(".d");
+        Some(dep_info)
     } else {
         None
     };
@@ -538,16 +531,13 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         // it too much.
         None
     }).collect();
-    let arguments = ArgsIter::new(&args, &args_with_val)
-        .map(|(arg, val)| (arg.into(), val.map(|v| v.into())))
-        .collect::<Vec<_>>();
     // We'll figure out the source files and outputs later in
     // `generate_hash_key` where we can run rustc.
     // Cargo doesn't deterministically order --externs, and we need the hash inputs in a
     // deterministic order.
     externs.sort();
     CompilerArguments::Ok(ParsedArguments {
-        arguments: arguments,
+        arguments: args,
         output_dir: output_dir.into(),
         externs: externs,
         staticlibs: staticlibs,
@@ -827,38 +817,6 @@ mod test {
                "--crate-name", "foo");
         fails!("--crate-type", "rlib,dylib", "--emit", "link", "foo.rs", "--out-dir", "out",
                "--crate-name", "foo");
-    }
-
-    #[test]
-    fn test_args_iter() {
-        let args_with_val: HashSet<&'static str> = HashSet::from_iter(ARGS_WITH_VALUE.iter().map(|v| *v));
-        macro_rules! t {
-            ( [ $( $s:expr ),* ], [ $( $t:expr ),* ] ) => {
-                let v = &[ $( $s, )* ];
-                let it = ArgsIter::new(v, &args_with_val);
-                assert_eq!(it.collect::<Vec<_>>(),
-                           vec!( $( $t, )* ));
-            }
-        }
-        t!(["--emit", "link", "-g", "foo.rs", "--out-dir", "out"],
-           [("--emit", Some("link")), ("-g", None), ("foo.rs", None), ("--out-dir", Some("out"))]);
-
-        t!(["--emit=link", "-g", "foo.rs", "--out-dir=out"],
-           [("--emit", Some("link")), ("-g", None), ("foo.rs", None), ("--out-dir", Some("out"))]);
-    }
-
-    #[test]
-    fn test_arg_in() {
-        let mut args: HashSet<&'static str> = HashSet::new();
-        args.insert("--foo");
-        args.insert("--bar");
-        args.insert("--baz");
-        assert!(arg_in("--foo", &args));
-        assert!(arg_in("--foo=abc", &args));
-        assert!(arg_in("--bar", &args));
-        assert!(arg_in("--baz", &args));
-        assert!(!arg_in("--xyz", &args));
-        assert!(!arg_in("--xyz=123", &args));
     }
 
     #[test]
