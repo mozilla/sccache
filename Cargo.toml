@@ -21,7 +21,7 @@ name = "sccache-dist"
 required-features = ["dist-server"]
 
 [dependencies]
-ar = { version = "0.6", optional = true }
+ar = "0.6.2"
 atty = "0.2.6"
 base64 = "0.9.0"
 bincode = "1"
@@ -124,7 +124,7 @@ memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "rust-crypto", "url"]
+dist-client = ["flate2", "hyper", "hyperx", "reqwest", "rust-crypto", "url"]
 # Enables the sccache-dist binary
 dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "void"]
 # Enables dist tests with external requirements

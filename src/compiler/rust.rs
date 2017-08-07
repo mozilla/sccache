@@ -51,7 +51,8 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, run_input_output, Digest, hash_all};
+use util::{fmt_duration_as_secs, run_input_output, Digest, hash_all,
+           hash_all_archives};
 use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
@@ -984,7 +985,7 @@ impl<T> CompilerHasher<T> for RustHasher
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
-        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
+        let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
         let creator = creator.clone();
         let hashes = source_files_and_hashes.join3(extern_hashes, staticlib_hashes);
         Box::new(hashes.and_then(move |((source_files, source_hashes), extern_hashes, staticlib_hashes)|
@@ -1753,7 +1754,7 @@ mod test {
     use mock_command::*;
     use std::ffi::OsStr;
     use std::fs::File;
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::sync::{Arc,Mutex};
     use test::utils::*;
 
@@ -2029,14 +2030,28 @@ c:/foo/bar.rs:
 
     #[test]
     fn test_generate_hash_key() {
+        use ar::{Builder, Header};
         use env_logger;
         drop(env_logger::try_init());
         let f = TestFixture::new();
         const FAKE_DIGEST: &'static str = "abcd1234";
+        const BAZ_O_SIZE: u64 = 1024;
         // We'll just use empty files for each of these.
-        for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
+        for s in ["foo.rs", "bar.rs", "bar.rlib"].iter() {
             f.touch(s).unwrap();
         }
+        // libbaz.a needs to be a valid archive.
+        create_file(f.tempdir.path(), "libbaz.a", |f| {
+            let mut builder = Builder::new(f);
+            let hdr = Header::new(b"baz.o".to_vec(), BAZ_O_SIZE);
+            builder.append(&hdr, io::repeat(0).take(BAZ_O_SIZE))?;
+            Ok(())
+        }).unwrap();
+        let mut m = Digest::new();
+        m.update(b"baz.o");
+        m.update(&vec![0; BAZ_O_SIZE as usize]);
+        let libbaz_a_digest = m.finish();
+
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
@@ -2093,8 +2108,9 @@ c:/foo/bar.rs:
         m.update(empty_digest.as_bytes());
         // bar.rlib (extern crate, from externs)
         m.update(empty_digest.as_bytes());
-        // libbaz.a (static library, from staticlibs)
-        m.update(empty_digest.as_bytes());
+        // libbaz.a (static library, from staticlibs), containing a single
+        // file, baz.o, consisting of 1024 bytes of zeroes.
+        m.update(libbaz_a_digest.as_bytes());
         // Env vars
         OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");

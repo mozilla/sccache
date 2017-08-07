@@ -14,7 +14,6 @@
 
 #![recursion_limit = "128"]
 
-#[cfg(feature = "ar")]
 extern crate ar;
 extern crate atty;
 extern crate base64;

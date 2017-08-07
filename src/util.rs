@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ar::Archive;
 use bincode;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
@@ -26,6 +27,7 @@ use std::io::BufReader;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
+use std::str;
 use std::time;
 use std::time::Duration;
 
@@ -50,26 +52,22 @@ impl Digest {
         T: AsRef<Path>,
     {
         let path = path.as_ref();
-        let f = ftry!(
-            File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))
-        );
-        Self::reader(f, pool)
+        Self::file_with(path, pool, |reader| {
+            let mut m = Digest::new();
+            update_from_reader(&mut m, reader)?;
+            Ok(m.finish())
+        })
     }
 
-    pub fn reader<R: Read + Send + 'static>(rdr: R, pool: &CpuPool) -> SFuture<String> {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
-            let mut m = Digest::new();
-            let mut reader = BufReader::new(rdr);
-            loop {
-                let mut buffer = [0; 1024];
-                let count = reader.read(&mut buffer[..])?;
-                if count == 0 {
-                    break;
-                }
-                m.update(&buffer[..count]);
-            }
-            Ok(m.finish())
-        }))
+    /// Calculate a hash for `path` using `method`.
+    fn file_with<F>(path: &Path, pool: &CpuPool, method: F) -> SFuture<String>
+        where F: FnOnce(BufReader<File>) -> Result<String> + Send + 'static,
+    {
+        let f = ftry!(
+            File::open(path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))
+                );
+        let reader = BufReader::new(f);
+        Box::new(pool.spawn_fn(move || -> Result<_> { method(reader) }))
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -79,6 +77,7 @@ impl Digest {
     pub fn finish(self) -> String {
         hex(self.inner.finish().as_ref())
     }
+
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -97,17 +96,17 @@ pub fn hex(bytes: &[u8]) -> String {
     }
 }
 
-/// Calculate the SHA-1 digest of each file in `files` on background threads
-/// in `pool`.
-pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
+/// Calculate a hash for each file in `files` using `method`.
+fn hash_all_with<F>(files: &[PathBuf], method: F) -> SFuture<Vec<String>>
+    where F: Fn(&PathBuf) -> SFuture<String> + 'static,
+{
     let start = time::Instant::now();
     let count = files.len();
-    let pool = pool.clone();
     Box::new(
         future::join_all(
             files
                 .into_iter()
-                .map(move |f| Digest::file(f, &pool))
+                .map(method)
                 .collect::<Vec<_>>(),
         ).map(move |hashes| {
             trace!(
@@ -118,6 +117,49 @@ pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
             hashes
         }),
     )
+}
+
+/// Calculate the SHA-512 digest of each file in `files` on background threads
+/// in `pool`.
+pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
+    let pool = pool.clone();
+    hash_all_with(files, move |path| Digest::file(path, &pool))
+}
+
+/// Calculate a SHA-512 digest of each Unix archive file in `files` on
+/// background threads in `pool`.
+///
+/// The hash is calculated by adding the filename of each archive entry followed
+/// by its contents, ignoring headers and other file metadata. This primarily
+/// exists because Apple's `ar` tool inserts timestamps for each file with
+/// no way to disable this behavior.
+pub fn hash_all_archives(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
+    let pool = pool.clone();
+    hash_all_with(files, move |path| {
+        Digest::file_with(path, &pool, |reader| {
+            let mut m = Digest::new();
+            let mut archive = Archive::new(reader);
+            while let Some(entry) = archive.next_entry() {
+                let entry = entry?;
+                m.update(entry.header().identifier());
+                update_from_reader(&mut m, entry)?;
+            }
+            Ok(m.finish())
+        })
+    })
+}
+
+/// Update the digest `m` with all data from `reader`.
+fn update_from_reader<R: Read>(m: &mut Digest, mut reader: R) -> Result<()> {
+    loop {
+        let mut buffer = [0; 1024];
+        let count = reader.read(&mut buffer[..])?;
+        if count == 0 {
+            break;
+        }
+        m.update(&buffer[..count]);
+    }
+    Ok(())
 }
 
 /// Format `duration` as seconds with a fractional component.
