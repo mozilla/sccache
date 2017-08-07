@@ -23,7 +23,7 @@ required-features = ["dist-server"]
 
 [dependencies]
 anyhow = "1.0"
-ar = { version = "0.9", optional = true }
+ar = "0.9"
 async-trait = "0.1"
 atty = "0.2.6"
 base64 = "0.13"
@@ -127,7 +127,7 @@ native-zlib = []
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
+dist-client = ["flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
 dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements

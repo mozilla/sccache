@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::mock_command::{CommandChild, RunCommand};
+use ar::Archive;
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use serde::Serialize;
@@ -22,6 +23,7 @@ use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
+use std::str;
 use std::time;
 use std::time::Duration;
 
@@ -119,6 +121,61 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes)
+}
+
+/// Calculate the digest of each Unix archive file in `files` on background threads in
+/// `pool`.
+///
+/// The hash is calculated by adding the filename of each archive entry followed
+/// by its contents, ignoring headers and other file metadata. This primarily
+/// exists because Apple's `ar` tool inserts timestamps for each file with
+/// no way to disable this behavior.
+pub async fn hash_all_archives(
+    files: &[PathBuf],
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<String>> {
+    let start = time::Instant::now();
+    let count = files.len();
+    let iter = files.iter().map(|path| {
+        let path = path.clone();
+        pool.spawn_blocking(move || -> Result<String> {
+            let mut m = Digest::new();
+            let reader = File::open(&path)
+                .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
+            let mut archive = Archive::new(reader);
+            while let Some(entry) = archive.next_entry() {
+                let entry = entry?;
+                m.update(entry.header().identifier());
+                update_from_reader(&mut m, entry)?;
+            }
+            Ok(m.finish())
+        })
+    });
+
+    let mut hashes = futures::future::try_join_all(iter).await?;
+    if let Some(i) = hashes.iter().position(|res| res.is_err()) {
+        return Err(hashes.swap_remove(i).unwrap_err());
+    }
+
+    trace!(
+        "Hashed {} files in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
+}
+
+/// Update the digest `m` with all data from `reader`.
+fn update_from_reader<R: Read>(m: &mut Digest, mut reader: R) -> Result<()> {
+    loop {
+        let mut buffer = [0; 1024];
+        let count = reader.read(&mut buffer[..])?;
+        if count == 0 {
+            break;
+        }
+        m.update(&buffer[..count]);
+    }
+    Ok(())
 }
 
 /// Format `duration` as seconds with a fractional component.

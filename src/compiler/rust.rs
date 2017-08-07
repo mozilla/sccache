@@ -25,7 +25,7 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
+use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
 use filetime::FileTime;
 use log::Level::Trace;
@@ -1321,7 +1321,7 @@ where
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
-        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
+        let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
         let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
             futures::try_join!(source_files_and_hashes, extern_hashes, staticlib_hashes)?;
@@ -2321,7 +2321,7 @@ mod test {
     use itertools::Itertools;
     use std::ffi::OsStr;
     use std::fs::File;
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
@@ -2931,13 +2931,28 @@ c:/foo/bar.rs:
 
     #[test]
     fn test_generate_hash_key() {
+        use ar::{Builder, Header};
         drop(env_logger::try_init());
         let f = TestFixture::new();
         const FAKE_DIGEST: &str = "abcd1234";
+        const BAZ_O_SIZE: u64 = 1024;
         // We'll just use empty files for each of these.
-        for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
+        for s in ["foo.rs", "bar.rs", "bar.rlib"].iter() {
             f.touch(s).unwrap();
         }
+        // libbaz.a needs to be a valid archive.
+        create_file(f.tempdir.path(), "libbaz.a", |f| {
+            let mut builder = Builder::new(f);
+            let hdr = Header::new(b"baz.o".to_vec(), BAZ_O_SIZE);
+            builder.append(&hdr, io::repeat(0).take(BAZ_O_SIZE))?;
+            Ok(())
+        })
+        .unwrap();
+        let mut m = Digest::new();
+        m.update(b"baz.o");
+        m.update(&vec![0; BAZ_O_SIZE as usize]);
+        let libbaz_a_digest = m.finish();
+
         let mut emit = HashSet::new();
         emit.insert("link".to_string());
         emit.insert("metadata".to_string());
@@ -3016,8 +3031,9 @@ c:/foo/bar.rs:
         m.update(empty_digest.as_bytes());
         // bar.rlib (extern crate, from externs)
         m.update(empty_digest.as_bytes());
-        // libbaz.a (static library, from staticlibs)
-        m.update(empty_digest.as_bytes());
+        // libbaz.a (static library, from staticlibs), containing a single
+        // file, baz.o, consisting of 1024 bytes of zeroes.
+        m.update(libbaz_a_digest.as_bytes());
         // Env vars
         OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");
