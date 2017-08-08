@@ -181,6 +181,7 @@ where
     let mut multiple_input = false;
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    let mut language = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -209,8 +210,18 @@ where
             Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget) => dep_target = item.arg.get_value().map(OsString::from),
             Some(PreprocessorArgument) |
-            Some(PassThrough) |
-            Some(Language) => {}
+            Some(PassThrough) => {}
+            Some(Language) => {
+                let lang = item.arg.get_value().map(OsString::from);
+                let lang = lang.as_ref().map(|a| a.to_string_lossy());
+                language = match lang.as_ref().map(|a| a.as_ref()) {
+                    Some("c") => Some(Language::C),
+                    Some("c++") => Some(Language::Cxx),
+                    Some("objective-c") => Some(Language::ObjectiveC),
+                    Some("objective-c++") => Some(Language::ObjectiveCxx),
+                    _ => return CompilerArguments::CannotCache("-x"),
+                };
+            }
             None => {
                 match item.arg {
                     Argument::Raw(ref val) => {
@@ -226,11 +237,11 @@ where
         }
         let args = match item.data {
             Some(SplitDwarf) |
-            Some(PassThrough) |
-            Some(Language) => Some(&mut common_args),
+            Some(PassThrough) => Some(&mut common_args),
             Some(PreprocessorArgument) |
             Some(NeedDepTarget) => Some(&mut preprocessor_args),
             Some(DoCompilation) |
+            Some(Language) |
             Some(Output) |
             Some(DepTarget) => None,
             Some(TooHard) => unreachable!(),
@@ -262,17 +273,17 @@ where
     if multiple_input {
         return CompilerArguments::CannotCache("multiple input files");
     }
-    let (input, language) = match input_arg {
-        Some(i) => {
-            // When compiling from the preprocessed output given as stdin, we need
-            // to explicitly pass its file type.
-            match Language::from_file_name(Path::new(&i)) {
-                Some(l) => (i.to_owned(), l),
-                None => return CompilerArguments::CannotCache("unknown source language"),
-            }
-        }
+    let input = match input_arg {
+        Some(i) => i.to_owned(),
         // We can't cache compilation without an input.
         None => return CompilerArguments::CannotCache("no input file"),
+    };
+    if language == None {
+        language = Language::from_file_name(Path::new(&input));
+    }
+    let language = match language {
+        Some(l) => l,
+        None => return CompilerArguments::CannotCache("unknown source language"),
     };
     let mut outputs = HashMap::new();
     let output = match output_arg {
@@ -311,14 +322,22 @@ pub fn preprocess<T>(creator: &T,
     where T: CommandCreatorSync
 {
     trace!("preprocess");
+    let language = match parsed_args.language {
+        Language::C => "c",
+        Language::Cxx => "c++",
+        Language::ObjectiveC => "objective-c",
+        Language::ObjectiveCxx => "objective-c++",
+    };
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-E")
+    cmd.arg("-x").arg(language)
+        .arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
+
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
@@ -345,24 +364,24 @@ pub fn compile<T>(creator: &T,
         }
     };
 
+    // When reading from stdin the language argument is needed
+    let language = match parsed_args.language {
+        Language::C => "cpp-output",
+        Language::Cxx => "c++-cpp-output",
+        Language::ObjectiveC => "objective-c-cpp-output",
+        Language::ObjectiveCxx => "objective-c++-cpp-output",
+    };
     let mut attempt = creator.clone().new_command_sync(executable);
-    attempt.arg("-c")
+    attempt.arg("-x").arg(language)
+        .arg("-c")
         .arg("-o").arg(&out_file)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
 
-    // When reading from stdin the language argument is needed
-    let language = parsed_args.language;
     let pre = pre.unwrap_or(Box::new(pool.spawn_fn(move || {
-        let language = match language {
-            Language::C => "cpp-output",
-            Language::Cxx => "c++-cpp-output",
-            Language::ObjectiveC => "objective-c-cpp-output",
-            Language::ObjectiveCxx => "objective-c++-cpp-output",
-        };
-        let args = vec!("-x".to_owned(), language.to_owned(), "-".to_owned());
+        let args = vec!("-".to_owned());
         Ok((Some(preprocessor_result.stdout), args, None))
     })));
 

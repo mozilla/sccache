@@ -98,6 +98,15 @@ impl Language {
             }
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match *self {
+            Language::C => "c",
+            Language::Cxx => "c++",
+            Language::ObjectiveC => "objc",
+            Language::ObjectiveCxx => "objc++",
+        }
+    }
 }
 
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
@@ -233,6 +242,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 
             let key = {
                 hash_key(&executable_digest,
+                         parsed_args.language,
                          &parsed_args.common_args,
                          &env_vars,
                          &preprocessor_result.stdout)
@@ -281,7 +291,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION : &'static [u8] = b"4";
+pub const CACHE_VERSION : &'static [u8] = b"5";
 
 /// Environment variables that are factored into the cache key.
 pub const CACHED_ENV_VARS : &'static [&'static str] = &[
@@ -291,6 +301,7 @@ pub const CACHED_ENV_VARS : &'static [&'static str] = &[
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 pub fn hash_key(compiler_digest: &str,
+                language: Language,
                 arguments: &[OsString],
                 env_vars: &[(OsString, OsString)],
                 preprocessor_output: &[u8]) -> String
@@ -299,6 +310,7 @@ pub fn hash_key(compiler_digest: &str,
     let mut m = Digest::new();
     m.update(compiler_digest.as_bytes());
     m.update(CACHE_VERSION);
+    m.update(language.as_str().as_bytes());
     for arg in arguments {
         arg.hash(&mut HashToDigest { digest: &mut m });
     }
@@ -323,8 +335,8 @@ mod test {
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key("abcd",&args, &[], &PREPROCESSED),
-                    hash_key("wxyz",&args, &[], &PREPROCESSED));
+        assert_neq!(hash_key("abcd", Language::C, &args, &[], &PREPROCESSED),
+                    hash_key("wxyz", Language::C, &args, &[], &PREPROCESSED));
     }
 
     #[test]
@@ -335,21 +347,21 @@ mod test {
         let ab = ovec!["a", "b"];
         let a = ovec!["a"];
         const PREPROCESSED: &'static [u8] = b"hello world";
-        assert_neq!(hash_key(digest, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, &xyz, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &xyz, &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, &ab, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &ab, &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, &a, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &a, &[], &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let args = ovec!["a", "b", "c"];
-        assert_neq!(hash_key("abcd", &args, &[], &b"hello world"[..]),
-                    hash_key("abcd", &args, &[], &b"goodbye"[..]));
+        assert_neq!(hash_key("abcd", Language::C, &args, &[], &b"hello world"[..]),
+                    hash_key("abcd", Language::C, &args, &[], &b"goodbye"[..]));
     }
 
     #[test]
@@ -358,11 +370,11 @@ mod test {
         let digest = "abcd";
         const PREPROCESSED: &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let h1 = hash_key(digest, &args, &[], &PREPROCESSED);
+            let h1 = hash_key(digest, Language::C, &args, &[], &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
-            let h2 = hash_key(digest, &args, &vars, &PREPROCESSED);
+            let h2 = hash_key(digest, Language::C, &args, &vars, &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something else"))];
-            let h3 = hash_key(digest, &args, &vars, &PREPROCESSED);
+            let h3 = hash_key(digest, Language::C, &args, &vars, &PREPROCESSED);
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
