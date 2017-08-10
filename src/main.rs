@@ -49,6 +49,8 @@ extern crate fern;
 #[cfg(test)]
 extern crate itertools;
 extern crate libc;
+#[cfg(feature = "memcached")]
+extern crate memcached;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate native_tls;

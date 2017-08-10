@@ -34,6 +34,7 @@ libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.1.0" }
+memcached-rs = { version = "0.1" , optional = true }
 native-tls = "0.1"
 num_cpus = "1.0"
 number_prefix = "0.2.5"
@@ -77,10 +78,11 @@ mio-named-pipes = "0.1"
 
 [features]
 default = ["s3"]
-all = ["redis", "s3"]
+all = ["redis", "s3", "memcached"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "simple-s3"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
+memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 

@@ -18,6 +18,8 @@ use app_dirs::{
     app_dir,
 };
 use cache::disk::DiskCache;
+#[cfg(feature = "memcached")]
+use cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
 use cache::redis::RedisCache;
 #[cfg(feature = "s3")]
@@ -229,6 +231,20 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                     return Arc::new(s);
                 }
                 Err(e) => warn!("Failed to create RedisCache: {:?}", e),
+            }
+        }
+    }
+
+    if cfg!(feature = "memcached") {
+        if let Ok(url) = env::var("SCCACHE_MEMCACHED") {
+            debug!("Trying Memcached({})", url);
+            #[cfg(feature = "memcached")]
+            match MemcachedCache::new(&url, pool) {
+                Ok(s) => {
+                    trace!("Using Memcached: {}", url);
+                    return Arc::new(s);
+                }
+                Err(e) => warn!("Failed to create MemcachedCache: {:?}", e),
             }
         }
     }
