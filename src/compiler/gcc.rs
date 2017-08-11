@@ -690,6 +690,12 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_link() {
+        assert_eq!(CompilerArguments::NotCompilation,
+                   _parse_arguments(&stringvec!["-shared", "foo.o", "-o", "foo.so", "bar.o"]));
+    }
+
+    #[test]
     fn test_parse_arguments_clangmodules() {
         assert_eq!(CompilerArguments::CannotCache("clang modules"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
