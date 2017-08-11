@@ -17,7 +17,7 @@ use ::compiler::{
     CompilerArguments,
 };
 use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use log::LogLevel::Trace;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
@@ -262,16 +262,13 @@ where
     if multiple_input {
         return CompilerArguments::CannotCache("multiple input files");
     }
-    let (input, extension) = match input_arg {
+    let (input, language) = match input_arg {
         Some(i) => {
             // When compiling from the preprocessed output given as stdin, we need
             // to explicitly pass its file type.
-            match Path::new(&i).extension().and_then(|e| e.to_str()) {
-                Some(e @ "c") | Some(e @ "cc") | Some(e @ "cpp") | Some(e @ "cxx") | Some(e @ "m") | Some(e @ "mm") => (i.to_owned(), e.to_owned()),
-                e => {
-                    trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
-                    return CompilerArguments::CannotCache("unknown source extension");
-                }
+            match Language::from_file_name(Path::new(&i)) {
+                Some(l) => (i.to_owned(), l),
+                None => return CompilerArguments::CannotCache("unknown source language"),
             }
         }
         // We can't cache compilation without an input.
@@ -295,7 +292,7 @@ where
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
-        extension: extension,
+        language: language,
         depfile: None,
         outputs: outputs,
         preprocessor_args: preprocessor_args,
@@ -357,18 +354,15 @@ pub fn compile<T>(creator: &T,
         .current_dir(&cwd);
 
     // When reading from stdin the language argument is needed
-    let extension = parsed_args.extension.clone();
+    let language = parsed_args.language;
     let pre = pre.unwrap_or(Box::new(pool.spawn_fn(move || {
-        let extension = match extension.as_ref() {
-            "c" => "cpp-output".to_owned(),
-            "cc" | "cpp" | "cxx" => "c++-cpp-output".to_owned(),
-            "m" | "mm" => "objc-cpp-output".to_owned(),
-            e => {
-                error!("gcc::compile: Got an unexpected file extension {}", e);
-                return Err("Unexpected file extension".into())
-            }
+        let language = match language {
+            Language::C => "cpp-output",
+            Language::Cxx => "c++-cpp-output",
+            Language::ObjectiveC => "objective-c-cpp-output",
+            Language::ObjectiveCxx => "objective-c++-cpp-output",
         };
-        let args = vec!("-x".to_owned(), extension, "-".to_owned());
+        let args = vec!("-x".to_owned(), language.to_owned(), "-".to_owned());
         Ok((Some(preprocessor_result.stdout), args, None))
     })));
 
@@ -491,7 +485,7 @@ mod test {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -503,7 +497,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -517,7 +511,7 @@ mod test {
         let args = stringvec!["-c", "foo.c"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -529,7 +523,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -543,7 +537,7 @@ mod test {
         let args = stringvec!["-gsplit-dwarf", "-c", "foo.cpp", "-o", "foo.o"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -555,7 +549,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cpp"), input.to_str());
-        assert_eq!("cpp", extension);
+        assert_eq!(Language::Cxx, language);
         assert_map_contains!(outputs,
                              ("obj", PathBuf::from("foo.o")),
                              ("dwo", PathBuf::from("foo.dwo")));
@@ -571,7 +565,7 @@ mod test {
         let args = stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -583,7 +577,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cc"), input.to_str());
-        assert_eq!("cc", extension);
+        assert_eq!(Language::Cxx, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -597,7 +591,7 @@ mod test {
         let args = stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -609,7 +603,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cxx"), input.to_str());
-        assert_eq!("cxx", extension);
+        assert_eq!(Language::Cxx, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -623,7 +617,7 @@ mod test {
         let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -635,7 +629,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -649,7 +643,7 @@ mod test {
         let args = stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -661,7 +655,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -675,7 +669,7 @@ mod test {
         let args = stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -687,7 +681,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -701,7 +695,7 @@ mod test {
         let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -713,7 +707,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -767,7 +761,7 @@ mod test {
         let arg = format!("@{}", td.path().join("foo").display());
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -779,7 +773,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());

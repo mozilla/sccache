@@ -48,14 +48,22 @@ pub struct CCompilerHasher<I>
     compiler: I,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Language {
+    C,
+    Cxx,
+    ObjectiveC,
+    ObjectiveCxx,
+}
+
 /// The results of parsing a compiler commandline.
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParsedArguments {
     /// The input source file.
     pub input: PathBuf,
-    /// The file extension of the input source file.
-    pub extension: String,
+    /// The type of language used in the input source file.
+    pub language: Language,
     /// The file in which to generate dependencies.
     pub depfile: Option<PathBuf>,
     /// Output files, keyed by a simple name, like "obj".
@@ -74,6 +82,21 @@ impl ParsedArguments {
             .and_then(|o| o.file_name())
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
+    }
+}
+
+impl Language {
+    pub fn from_file_name(file: &Path) -> Option<Self> {
+        match file.extension().and_then(|e| e.to_str()) {
+            Some("c") => Some(Language::C),
+            Some("cc") | Some("cpp") | Some("cxx") => Some(Language::Cxx),
+            Some("m") => Some(Language::ObjectiveC),
+            Some("mm") => Some(Language::ObjectiveCxx),
+            e => {
+                trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
+                None
+            }
+        }
     }
 }
 

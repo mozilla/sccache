@@ -21,7 +21,7 @@ use ::compiler::{
     write_temp_file,
 };
 use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use compiler::gcc::GCCArgAttribute::*;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
@@ -156,7 +156,7 @@ mod test {
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
-        assert_eq!("c", a.extension);
+        assert_eq!(Language::C, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
@@ -168,7 +168,7 @@ mod test {
     fn test_parse_arguments_values() {
         let a = parses!("-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file");
         assert_eq!(Some("foo.cxx"), a.input.to_str());
-        assert_eq!("cxx", a.extension);
+        assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, a.outputs.len());
@@ -190,7 +190,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec!(),
@@ -219,7 +219,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec!(),

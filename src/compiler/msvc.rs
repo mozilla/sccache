@@ -18,7 +18,7 @@ use ::compiler::{
     write_temp_file,
 };
 use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, ParsedArguments};
+use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::{Debug, Trace};
 use futures::future::Future;
@@ -294,14 +294,11 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
-    let (input, extension) = match input_arg {
+    let (input, language) = match input_arg {
         Some(i) => {
-            match Path::new(&i).extension().and_then(|e| e.to_str()) {
-                Some(e) => (i.to_owned(), e.to_owned()),
-                _ => {
-                    trace!("Bad or missing source extension: {:?}", i);
-                    return CompilerArguments::CannotCache("unknown source extension");
-                }
+            match Language::from_file_name(Path::new(&i)) {
+                Some(l) => (i.to_owned(), l),
+                None => return CompilerArguments::CannotCache("unknown source language"),
             }
         }
         // We can't cache compilation without an input.
@@ -331,7 +328,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     }
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
-        extension: extension,
+        language: language,
         depfile: depfile.map(|d| d.into()),
         outputs: outputs,
         preprocessor_args: vec!(),
@@ -597,7 +594,7 @@ mod test {
         let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -609,7 +606,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -623,7 +620,7 @@ mod test {
         let args = ovec!["-c", "foo.c"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -635,7 +632,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -649,7 +646,7 @@ mod test {
         let args = ovec!["-c", "foo.c", "/Fofoo.obj"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -661,7 +658,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -675,7 +672,7 @@ mod test {
         let args = ovec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -687,7 +684,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -701,7 +698,7 @@ mod test {
         let args = ovec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj", "/showIncludes"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -713,7 +710,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -727,7 +724,7 @@ mod test {
         let args = ovec!["-c", "foo.c", "-Zi", "-Fdfoo.pdb", "-Fofoo.obj"];
         let ParsedArguments {
             input,
-            extension,
+            language,
             depfile: _,
             outputs,
             preprocessor_args,
@@ -739,7 +736,7 @@ mod test {
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!("c", extension);
+        assert_eq!(Language::C, language);
         assert_map_contains!(outputs,
                              ("obj", PathBuf::from("foo.obj")),
                              ("pdb", PathBuf::from("foo.pdb")));
@@ -799,7 +796,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
             preprocessor_args: vec!(),
@@ -830,7 +827,7 @@ mod test {
         let pdb = f.touch("foo.pdb").unwrap();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.obj".into()),
                           ("pdb", pdb.into())].into_iter().collect(),
@@ -861,7 +858,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
             preprocessor_args: vec!(),
@@ -892,7 +889,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
-            extension: "c".into(),
+            language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
             preprocessor_args: vec!(),
