@@ -42,6 +42,8 @@ You can run `sccache --stop-server` to terminate the server. It will terminate a
 
 Running `sccache --show-stats` will print a summary of cache statistics.
 
+Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](docs/Jenkins.md).
+
 Storage Options
 ---------------
 
