@@ -123,7 +123,6 @@ impl Bucket {
         // Keep the list of header values sorted!
         for (header, maybe_value) in vec![
             ("x-amz-security-token", token),
-            ("x-amz-storage-class", Some("REDUCED_REDUNDANCY")),
             ] {
             if let Some(ref value) = maybe_value {
                 request.headers_mut()
