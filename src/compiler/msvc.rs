@@ -35,7 +35,6 @@ use std::io::{
     BufWriter,
     Write,
 };
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
 use util::{run_input_output, OsStrExt};
@@ -457,11 +456,11 @@ pub fn preprocess<T>(creator: &T,
 
 fn compile<T>(creator: &T,
               executable: &Path,
-              preprocessor_result: process::Output,
+              _preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &Path,
               env_vars: &[(OsString, OsString)],
-              pool: &CpuPool)
+              _pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
@@ -485,40 +484,9 @@ fn compile<T>(creator: &T,
             }
         });
 
-    // MSVC doesn't read anything from stdin, so it needs a temporary file
-    // as input.
-    let write = {
-        let filename = match parsed_args.input.file_name() {
-            Some(name) => name,
-            None => return f_err("missing input filename"),
-        };
-        write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout)
-    };
-
     let mut fo = OsString::from("-Fo");
     fo.push(&out_file);
 
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-c")
-        .arg(&fo)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
-    let output = write.and_then(move |(tempdir, input)| {
-        cmd.arg(input);
-        debug!("compile: {:?}", cmd);
-        run_input_output(cmd, None).map(move |e| {
-            drop(tempdir);
-            (cacheable, e)
-        })
-    });
-
-    // Sometimes MSVC can't handle compiling from the preprocessed source,
-    // so have a fallback path that compiles from the original input file.
-    //
-    // We may just throw away this `cmd` if our execution turns out to be
-    // successful.
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-c")
         .arg(&parsed_args.input)
@@ -527,36 +495,8 @@ fn compile<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
-    let ret = output.or_else(move |err| -> SFuture<_> {
-        match err {
-            // If compiling from the preprocessed source failed, try
-            // again from the original source.
-            Error(ErrorKind::ProcessError(_), _) => {
-                debug!("compile: {:?}", cmd);
-                Box::new(run_input_output(cmd, None).map(move |output| {
-                    (cacheable, output)
-                }))
-            }
-            e @ _ => f_err(e),
-        }
-    });
 
-    // If the `-showIncludes` command line option was originally passed we need
-    // to be sure to ship the output from the preprocessor as the actual
-    // result of this compilation.
-    //
-    // Note, though, that when we ran the preprocessor we passed `-E` which
-    // means that the "show includes" business when to stderr. Normally, though,
-    // the compiler emits `-showIncludes` output to stdout. To handle that we
-    // take the stderr of the preprocessor and prepend it to the stdout of the
-    // compilation.
-    let mut extra_stdout = Vec::new();
-    if parsed_args.msvc_show_includes {
-        extra_stdout = preprocessor_result.stderr;
-    }
-    Box::new(ret.map(|(cacheable, mut output)| {
-        let prev = mem::replace(&mut output.stdout, extra_stdout);
-        output.stdout.extend(prev);
+    Box::new(run_input_output(cmd, None).map(move |output| {
         (cacheable, output)
     }))
 }
@@ -806,7 +746,6 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
                                      empty_output(),
@@ -838,7 +777,6 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
                                      empty_output(),
@@ -849,69 +787,5 @@ mod test {
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
-    }
-
-    #[test]
-    fn test_compile_preprocessed_fails() {
-        let creator = new_creator();
-        let pool = CpuPool::new(1);
-        let f = TestFixture::new();
-        let parsed_args = ParsedArguments {
-            input: "foo.c".into(),
-            language: Language::C,
-            depfile: None,
-            outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
-            preprocessor_args: vec!(),
-            common_args: vec!(),
-            msvc_show_includes: false,
-        };
-        let compiler = &f.bins[0];
-        // First compiler invocation fails.
-        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        // Second compiler invocation succeeds.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(&creator,
-                                     &compiler,
-                                     empty_output(),
-                                     &parsed_args,
-                                     f.tempdir.path(),
-                                     &[],
-                                     &pool).wait().unwrap();
-        assert_eq!(Cacheable::Yes, cacheable);
-        // Ensure that we ran all processes.
-        assert_eq!(0, creator.lock().unwrap().children.len());
-    }
-
-    #[test]
-    fn preprocess_output_appended() {
-        let creator = new_creator();
-        let pool = CpuPool::new(1);
-        let f = TestFixture::new();
-        let parsed_args = ParsedArguments {
-            input: "foo.c".into(),
-            language: Language::C,
-            depfile: None,
-            outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
-            preprocessor_args: vec!(),
-            common_args: vec!(),
-            msvc_show_includes: true,
-        };
-        let compiler = &f.bins[0];
-        // Compiler invocation.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "stdout1", "stderr1")));
-        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        let mut output = empty_output();
-        output.stdout.extend(b"stdout2");
-        output.stderr.extend(b"stderr2");
-        let (_, output) = compile(&creator,
-                                  &compiler,
-                                  output,
-                                  &parsed_args,
-                                  f.tempdir.path(),
-                                  &[],
-                                  &pool).wait().unwrap();
-        assert_eq!(0, creator.lock().unwrap().children.len());
-        assert_eq!(output.stdout, b"stderr2stdout1");
-        assert_eq!(output.stderr, b"stderr1");
     }
 }

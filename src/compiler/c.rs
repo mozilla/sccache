@@ -291,7 +291,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION : &'static [u8] = b"5";
+pub const CACHE_VERSION : &'static [u8] = b"6";
 
 /// Environment variables that are factored into the cache key.
 pub const CACHED_ENV_VARS : &'static [&'static str] = &[
