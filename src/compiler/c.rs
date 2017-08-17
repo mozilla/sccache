@@ -113,8 +113,6 @@ impl Language {
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
     executable: PathBuf,
-    /// The output from running the preprocessor.
-    preprocessor_result: process::Output,
     compiler: I,
 }
 
@@ -151,7 +149,6 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     fn compile<T>(&self,
                   creator: &T,
                   executable: &Path,
-                  preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
                   cwd: &Path,
                   env_vars: &[(OsString, OsString)],
@@ -252,7 +249,6 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 compilation: Box::new(CCompilation {
                     parsed_args: parsed_args,
                     executable: executable,
-                    preprocessor_result: preprocessor_result,
                     compiler: compiler,
                 }),
             })
@@ -279,8 +275,8 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
-        let CCompilation { parsed_args, executable, preprocessor_result, compiler } = me;
-        compiler.compile(creator, &executable, preprocessor_result, &parsed_args, cwd, env_vars,
+        let CCompilation { parsed_args, executable, compiler } = me;
+        compiler.compile(creator, &executable, &parsed_args, cwd, env_vars,
                          pool)
     }
 
