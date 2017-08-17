@@ -141,8 +141,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)],
-                     pool: &CpuPool)
+                     env_vars: &[(OsString, OsString)])
                      -> SFuture<process::Output> where T: CommandCreatorSync;
     /// Run the C compiler with the specified set of arguments, using the
     /// previously-generated `preprocessor_output` as input if possible.
@@ -151,8 +150,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                   executable: &Path,
                   parsed_args: &ParsedArguments,
                   cwd: &Path,
-                  env_vars: &[(OsString, OsString)],
-                  pool: &CpuPool)
+                  env_vars: &[(OsString, OsString)])
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync;
 }
@@ -204,12 +202,12 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          creator: &T,
                          cwd: &Path,
                          env_vars: &[(OsString, OsString)],
-                         pool: &CpuPool)
+                         _pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
         let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
-        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, env_vars, pool);
+        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, env_vars);
         let out_pretty = parsed_args.output_pretty().into_owned();
         let env_vars = env_vars.to_vec();
         let result = result.map_err(move |e| {
@@ -270,14 +268,12 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &Path,
-               env_vars: &[(OsString, OsString)],
-               pool: &CpuPool)
+               env_vars: &[(OsString, OsString)])
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
         let CCompilation { parsed_args, executable, compiler } = me;
-        compiler.compile(creator, &executable, &parsed_args, cwd, env_vars,
-                         pool)
+        compiler.compile(creator, &executable, &parsed_args, cwd, env_vars)
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
