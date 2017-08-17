@@ -210,7 +210,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 // Cache miss, so compile it.
                 let start = Instant::now();
                 let out_pretty = out_pretty.clone();
-                let compile = compilation.compile(&creator, &cwd, &env_vars, &pool);
+                let compile = compilation.compile(&creator, &cwd, &env_vars);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
@@ -294,8 +294,7 @@ pub trait Compilation<T>
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &Path,
-               env_vars: &[(OsString, OsString)],
-               pool: &CpuPool)
+               env_vars: &[(OsString, OsString)])
                -> SFuture<(Cacheable, process::Output)>;
 
     /// Returns an iterator over the results of this compilation.

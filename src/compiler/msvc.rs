@@ -64,11 +64,10 @@ impl CCompilerImpl for MSVC {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)],
-                     pool: &CpuPool)
+                     env_vars: &[(OsString, OsString)])
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix, pool)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix)
     }
 
     fn compile<T>(&self,
@@ -76,12 +75,11 @@ impl CCompilerImpl for MSVC {
                   executable: &Path,
                   parsed_args: &ParsedArguments,
                   cwd: &Path,
-                  env_vars: &[(OsString, OsString)],
-                  pool: &CpuPool)
+                  env_vars: &[(OsString, OsString)])
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, parsed_args, cwd, env_vars, pool)
+        compile(creator, executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -381,8 +379,7 @@ pub fn preprocess<T>(creator: &T,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
                      env_vars: &[(OsString, OsString)],
-                     includes_prefix: &str,
-                     _pool: &CpuPool)
+                     includes_prefix: &str)
                      -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
@@ -457,8 +454,7 @@ fn compile<T>(creator: &T,
               executable: &Path,
               parsed_args: &ParsedArguments,
               cwd: &Path,
-              env_vars: &[(OsString, OsString)],
-              _pool: &CpuPool)
+              env_vars: &[(OsString, OsString)])
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
@@ -730,7 +726,6 @@ mod test {
     #[test]
     fn test_compile_simple() {
         let creator = new_creator();
-        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
@@ -748,8 +743,7 @@ mod test {
                                      &compiler,
                                      &parsed_args,
                                      &f.tempdir.path(),
-                                     &[],
-                                     &pool).wait().unwrap();
+                                     &[]).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -758,7 +752,6 @@ mod test {
     #[test]
     fn test_compile_not_cacheable_pdb() {
         let creator = new_creator();
-        let pool = CpuPool::new(1);
         let f = TestFixture::new();
         let pdb = f.touch("foo.pdb").unwrap();
         let parsed_args = ParsedArguments {
@@ -778,8 +771,7 @@ mod test {
                                      &compiler,
                                      &parsed_args,
                                      f.tempdir.path(),
-                                     &[],
-                                     &pool).wait().unwrap();
+                                     &[]).wait().unwrap();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());

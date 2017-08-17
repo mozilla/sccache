@@ -687,8 +687,7 @@ impl<T> Compilation<T> for RustCompilation
     fn compile(self: Box<Self>,
                creator: &T,
                cwd: &Path,
-               env_vars: &[(OsString, OsString)],
-               _pool: &CpuPool)
+               env_vars: &[(OsString, OsString)])
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
