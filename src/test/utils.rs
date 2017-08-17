@@ -21,7 +21,6 @@ use std::ffi::OsString;
 use std::fs::{self,File};
 use std::io;
 use std::path::{Path,PathBuf};
-use std::process;
 
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
@@ -185,14 +184,6 @@ impl TestFixture {
     }
 }
 
-
-pub fn empty_output() -> process::Output {
-    process::Output {
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        status: exit_status(0),
-    }
-}
 
 #[test]
 fn test_map_contains_ok() {

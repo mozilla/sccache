@@ -74,7 +74,6 @@ impl CCompilerImpl for MSVC {
     fn compile<T>(&self,
                   creator: &T,
                   executable: &Path,
-                  preprocessor_result: process::Output,
                   parsed_args: &ParsedArguments,
                   cwd: &Path,
                   env_vars: &[(OsString, OsString)],
@@ -82,7 +81,7 @@ impl CCompilerImpl for MSVC {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
+        compile(creator, executable, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -456,7 +455,6 @@ pub fn preprocess<T>(creator: &T,
 
 fn compile<T>(creator: &T,
               executable: &Path,
-              _preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &Path,
               env_vars: &[(OsString, OsString)],
@@ -748,7 +746,6 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     empty_output(),
                                      &parsed_args,
                                      &f.tempdir.path(),
                                      &[],
@@ -779,7 +776,6 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let (cacheable, _) = compile(&creator,
                                      &compiler,
-                                     empty_output(),
                                      &parsed_args,
                                      f.tempdir.path(),
                                      &[],
