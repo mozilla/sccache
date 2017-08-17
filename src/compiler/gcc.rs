@@ -492,6 +492,8 @@ mod test {
 
     use super::*;
     use ::compiler::*;
+    use mock_command::*;
+    use test::utils::*;
     use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
@@ -799,5 +801,68 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_compile_simple() {
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".into(),
+            language: Language::C,
+            depfile: None,
+            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
+            preprocessor_args: vec!(),
+            common_args: vec!(),
+            msvc_show_includes: false,
+        };
+        let compiler = &f.bins[0];
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, _) = compile(&creator,
+                                     &compiler,
+                                     empty_output(),
+                                     &parsed_args,
+                                     f.tempdir.path(),
+                                     &[],
+                                     &pool,
+                                     None).wait().unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_werror_fails() {
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.c".into(),
+            language: Language::C,
+            depfile: None,
+            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
+            preprocessor_args: vec!(),
+            common_args: ovec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
+            msvc_show_includes: false,
+        };
+        let compiler = &f.bins[0];
+        // First compiler invocation fails.
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
+        // Second compiler invocation succeeds.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let (cacheable, output) = compile(&creator,
+                                          &compiler,
+                                          empty_output(),
+                                          &parsed_args,
+                                          f.tempdir.path(),
+                                          &[],
+                                          &pool,
+                                          None).wait().unwrap();
+        assert_eq!(Cacheable::Yes, cacheable);
+        assert_eq!(exit_status(0), output.status);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
     }
 }
