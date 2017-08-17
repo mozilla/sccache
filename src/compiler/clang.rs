@@ -78,7 +78,7 @@ impl CCompilerImpl for Clang {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
+        gcc::compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -91,39 +91,6 @@ static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 7] = [
     take_arg!("-include-pch", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-target", String, Separated, PassThrough),
 ];
-
-fn compile<T>(creator: &T,
-              executable: &Path,
-              preprocessor_result: process::Output,
-              parsed_args: &ParsedArguments,
-              cwd: &Path,
-              env_vars: &[(OsString, OsString)],
-              pool: &CpuPool)
-              -> SFuture<(Cacheable, process::Output)>
-    where T: CommandCreatorSync,
-{
-    trace!("compile");
-    // Clang needs a temporary file for compilation, otherwise debug info
-    // doesn't have a reference to the input file.
-    let write = {
-        let filename = match Path::new(&parsed_args.input).file_name() {
-            Some(name) => name,
-            None => return f_err("Missing input filename"),
-        };
-  
-        Box::new(
-            write_temp_file(pool, filename.as_ref(), preprocessor_result.stdout.clone())
-                 .and_then(move |(tempdir, input)| {
-                     match input.into_os_string().into_string() {
-                         Ok(p) => future::ok((None, vec!(p), Some(tempdir))),
-                         Err(_) => future::err("Failed to write input file".into()),
-                     }
-                 })
-)
-    };
-
-    gcc::compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool, Some(write))
-}
 
 #[cfg(test)]
 mod test {

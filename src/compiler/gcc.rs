@@ -31,7 +31,6 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
-use tempdir::TempDir;
 use util::{run_input_output, OsStrExt};
 
 use errors::*;
@@ -72,7 +71,7 @@ impl CCompilerImpl for GCC {
                   -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync
     {
-        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool, None)
+        compile(creator, executable, preprocessor_result, parsed_args, cwd, env_vars, pool)
     }
 }
 
@@ -346,12 +345,11 @@ pub fn preprocess<T>(creator: &T,
 
 pub fn compile<T>(creator: &T,
               executable: &Path,
-              preprocessor_result: process::Output,
+              _preprocessor_result: process::Output,
               parsed_args: &ParsedArguments,
               cwd: &Path,
               env_vars: &[(OsString, OsString)],
-              pool: &CpuPool,
-              pre: Option<SFuture<(Option<Vec<u8>>, Vec<String>, Option<TempDir>)>>)
+              _pool: &CpuPool)
               -> SFuture<(Cacheable, process::Output)>
     where T: CommandCreatorSync
 {
@@ -364,46 +362,17 @@ pub fn compile<T>(creator: &T,
         }
     };
 
-    // When reading from stdin the language argument is needed
+    // Pass the language explicitly as we might have gotten it from the
+    // command line.
     let language = match parsed_args.language {
-        Language::C => "cpp-output",
-        Language::Cxx => "c++-cpp-output",
-        Language::ObjectiveC => "objective-c-cpp-output",
-        Language::ObjectiveCxx => "objective-c++-cpp-output",
+        Language::C => "c",
+        Language::Cxx => "c++",
+        Language::ObjectiveC => "objective-c",
+        Language::ObjectiveCxx => "objective-c++",
     };
     let mut attempt = creator.clone().new_command_sync(executable);
     attempt.arg("-x").arg(language)
         .arg("-c")
-        .arg("-o").arg(&out_file)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
-
-    let pre = pre.unwrap_or(Box::new(pool.spawn_fn(move || {
-        let args = vec!("-".to_owned());
-        Ok((Some(preprocessor_result.stdout), args, None))
-    })));
-
-    let output = pre.and_then(move |(stdin, args, tempdir)| {
-            attempt.args(&args);
-            run_input_output(attempt, stdin).map(|output| {
-                    drop(tempdir);
-                    (Cacheable::Yes, output)
-                })
-        });
-
-    // gcc/clang may fail when compiling preprocessor output with -Werror,
-    // so retry compilation from the original input file if it fails and
-    // -Werror is in the commandline.
-    //
-    // Otherwise if -Werror is missing we can just use the first instance.
-    if !parsed_args.common_args.iter().any(|a| a.starts_with("-Werror")) {
-        return Box::new(output);
-    }
-
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-c")
         .arg(&parsed_args.input)
         .arg("-o").arg(&out_file)
         .args(&parsed_args.preprocessor_args)
@@ -411,15 +380,8 @@ pub fn compile<T>(creator: &T,
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    Box::new(output.or_else(move |err| -> SFuture<_> {
-        match err {
-            Error(ErrorKind::ProcessError(_), _) => {
-                Box::new(run_input_output(cmd, None).map(|output| {
-                    (Cacheable::Yes, output)
-                }))
-            }
-            e @ _ => f_err(e),
-        }
+    Box::new(run_input_output(attempt, None).map(|output| {
+        (Cacheable::Yes, output)
     }))
 }
 
@@ -826,42 +788,8 @@ mod test {
                                      &parsed_args,
                                      f.tempdir.path(),
                                      &[],
-                                     &pool,
-                                     None).wait().unwrap();
+                                     &pool).wait().unwrap();
         assert_eq!(Cacheable::Yes, cacheable);
-        // Ensure that we ran all processes.
-        assert_eq!(0, creator.lock().unwrap().children.len());
-    }
-
-    #[test]
-    fn test_compile_werror_fails() {
-        let creator = new_creator();
-        let pool = CpuPool::new(1);
-        let f = TestFixture::new();
-        let parsed_args = ParsedArguments {
-            input: "foo.c".into(),
-            language: Language::C,
-            depfile: None,
-            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
-            preprocessor_args: vec!(),
-            common_args: ovec!("-c", "-o", "foo.o", "-Werror=blah", "foo.c"),
-            msvc_show_includes: false,
-        };
-        let compiler = &f.bins[0];
-        // First compiler invocation fails.
-        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        // Second compiler invocation succeeds.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, output) = compile(&creator,
-                                          &compiler,
-                                          empty_output(),
-                                          &parsed_args,
-                                          f.tempdir.path(),
-                                          &[],
-                                          &pool,
-                                          None).wait().unwrap();
-        assert_eq!(Cacheable::Yes, cacheable);
-        assert_eq!(exit_status(0), output.status);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
     }
