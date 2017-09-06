@@ -24,11 +24,31 @@ install:
 - cargo -V
 
 build_script:
-- cmd: cargo build --verbose --features="all %EXTRA_FEATURES%"
+- cmd: cargo build --release --verbose --features="all %EXTRA_FEATURES%"
 
 test_script:
-- cmd: cargo test --all --verbose --features="all %EXTRA_FEATURES%"
+- cmd: cargo test --all --release --verbose --features="all %EXTRA_FEATURES%"
 
 branches:
   only:
     - master
+
+before_deploy:
+  - ps: |
+        $NAME = "sccache-${env:APPVEYOR_REPO_TAG_NAME}-${env:TARGET}"
+        New-Item -Path $NAME -ItemType directory
+        Copy-Item target/release/sccache.exe "${NAME}/"
+        Copy-Item LICENSE "${NAME}/"
+        Copy-Item README.md "${NAME}/"
+        7z a -ttar "${NAME}.tar" "${NAME}"
+        7z a "${NAME}.tar.gz" "${NAME}.tar"
+        Push-AppveyorArtifact "${NAME}.tar.gz"
+
+deploy:
+  artifact: /.*\.tar.gz/
+  auth_token:
+    secure: nHB4fVo+y/Aak+L0nYfrT8Rcs8OfUNm0F2xcIVFVYJ9ehf0CzvCmSMUvWguM0kKp
+  description: ''
+  on:
+    appveyor_repo_tag: true
+  provider: GitHub
