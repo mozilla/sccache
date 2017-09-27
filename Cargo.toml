@@ -28,12 +28,14 @@ futures = "0.1.11"
 futures-cpupool = "0.1"
 hyper = { version = "0.11", optional = true }
 hyper-tls = { version = "0.1", optional = true }
+jobserver = "0.1"
 jsonwebtoken = { version = "2.0", optional = true }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.1.0" }
 native-tls = "0.1"
+num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.9", optional = true }
 redis = { version = "0.8.0", optional = true }

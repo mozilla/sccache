@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use futures::Future;
-use futures::future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
 use ring::digest::{SHA512, Context};
@@ -139,10 +138,9 @@ pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .chain_err(|| "failed to spawn child");
+        .spawn();
 
-    Box::new(future::result(child)
+    Box::new(child
              .and_then(|child| {
                  wait_with_input_output(child, input).and_then(|output| {
                      if output.status.success() {
