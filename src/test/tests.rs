@@ -24,6 +24,7 @@ use ::commands::{
 use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
+use jobserver::Client;
 use ::mock_command::*;
 use ::server::{
     ServerMessage,
@@ -80,7 +81,8 @@ fn run_server_thread<T>(cache_dir: &Path, options: T)
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
         let core = Core::new().unwrap();
-        let srv = SccacheServer::new(0, pool, core, storage).unwrap();
+        let client = unsafe { Client::new() };
+        let srv = SccacheServer::new(0, pool, core, client, storage).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {
@@ -202,11 +204,9 @@ fn test_server_compile() {
         let obj = f.tempdir.path().join("file.o");
         c.next_command_calls(move |_| {
             // Pretend to compile something.
-            match File::create(&obj)
-                .and_then(|mut f| f.write_all(b"file contents")) {
-                    Ok(_) => Ok(MockChild::new(exit_status(0), STDOUT, STDERR)),
-                    Err(e) => Err(e),
-                }
+            let mut f = File::create(&obj)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), STDOUT, STDERR))
         });
     }
     // Ask the server to compile something.

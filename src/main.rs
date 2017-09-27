@@ -52,6 +52,7 @@ extern crate libc;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate native_tls;
+extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]
 extern crate openssl;
@@ -93,6 +94,7 @@ mod client;
 mod cmdline;
 mod commands;
 mod compiler;
+mod jobserver;
 mod mock_command;
 mod protocol;
 mod server;

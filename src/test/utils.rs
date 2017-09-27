@@ -26,6 +26,9 @@ use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
 use tokio_core::reactor::Core;
 
+use jobserver::Client;
+use errors::*;
+
 /// Return a `Vec` with each listed entry converted to an owned `String`.
 macro_rules! stringvec {
     ( $( $x:expr ),* ) => {
@@ -69,15 +72,16 @@ macro_rules! assert_map_contains {
 
 pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
     let core = Core::new().unwrap();
-    Arc::new(Mutex::new(MockCommandCreator::new(&core.handle())))
+    let client = unsafe { Client::new() };
+    Arc::new(Mutex::new(MockCommandCreator::new(&core.handle(), &client)))
 }
 
 pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
-                child: io::Result<MockChild>) {
+                    child: Result<MockChild>) {
     creator.lock().unwrap().next_command_spawns(child);
 }
 
-pub fn next_command_calls<C: Fn(&[OsString]) -> io::Result<MockChild> + Send + 'static>(creator: &Arc<Mutex<MockCommandCreator>>, call: C) {
+pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static>(creator: &Arc<Mutex<MockCommandCreator>>, call: C) {
     creator.lock().unwrap().next_command_calls(call);
 }
 

@@ -31,6 +31,7 @@ use futures::sync::mpsc;
 use futures::task::{self, Task};
 use futures::{Stream, Sink, Async, AsyncSink, Poll, StartSend, Future};
 use futures_cpupool::CpuPool;
+use jobserver::Client;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,
@@ -121,10 +122,11 @@ fn get_signal(_status: ExitStatus) -> i32 {
 /// requests a shutdown.
 pub fn start_server(port: u16) -> Result<()> {
     trace!("start_server");
+    let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
     let storage = storage_from_environment(&pool, &core.handle());
-    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, storage);
+    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
@@ -152,6 +154,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(port: u16,
                pool: CpuPool,
                core: Core,
+               client: Client,
                storage: Arc<Storage>) -> Result<SccacheServer<C>> {
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
@@ -161,7 +164,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
-        let service = SccacheService::new(storage, core.handle(), pool, tx, info);
+        let service = SccacheService::new(storage,
+                                          core.handle(),
+                                          &client,
+                                          pool,
+                                          tx,
+                                          info);
 
         Ok(SccacheServer {
             core: core,
@@ -389,6 +397,7 @@ impl<C> SccacheService<C>
 {
     pub fn new(storage: Arc<Storage>,
                handle: Handle,
+               client: &Client,
                pool: CpuPool,
                tx: mpsc::Sender<ServerMessage>,
                info: ActiveInfo) -> SccacheService<C> {
@@ -397,7 +406,7 @@ impl<C> SccacheService<C>
             storage: storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
             pool: pool,
-            creator: C::new(&handle),
+            creator: C::new(&handle, client),
             handle: handle,
             tx: tx,
             info: info,

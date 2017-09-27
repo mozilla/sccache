@@ -18,6 +18,7 @@ use client::{
     ServerConnection,
 };
 use cmdline::{Command, StatsFormat};
+use jobserver::Client;
 use log::LogLevel::Trace;
 use mock_command::{
     CommandCreatorSync,
@@ -601,9 +602,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::Compile { exe, cmdline, cwd, env_vars } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
+            let jobserver = unsafe { Client::new() };
             let conn = connect_or_start_server(get_port())?;
             let mut core = Core::new()?;
-            let res = do_compile(ProcessCommandCreator::new(&core.handle()),
+            let res = do_compile(ProcessCommandCreator::new(&core.handle(), &jobserver),
                                  &mut core,
                                  conn,
                                  exe.as_ref(),
