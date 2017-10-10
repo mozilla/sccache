@@ -87,7 +87,7 @@ pub struct EnvironmentProvider;
 
 impl ProvideAwsCredentials for EnvironmentProvider {
     fn credentials(&self) -> SFuture<AwsCredentials> {
-		future::result(credentials_from_environment()).boxed()
+		Box::new(future::result(credentials_from_environment()))
     }
 }
 
@@ -189,7 +189,7 @@ impl ProvideAwsCredentials for ProfileProvider {
         let result = result.and_then(|mut profiles| {
             profiles.remove(self.profile()).ok_or("profile not found".into())
         });
-        future::result(result).boxed()
+        Box::new(future::result(result))
     }
 }
 

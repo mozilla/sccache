@@ -357,7 +357,7 @@ impl CommandChild for MockChild {
     fn take_stderr(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stderr.take() }
 
     fn wait(mut self) -> Box<Future<Item = ExitStatus, Error = io::Error>> {
-        future::result(self.wait_result.take().unwrap()).boxed()
+        Box::new(future::result(self.wait_result.take().unwrap()))
     }
 
 
@@ -370,7 +370,7 @@ impl CommandChild for MockChild {
                 stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec!()),
             })
         });
-        future::result(result).boxed()
+        Box::new(future::result(result))
     }
 }
 

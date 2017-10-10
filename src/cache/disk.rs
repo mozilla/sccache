@@ -18,7 +18,6 @@ use cache::{
     CacheWrite,
     Storage,
 };
-use futures::Future;
 use futures_cpupool::CpuPool;
 use lru_disk_cache::LruDiskCache;
 use lru_disk_cache::Error as LruError;
@@ -62,7 +61,7 @@ impl Storage for DiskCache {
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
-        self.pool.spawn_fn(move || {
+        Box::new(self.pool.spawn_fn(move || {
             let mut lru = lru.lock().unwrap();
             let f = match lru.get(&path) {
                 Ok(f) => f,
@@ -78,7 +77,7 @@ impl Storage for DiskCache {
             };
             let hit = CacheRead::from(f)?;
             Ok(Cache::Hit(hit))
-        }).boxed()
+        }))
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
@@ -87,12 +86,12 @@ impl Storage for DiskCache {
         trace!("DiskCache::finish_put({})", key);
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        self.pool.spawn_fn(move || {
+        Box::new(self.pool.spawn_fn(move || {
             let start = Instant::now();
             let v = entry.finish()?;
             lru.lock().unwrap().insert_bytes(key, &v)?;
             Ok(start.elapsed())
-        }).boxed()
+        }))
     }
 
     fn location(&self) -> String {
