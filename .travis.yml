@@ -1,11 +1,37 @@
 language: rust
 cache: cargo
 
-rust:
-  - stable
-  - beta
-  - nightly
-  - 1.17.0 # Oldest supported version. Keep in sync with README.md.
+matrix:
+  include:
+    # OS compat
+    - os: linux
+    - os: osx
+
+    # rustc version compat
+    - rust: 1.17.0 # oldest supported version, keep in sync with README.md
+    - rust: beta
+    - rust: nightly
+
+    # deployments
+    - env: DEPLOY=1 TARGET=x86_64-apple-darwin
+      script: cargo build --release --target $TARGET
+      os: osx
+    - env: DEPLOY=1 TARGET=x86_64-unknown-linux-musl
+      before_script:
+        - rustup target add $TARGET
+        - curl https://www.openssl.org/source/openssl-1.0.2l.tar.gz | tar xzf -
+        - (cd openssl-1.0.2l &&
+          CC=musl-gcc ./Configure --prefix=$HOME/openssl-musl no-dso no-ssl2 no-ssl3 linux-x86_64 -fPIC &&
+          make -j$(nproc) &&
+          make install)
+        - export OPENSSL_DIR=$HOME/openssl-musl
+      script: cargo build --release --target $TARGET
+      addons:
+        apt:
+          packages:
+          - musl-tools
+  allow_failures:
+    - rust: nightly
 
 before_script:
   - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES=unstable; fi
@@ -14,10 +40,20 @@ script:
   - cargo build --verbose --features="all ${EXTRA_FEATURES}"
   - RUST_BACKTRACE=1 cargo test --all --verbose --features="all ${EXTRA_FEATURES}"
 
-os:
-  - linux
-  - osx
+before_deploy:
+  - name="sccache-$TRAVIS_TAG-$TARGET"
+  - mkdir $name
+  - cp target/$TARGET/release/sccache $name/
+  - cp README.md LICENSE $name/
+  - tar czvf $name.tar.gz $name
 
-matrix:
-  allow_failures:
-    - rust: nightly
+deploy:
+  api_key:
+    secure: "feOj0C6YpcKzCZ5mvQi9H/OlHAPnk1FnDKP6+j1vDby+BoTe6Pzv2L068am4BzB3udU7ZwNfeBuZiGQE0LskLIMtc7TpcWyEr7nPfxbzIRYvR4dRKOoBoQdaS0TzkEm+lDQH/3ybyTipbnAiEAZtAgThh2u55tVmNg3PZAQnxlbkcPCTCTh296gcxfcvL3Espzrv7YhFJGjOKmMzTWQxZKNPdrwXhwUbRUziTlKeDypMmlxB3NpjCsewyT0O6ceLZBW0AnmftmS3MI0ZFC9DCDmHhG8Q88ndEjVzDZ0CozKY4aFKju6CG5sYYLqpgC70N138oWi4iGRLHY+M7MyuRt6EHRhuvkY/3GjhhLthCDQX/j0SfH9y4cNFB4kRx0zOBXiq1gb0q8ZZ2MH/WAptBnnDGzMiZrvdfM8rL7ptCApLDKrOEIPwh9vqKaqko1UDidh3Kz+YMb2Q5l0Ludc4nJdMEcnO9wpqPnR5IH2a91e2edRJ9wcOeva/FU7FoB6COAjIjm163VuH/uv/OT9X7M416iNHrIdxzvMxDLqUpfUlLVbHOrX4mta4GwMQPVZNX7ez6OBtripwRnSDRjDHVZcaQiRuANvzvfWHEPh6UmSMUdDXJZSoK5L6gQPjDUNWbtOU5pu0LWV/6V2ukjxi6uOhmfYTO9vjrr5EOhNe7hY="
+  file_glob: true
+  file: sccache-$TRAVIS_TAG-$TARGET.tar.gz
+  on:
+    condition: $DEPLOY = 1
+    tags: true
+  provider: releases
+  skip_cleanup: true
