@@ -33,10 +33,12 @@ use std::fs::File;
 use std::io::{
     self,
     BufWriter,
+    Read,
     Write,
 };
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
+use std::slice::from_raw_parts;
 use util::{run_input_output, OsStrExt};
 
 use errors::*;
@@ -54,9 +56,9 @@ impl CCompilerImpl for MSVC {
     fn kind(&self) -> CCompilerKind { CCompilerKind::MSVC }
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       _cwd: &Path) -> CompilerArguments<ParsedArguments>
+                       cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
-        parse_arguments(arguments)
+        parse_arguments(arguments, cwd)
     }
 
     fn preprocess<T>(&self,
@@ -221,7 +223,8 @@ static ARGS: [(ArgInfo, MSVCArgAttribute); 20] = [
     take_arg!("@", Path, Concatenated, TooHard),
 ];
 
-pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
+pub fn parse_arguments(arguments: &[OsString],
+                       cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec!();
@@ -231,8 +234,13 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
     let mut depfile = None;
     let mut show_includes = false;
 
-    // First convert all `/foo` arguments to `-foo` to accept both styles
-    let it = arguments.iter().map(|i| {
+    // Expand @response file arguments.
+    let it = ExpandedArgs::new(cwd, arguments.iter().map(|a| a.to_owned()));
+
+    // Convert all `/foo` arguments to `-foo` to accept both styles. Note that
+    // this must be done after response file expansion because the arguments
+    // within response file also need to be normalized.
+    let it = it.map(|i| {
         if let Some(arg) = i.split_prefix("/") {
             let mut dash = OsString::from("-");
             dash.push(&arg);
@@ -495,6 +503,211 @@ fn compile<T>(creator: &T,
     }))
 }
 
+/// Creates an iterator over the arguments in a Windows command line string.
+fn split_args(s: &str) -> SplitArgs {
+    SplitArgs { s: s }
+}
+
+/// An iterator over the arguments in a Windows command line.
+///
+/// This produces results identical to `CommandLineToArgvW` except in the
+/// following cases:
+///
+///  1. When passed an empty string, CommandLineToArgvW returns the path to the
+///     current executable file. Here, the iterator will simply be empty.
+///  2. CommandLineToArgvW interprets the first argument differently than the
+///     rest. Here, all arguments are treated in identical fashion.
+///
+/// Parsing rules:
+///
+///  - Arguments are delimited by whitespace (either a space or tab).
+///  - A string surrounded by double quotes is interpreted as a single argument.
+///  - Backslashes are interpreted literally unless followed by a double quote.
+///  - 2n backslashes followed by a double quote reduce to n backslashes and we
+///    enter the "in quote" state.
+///  - 2n+1 backslashes followed by a double quote reduces to n backslashes,
+///    we do *not* enter the "in quote" state, and the double quote is
+///    interpreted literally.
+///
+/// References:
+///  - https://msdn.microsoft.com/en-us/library/windows/desktop/bb776391(v=vs.85).aspx
+///  - https://msdn.microsoft.com/en-us/library/windows/desktop/17w5ykft(v=vs.85).aspx
+#[derive(Clone, Debug)]
+struct SplitArgs<'a> {
+    s: &'a str,
+}
+
+impl<'a> Iterator for SplitArgs<'a> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        // Current parsing state
+        let mut in_quotes = false;
+        let mut backslashes: usize = 0;
+
+        // Skip initial whitespace
+        self.s = self.s.trim_left_matches(|c| c == ' ' || c == '\t');
+
+        if self.s.is_empty() {
+            return None;
+        }
+
+        let mut arg = String::new();
+
+        let mut chars = self.s.chars();
+
+        for c in &mut chars {
+            match c {
+                ' ' | '\t' => {
+                    // Flush out any backslashes.
+                    while backslashes > 0 {
+                        arg.push('\\');
+                        backslashes -= 1;
+                    }
+
+                    if in_quotes {
+                        arg.push(c);
+                    } else {
+                        // White space delimits the argument.
+                        break;
+                    }
+                },
+
+                // Count backslashes.
+                '\\' => { backslashes += 1 },
+
+                // Toggle quote state.
+                '"' => {
+                    // Flush out half the number of backslashes.
+                    while backslashes > 1 {
+                        arg.push('\\');
+                        backslashes -= 2;
+                    }
+
+                    if backslashes == 0 {
+                        // Even number or no backslashes. Toggle quotes.
+                        in_quotes = !in_quotes;
+                    } else {
+                        // Discard extra backslash.
+                        backslashes = 0;
+
+                        // Interpret as literal quote.
+                        arg.push('"');
+                    }
+                }
+
+                _ => {
+                    // Flush out any backslashes.
+                    while backslashes > 0 {
+                        arg.push('\\');
+                        backslashes -= 1;
+                    }
+
+                    arg.push(c);
+                }
+            };
+        }
+
+        // Slide the window over.
+        self.s = chars.as_str();
+
+        Some(arg)
+    }
+}
+
+fn read_utf16s<R>(reader: &mut R) -> io::Result<String>
+    where R: Read
+{
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+
+    let data: &[u16] = unsafe {
+        from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2)
+    };
+
+    Ok(String::from_utf16(data).expect("invalid utf-16"))
+}
+
+/// Iterator that expands @response files in-place.
+///
+/// According to MSDN [1], @file means:
+///
+///     A text file containing compiler commands.
+///
+///     A response file can contain any commands that you would specify on the
+///     command line. This can be useful if your command-line arguments exceed
+///     127 characters.
+///
+///     It is not possible to specify the @ option from within a response file.
+///     That is, a response file cannot embed another response file.
+///
+///     From the command line you can specify as many response file options (for
+///     example, @respfile.1 @respfile.2) as you want.
+///
+/// Note that, in order to conform to the spec, response files are not
+/// recursively expanded.
+///
+/// [1]: https://docs.microsoft.com/en-us/cpp/build/reference/at-specify-a-compiler-response-file
+struct ExpandedArgs<'a, Iter>
+{
+    cwd: &'a Path,
+    iter: Iter,
+    stack: Vec<OsString>,
+}
+
+impl<'a, Iter> ExpandedArgs<'a, Iter>
+{
+    pub fn new(cwd: &'a Path, iter: Iter) -> ExpandedArgs<'a, Iter> {
+        ExpandedArgs {
+            cwd: cwd,
+            iter: iter,
+            stack: Vec::new(),
+        }
+    }
+}
+
+impl<'a, Iter> Iterator for ExpandedArgs<'a, Iter>
+    where Iter: Iterator<Item=OsString>
+{
+    type Item = OsString;
+
+    fn next(&mut self) -> Option<OsString> {
+        loop {
+            // Always pop elements off the stack until it is empty before
+            // returning more from the iterator.
+            if let Some(arg) = self.stack.pop() {
+                return Some(arg);
+            }
+
+            // Get elements out of the iterator.
+            if let Some(arg) = self.iter.next() {
+                if let Some(file) = arg.split_prefix("@") {
+                    // Argument is a response file.
+                    let file = self.cwd.join(&file);
+
+                    match File::open(&file).and_then(|mut f| read_utf16s(&mut f)) {
+                        Ok(contents) => {
+                            let new_args = split_args(&contents).collect::<Vec<_>>();
+                            self.stack.extend(new_args.iter().rev().map(|s| s.into()));
+
+                            // Continue on to the next iteration of the loop.
+                            // There is no guarantee that this response file had
+                            // any arguments in it.
+                        }
+                        Err(e) => {
+                            debug!("failed to read @-file `{}`: {}", file.display(), e);
+                            return Some(arg);
+                        }
+                    }
+                } else {
+                    return Some(arg);
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -505,6 +718,10 @@ mod test {
     use mock_command::*;
     use super::*;
     use test::utils::*;
+
+    fn _parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
+        parse_arguments(arguments, ".".as_ref())
+    }
 
     #[test]
     fn test_detect_showincludes_prefix() {
@@ -534,7 +751,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -560,7 +777,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -586,7 +803,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -612,7 +829,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -638,7 +855,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -664,7 +881,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
-        } = match parse_arguments(&args) {
+        } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -684,43 +901,43 @@ mod test {
     #[test]
     fn test_parse_arguments_empty_args() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&vec!()));
+                   _parse_arguments(&vec!()));
     }
 
     #[test]
     fn test_parse_arguments_not_compile() {
         assert_eq!(CompilerArguments::NotCompilation,
-                   parse_arguments(&ovec!["-Fofoo", "foo.c"]));
+                   _parse_arguments(&ovec!["-Fofoo", "foo.c"]));
     }
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(CompilerArguments::CannotCache("multiple input files"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"]));
+                   _parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"]));
     }
 
     #[test]
     fn test_parse_arguments_unsupported() {
         assert_eq!(CompilerArguments::CannotCache("-FA"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
+                   _parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
 
         assert_eq!(CompilerArguments::CannotCache("-Fa"),
-                   parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
+                   _parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
 
         assert_eq!(CompilerArguments::CannotCache("-FR"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
+                   _parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
         assert_eq!(CompilerArguments::CannotCache("@"),
-                   parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
+                   _parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_missing_pdb() {
         assert_eq!(CompilerArguments::CannotCache("shared pdb"),
-                   parse_arguments(&ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
+                   _parse_arguments(&ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
     }
 
     #[test]
@@ -775,5 +992,69 @@ mod test {
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_split_args() {
+        fn test_split(cmdline: &str, expected: &[&str]) -> bool {
+            let args = split_args(cmdline).collect::<Vec<_>>();
+
+            args == expected.iter()
+                            .map(|s| String::from(*s))
+                            .collect::<Vec<_>>()
+        }
+
+        assert!(test_split("/c foo.cpp /o foo.obj",
+                           &["/c", "foo.cpp", "/o", "foo.obj"]));
+        assert!(test_split("/c foo.cpp \"/o foo.obj\"",
+                           &["/c", "foo.cpp", "/o foo.obj"]));
+        assert!(test_split("/c foo.cpp        /o foo.obj",
+                           &["/c", "foo.cpp", "/o", "foo.obj"]));
+        assert!(test_split("prog a\"b c\"d",
+                           &["prog", "ab cd"]));
+        assert!(test_split("prog 'hello there'",
+                           &["prog", "'hello", "there'"]));
+        assert!(test_split("prog \"hello\"there", &["prog", "hellothere"]));
+
+        // Backslashes
+        assert!(test_split(r"\\server\share path",
+                           &[r"\\server\share", "path"]));
+        assert!(test_split(r#""\\server\share path""#,
+                           &[r"\\server\share path"]));
+        assert!(test_split(r#"prog "\\as\\\\\df\\""#,
+                           &["prog", r"\\as\\\\\df\"]));
+
+        // Edge cases
+        assert!(test_split("   ", &[]));
+        assert!(test_split("prog    ", &["prog"]));
+        assert!(test_split("    prog  arg  ", &["prog", "arg"]));
+
+        assert!(test_split(r#""prog name" hello\"there"#,
+                           &["prog name", "hello\"there"]));
+
+        // Handling of whitespace characters
+        assert!(test_split("prog \t hello \n there",
+                           &["prog", "hello", "\n", "there"]));
+        assert!(test_split("prog \t\t\thello \n\n\n there",
+                           &["prog", "hello", "\n\n\n", "there"]));
+        assert!(test_split("prog \t\t\thello\n\n\nthere",
+                           &["prog", "hello\n\n\nthere"]));
+        assert!(test_split("prog hello\tthere",
+                           &["prog", "hello", "there"]));
+        assert!(test_split("prog hello\t \t \t \t  there",
+                           &["prog", "hello", "there"]));
+
+        // No unicode whitespace handling.
+        assert!(test_split("prog hello\u{A0}there",
+                           &["prog", "hello\u{A0}there"]));
+
+        // 2n backslashes followed by a quote produces n backslashes followed by
+        // the quote.
+        assert!(test_split(r#"prog "hello\\""#, &["prog", r"hello\"]));
+
+        // 2n+1 backslashes followed by a quote produces n backslashes and
+        // toggles the "in quotes" mode.
+        assert!(test_split(r#"prog \\\\"in quotes\\\\""#,
+                           &["prog", r"\\in quotes\\"]));
     }
 }
