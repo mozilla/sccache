@@ -60,6 +60,7 @@ which = "1.0"
 zip = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+assert_cli = "0.5"
 gcc = "0.3"
 itertools = "0.6"
 
@@ -85,3 +86,4 @@ unstable = []
 debug = true
 
 [workspace]
+exclude = ["tests/test-crate"]

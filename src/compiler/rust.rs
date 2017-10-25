@@ -33,7 +33,7 @@ use std::process::{self, Stdio};
 use std::time::Instant;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
-use util::HashToDigest;
+use util::{HashToDigest, OsStrExt};
 
 use errors::*;
 
@@ -636,7 +636,8 @@ impl<T> CompilerHasher<T> for RustHasher
             let mut env_vars = env_vars.clone();
             env_vars.sort();
             for &(ref var, ref val) in env_vars.iter() {
-                if var.to_str().map(|s| s.starts_with("CARGO_")).unwrap_or(false) {
+                // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
+                if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
                     var.hash(&mut HashToDigest { digest: &mut m });
                     m.update(b"=");
                     val.hash(&mut HashToDigest { digest: &mut m });
