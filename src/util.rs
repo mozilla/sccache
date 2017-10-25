@@ -101,13 +101,15 @@ fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
     use tokio_io::io::{write_all, read_to_end};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|stdin| {
-            write_all(stdin, i)
+            write_all(stdin, i).chain_err(|| "failed to write stdin")
         })
-    }).chain_err(|| "failed to write stdin");
-    let stdout = child.take_stdout().map(|io| read_to_end(io, Vec::new()));
-    let stdout = stdout.chain_err(|| "failed to read stdout");
-    let stderr = child.take_stderr().map(|io| read_to_end(io, Vec::new()));
-    let stderr = stderr.chain_err(|| "failed to read stderr");
+    });
+    let stdout = child.take_stdout().map(|io| {
+        read_to_end(io, Vec::new()).chain_err(|| "failed to read stdout")
+    });
+    let stderr = child.take_stderr().map(|io| {
+        read_to_end(io, Vec::new()).chain_err(|| "failed to read stderr")
+    });
 
     // Finish writing stdin before waiting, because waiting drops stdin.
     let status = Future::and_then(stdin, |io| {
