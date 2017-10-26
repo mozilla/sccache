@@ -1,0 +1,32 @@
+name: sccache
+version: '0.2.2'
+version-script: |
+    git describe --tags
+
+summary: sccache is ccache with cloud storage
+description: |
+    sccache is a ccache-like tool. It is used as a compiler wrapper and avoids
+    compilation when possible, storing a cache in a remote storage using the
+    Amazon Simple Cloud Storage Service (S3) API, the Google Cloud Storage (GCS)
+    API, or Redis.
+
+grade: stable
+confinement: classic
+
+apps:
+    sccache:
+        command: bin/sccache
+
+parts:
+    sccache:
+        plugin: rust
+        source: .
+        source-type: git
+        build-packages:
+        - libssl-dev
+        - make
+        - pkg-config
+        rust-features:
+        - gcs
+        - redis
+        - s3
