@@ -1,0 +1,53 @@
+#!/bin/bash
+set -xe
+
+CONFIG_FILE=$SNAP_DATA/config
+
+declare -A OPTIONS DEFAULTS VALUES
+OPTIONS[port]=SCCACHE_PORT
+OPTIONS[log-level]=SCCACHE_LOG_LEVEL
+OPTIONS[cache-dir]=SCCACHE_DIR
+OPTIONS[s3.bucket]=SCCACHE_BUCKET
+OPTIONS[s3.endpoint]=SCCACHE_ENDPOINT
+OPTIONS[s3.key-id]=AWS_ACCESS_KEY_ID
+OPTIONS[s3.secret]=AWS_SECRET_ACCESS_KEY
+OPTIONS[redis.url]=SCCACHE_REDIS
+OPTIONS[gcs.bucket]=SCCACHE_GCS_BUCKET
+OPTIONS[gcs.key-path]=SCCACHE_GCS_KEY_PATH
+OPTIONS[gcs.rw-mode]=SCCACHE_GCS_RW_MODE
+
+DEFAULTS[port]=4226
+DEFAULTS[cache-dir]=$SNAP_COMMON/cache
+DEFAULTS[log-level]=info
+DEFAULTS[gcs.rw-mode]=false
+
+VALUES[gcs.rw-mode-true]=READ_WRITE
+VALUES[gcs.rw-mode-false]=READ_ONLY
+
+# Iterate through the config options array
+for opt in ${!OPTIONS[@]}; do
+    # Get environment variable name
+    var=${OPTIONS[$opt]}
+
+    # Use snapctl to get the value registered by the snap set command
+    value="$(snapctl get $opt)"
+
+    # Fall back to the default value
+    [ -n "$value" ] || value="${DEFAULTS[$opt]}"
+
+    # Set the resulting value back to snapctl to populate all keys and defaults
+    snapctl set $opt="$value"
+
+    # Map the value using the VALUES map
+    value="${VALUES[$opt-$value]-$value}"
+
+    # Write out non-empty variable exports to the config file, preserving
+    # calling environment values
+    [ -n "$value" ] && echo "export $var=\"\${$var-$value}\"" >> $CONFIG_FILE.new
+done
+
+# Move the new config file
+mv -f ${CONFIG_FILE}.new $CONFIG_FILE || /bin/true
+
+# Restart the server to pick up new values
+systemctl restart snap.sccache.sccache-server.service

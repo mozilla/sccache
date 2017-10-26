@@ -15,7 +15,15 @@ confinement: classic
 
 apps:
     sccache:
-        command: bin/sccache
+        command: bin/sccache.wrapper
+
+    sccache-server:
+        environment:
+            SCCACHE_START_SERVER: 1
+            SCCACHE_NO_DAEMON: 1
+            SCCACHE_IDLE_TIMEOUT: 0
+        command: bin/sccache.wrapper
+        daemon: simple
 
 parts:
     sccache:
@@ -30,3 +38,8 @@ parts:
         - gcs
         - redis
         - s3
+
+    wrapper:
+        plugin: dump
+        source: snap
+        prime: [bin]

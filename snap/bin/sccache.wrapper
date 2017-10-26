@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# read environment from the config file
+. $SNAP_DATA/config
+
+$SNAP/bin/sccache "$@"
