@@ -20,7 +20,6 @@ use cache::{
     Storage,
 };
 use errors::*;
-use futures::Future;
 use futures_cpupool::CpuPool;
 use redis::{
     cmd,
@@ -71,7 +70,7 @@ impl Storage for RedisCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = key.to_owned();
         let me = self.clone();
-        self.pool.spawn_fn(move || {
+        Box::new(self.pool.spawn_fn(move || {
             let c = me.connect()?;
             let d = c.get::<&str, Vec<u8>>(&key)?;
             if d.is_empty() {
@@ -80,20 +79,20 @@ impl Storage for RedisCache {
                 CacheRead::from(Cursor::new(d))
                     .map(Cache::Hit)
             }
-        }).boxed()
+        }))
     }
 
     /// Open a connection and store a object in the cache.
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         let key = key.to_owned();
         let me = self.clone();
-        self.pool.spawn_fn(move || {
+        Box::new(self.pool.spawn_fn(move || {
             let start = Instant::now();
             let c = me.connect()?;
             let d = entry.finish()?;
             c.set::<&str, Vec<u8>, ()>(&key, d)?;
             Ok(start.elapsed())
-        }).boxed()
+        }))
     }
 
     /// Returns the cache location.
