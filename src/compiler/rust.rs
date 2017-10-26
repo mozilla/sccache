@@ -64,7 +64,7 @@ pub struct RustHasher {
     parsed_args: ParsedArguments,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
     /// The full commandline, with arguments and their values as pairs.
     arguments: Vec<(OsString, Option<OsString>)>,
@@ -323,7 +323,7 @@ static ARGS: [(ArgInfo, RustArgAttribute); 33] = [
     take_arg!("--cap-lints", Path, CanBeSeparated('='), PassThrough),
     take_arg!("--cfg", Path, CanBeSeparated('='), PassThrough),
     take_arg!("--codegen", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("--color", Path, CanBeSeparated('='), CodeGen),
+    take_arg!("--color", Path, CanBeSeparated('='), PassThrough),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
     take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
     take_arg!("--deny", Path, CanBeSeparated('='), PassThrough),
@@ -341,16 +341,16 @@ static ARGS: [(ArgInfo, RustArgAttribute); 33] = [
     take_arg!("--unpretty", String, CanBeSeparated('='), NotCompilation),
     flag!("--version", NotCompilation),
     take_arg!("--warn", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("-A", Path, CanBeSeparated('='), LinkPath),
-    take_arg!("-C", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("-D", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("-F", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("-L", Path, CanBeSeparated('='), LinkPath),
+    take_arg!("-A", String, CanBeSeparated, PassThrough),
+    take_arg!("-C", String, CanBeSeparated, CodeGen),
+    take_arg!("-D", String, CanBeSeparated, PassThrough),
+    take_arg!("-F", String, CanBeSeparated, PassThrough),
+    take_arg!("-L", Path, CanBeSeparated, LinkPath),
     flag!("-V", NotCompilation),
-    take_arg!("-W", Path, CanBeSeparated('='), LinkPath),
-    take_arg!("-Z", Path, CanBeSeparated('='), LinkPath),
-    take_arg!("-l", Path, CanBeSeparated('='), LinkLibrary),
-    take_arg!("-o", Path, CanBeSeparated('='), TooHard),
+    take_arg!("-W", String, CanBeSeparated, PassThrough),
+    take_arg!("-Z", String, CanBeSeparated, PassThrough),
+    take_arg!("-l", Path, CanBeSeparated, LinkLibrary),
+    take_arg!("-o", Path, CanBeSeparated, TooHard),
 ];
 
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments>
@@ -759,6 +759,10 @@ mod test {
         assert!(h.dep_info.is_none());
         let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo");
         assert_eq!(h.output_dir.to_str(), Some("out"));
+        assert_eq!(parses!("--emit", "link", "-C", "opt-level=1", "foo.rs",
+                           "--out-dir", "out", "--crate-name", "foo"),
+                   parses!("--emit=link", "-Copt-level=1", "foo.rs",
+                           "--out-dir=out", "--crate-name=foo"));
         let h = parses!("--emit", "link,dep-info", "foo.rs", "--out-dir", "out",
                         "--crate-name", "my_crate",
                         "-C", "extra-filename=-abcxyz");
