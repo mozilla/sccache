@@ -5,7 +5,7 @@ rust:
   - stable
   - beta
   - nightly
-  - 1.17.0 # Oldest supported version. Keep in sync with README.md.
+  - 1.19.0 # Oldest supported version. Keep in sync with README.md.
 
 before_script:
   - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES=unstable; fi
