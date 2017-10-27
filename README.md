@@ -11,6 +11,20 @@ It works as a client-server. The client spawns a server if one is not running al
 
 Sccache can also be used with local storage instead of remote.
 
+---
+
+Table of Contents (ToC)
+======================
+
+* [Build Requirements](#build-requirements)
+* [Build](#build)
+* [Installation](#installation)
+* [Usage](#usage)
+* [Storage Options](#storage-options)
+* [Debugging](#debugging)
+* [Known Caveats](#known-caveats)
+
+---
 
 Build Requirements
 ------------------
@@ -26,6 +40,8 @@ We recommend you install Rust via [Rustup](https://rustup.rs/). The generated bi
 ## Installation
 
 > $ cargo install
+
+---
 
 Usage
 -----
@@ -48,6 +64,8 @@ Running `sccache --show-stats` will print a summary of cache statistics.
 
 Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](docs/Jenkins.md).
 
+---
+
 Storage Options
 ---------------
 
@@ -63,6 +81,8 @@ By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_R
 
 *Important:* The environment variables are only taken into account when the server starts, so only on the first run.
 
+---
+
 Debugging
 ---------
 
@@ -72,6 +92,7 @@ Alternately, you can run the server manually in foreground mode by running `SCCA
 
 You can set the `SCCACHE_ERROR_LOG` environment variable to a path to cause the server process to redirect its standard error output there, in order to capture the output of unhandled panics. (The server sets `RUST_BACKTRACE=1` internally.)
 
+---
 
 Known caveats
 -------------
