@@ -103,3 +103,7 @@ Known caveats
 * It doesn't support all kinds of compiler flags, and is certainly broken with a few of them. Really only the flags used during Firefox builds have been tested.
 * It doesn't support ccache's direct mode.
 * [It doesn't support an option like `CCACHE_BASEDIR`](https://github.com/mozilla/sccache/issues/35).
+
+---
+
+<img src="https://avatars2.githubusercontent.com/u/131524?s=200&v=4" width="50"></img>
