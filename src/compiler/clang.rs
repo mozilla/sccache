@@ -79,12 +79,13 @@ impl CCompilerImpl for Clang {
     }
 }
 
-static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 7] = [
+static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 8] = [
     take_arg!("--serialize-diagnostics", String, Separated, PassThrough),
     take_arg!("--target", String, Separated, PassThrough),
     take_arg!("-Xclang", String, Separated, PassThrough),
     flag!("-fcxx-modules", TooHard),
     flag!("-fmodules", TooHard),
+    take_arg!("-gcc-toolchain", String, Separated, PassThrough),
     take_arg!("-include-pch", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-target", String, Separated, PassThrough),
 ];
@@ -145,6 +146,7 @@ mod test {
         parses!("-c", "foo.c", "-Xclang", "-load", "-Xclang", "moz-check", "-o", "foo.o");
         parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
         parses!("-c", "foo.c", "-target", "x86_64-apple-darwin11", "-o", "foo.o");
+        parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
     }
 
     #[test]
