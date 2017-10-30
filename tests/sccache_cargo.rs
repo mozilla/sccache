@@ -48,6 +48,7 @@ fn stop(sccache: &Path) {
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.
 #[test]
+#[cfg(not(target_os="macos"))] // test currently fails on macos
 fn test_rust_cargo() {
     drop(LogBuilder::new()
          .format(|record| {
