@@ -202,11 +202,9 @@ fn test_server_compile() {
         let obj = f.tempdir.path().join("file.o");
         c.next_command_calls(move |_| {
             // Pretend to compile something.
-            match File::create(&obj)
-                .and_then(|mut f| f.write_all(b"file contents")) {
-                    Ok(_) => Ok(MockChild::new(exit_status(0), STDOUT, STDERR)),
-                    Err(e) => Err(e),
-                }
+            let mut f = File::create(&obj)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), STDOUT, STDERR))
         });
     }
     // Ask the server to compile something.

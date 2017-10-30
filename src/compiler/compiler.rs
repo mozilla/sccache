@@ -470,14 +470,13 @@ fn detect_compiler<T>(creator: &T, executable: &Path, pool: &CpuPool)
     };
     let is_rustc = if filename.to_string_lossy().to_lowercase() == "rustc" {
         // Sanity check that it's really rustc.
+        let executable = executable.to_path_buf();
         let child = creator.clone().new_command_sync(&executable)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .args(&["--version"])
-            .spawn().chain_err(|| {
-                format!("failed to execute {:?}", executable)
-            });
-        let output = child.into_future().and_then(move |child| {
+            .spawn();
+        let output = child.and_then(move |child| {
             child.wait_with_output()
                 .chain_err(|| "failed to read child output")
         });
@@ -530,10 +529,7 @@ gcc
     let output = write.and_then(move |(tempdir, src)| {
         cmd.arg("-E").arg(src);
         trace!("compiler {:?}", cmd);
-        let child = cmd.spawn().chain_err(|| {
-            format!("failed to execute {:?}", cmd)
-        });
-        child.into_future().and_then(|child| {
+        cmd.spawn().and_then(|child| {
             child.wait_with_output().chain_err(|| "failed to read child output")
         }).map(|e| {
             drop(tempdir);
@@ -724,11 +720,9 @@ mod test {
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
             // Pretend to compile something.
-            match File::create(&o)
-                .and_then(|mut f| f.write_all(b"file contents")) {
-                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
-                    Err(e) => Err(e),
-                }
+            let mut f = File::create(&o)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
         });
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
@@ -805,11 +799,9 @@ mod test {
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
             // Pretend to compile something.
-            match File::create(&o)
-                .and_then(|mut f| f.write_all(b"file contents")) {
-                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
-                    Err(e) => Err(e),
-                }
+            let mut f = File::create(&o)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
         });
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
@@ -887,11 +879,9 @@ mod test {
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
             // Pretend to compile something.
-            match File::create(&o)
-                .and_then(|mut f| f.write_all(b"file contents")) {
-                    Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
-                    Err(e) => Err(e),
-                }
+            let mut f = File::create(&o)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
         });
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
@@ -954,11 +944,9 @@ mod test {
             let o = obj.clone();
             next_command_calls(&creator, move |_| {
                 // Pretend to compile something.
-                match File::create(&o)
-                    .and_then(|mut f| f.write_all(b"file contents")) {
-                        Ok(_) => Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)),
-                        Err(e) => Err(e),
-                    }
+                let mut f = File::create(&o)?;
+                f.write_all(b"file contents")?;
+                Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
             });
         }
         let cwd = f.tempdir.path();
