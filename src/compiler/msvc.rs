@@ -608,6 +608,12 @@ impl<'a> Iterator for SplitArgs<'a> {
             };
         }
 
+        // Flush any backslashes at the end of the string.
+        while backslashes > 0 {
+            arg.push('\\');
+            backslashes -= 1;
+        }
+
         // Slide the window over.
         self.s = chars.as_str();
 
@@ -1056,5 +1062,9 @@ mod test {
         // toggles the "in quotes" mode.
         assert!(test_split(r#"prog \\\\"in quotes\\\\""#,
                            &["prog", r"\\in quotes\\"]));
+
+        // Trailing backslashes
+        assert!(test_split(r"prog \\\\", &["prog", r"\\\\"]));
+        assert!(test_split(r"prog foo\\\\", &["prog", r"foo\\\\"]));
     }
 }
