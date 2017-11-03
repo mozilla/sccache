@@ -921,8 +921,42 @@ mod test {
 
     #[test]
     fn test_parse_arguments_response_file() {
+        // Non-existent response files are not expanded and cannot be cached.
         assert_eq!(CompilerArguments::CannotCache("@"),
                    _parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
+
+        let fixture = TestFixture::new();
+        let rsp = fixture.touch("foo.rsp").unwrap();
+
+        let mut f = File::create(&rsp).unwrap();
+        writeln!(f, "{}", "/c foo.c /Fofoo.obj /D DEBUG /DUNICODE").unwrap();
+
+        let mut arg = OsString::new();
+        arg.push("@");
+        arg.push(rsp.as_os_str());
+
+        let args = ovec![arg];
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(common_args, ovec!["-DDEBUG", "-DUNICODE"]);
+        assert!(!msvc_show_includes);
     }
 
     #[test]
