@@ -33,13 +33,11 @@ use std::fs::File;
 use std::io::{
     self,
     BufWriter,
-    Read,
     Write,
 };
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
-use std::slice::from_raw_parts;
-use util::{run_input_output, OsStrExt};
+use util::{run_input_output, OsStrExt, read_text};
 
 use errors::*;
 
@@ -621,19 +619,6 @@ impl<'a> Iterator for SplitArgs<'a> {
     }
 }
 
-fn read_utf16s<R>(reader: &mut R) -> io::Result<String>
-    where R: Read
-{
-    let mut buf = Vec::new();
-    reader.read_to_end(&mut buf)?;
-
-    let data: &[u16] = unsafe {
-        from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2)
-    };
-
-    Ok(String::from_utf16(data).expect("invalid utf-16"))
-}
-
 /// Iterator that expands @response files in-place.
 ///
 /// According to MSDN [1], @file means:
@@ -691,9 +676,9 @@ impl<'a, Iter> Iterator for ExpandedArgs<'a, Iter>
                     // Argument is a response file.
                     let file = self.cwd.join(&file);
 
-                    match File::open(&file).and_then(|mut f| read_utf16s(&mut f)) {
+                    match File::open(&file).and_then(|mut f| read_text(&mut f)) {
                         Ok(contents) => {
-                            let new_args = split_args(&contents).collect::<Vec<_>>();
+                            let new_args = split_args(contents.trim()).collect::<Vec<_>>();
                             self.stack.extend(new_args.iter().rev().map(|s| s.into()));
 
                             // Continue on to the next iteration of the loop.

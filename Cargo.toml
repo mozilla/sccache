@@ -20,6 +20,7 @@ bincode = "0.9"
 byteorder = "1.0"
 chrono = { version = "0.3", optional = true }
 clap = "2.23.0"
+encoding = "0.2"
 env_logger = "0.4"
 error-chain = { version = "0.11", default-features = false }
 filetime = "0.1"

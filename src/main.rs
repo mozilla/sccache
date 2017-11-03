@@ -27,6 +27,7 @@ extern crate clap;
 extern crate crypto;
 #[cfg(unix)]
 extern crate daemonize;
+extern crate encoding;
 extern crate env_logger;
 #[macro_use]
 extern crate error_chain;

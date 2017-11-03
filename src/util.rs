@@ -19,11 +19,11 @@ use ring::digest::{SHA512, Context};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
-use std::io::BufReader;
-use std::io::prelude::*;
+use std::io::{self, Read, BufReader};
 use std::path::PathBuf;
 use std::process::{self,Stdio};
 use std::time::Duration;
+use encoding;
 
 use errors::*;
 
@@ -267,6 +267,22 @@ impl<'a> Hasher for HashToDigest<'a> {
 
     fn finish(&self) -> u64 {
         panic!("not supposed to be called");
+    }
+}
+
+/// Reads either UTF-8 or UTF-16 files into a string.
+pub fn read_text<R>(reader: &mut R) -> io::Result<String>
+    where R: Read
+{
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+
+    let (result, _) = encoding::decode(&buf, encoding::DecoderTrap::Strict,
+                                       encoding::all::ISO_8859_1);
+
+    match result {
+        Ok(string) => Ok(string),
+        Err(err) => Err(io::Error::new(io::ErrorKind::Other, err.into_owned())),
     }
 }
 
