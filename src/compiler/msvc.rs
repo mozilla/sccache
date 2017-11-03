@@ -199,7 +199,7 @@ enum MSVCArgAttribute {
 use self::MSVCArgAttribute::*;
 
 static ARGS: [(ArgInfo, MSVCArgAttribute); 20] = [
-    take_arg!("-D", String, Concatenated, PreprocessorArgument),
+    take_arg!("-D", String, CanBeSeparated, PreprocessorArgument),
     take_arg!("-FA", String, Concatenated, TooHard),
     take_arg!("-FI", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-FR", Path, Concatenated, TooHard),
