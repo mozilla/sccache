@@ -25,6 +25,8 @@ use hyper;
 #[cfg(feature = "jsonwebtoken")]
 use jwt;
 use lru_disk_cache;
+#[cfg(feature = "memcached")]
+use memcached;
 use native_tls;
 #[cfg(feature = "openssl")]
 use openssl;
@@ -42,6 +44,7 @@ error_chain! {
         Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
         Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
         Bincode(bincode::Error);
+        Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
