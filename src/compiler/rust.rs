@@ -367,7 +367,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
 
     for item in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
-        let arg = item.arg.to_os_string();
         let value = match item.arg.get_value() {
             Some(v) => {
                 if let Ok(v) = OsString::from(v).into_string() {
@@ -378,7 +377,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             None => None,
         };
-        args.push((arg, item.arg.get_value().map(|s| s.into())));
         match item.data {
             Some(TooHard) => {
                 return CompilerArguments::CannotCache(item.arg.to_str().expect(
@@ -458,7 +456,14 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     }
                 }
             }
-            Some(PassThrough) => {}
+            Some(PassThrough) => {
+                match item.arg.to_str() {
+                    // Skip --color argument, as we unconditionaly add --color=always
+                    // and strip color when necessary.
+                    Some("--color") => continue,
+                    _ => {},
+                }
+            }
             None => {
                 match item.arg {
                     Argument::Raw(ref val) => {
@@ -473,7 +478,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
             }
         }
+        args.push((item.arg.to_os_string(), item.arg.get_value().map(|s| s.into())));
     }
+    args.push((OsString::from("--color"), Some(OsString::from("always"))));
 
     // Unwrap required values.
     macro_rules! req {
