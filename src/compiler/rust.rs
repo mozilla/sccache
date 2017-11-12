@@ -589,6 +589,25 @@ impl<T> CompilerHasher<T> for RustHasher
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_vec();
         let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
+
+        // Absolute path to package (crate) being compiled. Usually contains "Cargo.toml" and "target".
+        let mut package_absolute_path = None;
+        // If output directory specified as absolute path
+        if output_dir.has_root() {
+            let mut i = None;
+            // .. find last component with name "target"
+            for (j, p) in output_dir.iter().enumerate() {
+                if p == r"target" {
+                    i = Some(j);
+                }
+            }
+            if i.is_some() {
+                // .. and take "target"'s parent as path to package
+                let p : PathBuf = output_dir.iter().take(i.unwrap()).collect();
+                package_absolute_path = p.to_str().map(|s| s.to_owned());
+            }
+        }
+
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
                                         -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
@@ -601,8 +620,7 @@ impl<T> CompilerHasher<T> for RustHasher
                 m.update(d.as_bytes());
             }
             // 3. The full commandline (self.arguments)
-            // TODO: there will be full paths here, it would be nice to
-            // normalize them so we can get cross-machine cache hits.
+            // TODO: normalize paths in arguments so we can get cross-machine cache hits.
             // A few argument types are not passed in a deterministic order
             // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
             // and append them to the rest of the arguments.
@@ -616,7 +634,20 @@ impl<T> CompilerHasher<T> for RustHasher
                         iter::once(arg).chain(val.as_ref())
                     })
                     .fold(OsString::new(), |mut a, b| {
-                        a.push(b);
+                        match package_absolute_path {
+                            // If we know absolute path of compiled package
+                            Some(ref prefix) => {
+                                let b = b.to_str().unwrap_or("");
+                                // .. remove it from all arguments
+                                for p in b.split(prefix) {
+                                    a.push(p);
+                                }
+                            },
+                            // Otherwise hash args as-is
+                            None => {
+                                a.push(b);
+                            }
+                        }
                         a
                     })
             };
