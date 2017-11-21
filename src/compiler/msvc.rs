@@ -278,7 +278,7 @@ pub fn parse_arguments(arguments: &[OsString],
                             // Can't cache compilations with multiple inputs.
                             return CompilerArguments::CannotCache("multiple input files");
                         }
-                        input_arg = Some(val.clone());
+                        input_arg = Some(PathBuf::from(val));
                     }
                     Argument::UnknownFlag(ref flag) => common_args.push(flag.clone()),
                     _ => unreachable!(),
@@ -298,24 +298,47 @@ pub fn parse_arguments(arguments: &[OsString],
     }
     let (input, language) = match input_arg {
         Some(i) => {
-            match Language::from_file_name(Path::new(&i)) {
-                Some(l) => (i.to_owned(), l),
+            match Language::from_file_name(&i) {
+                Some(l) => (i, l),
                 None => return CompilerArguments::CannotCache("unknown source language"),
             }
         }
         // We can't cache compilation without an input.
         None => return CompilerArguments::CannotCache("no input file"),
     };
+
     let mut outputs = HashMap::new();
-    match output_arg {
-        // If output file name is not given, use default naming rule
-        None => {
-            outputs.insert("obj", Path::new(&input).with_extension("obj"));
-        },
-        Some(o) => {
-            outputs.insert("obj", PathBuf::from(o));
-        },
+
+    {
+        let input_file_name = match input.file_name() {
+            Some(p) => Path::new(p),
+            None => &input,
+        };
+
+        match output_arg {
+            // If output file name is not given, use default naming rule
+            None => {
+                outputs.insert("obj", input_file_name.with_extension("obj"));
+            }
+            Some(o) => {
+                let mut path = PathBuf::from(o);
+
+                let is_dir = match path.to_str() {
+                    Some(s) => s.ends_with("/") || s.ends_with("\\"),
+                    None => false,
+                };
+
+                // If a directory is specified, construct the real path to the
+                // object file.
+                if is_dir {
+                    path.push(input_file_name.with_extension("obj"));
+                }
+
+                outputs.insert("obj", path);
+            }
+        }
     }
+
     // -Fd is not taken into account unless -Zi is given
     if debug_info {
         match pdb {
@@ -328,8 +351,9 @@ pub fn parse_arguments(arguments: &[OsString],
             }
         };
     }
+
     CompilerArguments::Ok(ParsedArguments {
-        input: input.into(),
+        input: input,
         language: language,
         depfile: depfile.map(|d| d.into()),
         outputs: outputs,
@@ -776,6 +800,32 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_output_dir() {
+        let args = ovec!["-c", r"-Fox64/Debug/", "../foo.c"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("../foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("x64/Debug/foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
