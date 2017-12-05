@@ -100,21 +100,49 @@ pub trait CountableMeter<K, V>: Meter<K, V> {
 }
 
 /// `Count` is all no-ops, the number of entries in the map is the size.
-impl<K, V> CountableMeter<K, V> for Count {
-    fn add(&self, _current: (), _amount: ()) -> () {}
-    fn sub(&self, _current: (), _amount: ()) -> () {}
-    fn size(&self, _current: ()) -> Option<usize> { None }
+impl<K, V, T: Meter<K, V>> CountableMeter<K, V> for T
+    where T: CountableMeterWithMeasure<K, V, <T as Meter<K, V>>::Measure>
+{
+    fn add(&self, current: Self::Measure, amount: Self::Measure) -> Self::Measure {
+        CountableMeterWithMeasure::meter_add(self, current, amount)
+    }
+    fn sub(&self, current: Self::Measure, amount: Self::Measure) -> Self::Measure {
+        CountableMeterWithMeasure::meter_sub(self, current, amount)
+    }
+    fn size(&self, current: Self::Measure) -> Option<usize> {
+        CountableMeterWithMeasure::meter_size(self, current)
+    }
+}
+
+pub trait CountableMeterWithMeasure<K, V, M> {
+    /// Add `amount` to `current` and return the sum.
+    fn meter_add(&self, current: M, amount: M) -> M;
+    /// Subtract `amount` from `current` and return the difference.
+    fn meter_sub(&self, current: M, amount: M) -> M;
+    /// Return `current` as a `usize` if possible, otherwise return `None`.
+    ///
+    /// If this method returns `None` the cache will use the number of cache entries as
+    /// its size.
+    fn meter_size(&self, current: M) -> Option<usize>;
 }
 
 /// For any other `Meter` with `Measure=usize`, just do the simple math.
-impl<K, V, T: Meter<K, V, Measure=usize>> CountableMeter<K, V> for T {
-    fn add(&self, current: usize, amount: usize) -> usize {
+impl<K, V, T> CountableMeterWithMeasure<K, V, usize> for T
+    where T: Meter<K, V>
+{
+    fn meter_add(&self, current: usize, amount: usize) -> usize {
         current + amount
     }
-    fn sub(&self, current: usize, amount: usize) -> usize {
+    fn meter_sub(&self, current: usize, amount: usize) -> usize {
         current - amount
     }
-    fn size(&self, current: usize) -> Option<usize> { Some(current) }
+    fn meter_size(&self, current: usize) -> Option<usize> { Some(current) }
+}
+
+impl<K, V> CountableMeterWithMeasure<K, V, ()> for Count {
+    fn meter_add(&self, _current: (), _amount: ()) {}
+    fn meter_sub(&self, _current: (), _amount: ()) {}
+    fn meter_size(&self, _current: ()) -> Option<usize> { None }
 }
 
 #[cfg(feature = "heapsize")]
