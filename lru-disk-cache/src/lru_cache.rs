@@ -96,7 +96,7 @@ pub trait CountableMeter<K, V>: Meter<K, V> {
     ///
     /// If this method returns `None` the cache will use the number of cache entries as
     /// its size.
-    fn size(&self, current: Self::Measure) -> Option<usize>;
+    fn size(&self, current: Self::Measure) -> Option<u64>;
 }
 
 /// `Count` is all no-ops, the number of entries in the map is the size.
@@ -109,7 +109,7 @@ impl<K, V, T: Meter<K, V>> CountableMeter<K, V> for T
     fn sub(&self, current: Self::Measure, amount: Self::Measure) -> Self::Measure {
         CountableMeterWithMeasure::meter_sub(self, current, amount)
     }
-    fn size(&self, current: Self::Measure) -> Option<usize> {
+    fn size(&self, current: Self::Measure) -> Option<u64> {
         CountableMeterWithMeasure::meter_size(self, current)
     }
 }
@@ -123,7 +123,7 @@ pub trait CountableMeterWithMeasure<K, V, M> {
     ///
     /// If this method returns `None` the cache will use the number of cache entries as
     /// its size.
-    fn meter_size(&self, current: M) -> Option<usize>;
+    fn meter_size(&self, current: M) -> Option<u64>;
 }
 
 /// For any other `Meter` with `Measure=usize`, just do the simple math.
@@ -136,13 +136,13 @@ impl<K, V, T> CountableMeterWithMeasure<K, V, usize> for T
     fn meter_sub(&self, current: usize, amount: usize) -> usize {
         current - amount
     }
-    fn meter_size(&self, current: usize) -> Option<usize> { Some(current) }
+    fn meter_size(&self, current: usize) -> Option<u64> { Some(current as u64) }
 }
 
 impl<K, V> CountableMeterWithMeasure<K, V, ()> for Count {
     fn meter_add(&self, _current: (), _amount: ()) {}
     fn meter_sub(&self, _current: (), _amount: ()) {}
-    fn meter_size(&self, _current: ()) -> Option<usize> { None }
+    fn meter_size(&self, _current: ()) -> Option<u64> { None }
 }
 
 #[cfg(feature = "heapsize")]
@@ -176,7 +176,7 @@ pub use heap_meter::*;
 pub struct LruCache<K: Eq + Hash, V, S: BuildHasher = RandomState, M: CountableMeter<K, V> = Count> {
     map: LinkedHashMap<K, V, S>,
     current_measure: M::Measure,
-    max_capacity: usize,
+    max_capacity: u64,
     meter: M,
 }
 
@@ -189,7 +189,7 @@ impl<K: Eq + Hash, V> LruCache<K, V> {
     /// use lru_cache::LruCache;
     /// let mut cache: LruCache<i32, &str> = LruCache::new(10);
     /// ```
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: u64) -> Self {
         LruCache {
             map: LinkedHashMap::new(),
             current_measure: (),
@@ -233,7 +233,7 @@ impl<K: Eq + Hash, V, M: CountableMeter<K, V>> LruCache<K, V, RandomState, M> {
     /// assert_eq!(cache.size(), 4);
     /// assert_eq!(cache.len(), 2);
     /// ```
-    pub fn with_meter(capacity: usize, meter: M) -> LruCache<K, V, RandomState, M> {
+    pub fn with_meter(capacity: u64, meter: M) -> LruCache<K, V, RandomState, M> {
         LruCache {
             map: LinkedHashMap::new(),
             current_measure: Default::default(),
@@ -245,7 +245,7 @@ impl<K: Eq + Hash, V, M: CountableMeter<K, V>> LruCache<K, V, RandomState, M> {
 
 impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
     /// Creates an empty cache that can hold at most `capacity` items with the given hash builder.
-    pub fn with_hasher(capacity: usize, hash_builder: S) -> LruCache<K, V, S, Count> {
+    pub fn with_hasher(capacity: u64, hash_builder: S) -> LruCache<K, V, S, Count> {
         LruCache {
             map: LinkedHashMap::with_hasher(hash_builder),
             current_measure: (),
@@ -319,7 +319,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
 impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S, M> {
     /// Creates an empty cache that can hold at most `capacity` as measured by `meter` with the
     /// given hash builder.
-    pub fn with_meter_and_hasher(capacity: usize, meter: M, hash_builder: S) -> Self {
+    pub fn with_meter_and_hasher(capacity: u64, meter: M, hash_builder: S) -> Self {
         LruCache {
             map: LinkedHashMap::with_hasher(hash_builder),
             current_measure: Default::default(),
@@ -338,7 +338,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// let mut cache: LruCache<i32, &str> = LruCache::new(2);
     /// assert_eq!(cache.capacity(), 2);
     /// ```
-    pub fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> u64 {
         self.max_capacity
     }
 
@@ -458,7 +458,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// assert_eq!(cache.get_mut(&2), None);
     /// assert_eq!(cache.get_mut(&3), Some(&mut "c"));
     /// ```
-    pub fn set_capacity(&mut self, capacity: usize) {
+    pub fn set_capacity(&mut self, capacity: u64) {
         while self.size() > capacity  {
             self.remove_lru();
         }
@@ -494,9 +494,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
 
     /// Returns the size of all the key-value pairs in the cache, as measured by the `Meter` used
     /// by the cache.
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> u64 {
         self.meter.size(self.current_measure)
-            .unwrap_or_else(|| self.map.len())
+            .unwrap_or_else(|| self.map.len() as u64)
     }
 
     /// Returns `true` if the cache contains no key-value pairs.

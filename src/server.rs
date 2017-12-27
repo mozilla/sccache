@@ -698,8 +698,8 @@ pub struct ServerStats {
 pub struct ServerInfo {
     pub stats: ServerStats,
     pub cache_location: String,
-    pub cache_size: Option<usize>,
-    pub max_cache_size: Option<usize>,
+    pub cache_size: Option<u64>,
+    pub max_cache_size: Option<u64>,
 }
 
 impl Default for ServerStats {

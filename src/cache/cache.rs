@@ -54,7 +54,7 @@ const APP_INFO: AppInfo = AppInfo {
     author: "Mozilla",
 };
 
-const TEN_GIGS: usize = 10 * 1024 * 1024 * 1024;
+const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Result of a cache lookup.
 pub enum Cache {
@@ -170,18 +170,18 @@ pub trait Storage {
     fn location(&self) -> String;
 
     /// Get the current storage usage, if applicable.
-    fn current_size(&self) -> Option<usize>;
+    fn current_size(&self) -> Option<u64>;
 
     /// Get the maximum storage size, if applicable.
-    fn max_size(&self) -> Option<usize>;
+    fn max_size(&self) -> Option<u64>;
 }
 
-fn parse_size(val: &str) -> Option<usize> {
+fn parse_size(val: &str) -> Option<u64> {
     let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
     re.captures(val)
         .and_then(|caps| {
             caps.get(1)
-                .and_then(|size| usize::from_str(size.as_str()).ok())
+                .and_then(|size| u64::from_str(size.as_str()).ok())
                 .and_then(|size| Some((size, caps.get(2))))
         })
         .and_then(|(size, suffix)| {
@@ -300,7 +300,7 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
         // Fall back to something, even if it's not very good.
         .unwrap_or(env::temp_dir().join("sccache_cache"));
     trace!("Using DiskCache({:?})", d);
-    let cache_size = env::var("SCCACHE_CACHE_SIZE")
+    let cache_size: u64 = env::var("SCCACHE_CACHE_SIZE")
         .ok()
         .and_then(|v| parse_size(&v))
         .unwrap_or(TEN_GIGS);
