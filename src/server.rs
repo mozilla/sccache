@@ -253,18 +253,20 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             })),
         ];
 
-	if timeout != Duration::new(0, 0) {
-            let shutdown_idle = ShutdownOrInactive {
-                rx: rx,
-                timeout: Timeout::new(timeout, &handle)?,
-                handle: handle.clone(),
-                timeout_dur: timeout,
-            };
-            futures.push(Box::new(shutdown_idle.map(|a| {
-                info!("shutting down due to being idle");
-                a
-            })));
-        }
+        let shutdown_idle = ShutdownOrInactive {
+            rx: rx,
+            timeout: if timeout != Duration::new(0, 0) {
+                Some(Timeout::new(timeout, &handle)?)
+            } else {
+                None
+            },
+            handle: handle.clone(),
+            timeout_dur: timeout,
+        };
+        futures.push(Box::new(shutdown_idle.map(|a| {
+            info!("shutting down due to being idle or request");
+            a
+        })));
 
         let server = future::select_all(futures);
         core.run(server)
@@ -908,7 +910,7 @@ impl<I: AsyncRead + AsyncWrite + 'static> Transport for SccacheTransport<I> {}
 struct ShutdownOrInactive {
     rx: mpsc::Receiver<ServerMessage>,
     handle: Handle,
-    timeout: Timeout,
+    timeout: Option<Timeout>,
     timeout_dur: Duration,
 }
 
@@ -923,13 +925,18 @@ impl Future for ShutdownOrInactive {
                 // Shutdown received!
                 Async::Ready(Some(ServerMessage::Shutdown)) => return Ok(().into()),
                 Async::Ready(Some(ServerMessage::Request)) => {
-                    self.timeout = Timeout::new(self.timeout_dur, &self.handle)?;
+                    if self.timeout_dur != Duration::new(0, 0) {
+                        self.timeout = Some(Timeout::new(self.timeout_dur, &self.handle)?);
+                    }
                 }
                 // All services have shut down, in theory this isn't possible...
                 Async::Ready(None) => return Ok(().into()),
             }
         }
-        self.timeout.poll()
+        match self.timeout {
+            None => Ok(Async::NotReady),
+            Some(ref mut timeout) => timeout.poll(),
+        }
     }
 }
 
