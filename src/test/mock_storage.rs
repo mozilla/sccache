@@ -46,6 +46,6 @@ impl Storage for MockStorage {
         f_ok(Duration::from_secs(0))
     }
     fn location(&self) -> String { "Mock Storage".to_string() }
-    fn current_size(&self) -> Option<usize> { None }
-    fn max_size(&self) -> Option<usize> { None }
+    fn current_size(&self) -> Option<u64> { None }
+    fn max_size(&self) -> Option<u64> { None }
 }

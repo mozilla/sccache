@@ -40,7 +40,7 @@ use std::process::Command;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;
 use std::time::Duration;
-use std::usize;
+use std::u64;
 use test::utils::*;
 use tokio_core::reactor::Core;
 
@@ -50,7 +50,7 @@ struct ServerOptions {
     /// The server's idle shutdown timeout.
     idle_timeout: Option<u64>,
     /// The maximum size of the disk cache.
-    cache_size: Option<usize>,
+    cache_size: Option<u64>,
 }
 
 /// Run a server on a background thread, and return a tuple of useful things.
@@ -71,7 +71,7 @@ fn run_server_thread<T>(cache_dir: &Path, options: T)
     let cache_size = options.as_ref()
                             .and_then(|o| o.cache_size.as_ref())
                             .map(|s| *s)
-                            .unwrap_or(usize::MAX);
+                            .unwrap_or(u64::MAX);
     let pool = CpuPool::new(1);
     let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
 

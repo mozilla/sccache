@@ -102,7 +102,7 @@ impl Storage for RedisCache {
 
     /// Returns the current cache size. This value is aquired via
     /// the Redis INFO command (used_memory).
-    fn current_size(&self) -> Option<usize> {
+    fn current_size(&self) -> Option<u64> {
         self.connect().ok()
             .and_then(|c| cmd("INFO").query(&c).ok())
             .and_then(|i: InfoDict| i.get("used_memory"))
@@ -111,13 +111,13 @@ impl Storage for RedisCache {
     /// Returns the maximum cache size. This value is read via
     /// the Redis CONFIG command (maxmemory). If the server has no
     /// configured limit, the result is None.
-    fn max_size(&self) -> Option<usize> {
+    fn max_size(&self) -> Option<u64> {
         self.connect().ok()
             .and_then(|c| cmd("CONFIG").arg("GET").arg("maxmemory").query(&c).ok())
             .and_then(|h: HashMap<String, usize>| h.get("maxmemory").map(|s| *s))
             .and_then(|s| {
                 if s != 0 {
-                    Some(s)
+                    Some(s as u64)
                 } else {
                     None
                 }
