@@ -109,6 +109,24 @@ fn test_server_shutdown() {
     child.join().unwrap();
 }
 
+/// The server will shutdown when requested when the idle timeout is disabled.
+#[test]
+fn test_server_shutdown_no_idle() {
+    let f = TestFixture::new();
+    // Set a ridiculously low idle timeout.
+    let (port, _sender, _storage, child) = run_server_thread(
+        &f.tempdir.path(),
+        ServerOptions {
+            idle_timeout: Some(0),
+            ..Default::default()
+        },
+    );
+
+    let conn = connect_to_server(port).unwrap();
+    request_shutdown(conn).unwrap();
+    child.join().unwrap();
+}
+
 #[test]
 fn test_server_idle_timeout() {
     let f = TestFixture::new();
