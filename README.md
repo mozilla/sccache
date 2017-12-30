@@ -66,6 +66,14 @@ Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](d
 
 ---
 
+Server Options
+--------------
+
+- `SCCACHE_SERVER_PORT` (default: 4226): The local TCP port the server should listen on.
+- `SCCACHE_AUTOSTART` (default: `true`): Whether to automatically start the server if it can't be connected to.
+
+---
+
 Storage Options
 ---------------
 

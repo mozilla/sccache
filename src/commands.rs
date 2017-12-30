@@ -71,6 +71,14 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+/// Get whether the server should be started automatically.
+fn should_autostart() -> bool {
+    env::var("SCCACHE_AUTOSTART")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false)
+}
+
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
@@ -343,8 +351,10 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
     trace!("connect_or_start_server({})", port);
     match connect_to_server(port) {
         Ok(server) => Ok(server),
-        Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused ||
-                      e.kind() == io::ErrorKind::TimedOut => {
+        Err(ref e)
+            if should_autostart() &&
+                   (e.kind() == io::ErrorKind::ConnectionRefused ||
+                        e.kind() == io::ErrorKind::TimedOut) => {
             // If the connection was refused we probably need to start
             // the server.
             //TODO: check startup value!
@@ -352,7 +362,7 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
             let server = connect_with_retry(port)?;
             Ok(server)
         }
-        Err(e) => Err(e.into())
+        Err(e) => Err(e.into()),
     }
 }
 
