@@ -28,7 +28,7 @@ futures = "0.1.11"
 futures-cpupool = "0.1"
 hyper = { version = "0.11", optional = true }
 hyper-tls = { version = "0.1", optional = true }
-jsonwebtoken = { version = "2.0", optional = true }
+jsonwebtoken = { version = "4.0", optional = true }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
@@ -39,7 +39,7 @@ openssl = { version = "0.9", optional = true }
 redis = { version = "0.8.0", optional = true }
 regex = "0.2"
 retry = "0.4.0"
-ring = "0.9.0"
+ring = "0.13.0-alpha"
 rust-crypto = { version = "0.2.36", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
