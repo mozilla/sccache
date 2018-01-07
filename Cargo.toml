@@ -15,8 +15,8 @@ appveyor = { repository = "mozilla/sccache" }
 
 [dependencies]
 app_dirs = "1.1.1"
-base64 = "0.5.2"
-bincode = "0.8"
+base64 = "0.9.0"
+bincode = "0.9"
 byteorder = "1.0"
 chrono = { version = "0.3", optional = true }
 clap = "2.23.0"
@@ -62,7 +62,7 @@ zip = { version = "0.2", default-features = false }
 [dev-dependencies]
 assert_cli = "0.5"
 gcc = "0.3"
-itertools = "0.6"
+itertools = "0.7"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"
