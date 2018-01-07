@@ -119,7 +119,7 @@ impl Bucket {
         Box::new(creds_opt_future.and_then(move |creds_opt| {
             let mut request = Request::new(Method::Post, url.parse().unwrap());
             {
-                let mut headers = request.headers_mut();
+                let headers = request.headers_mut();
                 if let Some(creds) = creds_opt {
                     headers.set(Authorization(Bearer { token: creds.token }));
                 }
@@ -257,7 +257,7 @@ impl GCSCredentialProvider {
 
             let mut request = Request::new(Method::Post, url.parse().unwrap());
             {
-                let mut headers = request.headers_mut();
+                let headers = request.headers_mut();
                 headers.set(ContentType::form_url_encoded());
                 headers.set(ContentLength(params.len() as u64));
             }
@@ -292,7 +292,7 @@ impl GCSCredentialProvider {
     pub fn credentials(&self, client: &HyperClient) -> SFuture<GCSCredential> {
         let mut future_opt = self.cached_credentials.borrow_mut();
 
-        let needs_refresh = match Option::as_mut(&mut future_opt).map(|mut f| f.poll()) {
+        let needs_refresh = match Option::as_mut(&mut future_opt).map(|f| f.poll()) {
             None => true,
             Some(Ok(Async::Ready(ref creds))) => creds.expiration_time < chrono::UTC::now(),
             _ => false

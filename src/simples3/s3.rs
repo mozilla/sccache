@@ -1,6 +1,7 @@
 // Originally from https://github.com/rust-lang/crates.io/blob/master/src/s3/lib.rs
 //#![deny(warnings)]
 
+#[allow(unused_imports)]
 use std::ascii::AsciiExt;
 use std::fmt;
 
