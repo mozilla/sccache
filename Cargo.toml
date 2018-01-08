@@ -57,7 +57,7 @@ tokio-tls = "0.1"
 uuid = { version = "0.5", features = ["v4"] }
 url = { version = "1.0", optional = true }
 which = "1.0"
-zip = { version = "0.2", default-features = false }
+zip = { version = "=0.2.3", default-features = false }
 
 [dev-dependencies]
 assert_cli = "0.5"
