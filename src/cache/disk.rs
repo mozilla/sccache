@@ -40,7 +40,7 @@ pub struct DiskCache {
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
     pub fn new<T: AsRef<OsStr>>(root: &T,
-                                max_size: usize,
+                                max_size: u64,
                                 pool: &CpuPool) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
@@ -98,6 +98,6 @@ impl Storage for DiskCache {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
 
-    fn current_size(&self) -> Option<usize> { Some(self.lru.lock().unwrap().size()) }
-    fn max_size(&self) -> Option<usize> { Some(self.lru.lock().unwrap().capacity()) }
+    fn current_size(&self) -> Option<u64> { Some(self.lru.lock().unwrap().size()) }
+    fn max_size(&self) -> Option<u64> { Some(self.lru.lock().unwrap().capacity()) }
 }

@@ -128,7 +128,7 @@ impl LruDiskCache {
     ///
     /// The cache is not observant of changes to files under `path` from external sources, it
     /// expects to have sole maintence of the contents.
-    pub fn new<T>(path: T, size: usize) -> Result<Self>
+    pub fn new<T>(path: T, size: u64) -> Result<Self>
         where PathBuf: From<T>
     {
         LruDiskCache {
@@ -138,10 +138,10 @@ impl LruDiskCache {
     }
 
     /// Return the current size of all the files in the cache.
-    pub fn size(&self) -> usize { self.lru.size() }
+    pub fn size(&self) -> u64 { self.lru.size() }
 
     /// Return the maximum size of the cache.
-    pub fn capacity(&self) -> usize { self.lru.capacity() }
+    pub fn capacity(&self) -> u64 { self.lru.capacity() }
 
     /// Return the path in which the cache is stored.
     pub fn path(&self) -> &Path { self.root.as_path() }

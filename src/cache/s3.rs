@@ -110,6 +110,6 @@ impl Storage for S3Cache {
         format!("S3, bucket: {}", self.bucket)
     }
 
-    fn current_size(&self) -> Option<usize> { None }
-    fn max_size(&self) -> Option<usize> { None }
+    fn current_size(&self) -> Option<u64> { None }
+    fn max_size(&self) -> Option<u64> { None }
 }

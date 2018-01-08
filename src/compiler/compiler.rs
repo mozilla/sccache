@@ -602,7 +602,7 @@ mod test {
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
-    use std::usize;
+    use std::u64;
     use test::mock_storage::MockStorage;
     use test::utils::*;
     use tokio_core::reactor::Core;
@@ -707,7 +707,7 @@ mod test {
         let core = Core::new().unwrap();
         let handle = core.handle();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
-                                     usize::MAX,
+                                     u64::MAX,
                                      &pool);
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -788,7 +788,7 @@ mod test {
         let core = Core::new().unwrap();
         let handle = core.handle();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
-                                     usize::MAX,
+                                     u64::MAX,
                                      &pool);
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -934,7 +934,7 @@ mod test {
         let core = Core::new().unwrap();
         let handle = core.handle();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
-                                     usize::MAX,
+                                     u64::MAX,
                                      &pool);
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1022,7 +1022,7 @@ mod test {
         let core = Core::new().unwrap();
         let handle = core.handle();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
-                                     usize::MAX,
+                                     u64::MAX,
                                      &pool);
         let storage: Arc<Storage> = Arc::new(storage);
         // Pretend to be GCC.
