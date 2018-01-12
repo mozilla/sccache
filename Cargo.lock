@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "sccache"
-version = "0.2.4-pre"
+version = "0.2.5-pre"
 dependencies = [
  "app_dirs 1.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "assert_cli 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -994,7 +994,7 @@ dependencies = [
  "uuid 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "which 1.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "zip 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zip 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1546,7 +1546,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "zip"
-version = "0.2.6"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "flate2 0.2.20 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1734,4 +1734,4 @@ dependencies = [
 "checksum winapi-x86_64-pc-windows-gnu 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)" = "98f12c52b2630cd05d2c3ffd8e008f7f48252c042b4871c72aed9dc733b96668"
 "checksum ws2_32-sys 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "d59cefebd0c892fa2dd6de581e937301d8552cb44489cdff035c6187cb63fa5e"
 "checksum xdg 2.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "a66b7c2281ebde13cf4391d70d4c7e5946c3c25e72a7b859ca8f677dcd0b0c61"
-"checksum zip 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)" = "21c4067ff2f91926cb9aef8a8a55f8568b0f2631bb6b827d0fb9770ff5894e43"
+"checksum zip 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "a8e9988af1aa47bb7ccb1a61fd1261c45f646dda65ea00c6562d6b611403acf9"

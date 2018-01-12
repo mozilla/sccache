@@ -126,10 +126,7 @@ fn hash_source_files<T>(creator: &T,
 {
     let start = Instant::now();
     // Get the full list of source files from rustc's dep-info.
-    let temp_dir = match TempDir::new("sccache") {
-        Ok(d) => d,
-        _ => return f_err("Failed to create temp dir"),
-    };
+    let temp_dir = ftry!(TempDir::new("sccache").chain_err(|| "Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
