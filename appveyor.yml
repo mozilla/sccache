@@ -12,6 +12,10 @@ environment:
     - channel: 1.20.0 # Oldest supported version. Keep in sync with README.md.
       target: x86_64-pc-windows-msvc
 
+cache:
+  - 'C:\Users\appveyor\.cargo'
+  - target
+
 matrix:
   allow_failures:
     - channel: nightly
