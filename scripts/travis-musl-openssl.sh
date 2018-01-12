@@ -1,5 +1,5 @@
 #!/bin/bash
-set -vex
+set -ex
 
 case "$TARGET" in
     x86_64-*)
