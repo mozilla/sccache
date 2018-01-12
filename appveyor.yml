@@ -9,7 +9,7 @@ environment:
     - channel: nightly
       target: x86_64-pc-windows-msvc
       EXTRA_FEATURES: unstable
-    - channel: 1.19.0 # Oldest supported version. Keep in sync with README.md.
+    - channel: 1.20.0 # Oldest supported version. Keep in sync with README.md.
       target: x86_64-pc-windows-msvc
 
 matrix:

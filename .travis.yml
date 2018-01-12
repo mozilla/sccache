@@ -8,7 +8,7 @@ matrix:
     - os: osx
 
     # rustc version compat
-    - rust: 1.19.0 # oldest supported version, keep in sync with README.md
+    - rust: 1.20.0 # oldest supported version, keep in sync with README.md
     - rust: beta
     - rust: nightly
 
