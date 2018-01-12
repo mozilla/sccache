@@ -30,6 +30,7 @@ matrix:
         apt:
           packages:
           - musl-tools
+          - gcc-multilib
   allow_failures:
     - rust: nightly
 
