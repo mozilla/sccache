@@ -32,6 +32,7 @@ test_script:
 branches:
   only:
     - master
+    - /\d+\.\d+\.\d+/
 
 before_deploy:
   - ps: |
@@ -47,8 +48,9 @@ before_deploy:
 deploy:
   artifact: /.*\.tar.gz/
   auth_token:
-    secure: nHB4fVo+y/Aak+L0nYfrT8Rcs8OfUNm0F2xcIVFVYJ9ehf0CzvCmSMUvWguM0kKp
+    secure: W0QWCXm6EgiwSZ43z64VZdxZSHNsZwaulEthPjcn6L4lBcA4JSCkpsjAMA9o9agD
   description: ''
   on:
     appveyor_repo_tag: true
   provider: GitHub
+  force_update: true
