@@ -23,14 +23,6 @@ matrix:
         apt:
           packages:
           - musl-tools
-    - env: DEPLOY=1 TARGET=i686-unknown-linux-musl OPENSSL_DIR=$HOME/openssl-musl
-      before_script: ./scripts/travis-musl-openssl.sh
-      script: cargo build --release --target $TARGET --features=all
-      addons:
-        apt:
-          packages:
-          - musl-tools
-          - gcc-multilib
   allow_failures:
     - rust: nightly
 
