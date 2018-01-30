@@ -33,7 +33,7 @@ jsonwebtoken = { version = "4.0", optional = true }
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.3.6"
-lru-disk-cache = { path = "lru-disk-cache", version = "0.1.0" }
+lru-disk-cache = { path = "lru-disk-cache", version = "0.2.0" }
 memcached-rs = { version = "0.1" , optional = true }
 native-tls = "0.1"
 num_cpus = "1.0"

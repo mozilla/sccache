@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "lru-disk-cache"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "filetime 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "linked-hash-map 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1013,7 +1013,7 @@ dependencies = [
  "libc 0.2.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "local-encoding 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "lru-disk-cache 0.1.0",
+ "lru-disk-cache 0.2.0",
  "memcached-rs 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio-named-pipes 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "native-tls 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
