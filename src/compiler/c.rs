@@ -283,13 +283,15 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION : &'static [u8] = b"6";
+pub const CACHE_VERSION: &[u8] = b"6";
 
-/// Environment variables that are factored into the cache key.
-pub const CACHED_ENV_VARS : &'static [&'static str] = &[
-    "MACOSX_DEPLOYMENT_TARGET",
-    "IPHONEOS_DEPLOYMENT_TARGET",
-];
+lazy_static! {
+    /// Environment variables that are factored into the cache key.
+    static ref CACHED_ENV_VARS: HashSet<&'static OsStr> = [
+        "MACOSX_DEPLOYMENT_TARGET",
+        "IPHONEOS_DEPLOYMENT_TARGET",
+    ].iter().map(OsStr::new).collect();
+}
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 pub fn hash_key(compiler_digest: &str,
@@ -306,10 +308,8 @@ pub fn hash_key(compiler_digest: &str,
     for arg in arguments {
         arg.hash(&mut HashToDigest { digest: &mut m });
     }
-    //TODO: use lazy_static.
-    let cached_env_vars: HashSet<OsString> = CACHED_ENV_VARS.iter().map(|v| OsStr::new(v).to_os_string()).collect();
     for &(ref var, ref val) in env_vars.iter() {
-        if cached_env_vars.contains(var) {
+        if CACHED_ENV_VARS.contains(var.as_os_str()) {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(&b"="[..]);
             val.hash(&mut HashToDigest { digest: &mut m });

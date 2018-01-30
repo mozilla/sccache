@@ -61,6 +61,7 @@ uuid = { version = "0.5", features = ["v4"] }
 url = { version = "1.0", optional = true }
 which = "1.0"
 zip = { version = "=0.2.3", default-features = false }
+lazy_static = "1.0.0"
 
 [dev-dependencies]
 assert_cli = "0.5"

@@ -41,6 +41,8 @@ extern crate hyper_tls;
 extern crate jsonwebtoken as jwt;
 #[cfg(windows)]
 extern crate kernel32;
+#[macro_use]
+extern crate lazy_static;
 extern crate local_encoding;
 #[macro_use]
 extern crate log;

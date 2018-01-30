@@ -27,7 +27,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
 use std::io::Read;
-use std::iter::{self, FromIterator};
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time::Instant;
@@ -39,11 +39,11 @@ use errors::*;
 
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
 #[cfg(not(windows))]
-const LIBS_DIR: &'static str = "lib";
+const LIBS_DIR: &str = "lib";
 
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
 #[cfg(windows)]
-const LIBS_DIR: &'static str = "bin";
+const LIBS_DIR: &str = "bin";
 
 /// A struct on which to hang a `Compiler` impl.
 #[derive(Debug, Clone)]
@@ -93,11 +93,16 @@ pub struct RustCompilation {
     crate_name: String,
 }
 
-/// Emit types that we will cache.
-const ALLOWED_EMIT: &'static [&'static str] = &["link", "dep-info"];
+lazy_static! {
+    /// Emit types that we will cache.
+    static ref ALLOWED_EMIT: HashSet<&'static str> = [
+        "link",
+        "dep-info",
+    ].iter().map(|s| *s).collect();
+}
 
 /// Version number for cache key.
-const CACHE_VERSION: &'static [u8] = b"2";
+const CACHE_VERSION: &[u8] = b"2";
 
 /// Calculate the SHA-1 digest of each file in `files` on background threads
 /// in `pool`.
@@ -496,10 +501,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
-    //TODO: use lazy_static for this.
-    let allowed_emit = HashSet::from_iter(ALLOWED_EMIT.iter().map(|v| (*v).to_owned()));
-    let l = allowed_emit.len();
-    if emit.union(&allowed_emit).count() > l {
+    if emit.iter().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
         return CompilerArguments::CannotCache("unsupported --emit");
     }
     // Figure out the dep-info filename, if emitting dep-info.
@@ -556,7 +558,9 @@ impl<T> CompilerHasher<T> for RustHasher
         let me = *self;
         let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
-        // filtered_arguments omits --emit and --out-dir arguments.
+        // `filtered_arguments` omits --emit and --out-dir arguments.
+        // It's used for invoking rustc with `--emit=dep-info` to get the list of
+        // source files for this crate.
         let filtered_arguments = arguments.iter()
             .filter_map(|&(ref arg, ref val)| {
                 if arg == "--emit" || arg == "--out-dir" {
