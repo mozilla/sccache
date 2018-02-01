@@ -79,7 +79,7 @@ mio-named-pipes = "0.1"
 
 [features]
 default = ["s3"]
-all = ["redis", "s3", "memcached"]
+all = ["redis", "s3", "memcached", "gcs"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "simple-s3"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
