@@ -219,7 +219,7 @@ fn find_compilers() -> Vec<Compiler> {
 
 #[cfg(target_env="msvc")]
 fn find_compilers() -> Vec<Compiler> {
-    let tool = gcc::Config::new()
+    let tool = gcc::Build::new()
         .opt_level(1)
         .host("x86_64-pc-windows-msvc")
         .target("x86_64-pc-windows-msvc")
