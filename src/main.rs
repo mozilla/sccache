@@ -47,7 +47,6 @@ extern crate local_encoding;
 #[macro_use]
 extern crate log;
 extern crate lru_disk_cache;
-extern crate fern;
 #[cfg(test)]
 extern crate itertools;
 extern crate libc;
@@ -136,37 +135,10 @@ fn main() {
 }
 
 fn init_logging() {
-    match if env::var("RUST_LOG").is_ok() {
-        env_logger::init()
-            .map_err(|e| format!("{:?}", e))
-    } else {
-        match env::var("SCCACHE_LOG_LEVEL") {
-            Ok(log_level) => {
-                let log_level = match &*log_level.to_lowercase() {
-                    "off" => log::LogLevelFilter::Off,
-                    "trace" => log::LogLevelFilter::Trace,
-                    "debug" => log::LogLevelFilter::Debug,
-                    "info" => log::LogLevelFilter::Info,
-                    "warn" => log::LogLevelFilter::Warn,
-                    "error" => log::LogLevelFilter::Error,
-                    _ => panic!("Invalid log level {}", log_level),
-                };
-
-                let logger_config = fern::DispatchConfig {
-                    format: Box::new(|msg: &str, level: &log::LogLevel, _location: &log::LogLocation| {
-                        format!("[{}][{}] {}", time::now().strftime("%Y-%m-%d][%H:%M:%S").unwrap(), level, msg)
-                    }),
-                    //TODO: only the server process should output to the log file.
-                    output: vec![fern::OutputConfig::stdout(), fern::OutputConfig::file("sccache.log")],
-                    level: log::LogLevelFilter::Trace,
-                };
-                fern::init_global_logger(logger_config, log_level)
-                    .map_err(|e| format!("{:?}", e))
-            },
-            Err(_) => Ok(()),
+    if env::var("RUST_LOG").is_ok() {
+        match env_logger::init() {
+            Ok(_) => (),
+            Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
         }
-    } {
-        Ok(_) => (),
-        Err(e) => panic!(format!("Failed to initalize logging: {}", e)),
     }
 }

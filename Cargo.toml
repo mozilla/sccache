@@ -22,7 +22,6 @@ chrono = { version = "0.3", optional = true }
 clap = "2.23.0"
 env_logger = "0.4"
 error-chain = { version = "0.11", default-features = false }
-fern = "0.3.5"
 filetime = "0.1"
 futures = "0.1.11"
 futures-cpupool = "0.1"
