@@ -87,8 +87,5 @@ memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 
-[profile.release]
-debug = true
-
 [workspace]
 exclude = ["tests/test-crate"]
