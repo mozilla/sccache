@@ -65,7 +65,7 @@ lazy_static = "1.0.0"
 
 [dev-dependencies]
 assert_cli = "0.5"
-gcc = "0.3"
+cc = "1.0"
 itertools = "0.7"
 
 [target.'cfg(unix)'.dependencies]

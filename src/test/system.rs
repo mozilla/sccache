@@ -14,7 +14,7 @@
 
 #![allow(dead_code, unused_imports)]
 
-extern crate gcc;
+extern crate cc;
 
 use client::connect_with_retry;
 use env_logger;
@@ -219,7 +219,7 @@ fn find_compilers() -> Vec<Compiler> {
 
 #[cfg(target_env="msvc")]
 fn find_compilers() -> Vec<Compiler> {
-    let tool = gcc::Build::new()
+    let tool = cc::Build::new()
         .opt_level(1)
         .host("x86_64-pc-windows-msvc")
         .target("x86_64-pc-windows-msvc")
