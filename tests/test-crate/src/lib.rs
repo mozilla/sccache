@@ -1,3 +1,5 @@
+fn unused() {}
+
 #[cfg(test)]
 mod tests {
     #[test]

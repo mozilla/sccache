@@ -94,6 +94,10 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                          env_vars: &[(OsString, OsString)],
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>;
+
+    /// Return the state of any `--color` option passed to the compiler.
+    fn color_mode(&self) -> ColorMode;
+
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     fn get_cached_or_compile(self: Box<Self>,
@@ -358,6 +362,18 @@ pub enum CompileResult {
     NotCacheable,
     /// Not in cache, but compilation failed.
     CompileFailed,
+}
+
+/// The state of `--color` options passed to a compiler.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ColorMode {
+    Off,
+    On,
+    Auto,
+}
+
+impl Default for ColorMode {
+    fn default() -> ColorMode { ColorMode::Auto }
 }
 
 

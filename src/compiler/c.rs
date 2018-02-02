@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, Compiler, CompilerArguments, CompilerHasher, CompilerKind, Compilation, HashResult};
+use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+               Compilation, HashResult};
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
@@ -251,6 +252,11 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 }),
             })
         }))
+    }
+
+    fn color_mode(&self) -> ColorMode {
+        //TODO: actually implement this for C compilers
+        ColorMode::Auto
     }
 
     fn output_pretty(&self) -> Cow<str>

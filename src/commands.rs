@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use atty::{self, Stream};
 use client::{
     connect_to_server,
     connect_with_retry,
     ServerConnection,
 };
 use cmdline::{Command, StatsFormat};
+use compiler::ColorMode;
 use jobserver::Client;
 use log::LogLevel::Trace;
 use mock_command::{
@@ -41,6 +43,7 @@ use std::path::{
     Path,
 };
 use std::process;
+use strip_ansi_escapes::Writer;
 use tokio_core::reactor::Core;
 use util::run_input_output;
 use which::which_in;
@@ -436,16 +439,33 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
     None
 }
 
-/// Handle `response`, the output from running a compile on the server. Return the compiler exit status.
+/// Handle `response`, the output from running a compile on the server.
+/// Return the compiler exit status.
 fn handle_compile_finished(response: CompileFinished,
                            stdout: &mut Write,
                            stderr: &mut Write) -> Result<i32> {
     trace!("handle_compile_finished");
+    fn write_output(stream: Stream,
+                    writer: &mut Write,
+                    data: &[u8],
+                    color_mode: ColorMode) -> Result<()> {
+        // If the compiler options explicitly requested color output, or if this output stream
+        // is a terminal and the compiler options didn't explicitly request non-color output,
+        // then write the compiler output directly.
+        if color_mode == ColorMode::On || (atty::is(stream) && color_mode != ColorMode::Off)  {
+            writer.write_all(data)?;
+        } else {
+            // Remove escape codes (and thus colors) while writing.
+            let mut writer = Writer::new(writer);
+            writer.write_all(data)?;
+        }
+        Ok(())
+    }
     // It might be nice if the server sent stdout/stderr as the process
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
-    stdout.write_all(&response.stdout)?;
-    stderr.write_all(&response.stderr)?;
+    write_output(Stream::Stdout, stdout, &response.stdout, response.color_mode)?;
+    write_output(Stream::Stderr, stderr, &response.stderr, response.color_mode)?;
 
     if let Some(ret) = response.retcode {
         trace!("compiler exited with status {}", ret);

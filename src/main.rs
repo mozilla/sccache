@@ -15,6 +15,7 @@
 #![recursion_limit="128"]
 
 extern crate app_dirs;
+extern crate atty;
 extern crate base64;
 extern crate bincode;
 extern crate byteorder;
@@ -67,6 +68,7 @@ extern crate retry;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
+extern crate strip_ansi_escapes;
 extern crate tempdir;
 extern crate tempfile;
 extern crate time;
