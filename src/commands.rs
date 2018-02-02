@@ -37,6 +37,8 @@ use std::io::{
 };
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
 use std::path::{
     Path,
 };
@@ -436,16 +438,67 @@ fn status_signal(_status : process::ExitStatus) -> Option<i32> {
     None
 }
 
+/// Write content of `buf` to `out` assuming it is ANSI colored text
+/// and strip color formatting.
+fn write_all_stripping_colors(out: &mut Write, buf: Vec<u8>) -> Result<()> {
+    let mut start = 0;
+    let mut color_description = false;
+    for (i, &c) in buf.iter().enumerate() {
+        if color_description {
+            if c == b'm' {
+                color_description = false;
+                start = i + 1;
+            }
+        } else {
+            if c == b'\x1b' {
+                color_description = true;
+                if i > start {
+                    out.write_all(&buf[start..i])?;
+                }
+            }
+        }
+    }
+    if !color_description && start < buf.len() {
+        out.write_all(&buf[start..])?;
+    }
+    Ok(())
+}
+
+/// Check if stream handle is "connected" to terminal.
+#[cfg(unix)]
+fn isatty<T: AsRawFd>(stream: T) -> bool {
+    use libc;
+    unsafe {
+        let res = libc::isatty(stream.as_raw_fd());
+        return res != 0;
+    }
+}
+
+#[cfg(not(unix))]
+fn isatty<T>(_: T) -> bool {
+    false
+}
+
 /// Handle `response`, the output from running a compile on the server. Return the compiler exit status.
 fn handle_compile_finished(response: CompileFinished,
                            stdout: &mut Write,
-                           stderr: &mut Write) -> Result<i32> {
+                           stderr: &mut Write,
+                           colored_output: Option<bool>) -> Result<i32> {
     trace!("handle_compile_finished");
     // It might be nice if the server sent stdout/stderr as the process
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
-    stdout.write_all(&response.stdout)?;
-    stderr.write_all(&response.stderr)?;
+    if colored_output.unwrap_or(isatty(io::stdout())) {
+        stdout.write_all(&response.stdout)?;
+    } else {
+        write_all_stripping_colors(stdout, response.stdout)?;
+    }
+
+    if colored_output.unwrap_or(isatty(io::stderr())) {
+        stderr.write_all(&response.stderr)?;
+    } else {
+        write_all_stripping_colors(stderr, response.stderr)?;
+    }
 
     if let Some(ret) = response.retcode {
         trace!("compiler exited with status {}", ret);
@@ -457,6 +510,34 @@ fn handle_compile_finished(response: CompileFinished,
         println!("Missing compiler exit status!");
         Ok(-3)
     }
+}
+
+/// Examines compiler's `cmdline` to decide if we should pass colored output or strip colors from it.
+/// Some(true), None, Some(false) corresponds to "always", "auto", "never"
+fn want_color(cmdline: &Vec<OsString>) -> Option<bool> {
+    for i in 1..cmdline.len() {
+        let arg = cmdline[i].to_str();
+        // TODO: process -fdiagnostics-color and -fno-diagnostics-color
+        if !arg.map(|s| s.starts_with("--color")).unwrap_or(false) {
+            continue;
+        }
+
+        let mut arg = arg.unwrap();
+        if !arg.contains('=') {
+            let s = cmdline[i + 1].to_str();
+            if s.is_none() {
+                return None;
+            }
+            arg = s.unwrap();
+        }
+        if arg.ends_with("always") {
+            return Some(true);
+        } else if arg.ends_with("never") {
+            return Some(false);
+        }
+        break;
+    }
+    None
 }
 
 /// Handle `response`, the response from sending a `Compile` request to the server. Return the compiler exit status.
@@ -483,7 +564,7 @@ fn handle_compile_response<T>(mut creator: T,
             // Wait for CompileFinished.
             match conn.read_one_response() {
                 Ok(Response::CompileFinished(result)) => {
-                    return handle_compile_finished(result, stdout, stderr)
+                    return handle_compile_finished(result, stdout, stderr, want_color(&cmdline))
                 }
                 Ok(_) => bail!("unexpected response from server"),
                 Err(Error(ErrorKind::Io(ref e), _))
