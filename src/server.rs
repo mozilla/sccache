@@ -549,6 +549,7 @@ impl<C> SccacheService<C>
             CacheControl::Default
         };
         let out_pretty = hasher.output_pretty().into_owned();
+        let color_mode = hasher.color_mode();
         let result = hasher.get_cached_or_compile(self.creator.clone(),
                                                   self.storage.clone(),
                                                   arguments,
@@ -562,6 +563,7 @@ impl<C> SccacheService<C>
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
             let mut res = CompileFinished::default();
+            res.color_mode = color_mode;
             match result {
                 Ok((compiled, out)) => {
                     match compiled {

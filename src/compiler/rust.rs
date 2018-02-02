@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, Compiler, CompilerArguments, CompilerHasher, CompilerKind, Compilation,
-               HashResult};
+use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+               Compilation, HashResult};
 use compiler::args::*;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
@@ -78,6 +78,8 @@ pub struct ParsedArguments {
     crate_name: String,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
+    /// The value of any `--color` option passed on the commandline.
+    color_mode: ColorMode,
 }
 
 /// A struct on which to hang a `Compilation` impl.
@@ -309,6 +311,7 @@ enum RustArgAttribute {
     LinkPath,
     Emit,
     Extern,
+    Color,
     CrateName,
     CrateType,
     OutDir,
@@ -325,7 +328,7 @@ static ARGS: [(ArgInfo, RustArgAttribute); 33] = [
     take_arg!("--cap-lints", Path, CanBeSeparated('='), PassThrough),
     take_arg!("--cfg", Path, CanBeSeparated('='), PassThrough),
     take_arg!("--codegen", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("--color", Path, CanBeSeparated('='), PassThrough),
+    take_arg!("--color", String, CanBeSeparated('='), Color),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
     take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
     take_arg!("--deny", Path, CanBeSeparated('='), PassThrough),
@@ -367,6 +370,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut externs = vec![];
     let mut static_lib_names = vec![];
     let mut static_link_paths: Vec<PathBuf> = vec![];
+    let mut color_mode = ColorMode::Auto;
 
     for item in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
         let arg = item.arg.to_os_string();
@@ -380,7 +384,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             None => None,
         };
-        args.push((arg, item.arg.get_value().map(|s| s.into())));
+        // We'll drop --color arguments, we're going to pass --color=always and the client will
+        // strip colors if necessary.
+        match item.data {
+            Some(Color) => {}
+            _ => args.push((arg, item.arg.get_value().map(|s| s.into()))),
+        }
         match item.data {
             Some(TooHard) => {
                 return CompilerArguments::CannotCache(item.arg.to_str().expect(
@@ -459,6 +468,14 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                         }
                     }
                 }
+            }
+            Some(Color) => {
+                // We'll just assume the last specified value wins.
+                color_mode = match value.as_ref().map(|s| s.as_ref()) {
+                    Some("always") => ColorMode::On,
+                    Some("never") => ColorMode::Off,
+                    _ => ColorMode::Auto,
+                };
             }
             Some(PassThrough) => {}
             None => {
@@ -542,6 +559,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
+        color_mode,
     })
 }
 
@@ -556,7 +574,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
-        let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info } } = me;
+        let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
@@ -644,10 +662,12 @@ impl<T> CompilerHasher<T> for RustHasher
                     val.hash(&mut HashToDigest { digest: &mut m });
                 }
             }
-            // Turn arguments into a simple Vec<String> for compilation.
-            let arguments = arguments.into_iter()
+            // Turn arguments into a simple Vec<OsString> for compilation.
+            let arguments: Vec<OsString> = arguments.into_iter()
                 .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
-                .collect::<Vec<_>>();
+                // Always request color output, the client will strip colors if needed.
+                .chain(iter::once("--color=always".into()))
+                .collect();
             Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd, &env_vars).map(move |outputs| {
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.
@@ -672,6 +692,10 @@ impl<T> CompilerHasher<T> for RustHasher
                 }
             }))
         }))
+    }
+
+    fn color_mode(&self) -> ColorMode {
+        self.parsed_args.color_mode
     }
 
     fn output_pretty(&self) -> Cow<str> {
@@ -822,6 +846,21 @@ mod test {
                "--crate-name", "foo");
         fails!("--crate-type", "rlib,dylib", "--emit", "link", "foo.rs", "--out-dir", "out",
                "--crate-name", "foo");
+    }
+
+    #[test]
+    fn test_parse_arguments_color() {
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        assert_eq!(h.color_mode, ColorMode::Auto);
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                        "--color=always");
+        assert_eq!(h.color_mode, ColorMode::On);
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                        "--color=never");
+        assert_eq!(h.color_mode, ColorMode::Off);
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                        "--color=auto");
+        assert_eq!(h.color_mode, ColorMode::Auto);
     }
 
     #[test]
@@ -980,6 +1019,7 @@ c:/foo/bar.rs:
                 staticlibs: vec![f.tempdir.path().join("libbaz.a")],
                 crate_name: "foo".into(),
                 dep_info: None,
+                color_mode: ColorMode::Auto,
             }
         });
         let creator = new_creator();

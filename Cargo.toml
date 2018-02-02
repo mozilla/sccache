@@ -46,6 +46,7 @@ rust-crypto = { version = "0.2.36", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
+strip-ansi-escapes = "0.1"
 tempdir = "0.3.4"
 tempfile = "2.1.5"
 time = "0.1.35"
@@ -61,6 +62,7 @@ url = { version = "1.0", optional = true }
 which = "1.0"
 zip = { version = "=0.2.3", default-features = false }
 lazy_static = "1.0.0"
+atty = "0.2.6"
 
 [dev-dependencies]
 assert_cli = "0.5"

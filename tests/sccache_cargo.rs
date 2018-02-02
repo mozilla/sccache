@@ -88,7 +88,8 @@ fn test_rust_cargo() {
     a.unwrap();
     // Now build the crate with cargo.
     let a = Assert::command(&[&cargo])
-        .with_args(&["build"]).with_env(&env).current_dir(&crate_dir).succeeds();
+        .with_args(&["build", "--color=never"]).with_env(&env).current_dir(&crate_dir)
+        .stderr().doesnt_contain("\x1b[").succeeds();
     trace!("cargo build: {:?}", a);
     a.unwrap();
     // Clean it so we can build it again.
@@ -97,7 +98,8 @@ fn test_rust_cargo() {
     trace!("cargo clean: {:?}", a);
     a.unwrap();
     let a = Assert::command(&[&cargo])
-        .with_args(&["build"]).with_env(&env).current_dir(&crate_dir).succeeds();
+        .with_args(&["build", "--color=always"]).with_env(&env).current_dir(&crate_dir)
+        .stderr().contains("\x1b[").succeeds();
     trace!("cargo build: {:?}", a);
     a.unwrap();
     // Now get the stats and ensure that we had a cache hit for the second build.

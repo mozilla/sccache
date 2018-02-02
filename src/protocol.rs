@@ -1,3 +1,4 @@
+use compiler::ColorMode;
 use std::ffi::OsString;
 use server::ServerInfo;
 
@@ -47,6 +48,8 @@ pub struct CompileFinished {
     pub stdout: Vec<u8>,
     /// The compiler's stderr.
     pub stderr: Vec<u8>,
+    /// The state of any compiler options passed to control color output.
+    pub color_mode: ColorMode,
 }
 
 /// The contents of a compile request from a client.
