@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla Foundation
+// Copyright 2018 Benjamin Bader
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "azure")]
-pub mod azure;
-pub mod cache;
-pub mod disk;
-#[cfg(feature = "memcached")]
-pub mod memcached;
-#[cfg(feature = "redis")]
-pub mod redis;
-#[cfg(feature = "s3")]
-pub mod s3;
-#[cfg(feature = "gcs")]
-pub mod gcs;
+mod blobstore;
+mod credentials;
 
-pub use cache::cache::*;
+pub use azure::credentials::*;
+pub use azure::blobstore::*;

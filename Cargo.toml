@@ -80,9 +80,10 @@ mio-named-pipes = "0.1"
 
 [features]
 default = ["s3"]
-all = ["redis", "s3", "memcached", "gcs"]
+all = ["redis", "s3", "memcached", "gcs", "azure"]
 # gcs requires openssl, which is a pain on Windows.
 all-windows = ["redis", "s3", "memcached"]
+azure = ["chrono", "hyper", "hyper-tls", "rust-crypto"]
 s3 = ["chrono", "hyper", "hyper-tls", "rust-crypto", "simple-s3"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
