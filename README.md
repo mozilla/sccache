@@ -129,6 +129,10 @@ To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to se
 If you're using authentication, set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials.
 By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
 
+To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
+environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
+the container for you - you'll need to do that yourself.
+
 *Important:* The environment variables are only taken into account when the server starts, so only on the first run.
 
 ---

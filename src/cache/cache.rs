@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
+#[cfg(feature = "azure")]
+use cache::azure::AzureBlobCache;
 use cache::disk::DiskCache;
 #[cfg(feature = "memcached")]
 use cache::memcached::MemcachedCache;
@@ -300,6 +301,20 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
                     }
                     Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
                 }
+            }
+        }
+    }
+
+    if cfg!(feature = "azure") {
+        if let Ok(_) = env::var("SCCACHE_AZURE_CONNECTION_STRING") {
+            debug!("Trying Azure Blob Store account");
+            #[cfg(feature = "azure")]
+            match AzureBlobCache::new(_handle) {
+                Ok(storage) => {
+                    trace!("Using AzureBlobCache");
+                    return Arc::new(storage);
+                }
+                Err(e) => warn!("Failed to create Azure cache: {:?}", e),
             }
         }
     }

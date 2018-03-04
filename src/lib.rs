@@ -94,6 +94,8 @@ mod test;
 #[macro_use]
 mod errors;
 
+#[cfg(feature = "azure")]
+mod azure;
 mod cache;
 mod client;
 mod cmdline;
