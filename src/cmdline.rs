@@ -67,7 +67,8 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                 "    S3:        ", cfg!(feature = "s3"), "\n",
                 "    Redis:     ", cfg!(feature = "redis"), "\n",
                 "    Memcached: ", cfg!(feature = "memcached"), "\n",
-                "    GCS:       ", cfg!(feature = "gcs"), "\n")
+                "    GCS:       ", cfg!(feature = "gcs"), "\n",
+                "    Azure:     ", cfg!(feature = "azure"), "\n")
                 )
         .args_from_usage(
             "-s --show-stats 'show cache statistics'
