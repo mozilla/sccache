@@ -251,6 +251,9 @@ fn test_server_compile() {
 }
 
 #[test]
+// test fails intermittently on macos:
+// https://github.com/mozilla/sccache/issues/234
+#[cfg(not(target_os="macos"))]
 fn test_server_port_in_use() {
     // Bind an arbitrary free port.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
