@@ -32,11 +32,58 @@ Build Requirements
 
 Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.21**.
 
-We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very portable, see [scripts/build-release.sh](scripts/build-release.sh). By default `sccache` supports a local disk cache. To build `sccache` with support for `S3` and/or `Redis` cache backends, add `--features=all` or select a specific feature by passing `s3`, `gcs`, and/or `redis`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
+We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very [portable](#building-portable-binaries)). By default `sccache` supports a local disk cache. To build `sccache` with support for `S3` and/or `Redis` cache backends, add `--features=all` or select a specific feature by passing `s3`, `gcs`, and/or `redis`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
 
-## Build
+Build
+-----
 
 > $ cargo build [--features=all|redis|s3|gcs] [--release]
+
+### Building portable binaries
+
+When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the steps below before building with `cargo`.
+
+#### Linux
+
+You will need to download and build OpenSSL with `-fPIC` in order to statically link against it.
+
+```
+./config -fPIC --prefix=/usr/local --openssldir=/usr/local/ssl
+make
+make install
+export OPENSSL_LIB_DIR=/usr/local/lib
+export OPENSSL_INCLUDE_DIR=/usr/local/include
+export OPENSSL_STATIC=yes
+```
+
+Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
+
+#### macOS
+
+Just setting the below environment variable will enable static linking.
+
+```
+export OPENSSL_STATIC=yes
+```
+
+Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
+
+#### Windows
+
+On Windows it is fairly straight forward to just ship the required `libcrpyto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+
+It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
+
+```
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+```
+
+Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
+
+In order to statically link against both the CRT and OpenSSL, you will need to build OpenSSL with a statically linked CRT, which is left as an exercise for the reader. Generally it is simpler to just ship the OpenSSL DLLs.
+
+---
 
 ## Installation
 
