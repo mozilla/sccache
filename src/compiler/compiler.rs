@@ -473,7 +473,10 @@ pub fn write_temp_file(pool: &CpuPool, path: &Path, contents: Vec<u8>)
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
-fn detect_compiler<T>(creator: &T, executable: &Path, pool: &CpuPool)
+fn detect_compiler<T>(creator: &T,
+                      executable: &Path,
+                      env: &[(OsString, OsString)],
+                      pool: &CpuPool)
                       -> SFuture<Option<Box<Compiler<T>>>>
     where T: CommandCreatorSync
 {
@@ -512,18 +515,22 @@ fn detect_compiler<T>(creator: &T, executable: &Path, pool: &CpuPool)
 
     let creator = creator.clone();
     let executable = executable.to_owned();
+    let env = env.to_owned();
     let pool = pool.clone();
     Box::new(is_rustc.and_then(move |is_rustc| {
         if is_rustc {
             debug!("Found rustc");
             Box::new(Rust::new(creator, executable, pool).map(|c| Some(Box::new(c) as Box<Compiler<T>>)))
         } else {
-            detect_c_compiler(creator, executable, pool)
+            detect_c_compiler(creator, executable, env, pool)
         }
     }))
 }
 
-fn detect_c_compiler<T>(creator: T, executable: PathBuf, pool: CpuPool)
+fn detect_c_compiler<T>(creator: T,
+                        executable: PathBuf,
+                        env: Vec<(OsString, OsString)>,
+                        pool: CpuPool)
                         -> SFuture<Option<Box<Compiler<T>>>>
     where T: CommandCreatorSync
 {
@@ -541,7 +548,8 @@ gcc
 
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
-       .stderr(Stdio::null());
+       .stderr(Stdio::null())
+       .envs(env.iter().map(|s| (&s.0, &s.1)));
     let output = write.and_then(move |(tempdir, src)| {
         cmd.arg("-E").arg(src);
         trace!("compiler {:?}", cmd);
@@ -572,6 +580,7 @@ gcc
                 debug!("Found MSVC");
                 let prefix = msvc::detect_showincludes_prefix(&creator,
                                                               executable.as_ref(),
+                                                              env,
                                                               &pool);
                 return Box::new(prefix.and_then(move |prefix| {
                     trace!("showIncludes prefix: '{}'", prefix);
@@ -583,17 +592,22 @@ gcc
             }
         }
         debug!("nothing useful in detection output {:?}", stdout);
+        debug!("compiler status: {}", output.status);
+        debug!("compiler stderr:\n{}", String::from_utf8_lossy(&output.stderr));
         f_ok(None)
     }))
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
-pub fn get_compiler_info<T>(creator: &T, executable: &Path, pool: &CpuPool)
+pub fn get_compiler_info<T>(creator: &T,
+                            executable: &Path,
+                            env: &[(OsString, OsString)],
+                            pool: &CpuPool)
                             -> SFuture<Box<Compiler<T>>>
     where T: CommandCreatorSync
 {
     let pool = pool.clone();
-    let detect = detect_compiler(creator, executable, &pool);
+    let detect = detect_compiler(creator, executable, env, &pool);
     Box::new(detect.and_then(move |compiler| -> Result<_> {
         match compiler {
             Some(compiler) => Ok(compiler),
@@ -625,7 +639,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")));
-        let c = detect_compiler(&creator, &f.bins[0], &pool).wait().unwrap().unwrap();
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap().unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
 
@@ -635,7 +649,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\nfoo", "")));
-        let c = detect_compiler(&creator, &f.bins[0], &pool).wait().unwrap().unwrap();
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap().unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
     }
 
@@ -657,7 +671,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\nmsvc\nbar", "")));
         // showincludes prefix detection output
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &String::new())));
-        let c = detect_compiler(&creator, &f.bins[0], &pool).wait().unwrap().unwrap();
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap().unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
     }
 
@@ -675,7 +689,7 @@ mod test {
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(&creator, &rustc, &pool).wait().unwrap().unwrap();
+        let c = detect_compiler(&creator, &rustc, &[], &pool).wait().unwrap().unwrap();
         assert_eq!(CompilerKind::Rust, c.kind());
     }
 
@@ -684,7 +698,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "something", "")));
-        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &pool).wait().unwrap().is_none());
+        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool).wait().unwrap().is_none());
     }
 
     #[test]
@@ -692,7 +706,7 @@ mod test {
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &pool).wait().unwrap().is_none());
+        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool).wait().unwrap().is_none());
     }
 
     #[test]
@@ -704,6 +718,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         // sha-1 digest of an empty file.
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
@@ -726,6 +741,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
@@ -805,6 +821,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
@@ -885,6 +902,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
@@ -947,6 +965,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
         const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
@@ -1033,6 +1052,7 @@ mod test {
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator,
                                   &f.bins[0],
+                                  &[],
                                   &pool).wait().unwrap();
         // The preprocessor invocation.
         const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
