@@ -20,7 +20,7 @@ use ::compiler::{
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use local_encoding::{Encoding, Encoder};
-use log::LogLevel::{Debug, Trace};
+use log::LogLevel::Debug;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -88,7 +88,10 @@ fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
-pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
+pub fn detect_showincludes_prefix<T>(creator: &T,
+                                     exe: &OsStr,
+                                     env: Vec<(OsString, OsString)>,
+                                     pool: &CpuPool)
                                      -> SFuture<String>
     where T: CommandCreatorSync
 {
@@ -118,10 +121,10 @@ pub fn detect_showincludes_prefix<T>(creator: &T, exe: &OsStr, pool: &CpuPool)
         // but that's not true unless running with -E.
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-
-        if log_enabled!(Trace) {
-            trace!("detect_showincludes_prefix: {:?}", cmd);
+        for (k, v) in env {
+            cmd.env(k, v);
         }
+        trace!("detect_showincludes_prefix: {:?}", cmd);
 
         run_input_output(cmd, None).map(|e| {
             // Keep the tempdir around so test.h still exists for the
@@ -521,7 +524,7 @@ mod test {
         let stdout = format!("blah: {}\r\n", s);
         let stderr = String::from("some\r\nstderr\r\n");
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &stderr)));
-        assert_eq!("blah: ", detect_showincludes_prefix(&creator, "cl.exe".as_ref(), &pool).wait().unwrap());
+        assert_eq!("blah: ", detect_showincludes_prefix(&creator, "cl.exe".as_ref(), Vec::new(), &pool).wait().unwrap());
     }
 
     #[test]

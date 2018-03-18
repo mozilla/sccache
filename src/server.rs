@@ -444,14 +444,14 @@ impl<C> SccacheService<C>
         let cwd = compile.cwd;
         let env_vars = compile.env_vars;
         let me = self.clone();
-        Box::new(self.compiler_info(exe.into()).map(move |info| {
+        Box::new(self.compiler_info(exe.into(), &env_vars).map(move |info| {
             me.check_compiler(info, cmd, cwd.into(), env_vars)
         }))
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
-    fn compiler_info(&self, path: PathBuf)
+    fn compiler_info(&self, path: PathBuf, env: &[(OsString, OsString)])
                      -> SFuture<Option<Box<Compiler<C>>>> {
         trace!("compiler_info");
         let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
@@ -477,7 +477,7 @@ impl<C> SccacheService<C>
                 // so do it asynchronously.
                 let me = self.clone();
 
-                let info = get_compiler_info(&self.creator, &path, &self.pool);
+                let info = get_compiler_info(&self.creator, &path, env, &self.pool);
                 Box::new(info.then(move |info| {
                     let info = info.ok();
                     me.compilers.borrow_mut().insert(path, info.clone().map(|i| (i, mtime)));
