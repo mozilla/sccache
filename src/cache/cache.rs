@@ -12,11 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use app_dirs::{
-    AppDataType,
-    AppInfo,
-    app_dir,
-};
+
 use cache::disk::DiskCache;
 #[cfg(feature = "memcached")]
 use cache::memcached::MemcachedCache;
@@ -26,6 +22,7 @@ use cache::redis::RedisCache;
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
 use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
+use directories::ProjectDirs;
 use futures_cpupool::CpuPool;
 use regex::Regex;
 #[cfg(feature = "gcs")]
@@ -51,11 +48,8 @@ use zip::write::FileOptions;
 use errors::*;
 
 //TODO: might need to put this somewhere more central
-const APP_INFO: AppInfo = AppInfo {
-    name: "sccache",
-    author: "Mozilla",
-};
-
+const ORGANIZATION: &str = "Mozilla";
+const APP_NAME: &str = "sccache";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Result of a cache lookup.
@@ -312,9 +306,10 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
 
     let d = env::var_os("SCCACHE_DIR")
         .map(|p| PathBuf::from(p))
-        .or_else(|| app_dir(AppDataType::UserCache, &APP_INFO, "").ok())
-        // Fall back to something, even if it's not very good.
-        .unwrap_or(env::temp_dir().join("sccache_cache"));
+        .unwrap_or_else(|| {
+            let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
+            dirs.cache_dir().to_owned()
+        });
     trace!("Using DiskCache({:?})", d);
     let cache_size: u64 = env::var("SCCACHE_CACHE_SIZE")
         .ok()

@@ -14,7 +14,6 @@
 
 #![recursion_limit="128"]
 
-extern crate app_dirs;
 extern crate atty;
 extern crate base64;
 extern crate bincode;
@@ -27,6 +26,7 @@ extern crate clap;
 extern crate crypto;
 #[cfg(unix)]
 extern crate daemonize;
+extern crate directories;
 extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
