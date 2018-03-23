@@ -75,6 +75,8 @@ pub struct ParsedArguments {
     pub common_args: Vec<OsString>,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
+    /// Whether the compilation is generating profiling data.
+    pub profile_generate: bool,
 }
 
 impl ParsedArguments {

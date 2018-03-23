@@ -82,12 +82,13 @@ pub enum GCCArgAttribute {
     DepTarget,
     Language,
     SplitDwarf,
+    ProfileGenerate,
 }
 
 use self::GCCArgAttribute::*;
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/compopt.c#L32-L84
-pub static ARGS: [(ArgInfo, GCCArgAttribute); 60] = [
+pub static ARGS: [(ArgInfo, GCCArgAttribute); 61] = [
     flag!("-", TooHard),
     take_arg!("--param", String, Separated, PassThrough),
     flag!("--save-temps", TooHard),
@@ -121,6 +122,7 @@ pub static ARGS: [(ArgInfo, GCCArgAttribute); 60] = [
     flag!("-c", DoCompilation),
     flag!("-fno-working-directory", PreprocessorArgument),
     flag!("-fplugin=libcc1plugin", TooHard),
+    flag!("-fprofile-generate", ProfileGenerate),
     flag!("-fprofile-use", TooHard),
     flag!("-frepo", TooHard),
     flag!("-fsyntax-only", TooHard),
@@ -177,6 +179,7 @@ where
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
     let mut language = None;
+    let mut profile_generate = false;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -201,6 +204,7 @@ where
             }
             Some(SplitDwarf) => split_dwarf = true,
             Some(DoCompilation) => compilation = true,
+            Some(ProfileGenerate) => profile_generate = true,
             Some(Output) => output_arg = item.arg.get_value().map(|s| s.unwrap_path()),
             Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget) => dep_target = item.arg.get_value().map(OsString::from),
@@ -232,6 +236,7 @@ where
         }
         let args = match item.data {
             Some(SplitDwarf) |
+            Some(ProfileGenerate) |
             Some(PassThrough) => Some(&mut common_args),
             Some(PreprocessorArgument) |
             Some(NeedDepTarget) => Some(&mut preprocessor_args),
@@ -304,6 +309,7 @@ where
         preprocessor_args: preprocessor_args,
         common_args: common_args,
         msvc_show_includes: false,
+        profile_generate,
     })
 }
 
@@ -324,9 +330,12 @@ pub fn preprocess<T>(creator: &T,
     };
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language)
-        .arg("-E")
-        .arg("-P")
-        .arg(&parsed_args.input)
+        .arg("-E");
+    // With -fprofile-generate line number information is important, so don't use -P.
+    if !parsed_args.profile_generate {
+        cmd.arg("-P");
+    }
+    cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
@@ -468,6 +477,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -494,6 +504,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -520,6 +531,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -548,6 +560,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -574,6 +587,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -600,6 +614,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -626,6 +641,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -652,6 +668,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -678,6 +695,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -744,6 +762,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match _parse_arguments(&[arg]) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -771,6 +790,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
             msvc_show_includes: false,
+            profile_generate: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.

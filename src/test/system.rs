@@ -16,7 +16,6 @@
 
 extern crate cc;
 
-use client::connect_with_retry;
 use env_logger;
 use log::LogLevel::Trace;
 use serde_json;
@@ -114,6 +113,12 @@ fn get_stats(sccache: &Path, cwd: &Path) -> ServerInfo {
     serde_json::from_str(&output).expect("Failed to parse JSON stats")
 }
 
+fn write_source(path: &Path, filename: &str, contents: &str) {
+    let p = path.join(filename);
+    let mut f = File::create(&p).unwrap();
+    f.write_all(contents.as_bytes()).unwrap();
+}
+
 fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
     // Ensure there's no existing sccache server running.
@@ -192,6 +197,50 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
         // This should fail, but the error should be from the #error!
         let stderr = String::from_utf8(output.stderr).expect("Couldn't convert stderr to String");
         assert!(stderr.find("to generate dependencies you must specify either -M or -MM").is_none(), "Should not have complained about commandline arguments");
+
+        trace!("test -fprofile-generate with different source inputs");
+        do_run(sccache, &["--zero-stats"], tempdir, &[]);
+        const SRC: &str = "source.c";
+        write_source(&tempdir, SRC, "/*line 1*/
+#ifndef UNDEFINED
+/*unused line 1*/
+#endif
+
+int main(int argc, char** argv) {
+  return 0;
+}
+");
+        let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
+        args.extend(vec_from!(OsString, "-fprofile-generate"));
+        trace!("compile source.c (1)");
+        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
+        let info = get_stats(sccache, tempdir);
+        assert_eq!(0, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+        // Compile the same source again to ensure we can get a cache hit.
+        trace!("compile source.c (2)");
+        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
+        let info = get_stats(sccache, tempdir);
+        assert_eq!(1, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+        // Now write out a slightly different source file that will preprocess to the same thing,
+        // modulo line numbers. This should not be a cache hit because line numbers are important
+        // with -fprofile-generate.
+        write_source(&tempdir, SRC, "/*line 1*/
+#ifndef UNDEFINED
+/*unused line 1*/
+/*unused line 2*/
+#endif
+
+int main(int argc, char** argv) {
+  return 0;
+}
+");
+        trace!("compile source.c (3)");
+        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
+        let info = get_stats(sccache, tempdir);
+        assert_eq!(1, info.stats.cache_hits);
+        assert_eq!(2, info.stats.cache_misses);
     }
     trace!("stop server");
     assert_eq!(true, run(sccache, &["--stop-server"], tempdir, &[]));

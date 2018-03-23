@@ -330,6 +330,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
         preprocessor_args: vec!(),
         common_args: common_args,
         msvc_show_includes: show_includes,
+        profile_generate: false,
     })
 }
 
@@ -534,6 +535,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -560,6 +562,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -586,6 +589,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -612,6 +616,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -638,6 +643,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -664,6 +670,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -735,6 +742,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
             msvc_show_includes: false,
+            profile_generate: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -763,6 +771,7 @@ mod test {
             preprocessor_args: vec!(),
             common_args: vec!(),
             msvc_show_includes: false,
+            profile_generate: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
