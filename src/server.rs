@@ -29,7 +29,7 @@ use filetime::FileTime;
 use futures::future;
 use futures::sync::mpsc;
 use futures::task::{self, Task};
-use futures::{Stream, Sink, Async, AsyncSink, Poll, StartSend, Future};
+use futures::{Stream, Sink, Async, AsyncSink, Poll, StartSend, Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use jobserver::Client;
 use mock_command::{
@@ -638,7 +638,7 @@ impl<C> SccacheService<C>
             let send = tx.send(Ok(Response::CompileFinished(res)));
 
             let me = me.clone();
-            let cache_write = cache_write.then(move |result| {
+            let cache_write = cache_write.into_future().then(move |result| {
                 match result {
                     Err(e) => {
                         debug!("Error executing cache write: {}", e);
