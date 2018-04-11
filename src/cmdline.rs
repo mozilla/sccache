@@ -143,7 +143,7 @@ pub fn parse() -> Result<Command> {
         stop_server,
         is_some(&cmd),
             ].iter()
-        .fold(0, |acc, &x| acc + (x as usize)) > 1 {
+        .filter(|&&x| x).count() > 1 {
             bail!("Too many commands specified");
         }
     if internal_start_server {
