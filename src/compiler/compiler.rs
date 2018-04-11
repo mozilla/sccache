@@ -150,9 +150,8 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
             // Check the result of the cache lookup.
             Box::new(cache_status.then(move |result| {
                 let duration = start.elapsed();
-                let pwd = Path::new(&cwd);
                 let outputs = compilation.outputs()
-                    .map(|(key, path)| (key.to_string(), pwd.join(path)))
+                    .map(|(key, path)| (key.to_string(), cwd.join(path)))
                     .collect::<HashMap<_, _>>();
 
                 let miss_type = match result {
@@ -213,7 +212,6 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let out_pretty = out_pretty.clone();
                 let compile = compilation.compile(&creator, &cwd, &env_vars);
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
@@ -255,7 +253,6 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                         // Try to finish storing the newly-written cache
                         // entry. We'll get the result back elsewhere.
-                        let out_pretty = out_pretty.clone();
                         let future = storage.put(&key, entry)
                             .then(move |res| {
                                 match res {
