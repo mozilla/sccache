@@ -108,6 +108,18 @@ impl CacheRead {
         io::copy(&mut file, to)?;
         Ok(file.unix_mode())
     }
+
+    pub fn to_write(&mut self) -> CacheWrite {
+        let mut write = CacheWrite::new();
+        for i in 0..self.zip.len() {
+            // Mutable borrows mean we have to unwrap twice
+            let mut file = self.zip.by_index(i).unwrap();
+            let file_name = String::from(file.name());
+            let mode = file.unix_mode();
+            write.put_object(&file_name, &mut file, mode);
+        }
+        write
+    }
 }
 
 /// Data to be stored in the compiler cache.
