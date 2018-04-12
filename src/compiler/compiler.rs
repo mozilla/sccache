@@ -23,6 +23,7 @@ use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
 use compiler::rust::Rust;
+use dist::{self, DaemonClientRequester};
 use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -40,7 +41,7 @@ use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{self,Stdio};
+use std::process::{self, Stdio};
 use std::str;
 use std::sync::Arc;
 use std::time::{
@@ -89,6 +90,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
     fn generate_hash_key(self: Box<Self>,
+                         daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
                          cwd: &Path,
                          env_vars: &[(OsString, OsString)],
@@ -111,18 +113,19 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                              handle: Handle)
                              -> SFuture<(CompileResult, process::Output)>
     {
+        let daemon_client = Arc::new(dist::SccacheDaemonClient::new()); // TODO: pass this in from elsewhere
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let result = self.generate_hash_key(&creator, &cwd, &env_vars, &pool);
+        let result = self.generate_hash_key(daemon_client.clone(), &creator, &cwd, &env_vars, &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
-            let (key, compilation) = match res {
+            let (key, compilation, dist_toolchain) = match res {
                 Err(Error(ErrorKind::ProcessError(output), _)) => {
                     return f_ok((CompileResult::Error, output));
                 }
                 Err(e) => return f_err(e),
-                Ok(HashResult { key, compilation }) => (key, compilation),
+                Ok(HashResult { key, compilation, dist_toolchain }) => (key, compilation, dist_toolchain),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -212,7 +215,17 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = compilation.compile(&creator, &cwd, &env_vars);
+                let compile = if let Some(dist_reqs_fut) = compilation.generate_dist_requests(&cwd, &env_vars, dist_toolchain) {
+                    debug!("[{}]: Attempting distributed compilation", out_pretty);
+                    Box::new(dist_reqs_fut.and_then(|(jareq, jreq)|
+                        daemon_client.do_allocation_request(jareq)
+                            .and_then(move |jares| {
+                                daemon_client.do_compile_request(jares, jreq)
+                            }).map(|jres| (Cacheable::No, jres.output.into())) // TODO: allow caching
+                    ))
+                } else {
+                    compilation.compile(&creator, &cwd, &env_vars)
+                };
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
@@ -298,6 +311,13 @@ pub trait Compilation<T>
                env_vars: &[(OsString, OsString)])
                -> SFuture<(Cacheable, process::Output)>;
 
+    /// Generate the requests that will be used to perform a distributed compilation
+    fn generate_dist_requests(&self,
+                              _cwd: &Path,
+                              _env_vars: &[(OsString, OsString)],
+                              _toolchain: SFuture<dist::Toolchain>)
+                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> { None }
+
     /// Returns an iterator over the results of this compilation.
     ///
     /// Each item is a descriptive (and unique) name of the output paired with
@@ -311,6 +331,8 @@ pub struct HashResult<T: CommandCreatorSync> {
     pub key: String,
     /// An object to use for the actual compilation, if necessary.
     pub compilation: Box<Compilation<T> + 'static>,
+    /// A future that may resolve to a packaged toolchain if required.
+    pub dist_toolchain: SFuture<dist::Toolchain>,
 }
 
 /// Possible results of parsing compiler arguments.

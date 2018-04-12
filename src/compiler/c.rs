@@ -14,6 +14,7 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
                Compilation, HashResult};
+use dist;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
@@ -24,6 +25,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Arc;
 use util::{HashToDigest, Digest};
 
 use errors::*;
@@ -202,6 +204,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
           I: CCompilerImpl,
 {
     fn generate_hash_key(self: Box<Self>,
+                         _daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
                          cwd: &Path,
                          env_vars: &[(OsString, OsString)],
@@ -252,6 +255,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     executable: executable,
                     compiler: compiler,
                 }),
+                dist_toolchain: f_err("cannot package toolchain for Rust compilers"),
             })
         }))
     }
