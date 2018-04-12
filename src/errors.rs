@@ -60,6 +60,7 @@ error_chain! {
             display("didn't get a successful HTTP status, got `{}`", status)
         }
         ProcessError(output: process::Output)
+        DistError(msg: String) // TODO: make this not a string
     }
 }
 

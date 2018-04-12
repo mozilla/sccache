@@ -15,6 +15,7 @@
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
+use dist;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
@@ -30,7 +31,9 @@ use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
+use std::sync::Arc;
 use std::time::Instant;
+use tar;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt};
@@ -50,6 +53,8 @@ const LIBS_DIR: &str = "bin";
 pub struct Rust {
     /// The path to the rustc executable.
     executable: PathBuf,
+    /// The path to the rustc sysroot.
+    sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
 }
@@ -59,6 +64,8 @@ pub struct Rust {
 pub struct RustHasher {
     /// The path to the rustc executable.
     executable: PathBuf,
+    /// The path to the rustc sysroot.
+    sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
     parsed_args: ParsedArguments,
@@ -236,9 +243,10 @@ impl Rust {
             .stderr(Stdio::null())
             .arg("--print=sysroot");
         let output = run_input_output(cmd, None);
-        let libs = output.and_then(move |output| -> Result<_> {
+        let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
             let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing sysroot")?;
-            let libs_path = Path::new(outstr.trim_right()).join(LIBS_DIR);
+            let sysroot = PathBuf::from(outstr.trim_right());
+            let libs_path = sysroot.join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path).chain_err(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?.filter_map(|e| {
                 e.ok().and_then(|e| {
                     e.file_type().ok().and_then(|t| {
@@ -252,12 +260,13 @@ impl Rust {
                 })
             }).collect::<Vec<_>>();
             libs.sort();
-            Ok(libs)
+            Ok((sysroot, libs))
         });
-        Box::new(libs.and_then(move |libs| {
+        Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(libs, &pool).map(move |digests| {
                 Rust {
                     executable: executable,
+                    sysroot,
                     compiler_shlibs_digests: digests,
                 }
             })
@@ -288,6 +297,7 @@ impl<T> Compiler<T> for Rust
             CompilerArguments::Ok(args) => {
                 CompilerArguments::Ok(Box::new(RustHasher {
                     executable: self.executable.clone(),
+                    sysroot: self.sysroot.clone(),
                     compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
                     parsed_args: args,
                 }))
@@ -576,6 +586,7 @@ impl<T> CompilerHasher<T> for RustHasher
     where T: CommandCreatorSync,
 {
     fn generate_hash_key(self: Box<Self>,
+                         daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
                          cwd: &Path,
                          env_vars: &[(OsString, OsString)],
@@ -583,7 +594,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
-        let RustHasher { executable, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
+        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
@@ -616,6 +627,7 @@ impl<T> CompilerHasher<T> for RustHasher
         let creator = creator.clone();
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_vec();
+        let toolchain_pool = pool.clone();
         let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
                                         -> SFuture<_> {
@@ -690,6 +702,22 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info);
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
+                // CPU pool futures are eager, delay until poll is called
+                let toolchain_future = Box::new(future::lazy(move || {
+                    toolchain_pool.spawn_fn(move || {
+                        let path = daemon_client.toolchain_cache(&mut |f| {
+                            let mut builder = tar::Builder::new(f);
+                            // TODO: attempt to mimic original layout
+                            // TODO: FnBox would remove need for this clone
+                            builder.append_dir_all("", sysroot.clone()).unwrap();
+                            builder.finish().unwrap()
+                        });
+                        future::ok(dist::Toolchain {
+                            docker_img: "ubuntu:16.04".to_owned(),
+                            archive: path,
+                        })
+                    })
+                }));
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
@@ -698,6 +726,7 @@ impl<T> CompilerHasher<T> for RustHasher
                         outputs: outputs,
                         crate_name: crate_name,
                     }),
+                    dist_toolchain: toolchain_future,
                 }
             }))
         }))
@@ -737,6 +766,29 @@ impl<T> Compilation<T> for RustCompilation
         Box::new(run_input_output(cmd, None).map(|output| {
             (Cacheable::Yes, output)
         }))
+    }
+
+    fn generate_dist_requests(&self,
+                              cwd: &Path,
+                              env_vars: &[(OsString, OsString)],
+                              toolchain: SFuture<dist::Toolchain>)
+                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> {
+        let executable = self.executable.clone();
+        let arguments = self.arguments.clone();
+        let cwd = cwd.to_owned();
+        let env_vars = env_vars.to_owned();
+        Some(Box::new(toolchain.map(move |toolchain| (
+            dist::JobAllocRequest {
+                toolchain: toolchain.clone(),
+            },
+            dist::JobRequest {
+                executable: PathBuf::from("/toolchain/bin/rustc"),
+                arguments,
+                cwd,
+                env_vars,
+                toolchain,
+            }
+        ))))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {

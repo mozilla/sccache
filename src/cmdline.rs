@@ -23,6 +23,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use which::which_in;
 
+use dist;
+
 arg_enum!{
     #[derive(Debug)]
     #[allow(non_camel_case_types)]
@@ -90,6 +92,23 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
 pub fn parse() -> Result<Command> {
     trace!("parse");
     let cwd = env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
+    let start_daemon_worker = match env::var("SCCACHE_START_DAEMON_WORKER") {
+        Ok(val) => val == "1",
+        Err(_) => false,
+    };
+    if start_daemon_worker {
+        let builder = dist::SccacheBuilder::new();
+        let server = dist::SccacheDaemonServer::new(Box::new(builder));
+        server.start()
+    }
+    let start_scheduler = match env::var("SCCACHE_START_SCHEDULER") {
+        Ok(val) => val == "1",
+        Err(_) => false,
+    };
+    if start_scheduler {
+        let scheduler = dist::SccacheScheduler::new();
+        scheduler.start()
+    }
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",

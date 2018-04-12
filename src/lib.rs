@@ -70,6 +70,7 @@ extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
 extern crate strip_ansi_escapes;
+extern crate tar;
 extern crate tempdir;
 extern crate tempfile;
 extern crate time;
