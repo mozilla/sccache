@@ -18,32 +18,31 @@ use cache::{
     Storage,
 };
 use cache::disk::DiskCache;
-use cache::s3::S3Cache;
 use futures;
 use futures::future::Future;
+use std::sync::Arc;
 use std::time::{Duration};
 
 use errors::*;
 
-/// A cache that stores entries on disk but can fetch from Amazon S3 or disk.
-pub struct S3DiskCache {
-    /// S3 Cache
-    s3: S3Cache,
+/// A cache that stores entries on disk but can fetch from remote cache or disk.
+pub struct TwoTierDiskCache {
+    /// Remote Cache
+    remote: Arc<Storage>,
     /// Disk cache
-    disk: DiskCache
+    disk: Arc<DiskCache>
 }
 
-impl S3DiskCache {
-    /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(s3_cache: S3Cache, disk_cache: DiskCache) -> S3DiskCache {
-        S3DiskCache {
-            s3: s3_cache,
+impl TwoTierDiskCache {
+    pub fn new(remote_cache: Arc<Storage>, disk_cache: Arc<DiskCache>) -> TwoTierDiskCache {
+        TwoTierDiskCache {
+            remote: remote_cache,
             disk: disk_cache,
         }
     }
 }
 
-impl Storage for S3DiskCache {
+impl Storage for TwoTierDiskCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let disk_lookup = Box::new(self.disk.get(&key).then(|disk_result| {
             match disk_result {
@@ -54,14 +53,14 @@ impl Storage for S3DiskCache {
                     }
                 }
                 Err(e) => {
-                    warn!("Got s3disk error: {:?}", e);
+                    warn!("Got disk error: {:?}", e);
                      Ok(Cache::Miss)
                 }
             }
         })).wait();
         match disk_lookup {
             Ok(Cache::Hit(_)) => Box::new(futures::done(disk_lookup)),
-            _ => Box::new(self.s3.get(&key))
+            _ => Box::new(self.remote.get(&key))
         }
     }
 
@@ -70,7 +69,7 @@ impl Storage for S3DiskCache {
     }
 
     fn location(&self) -> String {
-        format!("Local: {} - S3, bucket: {}", self.disk.location(), self.s3.location())
+        format!("Local: {} - Remote: {}", self.disk.location(), self.remote.location())
     }
 
     fn current_size(&self) -> Option<u64> { self.disk.current_size() }

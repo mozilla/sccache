@@ -15,6 +15,7 @@
 #[cfg(feature = "azure")]
 use cache::azure::AzureBlobCache;
 use cache::disk::DiskCache;
+use cache::two_tier_disk::TwoTierDiskCache;
 #[cfg(feature = "memcached")]
 use cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
@@ -23,8 +24,6 @@ use cache::redis::RedisCache;
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
 use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
-#[cfg(feature = "s3")]
-use cache::s3disk::S3DiskCache;
 use directories::ProjectDirs;
 use futures_cpupool::CpuPool;
 use regex::Regex;
@@ -196,6 +195,14 @@ fn parse_size(val: &str) -> Option<u64> {
 
 /// Get a suitable `Storage` implementation from the environment.
 pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
+    let base = base_storage_from_environment(pool, _handle);
+    if let Ok(_use_two_tier) = env::var("SCCACHE_TWO_TIER") {
+        trace!("Using two tier cache");
+        return Arc::new(TwoTierDiskCache::new(base, get_disk_storage(pool)))
+    }
+    base
+}
+pub fn get_disk_storage(pool: &CpuPool) -> Arc<DiskCache> {
     let disk_cache_path = env::var_os("SCCACHE_DIR")
         .map(|p| PathBuf::from(p))
         .unwrap_or_else(|| {
@@ -206,7 +213,11 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
         .ok()
         .and_then(|v| parse_size(&v))
         .unwrap_or(TEN_GIGS);
-
+    trace!("Using DiskCache({:?})", disk_cache_path);
+    trace!("DiskCache size: {}", disk_cache_size);
+    Arc::new(DiskCache::new(&disk_cache_path, disk_cache_size, pool))
+}
+pub fn base_storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
     if cfg!(feature = "s3") {
         if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
             let endpoint = match env::var("SCCACHE_ENDPOINT") {
@@ -221,15 +232,8 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
             #[cfg(feature = "s3")]
             match S3Cache::new(&bucket, &endpoint, _handle) {
                 Ok(s) => {
-                    if let Ok(_use_local_s3) = env::var("SCCACHE_LOCAL_S3") {
-                        trace!("Using S3Cache");
-                        return Arc::new(s);
-                    } else {
-                        trace!("Using S3DiskCache");
-                        let d = DiskCache::new(&disk_cache_path, disk_cache_size, pool);
-                        let sd = S3DiskCache::new(s, d);
-                        return Arc::new(sd)
-                    }
+                    trace!("Using S3Cache");
+                    return Arc::new(s);
                 }
                 Err(e) => warn!("Failed to create S3Cache: {:?}", e),
             }
@@ -339,10 +343,7 @@ pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage
         }
     }
 
-    
-    trace!("Using DiskCache({:?})", disk_cache_path);
-    trace!("DiskCache size: {}", disk_cache_size);
-    Arc::new(DiskCache::new(&disk_cache_path, disk_cache_size, pool))
+    get_disk_storage(pool)
 }
 
 #[test]

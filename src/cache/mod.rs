@@ -16,14 +16,13 @@
 pub mod azure;
 pub mod cache;
 pub mod disk;
+pub mod two_tier_disk;
 #[cfg(feature = "memcached")]
 pub mod memcached;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
-#[cfg(feature = "s3")]
-pub mod s3disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 
