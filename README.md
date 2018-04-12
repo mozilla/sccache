@@ -133,6 +133,10 @@ To use Azure Blob Storage, you'll need your Azure connection string and an _exis
 environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
 the container for you - you'll need to do that yourself.
 
+Set `SCCACHE_TWO_TIER` if you want to use a two tier storage system, where cache can be read from any of the remote options
+above but is only ever written to a local disk.  Remote cache items that are read will also be written locally.  This can
+be used to give CI machines read / write to your cache and developers read access to the cache they generate.
+
 *Important:* The environment variables are only taken into account when the server starts, so only on the first run.
 
 ---
