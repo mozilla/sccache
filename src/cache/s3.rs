@@ -65,7 +65,11 @@ impl S3Cache {
 }
 
 fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+    let normalized = format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key);
+    if let Ok(s3_prefix) = env::var("SCCACHE_BUCKET_PREFIX") {
+        return format!("{}/{}", s3_prefix, normalized);
+    }
+    normalized
 }
 
 impl Storage for S3Cache {
