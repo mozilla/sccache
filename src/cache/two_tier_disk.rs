@@ -16,6 +16,7 @@ use cache::{
     Cache,
     CacheWrite,
     Storage,
+    CacheRead,
 };
 use cache::disk::DiskCache;
 use futures;
@@ -23,6 +24,7 @@ use futures::future::Future;
 use std::sync::Arc;
 use std::time::{Duration};
 
+use errors;
 use errors::*;
 
 /// A cache that stores entries on disk but can fetch from remote cache or disk.
@@ -40,38 +42,54 @@ impl TwoTierDiskCache {
             disk: disk_cache,
         }
     }
+
+    // To get good lifetimes we need to take disk and remote out of self
+    fn _get(&self, key: String, disk: Arc<Storage>, remote: Arc<Storage>) -> SFuture<Cache> {
+        Box::new(
+            disk.get(&key)
+                .then(move |disk_result| {
+                    match disk_result {
+                        Ok(data) => {
+                            match data {
+                                Cache::Hit(_) => Ok(data),
+                                _ => Ok(Cache::Miss),
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Got disk error: {:?}", e);
+                            Ok(Cache::Miss)
+                        }
+                    }
+                })
+                .and_then(move |disk_status| {
+                    if let Cache::Hit(_) = disk_status {
+                        return Box::new(futures::future::result(Ok(disk_status)))
+                            as Box<futures::Future<Error=errors::Error, Item=Cache>>;
+                    }
+
+                    Box::new(remote.get(&key)
+                        .then(move |remote_status| {
+                            match remote_status {
+                                Ok(Cache::Hit(mut entry)) => {
+                                    {
+                                        trace!("cache hit but need to push back into primary cache");
+                                        // We really don't care if this succeeds or not
+                                        // we just need to try it
+                                        disk.put(&key, entry.to_write());
+                                        Ok(Cache::Hit(entry))
+                                    }
+                                }
+                                _ => remote_status,
+                            }
+                        }))
+                })
+        )
+    }
 }
 
 impl Storage for TwoTierDiskCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
-        let disk_lookup = Box::new(self.disk.get(&key).then(|disk_result| {
-            match disk_result {
-                Ok(data) => {
-                    match data {
-                        Cache::Hit(_) => Ok(data),
-                        _ => Ok(Cache::Miss),
-                    }
-                }
-                Err(e) => {
-                    warn!("Got disk error: {:?}", e);
-                     Ok(Cache::Miss)
-                }
-            }
-        })).wait();
-        let remote_lookup = match disk_lookup {
-            Ok(Cache::Hit(_)) => Box::new(futures::done(disk_lookup)),
-            _ => self.remote.get(&key)
-        };
-        let cache_status = remote_lookup.wait();
-        let new_cache_status = match cache_status {
-            Ok(Cache::Hit(mut entry)) => {
-                self.put(&key, entry.to_write()).wait();
-                Ok(Cache::Hit(entry))
-            }
-            Ok(c) => Ok(c),
-            Err(e) => Err(e)
-        };
-        Box::new(futures::done(new_cache_status))
+        self._get(String::from(key), self.disk.clone(), self.remote.clone())
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
