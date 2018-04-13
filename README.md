@@ -137,6 +137,9 @@ Set `SCCACHE_TWO_TIER` if you want to use a two tier storage system, where cache
 above but is only ever written to a local disk.  Remote cache items that are read will also be written locally.  This can
 be used to give CI machines read / write to your cache and developers read access to the cache they generate.
 
+Sometimes path are used in the hashing of built artifacts, in order to avoid getting cache misses across different machines you could set
+`SCCACHE_STRIP_DIRS` to a `":"` separated list of directories to ignore from the hashing.  E.g. `SCCACHE_STRIP_DIRS=/projects/thing:/projects/dep`
+
 *Important:* The environment variables are only taken into account when the server starts, so only on the first run.
 
 ---

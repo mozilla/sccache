@@ -19,11 +19,13 @@ use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str;
 use util::{HashToDigest, Digest};
 
 use errors::*;
@@ -323,7 +325,27 @@ pub fn hash_key(compiler_digest: &str,
             val.hash(&mut HashToDigest { digest: &mut m });
         }
     }
-    m.update(preprocessor_output);
+
+    if let Ok(strip_dirs) = env::var("SCCACHE_STRIP_DIRS") {
+        trace!("Attempting to strip dirs from preprocessor output");
+        m.update(strip_dirs.as_bytes());
+        let output_result = str::from_utf8(preprocessor_output);
+
+        if output_result.is_ok() {
+            trace!("Strip env is: {}", strip_dirs);
+            let mut dirs = strip_dirs.split(":");
+            let mut stripped_output = String::from(output_result.unwrap());
+            for dir in dirs {
+                trace!("Stripping \"{}\" from preprocessor output", dir);
+                stripped_output = String::from(str::replace(&stripped_output, &dir, ""));
+            }
+            m.update(stripped_output.as_bytes());
+        } else {
+            m.update(preprocessor_output);
+        }
+    } else {
+        m.update(preprocessor_output);
+    }
     m.finish()
 }
 
