@@ -89,7 +89,7 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Result<Command> {
     trace!("parse");
-    let cwd = try!(env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory"));
+    let cwd = env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",
@@ -107,7 +107,7 @@ pub fn parse() -> Result<Command> {
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name()) {
                         match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path) if try!(full_path.canonicalize()) == try!(exe.canonicalize()) => {
+                            Ok(ref full_path) if full_path.canonicalize()? == exe.canonicalize()? => {
                                 if let Some(dir) = full_path.parent() {
                                     let path = env::join_paths(env::split_paths(&path).filter(|p| p != dir)).ok();
                                     match which_in(exe_filename, path, &cwd) {

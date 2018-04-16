@@ -37,7 +37,7 @@ pub struct ServerConnection {
 impl ServerConnection {
     /// Create a new connection using `stream`.
     pub fn new(stream : TcpStream) -> io::Result<ServerConnection> {
-        let writer = try!(stream.try_clone());
+        let writer = stream.try_clone()?;
         Ok(ServerConnection {
             reader : BufReader::new(stream),
             writer : BufWriter::new(writer),
@@ -74,7 +74,7 @@ impl ServerConnection {
 /// Establish a TCP connection to an sccache server listening on `port`.
 pub fn connect_to_server(port: u16) -> io::Result<ServerConnection> {
     trace!("connect_to_server({})", port);
-    let stream = try!(TcpStream::connect(("127.0.0.1", port)));
+    let stream = TcpStream::connect(("127.0.0.1", port))?;
     ServerConnection::new(stream)
 }
 

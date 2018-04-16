@@ -202,7 +202,7 @@ fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredent
         bail!("Couldn't open file.");
     }
 
-    let file = try!(File::open(file_path));
+    let file = File::open(file_path)?;
 
     let profile_regex = Regex::new(r"^\[([^\]]+)\]$").unwrap();
     let mut profiles: HashMap<String, AwsCredentials> = HashMap::new();

@@ -78,7 +78,7 @@ fn get_idle_timeout() -> u64 {
 
 fn notify_server_startup_internal<W: Write>(mut w: W, success: bool) -> io::Result<()> {
     let data = [ if success { 0 } else { 1 }; 1];
-    try!(w.write_all(&data));
+    w.write_all(&data)?;
     Ok(())
 }
 
@@ -90,7 +90,7 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
         None => return Ok(()),
     };
     debug!("notify_server_startup(success: {})", success);
-    let stream = try!(UnixStream::connect(name));
+    let stream = UnixStream::connect(name)?;
     notify_server_startup_internal(stream, success)
 }
 
