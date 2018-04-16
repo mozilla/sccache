@@ -148,7 +148,7 @@ impl LruDiskCache {
 
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
-        try!(fs::create_dir_all(&self.root));
+        fs::create_dir_all(&self.root)?;
         for (file, size) in get_all_files(&self.root) {
             if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| error!("Error removing file `{}` which is too large for the cache ({} bytes)", e, size));
@@ -192,8 +192,8 @@ impl LruDiskCache {
         }
         let rel_path = key.as_ref();
         let path = self.root.join(rel_path);
-        try!(fs::create_dir_all(path.parent().expect("Bad path?")));
-        try!(by(path.as_path()));
+        fs::create_dir_all(path.parent().expect("Bad path?"))?;
+        by(path.as_path())?;
         self.add_file(path, Some(rel_path), size)
             .or_else(|e| {
                 error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
@@ -205,20 +205,20 @@ impl LruDiskCache {
     /// Add a file with `bytes` as its contents to the cache at path `key`.
     pub fn insert_bytes<K: AsRef<OsStr>>(&mut self, key: K, bytes: &[u8]) -> Result<()> {
         self.insert_by(key, bytes.len() as u64, |path| {
-            let mut f = try!(File::create(&path));
-            try!(f.write_all(bytes));
+            let mut f = File::create(&path)?;
+            f.write_all(bytes)?;
             Ok(())
         })
     }
 
     /// Add an existing file at `path` to the cache at path `key`.
     pub fn insert_file<K: AsRef<OsStr>, P: AsRef<OsStr>>(&mut self, key: K, path: P) -> Result<()> {
-        let size = try!(fs::metadata(path.as_ref())).len();
+        let size = fs::metadata(path.as_ref())?.len();
         self.insert_by(key, size, |new_path| {
             fs::rename(path.as_ref(), new_path)
                 .or_else(|_| {
                     warn!("fs::rename failed, falling back to copy!");
-                    try!(fs::copy(path.as_ref(), new_path));
+                    fs::copy(path.as_ref(), new_path)?;
                     fs::remove_file(path.as_ref())
                         .unwrap_or_else(|e| error!("Failed to remove original file in insert_file: {}", e));
                     Ok(())
@@ -238,8 +238,8 @@ impl LruDiskCache {
             .ok_or(Error::FileNotInCache)
             .and_then(|&(ref path, _)| {
                 let t = filetime_now();
-                try!(set_file_times(path, t, t));
-                Ok(Box::new(try!(File::open(path))) as Box<ReadSeek>)
+                set_file_times(path, t, t)?;
+                Ok(Box::new(File::open(path)?) as Box<ReadSeek>)
             })
     }
 }
