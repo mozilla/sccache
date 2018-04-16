@@ -16,7 +16,6 @@ use cache::{
     Cache,
     CacheWrite,
     Storage,
-    CacheRead,
 };
 use cache::disk::DiskCache;
 use futures;
@@ -73,9 +72,7 @@ impl TwoTierDiskCache {
                                 Ok(Cache::Hit(mut entry)) => {
                                     {
                                         trace!("cache hit but need to push back into primary cache");
-                                        // We really don't care if this succeeds or not
-                                        // we just need to try it
-                                        disk.put(&key, entry.to_write());
+                                        disk.put(&key, entry.to_write()).wait();
                                         Ok(Cache::Hit(entry))
                                     }
                                 }
