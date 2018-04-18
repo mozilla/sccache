@@ -777,6 +777,7 @@ impl<T> Compilation<T> for RustCompilation
         let arguments = self.arguments.clone();
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_owned();
+        let outputs = self.outputs.iter().map(|(_, p)| p.to_owned()).collect();
         Some(Box::new(toolchain.map(move |toolchain| (
             dist::JobAllocRequest {
                 toolchain: toolchain.clone(),
@@ -786,6 +787,7 @@ impl<T> Compilation<T> for RustCompilation
                 arguments,
                 cwd,
                 env_vars,
+                outputs,
                 toolchain,
             }
         ))))

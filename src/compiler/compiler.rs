@@ -221,7 +221,13 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         daemon_client.do_allocation_request(jareq)
                             .and_then(move |jares| {
                                 daemon_client.do_compile_request(jares, jreq)
-                            }).map(|jres| (Cacheable::No, jres.output.into())) // TODO: allow caching
+                            }).map(|jres| {
+                                error!("fetched {:?}", jres.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
+                                for (path, bytes) in jres.outputs {
+                                    let file = File::create(path).unwrap().write_all(&bytes);
+                                }
+                                (Cacheable::No, jres.output.into())
+                            }) // TODO: allow caching
                     ))
                 } else {
                     compilation.compile(&creator, &cwd, &env_vars)
