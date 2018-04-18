@@ -63,18 +63,22 @@ const SERVER_CLIENTS_PORT: u16 = 10502;
 
 // TODO: make these fields not public
 
+// TODO: any OsString or PathBuf shouldn't be sent across the wire
+// from Windows
+
 #[derive(Serialize, Deserialize)]
 pub struct JobRequest {
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
-    // TODO: next two can't be sent across the wire like this if coming from Windows
     pub cwd: PathBuf,
     pub env_vars: Vec<(OsString, OsString)>,
+    pub outputs: Vec<PathBuf>,
     pub toolchain: Toolchain,
 }
 #[derive(Serialize, Deserialize)]
 pub struct JobResult {
     pub output: ProcessOutput,
+    pub outputs: Vec<(PathBuf, Vec<u8>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +98,7 @@ pub struct BuildRequest(JobRequest);
 #[derive(Serialize, Deserialize)]
 pub struct BuildResult {
     output: ProcessOutput,
+    outputs: Vec<(PathBuf, Vec<u8>)>,
 }
 
 trait SchedulerHandler {
@@ -282,7 +287,7 @@ impl DaemonServerHandler for SccacheDaemonServer {
         f_ok(())
     }
     fn handle_compile_request(&self, req: JobRequest) -> SFuture<JobResult> {
-        Box::new(self.builder.handle_compile_request(BuildRequest(req)).map(|res| JobResult { output: res.output }))
+        Box::new(self.builder.handle_compile_request(BuildRequest(req)).map(|res| JobResult { output: res.output, outputs: res.outputs }))
     }
 }
 impl DaemonServerRequester for SccacheDaemonServer {
@@ -317,6 +322,7 @@ impl BuilderHandler for SccacheBuilder {
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
         };
+
         // TODO: dirname to make sure the source is copied onto the correct directory (otherwise it
         // copies *under* the target directory), though this is still flawed if the dir exists before mkdir
         let output = Command::new("docker").args(&["exec", &cid, "mkdir", "-p", job_req.cwd.parent().unwrap().to_str().unwrap()]).output().unwrap();
@@ -331,6 +337,7 @@ impl BuilderHandler for SccacheBuilder {
                 String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
             panic!()
         }
+
         let cmdstr = format!("cd '{}' && exec '{}' \"$@\"", job_req.cwd.to_str().unwrap(), job_req.executable.to_str().unwrap());
         info!("{:?}", job_req.env_vars);
         info!("{:?}", cmdstr);
@@ -346,7 +353,19 @@ impl BuilderHandler for SccacheBuilder {
         cmd.args(&[&cid, "bash", "-c", &cmdstr, "sh"]).args(job_req.arguments);
         let output = cmd.output().unwrap();
         println!("output: {:?}", output);
-        f_ok(BuildResult { output: output.into() })
+
+        let mut outputs = vec![];
+        for path in job_req.outputs {
+            let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
+            if !output.status.success() {
+                error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+                    String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                panic!()
+            }
+            outputs.push((path, output.stdout))
+        }
+
+        f_ok(BuildResult { output: output.into(), outputs })
     }
 }
 impl BuilderRequester for SccacheBuilder {
