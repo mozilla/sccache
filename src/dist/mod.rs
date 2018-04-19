@@ -3,10 +3,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs;
-use std::io::BufReader;
+use std::io::{self, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
+use std::process::{self, Command, Stdio};
 use std::sync::Mutex;
 
 use bincode;
@@ -119,7 +119,7 @@ pub trait DaemonClientRequester: Send + Sync {
     // To DaemonServer
     fn do_compile_request(&self, JobAllocResult, JobRequest) -> SFuture<JobResult>;
 
-    // TODO: Really want fnbox here
+    // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     fn toolchain_cache(&self, create: &mut FnMut(fs::File)) -> PathBuf;
 }
 
@@ -136,8 +136,6 @@ pub trait DaemonServerRequester {
 pub trait BuilderHandler {
     // From DaemonServer
     fn handle_compile_request(&self, BuildRequest) -> SFuture<BuildResult>;
-}
-pub trait BuilderRequester {
 }
 
 enum JobStatus {
@@ -309,50 +307,53 @@ impl BuilderHandler for SccacheBuilder {
         if cache_dir.is_dir() {
             fs::remove_dir_all("/tmp/sccache_rust_cache").unwrap();
         }
-        let mut ar = tar::Archive::new(fs::File::open(job_req.toolchain.archive).unwrap());
-        ar.unpack("/tmp/sccache_rust_cache").unwrap();
+        let rel_cwd = job_req.cwd.strip_prefix("/").unwrap().to_str().unwrap();
+        let cwd = job_req.cwd.to_str().unwrap();
+        info!("{:?}", job_req.env_vars);
+        info!("{:?}", job_req.arguments);
 
         let cid = {
-            // This odd construction is to ensure bash stays as the root process - without
-            // the &&, bash will just exec since it's the last command in the pipeline.
-            let cmd = "sleep infinity && true";
-            let args = &["run", "--rm", "-d", "-v", "/tmp/sccache_rust_cache:/toolchain", &job_req.toolchain.docker_img, "bash", "-c", cmd];
-            let output = Command::new("docker").args(args).output().unwrap();
+            let mut cmd = Command::new("docker");
+            cmd.args(&["create", "-w", cwd]);
+            for (k, v) in job_req.env_vars {
+                let mut env = k;
+                env.push("=");
+                env.push(v);
+                cmd.arg("-e").arg(env);
+            }
+            cmd.arg(job_req.toolchain.docker_img);
+            cmd.arg(job_req.executable.to_str().unwrap());
+            cmd.args(job_req.arguments);
+            let output = cmd.output().unwrap();
             assert!(output.status.success());
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
         };
 
-        // TODO: dirname to make sure the source is copied onto the correct directory (otherwise it
-        // copies *under* the target directory), though this is still flawed if the dir exists before mkdir
-        let output = Command::new("docker").args(&["exec", &cid, "mkdir", "-p", job_req.cwd.parent().unwrap().to_str().unwrap()]).output().unwrap();
-        if !output.status.success() {
-            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            panic!()
-        }
-        let output = Command::new("docker").args(&["cp", job_req.cwd.to_str().unwrap(), &format!("{}:{}", cid, job_req.cwd.to_str().unwrap())]).output().unwrap();
+        error!("copying in toolchain");
+        let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
+        io::copy(&mut fs::File::open(job_req.toolchain.archive).unwrap(), &mut process.stdin.take().unwrap());
+        let output = process.wait_with_output().unwrap();
         if !output.status.success() {
             error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
                 String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
             panic!()
         }
 
-        let cmdstr = format!("cd '{}' && exec '{}' \"$@\"", job_req.cwd.to_str().unwrap(), job_req.executable.to_str().unwrap());
-        info!("{:?}", job_req.env_vars);
-        info!("{:?}", cmdstr);
-        info!("{:?}", job_req.arguments);
-        let mut cmd = Command::new("docker");
-        cmd.arg("exec");
-        for (k, v) in job_req.env_vars {
-            let mut env = k;
-            env.push("=");
-            env.push(v);
-            cmd.arg("-e").arg(env);
+        error!("copying in build dir");
+        let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
+        let mut builder = tar::Builder::new(process.stdin.take().unwrap());
+        builder.append_dir_all(rel_cwd, cwd).unwrap();
+        process.stdin = Some(builder.into_inner().unwrap());
+        let output = process.wait_with_output().unwrap();
+        if !output.status.success() {
+            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            panic!()
         }
-        cmd.args(&[&cid, "bash", "-c", &cmdstr, "sh"]).args(job_req.arguments);
-        let output = cmd.output().unwrap();
-        println!("output: {:?}", output);
+
+        let compile_output = Command::new("docker").args(&["start", "-a", &cid]).output().unwrap();
+        println!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
         for path in job_req.outputs {
@@ -365,8 +366,13 @@ impl BuilderHandler for SccacheBuilder {
             outputs.push((path, output.stdout))
         }
 
-        f_ok(BuildResult { output: output.into(), outputs })
+        let output = Command::new("docker").args(&["rm", "-f", &cid]).output().unwrap();
+        if !output.status.success() {
+            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            panic!()
+        }
+
+        f_ok(BuildResult { output: compile_output.into(), outputs })
     }
-}
-impl BuilderRequester for SccacheBuilder {
 }
