@@ -94,7 +94,9 @@ pub struct ParsedArguments {
 pub struct RustCompilation {
     /// The path to the rustc executable.
     executable: PathBuf,
-    /// The full commandline.
+    /// The sysroot for this rustc
+    sysroot: PathBuf,
+    /// All arguments passed to rustc
     arguments: Vec<OsString>,
     /// The compiler outputs.
     outputs: HashMap<String, PathBuf>,
@@ -703,13 +705,12 @@ impl<T> CompilerHasher<T> for RustHasher
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
                 // CPU pool futures are eager, delay until poll is called
+                let toolchain_sysroot = sysroot.clone();
                 let toolchain_future = Box::new(future::lazy(move || {
                     toolchain_pool.spawn_fn(move || {
-                        let path = daemon_client.toolchain_cache(&mut |f| {
+                        let path = daemon_client.toolchain_cache(&mut move |f| {
                             let mut builder = tar::Builder::new(f);
-                            // TODO: attempt to mimic original layout
-                            // TODO: FnBox would remove need for this clone
-                            builder.append_dir_all("", sysroot.clone()).unwrap();
+                            builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
                             builder.finish().unwrap()
                         });
                         future::ok(dist::Toolchain {
@@ -722,6 +723,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
+                        sysroot: sysroot,
                         arguments: arguments,
                         outputs: outputs,
                         crate_name: crate_name,
@@ -773,7 +775,7 @@ impl<T> Compilation<T> for RustCompilation
                               env_vars: &[(OsString, OsString)],
                               toolchain: SFuture<dist::Toolchain>)
                               -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> {
-        let executable = self.executable.clone();
+        let executable = self.sysroot.join("bin").join("rustc");
         let arguments = self.arguments.clone();
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_owned();
@@ -783,7 +785,7 @@ impl<T> Compilation<T> for RustCompilation
                 toolchain: toolchain.clone(),
             },
             dist::JobRequest {
-                executable: PathBuf::from("/toolchain/bin/rustc"),
+                executable,
                 arguments,
                 cwd,
                 env_vars,

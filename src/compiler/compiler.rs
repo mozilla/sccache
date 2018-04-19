@@ -224,7 +224,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                             }).map(|jres| {
                                 error!("fetched {:?}", jres.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
                                 for (path, bytes) in jres.outputs {
-                                    let file = File::create(path).unwrap().write_all(&bytes);
+                                    File::create(path).unwrap().write_all(&bytes).unwrap();
                                 }
                                 (Cacheable::No, jres.output.into())
                             }) // TODO: allow caching
