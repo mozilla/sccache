@@ -72,6 +72,7 @@ pub struct JobRequest {
     pub arguments: Vec<OsString>,
     pub cwd: PathBuf,
     pub env_vars: Vec<(OsString, OsString)>,
+    pub inputs_archive: Vec<u8>,
     pub outputs: Vec<PathBuf>,
     pub toolchain: Toolchain,
 }
@@ -310,7 +311,7 @@ impl BuilderHandler for SccacheBuilder {
         let rel_cwd = job_req.cwd.strip_prefix("/").unwrap().to_str().unwrap();
         let cwd = job_req.cwd.to_str().unwrap();
         info!("{:?}", job_req.env_vars);
-        info!("{:?}", job_req.arguments);
+        info!("{:?} {:?}", job_req.executable, job_req.arguments);
 
         let cid = {
             let mut cmd = Command::new("docker");
@@ -325,7 +326,11 @@ impl BuilderHandler for SccacheBuilder {
             cmd.arg(job_req.executable.to_str().unwrap());
             cmd.args(job_req.arguments);
             let output = cmd.output().unwrap();
-            assert!(output.status.success());
+            if !output.status.success() {
+                error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+                    String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                panic!()
+            }
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
         };
@@ -342,9 +347,7 @@ impl BuilderHandler for SccacheBuilder {
 
         error!("copying in build dir");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        let mut builder = tar::Builder::new(process.stdin.take().unwrap());
-        builder.append_dir_all(rel_cwd, cwd).unwrap();
-        process.stdin = Some(builder.into_inner().unwrap());
+        io::copy(&mut job_req.inputs_archive.as_slice(), &mut process.stdin.take().unwrap());
         let output = process.wait_with_output().unwrap();
         if !output.status.success() {
             error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
@@ -356,7 +359,9 @@ impl BuilderHandler for SccacheBuilder {
         println!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
+        error!("retrieving {:?}", job_req.outputs);
         for path in job_req.outputs {
+            let path = job_req.cwd.join(path); // Resolve in case it's relative
             let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
             if !output.status.success() {
                 error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",

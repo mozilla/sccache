@@ -320,6 +320,7 @@ where
     outputs.insert("obj", output);
 
     CompilerArguments::Ok(ParsedArguments {
+        literal_args: arguments.to_owned(),
         input: input.into(),
         language: language,
         depfile: None,

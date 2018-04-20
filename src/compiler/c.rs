@@ -15,17 +15,22 @@
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use dist;
-use futures::Future;
+use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs::File;
 use std::hash::Hash;
+use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
+use tar;
 use util::{HashToDigest, Digest};
 
 use errors::*;
@@ -63,6 +68,7 @@ pub enum Language {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParsedArguments {
+    pub literal_args: Vec<OsString>,
     /// The input source file.
     pub input: PathBuf,
     /// The type of language used in the input source file.
@@ -117,6 +123,7 @@ impl Language {
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
+    preprocessed_input: Vec<u8>,
     executable: PathBuf,
     compiler: I,
 }
@@ -204,11 +211,11 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
           I: CCompilerImpl,
 {
     fn generate_hash_key(self: Box<Self>,
-                         _daemon_client: Arc<dist::DaemonClientRequester>,
+                         daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
                          cwd: &Path,
                          env_vars: &[(OsString, OsString)],
-                         _pool: &CpuPool)
+                         pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
@@ -216,6 +223,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
         let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, env_vars);
         let out_pretty = parsed_args.output_pretty().into_owned();
         let env_vars = env_vars.to_vec();
+        let toolchain_pool = pool.clone();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
@@ -248,14 +256,33 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          &env_vars,
                          &preprocessor_result.stdout)
             };
+            // CPU pool futures are eager, delay until poll is called
+            let env_executable = executable.clone();
+            let toolchain_future = Box::new(future::lazy(move || {
+                toolchain_pool.spawn_fn(move || {
+                    let path = daemon_client.toolchain_cache(&mut move |f| {
+                        // TODO: write our own, since this is GPL
+                        env::set_current_dir("/tmp").unwrap();
+                        let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
+                        let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
+                        let filename = &file_line[b"creating ".len()..];
+                        io::copy(&mut File::open(OsStr::from_bytes(filename)).unwrap(), &mut {f}).unwrap();
+                    });
+                    future::ok(dist::Toolchain {
+                        docker_img: "aidanhs/empty".to_owned(),
+                        archive: path,
+                    })
+                })
+            }));
             Ok(HashResult {
                 key: key,
                 compilation: Box::new(CCompilation {
                     parsed_args: parsed_args,
+                    preprocessed_input: preprocessor_result.stdout,
                     executable: executable,
                     compiler: compiler,
                 }),
-                dist_toolchain: f_err("cannot package toolchain for Rust compilers"),
+                dist_toolchain: toolchain_future,
             })
         }))
     }
@@ -284,8 +311,46 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                -> SFuture<(Cacheable, process::Output)>
     {
         let me = *self;
-        let CCompilation { parsed_args, executable, compiler } = me;
+        let CCompilation { parsed_args, executable, compiler, preprocessed_input: _ } = me;
         compiler.compile(creator, &executable, &parsed_args, cwd, env_vars)
+    }
+
+    fn generate_dist_requests(&self,
+                              cwd: &Path,
+                              env_vars: &[(OsString, OsString)],
+                              toolchain: SFuture<dist::Toolchain>)
+                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> {
+        let executable = self.executable.clone();
+        let arguments = self.parsed_args.literal_args.clone();
+        let cwd = cwd.to_owned();
+        let env_vars = env_vars.to_owned();
+
+        let mut builder = tar::Builder::new(vec![]);
+        {
+            let mut preprocessed = File::create("/tmp/preprocessed.c").unwrap();
+            preprocessed.write_all(&self.preprocessed_input).unwrap();
+        }
+        let preprocessed_path = cwd.strip_prefix("/").unwrap().join(&self.parsed_args.input);
+        let mut preprocessed = File::open("/tmp/preprocessed.c").unwrap();
+        builder.append_file(preprocessed_path, &mut preprocessed).unwrap();
+        let inputs_archive = builder.into_inner().unwrap();
+        // Unsure why this needs UFCS
+        let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
+
+        Some(Box::new(toolchain.map(move |toolchain| (
+            dist::JobAllocRequest {
+                toolchain: toolchain.clone(),
+            },
+            dist::JobRequest {
+                executable,
+                arguments,
+                cwd,
+                env_vars,
+                inputs_archive,
+                outputs,
+                toolchain,
+            }
+        ))))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
