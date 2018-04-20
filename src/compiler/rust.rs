@@ -779,7 +779,13 @@ impl<T> Compilation<T> for RustCompilation
         let arguments = self.arguments.clone();
         let cwd = cwd.to_owned();
         let env_vars = env_vars.to_owned();
-        let outputs = self.outputs.iter().map(|(_, p)| p.to_owned()).collect();
+
+        let mut builder = tar::Builder::new(vec![]);
+        builder.append_dir_all(cwd.strip_prefix("/").unwrap(), &cwd).unwrap();
+        let inputs_archive = builder.into_inner().unwrap();
+        // Unsure why this needs UFCS
+        let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
+
         Some(Box::new(toolchain.map(move |toolchain| (
             dist::JobAllocRequest {
                 toolchain: toolchain.clone(),
@@ -789,6 +795,7 @@ impl<T> Compilation<T> for RustCompilation
                 arguments,
                 cwd,
                 env_vars,
+                inputs_archive,
                 outputs,
                 toolchain,
             }

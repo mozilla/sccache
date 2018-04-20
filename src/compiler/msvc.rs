@@ -329,6 +329,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
         };
     }
     CompilerArguments::Ok(ParsedArguments {
+        literal_args: arguments.to_owned(),
         input: input.into(),
         language: language,
         depfile: depfile.map(|d| d.into()),
