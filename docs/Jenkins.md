@@ -8,7 +8,7 @@ once a job is finished.  This results in broken builds when two run in parallel 
 is finished and the server is killed. The other job way be in contact with the server (e.g waiting for a cache response)
 and fail.
 
-One option so solve this problem is to spawn a always running sccache server process by setting `SCCACHE_IDLE_TIMEOUT`
+One option to solve this problem is to spawn a always running sccache server process by setting `SCCACHE_IDLE_TIMEOUT`
 to `0` and start the server beside Jenkins as a system service. This implies that all jobs use the same sccache
 configuration and share the statistics.
 
