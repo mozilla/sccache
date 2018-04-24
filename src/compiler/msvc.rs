@@ -142,16 +142,19 @@ pub fn detect_showincludes_prefix<T>(creator: &T,
         let stdout = from_local_codepage(&stdout_bytes)
             .chain_err(|| "Failed to convert compiler stdout while detecting showIncludes prefix")?;
         for line in stdout.lines() {
-            if line.ends_with("test.h") {
-                for (i, c) in line.char_indices().rev() {
-                    if c == ' ' {
-                        // See if the rest of this line is a full pathname.
-                        if Path::new(&line[i+1..]).exists() {
-                            // Everything from the beginning of the line
-                            // to this index is the prefix.
-                            return Ok(line[..i+1].to_owned());
-                        }
-                    }
+            if !line.ends_with("test.h") {
+                continue
+            }
+            for (i, c) in line.char_indices().rev() {
+                if c != ' ' {
+                    continue
+                }
+                let path = tempdir.path().join(&line[i + 1..]);
+                // See if the rest of this line is a full pathname.
+                if path.exists() {
+                    // Everything from the beginning of the line
+                    // to this index is the prefix.
+                    return Ok(line[..i+1].to_owned());
                 }
             }
         }
