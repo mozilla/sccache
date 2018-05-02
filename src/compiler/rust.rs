@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
 use dist;
@@ -30,7 +30,7 @@ use std::hash::Hash;
 use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
-use std::process::{self, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tar;
@@ -750,56 +750,46 @@ impl<T> CompilerHasher<T> for RustHasher
 impl<T> Compilation<T> for RustCompilation
     where T: CommandCreatorSync,
 {
-    fn compile(self: Box<Self>,
-               creator: &T,
-               cwd: &Path,
-               env_vars: &[(OsString, OsString)])
-               -> SFuture<(Cacheable, process::Output)>
+    fn generate_compile_command(&self,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
     {
-        let me = *self;
-        let RustCompilation { executable, arguments, crate_name, .. } = me;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, .. } = *self;
         trace!("[{}]: compile", crate_name);
-        let mut cmd = creator.clone().new_command_sync(&executable);
-        cmd.args(&arguments)
-            .env_clear()
-            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-            .current_dir(cwd);
-        trace!("compile: {:?}", cmd);
-        Box::new(run_input_output(cmd, None).map(|output| {
-            (Cacheable::Yes, output)
-        }))
+        Ok((CompileCommand {
+            executable: executable.to_owned(),
+            arguments: arguments.to_owned(),
+            env_vars: env_vars.to_owned(),
+            cwd: cwd.to_owned(),
+        }, Cacheable::Yes))
     }
 
     fn generate_dist_requests(&self,
-                              cwd: &Path,
-                              env_vars: &[(OsString, OsString)],
+                              compile_cmd: &CompileCommand,
                               toolchain: SFuture<dist::Toolchain>)
-                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> {
-        let executable = self.sysroot.join("bin").join("rustc");
-        let arguments = self.arguments.clone();
-        let cwd = cwd.to_owned();
-        let env_vars = env_vars.to_owned();
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+
+        let mut command = compile_cmd.clone();
+        command.executable = self.sysroot.join("bin").join("rustc");
 
         let mut builder = tar::Builder::new(vec![]);
-        builder.append_dir_all(cwd.strip_prefix("/").unwrap(), &cwd).unwrap();
+        builder.append_dir_all(compile_cmd.cwd.strip_prefix("/").unwrap(), &compile_cmd.cwd).unwrap();
         let inputs_archive = builder.into_inner().unwrap();
         // Unsure why this needs UFCS
         let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
 
-        Some(Box::new(toolchain.map(move |toolchain| (
+        Box::new(toolchain.map(move |toolchain| (
             dist::JobAllocRequest {
                 toolchain: toolchain.clone(),
             },
             dist::JobRequest {
-                executable,
-                arguments,
-                cwd,
-                env_vars,
+                command,
                 inputs_archive,
                 outputs,
                 toolchain,
             }
-        ))))
+        )))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {

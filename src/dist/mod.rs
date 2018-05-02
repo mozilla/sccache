@@ -17,6 +17,7 @@ use tar;
 
 use tokio_core;
 
+use compiler::CompileCommand;
 use errors::*;
 use mock_command::exit_status;
 
@@ -68,10 +69,7 @@ const SERVER_CLIENTS_PORT: u16 = 10502;
 
 #[derive(Serialize, Deserialize)]
 pub struct JobRequest {
-    pub executable: PathBuf,
-    pub arguments: Vec<OsString>,
-    pub cwd: PathBuf,
-    pub env_vars: Vec<(OsString, OsString)>,
+    pub command: CompileCommand,
     pub inputs_archive: Vec<u8>,
     pub outputs: Vec<PathBuf>,
     pub toolchain: Toolchain,
@@ -304,27 +302,28 @@ impl BuilderHandler for SccacheBuilder {
     // From DaemonServer
     fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
         let BuildRequest(job_req) = req;
+        let command = job_req.command;
         let cache_dir = Path::new("/tmp/sccache_rust_cache");
         if cache_dir.is_dir() {
             fs::remove_dir_all("/tmp/sccache_rust_cache").unwrap();
         }
-        let rel_cwd = job_req.cwd.strip_prefix("/").unwrap().to_str().unwrap();
-        let cwd = job_req.cwd.to_str().unwrap();
-        info!("{:?}", job_req.env_vars);
-        info!("{:?} {:?}", job_req.executable, job_req.arguments);
+        let rel_cwd = command.cwd.strip_prefix("/").unwrap().to_str().unwrap();
+        let cwd = command.cwd.to_str().unwrap();
+        info!("{:?}", command.env_vars);
+        info!("{:?} {:?}", command.executable, command.arguments);
 
         let cid = {
             let mut cmd = Command::new("docker");
             cmd.args(&["create", "-w", cwd]);
-            for (k, v) in job_req.env_vars {
+            for (k, v) in command.env_vars {
                 let mut env = k;
                 env.push("=");
                 env.push(v);
                 cmd.arg("-e").arg(env);
             }
             cmd.arg(job_req.toolchain.docker_img);
-            cmd.arg(job_req.executable.to_str().unwrap());
-            cmd.args(job_req.arguments);
+            cmd.arg(command.executable.to_str().unwrap());
+            cmd.args(command.arguments);
             let output = cmd.output().unwrap();
             if !output.status.success() {
                 error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
@@ -361,7 +360,7 @@ impl BuilderHandler for SccacheBuilder {
         let mut outputs = vec![];
         error!("retrieving {:?}", job_req.outputs);
         for path in job_req.outputs {
-            let path = job_req.cwd.join(path); // Resolve in case it's relative
+            let path = command.cwd.join(path); // Resolve in case it's relative
             let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
             if !output.status.success() {
                 error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use dist;
 use futures::{Future, future};
@@ -68,7 +68,6 @@ pub enum Language {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParsedArguments {
-    pub literal_args: Vec<OsString>,
     /// The input source file.
     pub input: PathBuf,
     /// The type of language used in the input source file.
@@ -155,16 +154,14 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                      cwd: &Path,
                      env_vars: &[(OsString, OsString)])
                      -> SFuture<process::Output> where T: CommandCreatorSync;
-    /// Run the C compiler with the specified set of arguments, using the
-    /// previously-generated `preprocessor_output` as input if possible.
-    fn compile<T>(&self,
-                  creator: &T,
-                  executable: &Path,
-                  parsed_args: &ParsedArguments,
-                  cwd: &Path,
-                  env_vars: &[(OsString, OsString)])
-                  -> SFuture<(Cacheable, process::Output)>
-        where T: CommandCreatorSync;
+    /// Generate a command that can be used to invoke the C compiler to perform
+    /// the compilation.
+    fn generate_compile_command(&self,
+                                executable: &Path,
+                                parsed_args: &ParsedArguments,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>;
 }
 
 impl <I> CCompiler<I>
@@ -304,53 +301,46 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
-    fn compile(self: Box<Self>,
-               creator: &T,
-               cwd: &Path,
-               env_vars: &[(OsString, OsString)])
-               -> SFuture<(Cacheable, process::Output)>
+    fn generate_compile_command(&self,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
     {
-        let me = *self;
-        let CCompilation { parsed_args, executable, compiler, preprocessed_input: _ } = me;
-        compiler.compile(creator, &executable, &parsed_args, cwd, env_vars)
+        let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _ } = *self;
+        compiler.generate_compile_command(executable, parsed_args, cwd, env_vars)
     }
 
     fn generate_dist_requests(&self,
-                              cwd: &Path,
-                              env_vars: &[(OsString, OsString)],
+                              compile_cmd: &CompileCommand,
                               toolchain: SFuture<dist::Toolchain>)
-                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> {
-        let executable = self.executable.clone();
-        let arguments = self.parsed_args.literal_args.clone();
-        let cwd = cwd.to_owned();
-        let env_vars = env_vars.to_owned();
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+
+        let mut command = compile_cmd.clone();
+        command.arguments.push(OsString::from("-fpreprocessed"));
 
         let mut builder = tar::Builder::new(vec![]);
         {
             let mut preprocessed = File::create("/tmp/preprocessed.c").unwrap();
             preprocessed.write_all(&self.preprocessed_input).unwrap();
         }
-        let preprocessed_path = cwd.strip_prefix("/").unwrap().join(&self.parsed_args.input);
+        let preprocessed_path = compile_cmd.cwd.strip_prefix("/").unwrap().join(&self.parsed_args.input);
         let mut preprocessed = File::open("/tmp/preprocessed.c").unwrap();
         builder.append_file(preprocessed_path, &mut preprocessed).unwrap();
         let inputs_archive = builder.into_inner().unwrap();
         // Unsure why this needs UFCS
         let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
 
-        Some(Box::new(toolchain.map(move |toolchain| (
+        Box::new(toolchain.map(move |toolchain| (
             dist::JobAllocRequest {
                 toolchain: toolchain.clone(),
             },
             dist::JobRequest {
-                executable,
-                arguments,
-                cwd,
-                env_vars,
+                command,
                 inputs_archive,
                 outputs,
                 toolchain,
             }
-        ))))
+        )))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>

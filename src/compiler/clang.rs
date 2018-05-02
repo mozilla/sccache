@@ -18,6 +18,7 @@ use ::compiler::{
     gcc,
     Cacheable,
     CompilerArguments,
+    CompileCommand,
     write_temp_file,
 };
 use compiler::args::*;
@@ -66,16 +67,14 @@ impl CCompilerImpl for Clang {
         gcc::preprocess(creator, executable, parsed_args, cwd, env_vars)
     }
 
-    fn compile<T>(&self,
-                  creator: &T,
-                  executable: &Path,
-                  parsed_args: &ParsedArguments,
-                  cwd: &Path,
-                  env_vars: &[(OsString, OsString)])
-                  -> SFuture<(Cacheable, process::Output)>
-        where T: CommandCreatorSync
+    fn generate_compile_command(&self,
+                                executable: &Path,
+                                parsed_args: &ParsedArguments,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
     {
-        gcc::compile(creator, executable, parsed_args, cwd, env_vars)
+        gcc::generate_compile_command(executable, parsed_args, cwd, env_vars)
     }
 }
 
