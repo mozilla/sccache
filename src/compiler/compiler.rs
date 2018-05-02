@@ -50,10 +50,19 @@ use std::time::{
 };
 use tempdir::TempDir;
 use tempfile::NamedTempFile;
-use util::fmt_duration_as_secs;
+use util::{fmt_duration_as_secs, run_input_output};
 use tokio_core::reactor::{Handle, Timeout};
 
 use errors::*;
+
+// TODO: needs a custom serializer that fails if it's not utf8
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompileCommand {
+    pub executable: PathBuf,
+    pub arguments: Vec<OsString>,
+    pub env_vars: Vec<(OsString, OsString)>,
+    pub cwd: PathBuf,
+}
 
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
@@ -215,24 +224,39 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = if let Some(dist_reqs_fut) = compilation.generate_dist_requests(&cwd, &env_vars, dist_toolchain) {
-                    debug!("[{}]: Attempting distributed compilation", out_pretty);
-                    Box::new(dist_reqs_fut.and_then(|(jareq, jreq)|
-                        daemon_client.do_allocation_request(jareq)
-                            .and_then(move |jares| {
-                                daemon_client.do_compile_request(jares, jreq)
-                            }).map(|jres| {
-                                error!("fetched {:?}", jres.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
-                                for (path, bytes) in jres.outputs {
-                                    File::create(path).unwrap().write_all(&bytes).unwrap();
-                                }
-                                (Cacheable::No, jres.output.into())
-                            }) // TODO: allow caching
-                    ))
-                } else {
-                    compilation.compile(&creator, &cwd, &env_vars)
-                };
-                Box::new(compile.and_then(move |(cacheable, compiler_result)| {
+                let (compile_cmd, cacheable) = compilation.generate_compile_command(&cwd, &env_vars).unwrap(); // TODO
+                debug!("[{}]: Attempting distributed compilation", out_pretty);
+                let compile_out_pretty = out_pretty.clone();
+                let compile = compilation.generate_dist_requests(&compile_cmd, dist_toolchain)
+                    .then(move |reqs| -> SFuture<process::Output> {
+                        match reqs {
+                            Ok((jareq, jreq)) => {
+                                debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
+                                Box::new(daemon_client.do_allocation_request(jareq)
+                                    .and_then(move |jares| {
+                                        debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
+                                        daemon_client.do_compile_request(jares, jreq)
+                                    }).map(move |jres| {
+                                        error!("fetched {:?}", jres.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
+                                        for (path, bytes) in jres.outputs {
+                                            File::create(path).unwrap().write_all(&bytes).unwrap();
+                                        }
+                                        jres.output.into()
+                                    }))
+                            },
+                            Err(e) => {
+                                debug!("[{}]: Could not create distributed compile request, falling back to local: {}", compile_out_pretty, e);
+                                let mut cmd = creator.clone().new_command_sync(&compile_cmd.executable);
+                                cmd.args(&compile_cmd.arguments)
+                                    .env_clear()
+                                    .envs(compile_cmd.env_vars)
+                                    .current_dir(compile_cmd.cwd);
+                                trace!("compile: {:?}", cmd);
+                                Box::new(run_input_output(cmd, None))
+                            },
+                        }
+                    });
+                Box::new(compile.and_then(move |compiler_result| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -310,19 +334,21 @@ impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
 pub trait Compilation<T>
     where T: CommandCreatorSync,
 {
-    /// Given information about a compiler command, execute the compiler.
-    fn compile(self: Box<Self>,
-               creator: &T,
-               cwd: &Path,
-               env_vars: &[(OsString, OsString)])
-               -> SFuture<(Cacheable, process::Output)>;
+    /// Given information about a compiler command, generate a command that can
+    /// execute the compiler.
+    fn generate_compile_command(&self,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>;
 
     /// Generate the requests that will be used to perform a distributed compilation
     fn generate_dist_requests(&self,
-                              _cwd: &Path,
-                              _env_vars: &[(OsString, OsString)],
+                              _compile_cmd: &CompileCommand,
                               _toolchain: SFuture<dist::Toolchain>)
-                              -> Option<SFuture<(dist::JobAllocRequest, dist::JobRequest)>> { None }
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+
+        f_err("distributed compilation not implemented")
+    }
 
     /// Returns an iterator over the results of this compilation.
     ///

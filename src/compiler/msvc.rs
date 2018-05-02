@@ -15,6 +15,7 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
+    CompileCommand,
     write_temp_file,
 };
 use compiler::args::*;
@@ -70,16 +71,14 @@ impl CCompilerImpl for MSVC {
         preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix)
     }
 
-    fn compile<T>(&self,
-                  creator: &T,
-                  executable: &Path,
-                  parsed_args: &ParsedArguments,
-                  cwd: &Path,
-                  env_vars: &[(OsString, OsString)])
-                  -> SFuture<(Cacheable, process::Output)>
-        where T: CommandCreatorSync
+    fn generate_compile_command(&self,
+                                executable: &Path,
+                                parsed_args: &ParsedArguments,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
     {
-        compile(creator, executable, parsed_args, cwd, env_vars)
+        generate_compile_command(executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -329,7 +328,6 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
         };
     }
     CompilerArguments::Ok(ParsedArguments {
-        literal_args: arguments.to_owned(),
         input: input.into(),
         language: language,
         depfile: depfile.map(|d| d.into()),
@@ -458,19 +456,17 @@ pub fn preprocess<T>(creator: &T,
     }))
 }
 
-fn compile<T>(creator: &T,
-              executable: &Path,
-              parsed_args: &ParsedArguments,
-              cwd: &Path,
-              env_vars: &[(OsString, OsString)])
-              -> SFuture<(Cacheable, process::Output)>
-    where T: CommandCreatorSync
+fn generate_compile_command(executable: &Path,
+                            parsed_args: &ParsedArguments,
+                            cwd: &Path,
+                            env_vars: &[(OsString, OsString)])
+                            -> Result<(CompileCommand, Cacheable)>
 {
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return f_err("Missing object file output")
+            return Err("Missing object file output".into())
         }
     };
 
@@ -489,18 +485,18 @@ fn compile<T>(creator: &T,
     let mut fo = OsString::from("-Fo");
     fo.push(&out_file);
 
-    let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-c")
-        .arg(&parsed_args.input)
-        .arg(&fo)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(cwd);
-
-    Box::new(run_input_output(cmd, None).map(move |output| {
-        (cacheable, output)
-    }))
+    let mut arguments: Vec<OsString> = vec![
+        "-c".into(),
+        parsed_args.input.clone().into(),
+        fo,
+    ];
+    arguments.extend(parsed_args.common_args.clone());
+    Ok((CompileCommand {
+        executable: executable.to_owned(),
+        arguments: arguments,
+        env_vars: env_vars.to_owned(),
+        cwd: cwd.to_owned(),
+    }, cacheable))
 }
 
 

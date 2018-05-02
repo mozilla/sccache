@@ -15,11 +15,11 @@
 use ::compiler::{
     Cacheable,
     CompilerArguments,
+    CompileCommand,
 };
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use log::LogLevel::Trace;
-use futures::future::Future;
 use mock_command::{
     CommandCreatorSync,
     RunCommand,
@@ -58,16 +58,14 @@ impl CCompilerImpl for GCC {
         preprocess(creator, executable, parsed_args, cwd, env_vars)
     }
 
-    fn compile<T>(&self,
-                  creator: &T,
-                  executable: &Path,
-                  parsed_args: &ParsedArguments,
-                  cwd: &Path,
-                  env_vars: &[(OsString, OsString)])
-                  -> SFuture<(Cacheable, process::Output)>
-        where T: CommandCreatorSync
+    fn generate_compile_command(&self,
+                                executable: &Path,
+                                parsed_args: &ParsedArguments,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
     {
-        compile(creator, executable, parsed_args, cwd, env_vars)
+        generate_compile_command(executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -320,7 +318,6 @@ where
     outputs.insert("obj", output);
 
     CompilerArguments::Ok(ParsedArguments {
-        literal_args: arguments.to_owned(),
         input: input.into(),
         language: language,
         depfile: None,
@@ -367,20 +364,18 @@ pub fn preprocess<T>(creator: &T,
     run_input_output(cmd, None)
 }
 
-pub fn compile<T>(creator: &T,
-              executable: &Path,
-              parsed_args: &ParsedArguments,
-              cwd: &Path,
-              env_vars: &[(OsString, OsString)])
-              -> SFuture<(Cacheable, process::Output)>
-    where T: CommandCreatorSync
+pub fn generate_compile_command(executable: &Path,
+                                parsed_args: &ParsedArguments,
+                                cwd: &Path,
+                                env_vars: &[(OsString, OsString)])
+                                -> Result<(CompileCommand, Cacheable)>
 {
     trace!("compile");
 
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
         None => {
-            return f_err("Missing object file output")
+            return Err("Missing object file output".into())
         }
     };
 
@@ -392,19 +387,20 @@ pub fn compile<T>(creator: &T,
         Language::ObjectiveC => "objective-c",
         Language::ObjectiveCxx => "objective-c++",
     };
-    let mut attempt = creator.clone().new_command_sync(executable);
-    attempt.arg("-x").arg(language)
-        .arg("-c")
-        .arg(&parsed_args.input)
-        .arg("-o").arg(&out_file)
-        .args(&parsed_args.preprocessor_args)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
-    Box::new(run_input_output(attempt, None).map(|output| {
-        (Cacheable::Yes, output)
-    }))
+    let mut arguments: Vec<OsString> = vec![
+        "-x".into(), language.into(),
+        "-c".into(),
+        parsed_args.input.clone().into(),
+        "-o".into(), out_file.into(),
+    ];
+    arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.common_args.clone());
+    Ok((CompileCommand {
+        executable: executable.to_owned(),
+        arguments: arguments.to_owned(),
+        env_vars: env_vars.to_owned(),
+        cwd: cwd.to_owned(),
+    }, Cacheable::Yes))
 }
 
 struct ExpandIncludeFile<'a> {
