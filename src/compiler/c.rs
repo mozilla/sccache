@@ -253,11 +253,13 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          &env_vars,
                          &preprocessor_result.stdout)
             };
+            let weak_toolchain_key = executable_digest.to_owned();
             // CPU pool futures are eager, delay until poll is called
             let env_executable = executable.clone();
             let toolchain_future = Box::new(future::lazy(move || {
                 toolchain_pool.spawn_fn(move || {
-                    let path = daemon_client.toolchain_cache(&mut move |f| {
+                    let archive_id = daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
+                        info!("Packaging C compiler");
                         // TODO: write our own, since this is GPL
                         env::set_current_dir("/tmp").unwrap();
                         let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
@@ -267,7 +269,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     });
                     future::ok(dist::Toolchain {
                         docker_img: "aidanhs/empty".to_owned(),
-                        archive: path,
+                        archive_id,
                     })
                 })
             }));
@@ -339,6 +341,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                 inputs_archive,
                 outputs,
                 toolchain,
+                toolchain_data: None,
             }
         )))
     }

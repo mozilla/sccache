@@ -25,16 +25,17 @@ lazy_static! {
     pub static ref CONFIG: Config = { Config::create() };
 }
 
-const ORGANIZATION: &str = "Mozilla";
+pub const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
-const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
+pub const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
+// Unfortunately this means that nothing else can use the cache dir
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
         .cache_dir().to_owned()
 }
 
-fn parse_size(val: &str) -> Option<u64> {
+pub fn parse_size(val: &str) -> Option<u64> {
     let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
     re.captures(val)
         .and_then(|caps| {
