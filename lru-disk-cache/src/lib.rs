@@ -110,7 +110,7 @@ impl From<io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
-pub trait ReadSeek: Read + Seek +Send {}
+pub trait ReadSeek: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
@@ -195,6 +195,23 @@ impl LruDiskCache {
         fs::create_dir_all(path.parent().expect("Bad path?"))?;
         by(path.as_path())?;
         self.add_file(path, Some(rel_path), size)
+            .or_else(|e| {
+                error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
+                fs::remove_file(&self.root.join(rel_path)).expect("Failed to remove file we just created!");
+                Err(e)
+            })
+    }
+
+    /// Add a file by calling `with` with the open `File` corresponding to the cache at path `key`.
+    pub fn insert_with<K: AsRef<OsStr>, F: Fn(File) -> io::Result<()>>(&mut self, key: K, with: F) -> Result<()> {
+        let rel_path = key.as_ref();
+        let path = self.root.join(rel_path);
+        try!(fs::create_dir_all(path.parent().expect("Bad path?")));
+        with(try!(File::create(&path)))
+            .and_then(|()| fs::metadata(&path))
+            .map(|f| f.len())
+            .map_err(|e| e.into())
+            .and_then(|size| self.add_file(path, Some(rel_path), size))
             .or_else(|e| {
                 error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
                 fs::remove_file(&self.root.join(rel_path)).expect("Failed to remove file we just created!");

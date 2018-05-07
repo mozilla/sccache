@@ -89,7 +89,7 @@ macro_rules! ftry {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new(future::err(e.into())),
+            Err(e) => return Box::new($crate::futures::future::err(e.into())),
         }
     }
 }

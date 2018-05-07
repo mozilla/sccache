@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use errors::*;
 
+#[derive(Clone)]
 pub struct Digest {
     inner: Context,
 }
@@ -45,10 +46,14 @@ impl Digest {
         where T: Into<PathBuf>
     {
         let path = path.into();
+        let f = ftry!(File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path)));
+        Self::reader(f, pool)
+    }
+
+    pub fn reader<R: Read + Send + 'static>(rdr: R, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
-            let f = File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
             let mut m = Digest::new();
-            let mut reader = BufReader::new(f);
+            let mut reader = BufReader::new(rdr);
             loop {
                 let mut buffer = [0; 1024];
                 let count = reader.read(&mut buffer[..])?;

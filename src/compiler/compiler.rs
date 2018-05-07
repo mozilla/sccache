@@ -23,7 +23,7 @@ use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
 use compiler::rust::Rust;
-use dist::{self, DaemonClientRequester};
+use dist::{self, DaemonClientRequester, JobResult};
 use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -232,16 +232,33 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         match reqs {
                             Ok((jareq, jreq)) => {
                                 debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
-                                Box::new(daemon_client.do_allocation_request(jareq)
-                                    .and_then(move |jares| {
+                                let retry_out_pretty = compile_out_pretty.clone();
+                                Box::new(daemon_client.do_allocation_request(jareq).map(|jares| (daemon_client, jares))
+                                    .and_then(move |(daemon_client, jares)| {
                                         debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
-                                        daemon_client.do_compile_request(jares, jreq)
-                                    }).map(move |jres| {
-                                        error!("fetched {:?}", jres.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
-                                        for (path, bytes) in jres.outputs {
+                                        daemon_client.do_compile_request(jares.clone(), jreq.clone()).map(|jres| (daemon_client, jares, jreq, jres))
+                                    }).and_then(move |(daemon_client, jares, mut jreq, jres)| {
+                                        match jres {
+                                            JobResult::Complete(jc) => f_ok(jc),
+                                            // Issue the request again, but with the toolchain data added
+                                            JobResult::NeedToolchain => {
+                                                debug!("[{}]: Re-sending compile with toolchain (missing on worker)", retry_out_pretty);
+                                                jreq.toolchain_data = Some(daemon_client.get_toolchain_cache(&jreq.toolchain.archive_id));
+                                                Box::new(daemon_client.do_compile_request(jares, jreq).and_then(|jres| {
+                                                    match jres {
+                                                        JobResult::Complete(jc) => f_ok(jc),
+                                                        // Send the toolchain, then issue the request again
+                                                        JobResult::NeedToolchain => f_err("sent toolchain but daemon server lost it"),
+                                                    }
+                                                }))
+                                            },
+                                        }
+                                    }).map(|jc| {
+                                        error!("fetched {:?}", jc.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
+                                        for (path, bytes) in jc.outputs {
                                             File::create(path).unwrap().write_all(&bytes).unwrap();
                                         }
-                                        jres.output.into()
+                                        jc.output.into()
                                     }))
                             },
                             Err(e) => {
