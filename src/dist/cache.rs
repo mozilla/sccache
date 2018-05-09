@@ -4,11 +4,10 @@ use futures::Future;
 use futures_cpupool::CpuPool;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Result as LruResult;
-use ring::digest::{SHA512, Context};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Seek, SeekFrom};
+use std::io;
 use std::path::PathBuf;
 use util;
 
@@ -62,8 +61,9 @@ impl TcCache {
         self.inner.contains_key(key)
     }
 
-    fn file_key<RS: ReadSeek + 'static>(&self, mut rs: RS) -> Result<String> {
-        // TODO: should be dispatched on the event loop rather than relying on it being dispatched on a cpu pool
+    fn file_key<RS: ReadSeek + 'static>(&self, rs: RS) -> Result<String> {
+        // TODO: should be dispatched on the event loop rather than relying on it being
+        // dispatched on a cpu pool (`.wait()` could end up blocking)
         util::Digest::reader(rs, &self.pool).wait()
     }
 

@@ -1,24 +1,21 @@
-#![allow(non_camel_case_types, unused)]
+#![allow(non_camel_case_types)]
 
 use bincode;
 use compiler::CompileCommand;
 use directories::ProjectDirs;
 use dist::cache::{CacheOwner, TcCache};
 use lru_disk_cache::Error as LruError;
-use lru_disk_cache::ReadSeek;
 use futures::{Future, future};
 use mock_command::exit_status;
 use serde_json;
 use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::ffi::OsString;
 use std::fs;
-use std::io::{self, BufReader, Write};
+use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tar;
 use tokio_core;
 
 use errors::*;
@@ -393,7 +390,7 @@ impl SccacheBuilder {
 
         error!("copying in toolchain");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap());
+        io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         if !output.status.success() {
             error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
@@ -414,11 +411,12 @@ impl BuilderHandler for SccacheBuilder {
         info!("{:?}", command.env_vars);
         info!("{:?} {:?}", command.executable, command.arguments);
 
-        let cid = Self::make_container(job_req.toolchain, cache, command);
+        let container_entry = self.get_container(job_req.toolchain, cache, command);
+        let cid = container_entry.lock().unwrap();
 
         error!("copying in build dir");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        io::copy(&mut job_req.inputs_archive.as_slice(), &mut process.stdin.take().unwrap());
+        io::copy(&mut job_req.inputs_archive.as_slice(), &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         if !output.status.success() {
             error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
