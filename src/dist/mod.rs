@@ -33,7 +33,8 @@ mod test;
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Serialize, Deserialize)]
 pub struct Toolchain {
     pub docker_img: String,
     pub archive_id: String,
@@ -351,34 +352,26 @@ impl DaemonServerHandler for SccacheDaemonServer {
 impl DaemonServerRequester for SccacheDaemonServer {
 }
 
-pub struct SccacheBuilder;
+pub struct SccacheBuilder {
+    container_map: Mutex<HashMap<Toolchain, Arc<Mutex<Option<String>>>>>,
+}
 
 impl SccacheBuilder {
     pub fn new() -> SccacheBuilder {
-        SccacheBuilder
+        SccacheBuilder { container_map: Mutex::new(HashMap::new()) }
     }
-}
 
-impl BuilderHandler for SccacheBuilder {
-    // From DaemonServer
-    fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
-        let BuildRequest(job_req, cache) = req;
-        let command = job_req.command;
-        let rel_cwd = command.cwd.strip_prefix("/").unwrap().to_str().unwrap();
-        let cwd = command.cwd.to_str().unwrap();
-        info!("{:?}", command.env_vars);
-        info!("{:?} {:?}", command.executable, command.arguments);
-
+    fn make_container(tc: Toolchain, cache: Arc<Mutex<TcCache>>, command: CompileCommand) -> String {
         let cid = {
             let mut cmd = Command::new("docker");
-            cmd.args(&["create", "-w", cwd]);
+            cmd.args(&["create", "-w", command.cwd.to_str().unwrap()]);
             for (k, v) in command.env_vars {
                 let mut env = k;
                 env.push("=");
                 env.push(v);
                 cmd.arg("-e").arg(env);
             }
-            cmd.arg(job_req.toolchain.docker_img);
+            cmd.arg(tc.docker_img);
             cmd.arg(command.executable.to_str().unwrap());
             cmd.args(command.arguments);
             let output = cmd.output().unwrap();
@@ -391,24 +384,37 @@ impl BuilderHandler for SccacheBuilder {
             stdout.trim().to_owned()
         };
 
-        {
-            let mut toolchain_cache = cache.lock().unwrap();
-            let toolchain_reader = match toolchain_cache.get(&job_req.toolchain.archive_id) {
-                Ok(rdr) => rdr,
-                Err(LruError::FileNotInCache) => return f_err("expected toolchain, but not available"),
-                Err(e) => return f_err(e),
-            };
+        let mut toolchain_cache = cache.lock().unwrap();
+        let toolchain_reader = match toolchain_cache.get(&tc.archive_id) {
+            Ok(rdr) => rdr,
+            Err(LruError::FileNotInCache) => panic!("expected toolchain, but not available"),
+            Err(e) => panic!("{}", e),
+        };
 
-            error!("copying in toolchain");
-            let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-            io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap());
-            let output = process.wait_with_output().unwrap();
-            if !output.status.success() {
-                error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                    String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-                panic!()
-            }
+        error!("copying in toolchain");
+        let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
+        io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap());
+        let output = process.wait_with_output().unwrap();
+        if !output.status.success() {
+            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            panic!()
         }
+
+        cid
+    }
+}
+
+impl BuilderHandler for SccacheBuilder {
+    // From DaemonServer
+    fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
+        let BuildRequest(job_req, cache) = req;
+        let command = job_req.command;
+        let cwd = command.cwd.to_owned();
+        info!("{:?}", command.env_vars);
+        info!("{:?} {:?}", command.executable, command.arguments);
+
+        let cid = Self::make_container(job_req.toolchain, cache, command);
 
         error!("copying in build dir");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
@@ -420,13 +426,14 @@ impl BuilderHandler for SccacheBuilder {
             panic!()
         }
 
+        error!("performing compile");
         let compile_output = Command::new("docker").args(&["start", "-a", &cid]).output().unwrap();
         info!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
         error!("retrieving {:?}", job_req.outputs);
         for path in job_req.outputs {
-            let path = command.cwd.join(path); // Resolve in case it's relative
+            let path = cwd.join(path); // Resolve in case it's relative
             let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
             if !output.status.success() {
                 error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
