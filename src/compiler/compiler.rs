@@ -242,7 +242,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                             JobResult::Complete(jc) => f_ok(jc),
                                             // Issue the request again, but with the toolchain data added
                                             JobResult::NeedToolchain => {
-                                                debug!("[{}]: Re-sending compile with toolchain (missing on worker)", retry_out_pretty);
+                                                debug!("[{}]: Re-sending compile with toolchain (missing on server)", retry_out_pretty);
                                                 jreq.toolchain_data = Some(daemon_client.get_toolchain_cache(&jreq.toolchain.archive_id));
                                                 Box::new(daemon_client.do_compile_request(jares, jreq).and_then(|jres| {
                                                     match jres {
