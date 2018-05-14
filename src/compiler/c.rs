@@ -268,7 +268,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                         io::copy(&mut File::open(OsStr::from_bytes(filename)).unwrap(), &mut {f}).unwrap();
                     });
                     future::ok(dist::Toolchain {
-                        docker_img: "aidanhs/empty".to_owned(),
+                        docker_img: "aidanhs/busybox".to_owned(),
                         archive_id,
                     })
                 })
