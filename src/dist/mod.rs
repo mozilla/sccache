@@ -6,15 +6,17 @@ use directories::ProjectDirs;
 use dist::cache::{CacheOwner, TcCache};
 use lru_disk_cache::Error as LruError;
 use futures::{Future, future};
+use futures_cpupool::CpuPool;
 use mock_command::exit_status;
 use serde_json;
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::{self, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{self, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio_core;
 
@@ -30,8 +32,8 @@ mod test;
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
-#[derive(Clone, Hash, Eq, PartialEq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Toolchain {
     pub docker_img: String,
     pub archive_id: String,
@@ -57,8 +59,9 @@ impl From<ProcessOutput> for process::Output {
 }
 
 #[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct JobId(u64);
-struct DaemonId(u64);
+pub struct ServerId(u64);
 
 const SCHEDULER_SERVERS_PORT: u16 = 10500;
 const SCHEDULER_CLIENTS_PORT: u16 = 10501;
@@ -95,11 +98,14 @@ pub struct JobAllocRequest {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobAllocResult {
+    job_id: JobId,
     addr: SocketAddr,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct AllocAssignment;
+pub struct AllocAssignment {
+    job_id: JobId,
+}
 
 pub struct BuildRequest(JobRequest, Arc<Mutex<TcCache>>);
 pub struct BuildResult {
@@ -113,7 +119,7 @@ trait SchedulerHandler {
 }
 pub trait SchedulerRequester {
     // To DaemonServer
-    fn do_allocation_assign(&self, usize, AllocAssignment) -> SFuture<()>;
+    fn do_allocation_assign(&self, ServerId, AllocAssignment) -> SFuture<()>;
 }
 
 trait DaemonClientHandler {
@@ -139,23 +145,24 @@ pub trait DaemonServerRequester {
 }
 
 // TODO: this being public is asymmetric
-pub trait BuilderHandler {
+pub trait BuilderHandler: Send + Sync {
     // From DaemonServer
     fn handle_compile_request(&self, BuildRequest) -> SFuture<BuildResult>;
 }
 
 enum JobStatus {
     AllocRequested(JobAllocRequest),
-    AllocSuccess(DaemonId, JobAllocRequest, JobAllocResult),
-    JobStarted(DaemonId, JobAllocRequest, JobAllocResult),
-    JobCompleted(DaemonId, JobAllocRequest, JobAllocResult),
+    AllocSuccess(ServerId, JobAllocRequest, JobAllocResult),
+    JobStarted(ServerId, JobAllocRequest, JobAllocResult),
+    JobCompleted(ServerId, JobAllocRequest, JobAllocResult),
     // Interrupted by some error in distributed sccache
     // or maybe a failure to allocate. Nothing to do with the
     // compilation itself.
-    JobFailed(DaemonId, JobAllocRequest, JobAllocResult),
+    JobFailed(ServerId, JobAllocRequest, JobAllocResult),
 }
 
 pub struct SccacheScheduler {
+    job_count: Cell<u64>,
     jobs: HashMap<JobId, JobStatus>,
 
     // Acts as a ring buffer of most recently completed jobs
@@ -167,6 +174,7 @@ pub struct SccacheScheduler {
 impl SccacheScheduler {
     pub fn new() -> Self {
         SccacheScheduler {
+            job_count: Cell::new(0),
             jobs: HashMap::new(),
             finished_jobs: VecDeque::new(),
             servers: vec![],
@@ -182,8 +190,8 @@ impl SccacheScheduler {
             self.servers.push(conn);
             assert!(self.servers.len() == 1);
         }
+        let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
         loop {
-            let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
             let conn = listener.accept().unwrap().0;
             core.run(future::lazy(|| {
                 let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
@@ -198,14 +206,16 @@ impl SccacheScheduler {
 impl SchedulerHandler for SccacheScheduler {
     fn handle_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
         assert!(self.servers.len() == 1);
-        self.do_allocation_assign(0, AllocAssignment);
+        let job_id = JobId(self.job_count.get());
+        self.do_allocation_assign(ServerId(0), AllocAssignment { job_id });
+        self.job_count.set(self.job_count.get() + 1);
         let ip_addr = self.servers[0].peer_addr().unwrap().ip();
-        f_ok(JobAllocResult { addr: SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT) })
+        f_ok(JobAllocResult { addr: SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT), job_id })
     }
 }
 impl SchedulerRequester for SccacheScheduler {
-    fn do_allocation_assign(&self, server_id: usize, req: AllocAssignment) -> SFuture<()> {
-        f_ok(bincode::serialize_into(&mut &self.servers[0], &req, bincode::Infinite).unwrap())
+    fn do_allocation_assign(&self, server_id: ServerId, req: AllocAssignment) -> SFuture<()> {
+        f_ok(bincode::serialize_into(&mut &self.servers[server_id.0 as usize], &req, bincode::Infinite).unwrap())
     }
 }
 
@@ -215,6 +225,7 @@ pub struct SccacheDaemonClient {
     cache: Mutex<TcCache>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     weak_map: Mutex<HashMap<String, String>>,
+    pool: CpuPool,
 }
 
 impl SccacheDaemonClient {
@@ -239,6 +250,7 @@ impl SccacheDaemonClient {
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
             weak_map: Mutex::new(weak_map),
+            pool: CpuPool::new(5),
         }
     }
 
@@ -257,18 +269,18 @@ impl DaemonClientHandler for SccacheDaemonClient {
 }
 impl DaemonClientRequester for SccacheDaemonClient {
     fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        Box::new(future::lazy(move || -> SFuture<JobAllocResult> {
+        Box::new(self.pool.spawn(future::lazy(move || {
             let conn = TcpStream::connect(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
             bincode::serialize_into(&mut &conn, &req, bincode::Infinite).unwrap();
-            f_ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
-        }))
+            future::ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
+        })))
     }
     fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
-        Box::new(future::lazy(move || -> SFuture<JobResult> {
+        Box::new(self.pool.spawn(future::lazy(move || {
             let conn = TcpStream::connect(ja_res.addr).unwrap();
             bincode::serialize_into(&mut &conn, &req, bincode::Infinite).unwrap();
-            f_ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
-        }))
+            future::ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
+        })))
     }
 
     fn get_toolchain_cache(&self, key: &str) -> Vec<u8> {
@@ -306,25 +318,50 @@ impl SccacheDaemonServer {
     pub fn new(builder: Box<BuilderHandler>) -> SccacheDaemonServer {
         SccacheDaemonServer {
             builder,
-            cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Worker).unwrap())),
+            cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Server).unwrap())),
             sched_conn: TcpStream::connect(("127.0.0.1", SCHEDULER_SERVERS_PORT)).unwrap(),
         }
     }
 
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
-        loop {
-            let req = bincode::deserialize_from(&mut &self.sched_conn, bincode::Infinite).unwrap();
-            let () = core.run(self.handle_allocation_assign(req)).unwrap();
-            let listener = TcpListener::bind(("127.0.0.1", SERVER_CLIENTS_PORT)).unwrap();
-            let conn = listener.accept().unwrap().0;
-            core.run(future::lazy(|| {
-                let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
-                self.handle_compile_request(req).and_then(|res| {
-                    f_ok(bincode::serialize_into(&mut &conn, &res, bincode::Infinite).unwrap())
-                })
-            })).unwrap()
-        }
+        let remote = core.remote();
+        let pool = Arc::new(CpuPool::new(5));
+        let outerpool = pool.clone();
+
+        core.run(outerpool.spawn(future::lazy(move || -> Box<Future<Item=(), Error=()> + Send> { // TODO: use never type
+            let self_ = Arc::new(self);
+            let mut sched_conn = self_.sched_conn.try_clone().unwrap();
+            let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), SERVER_CLIENTS_PORT);
+            let listener = Arc::new(TcpListener::bind(&addr).unwrap());
+            loop {
+                let req = bincode::deserialize_from(&mut sched_conn, bincode::Infinite).unwrap();
+
+                let pool1 = pool.clone();
+                let pool2 = pool.clone();
+                let self_ = self_.clone();
+                let listener = listener.clone();
+                remote.spawn(move |_handle|
+                    self_.handle_allocation_assign(req)
+                    .and_then(move |()| {
+                        pool1.spawn(future::lazy(move || {
+                            let conn = listener.accept().unwrap().0;
+                            let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
+                            future::ok((conn, req))
+                        }))
+                    })
+                    .and_then(move |(conn, req)| self_.handle_compile_request(req).map(|res| (conn, res)))
+                    .and_then(move |(conn, res)| {
+                        pool2.spawn(future::lazy(move || {
+                            bincode::serialize_into(&mut &conn, &res, bincode::Infinite).unwrap();
+                            future::ok(())
+                        }))
+                    })
+                    .map_err(|e| panic!("{}", e))
+                )
+            }
+        }))).unwrap();
+        panic!()
     }
 }
 
@@ -350,33 +387,96 @@ impl DaemonServerRequester for SccacheDaemonServer {
 }
 
 pub struct SccacheBuilder {
-    container_map: Mutex<HashMap<Toolchain, Arc<Mutex<Option<String>>>>>,
+    image_map: Arc<Mutex<HashMap<Toolchain, String>>>,
+    container_lists: Arc<Mutex<HashMap<Toolchain, Vec<String>>>>,
+    pool: CpuPool,
+}
+
+fn check_output(output: &Output) {
+    if !output.status.success() {
+        error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        panic!()
+    }
 }
 
 impl SccacheBuilder {
     pub fn new() -> SccacheBuilder {
-        SccacheBuilder { container_map: Mutex::new(HashMap::new()) }
+        SccacheBuilder {
+            image_map: Arc::new(Mutex::new(HashMap::new())),
+            container_lists: Arc::new(Mutex::new(HashMap::new())),
+            // TODO: maybe pass this in from global pool? Maybe not
+            pool: CpuPool::new(5),
+        }
     }
 
-    fn make_container(tc: Toolchain, cache: Arc<Mutex<TcCache>>, command: CompileCommand) -> String {
+    // TODO: this is an odd dance that needs explaining, maybe should have a queue of containers being created
+    fn get_container(image_map: &Mutex<HashMap<Toolchain, String>>, container_lists: &Mutex<HashMap<Toolchain, Vec<String>>>, tc: &Toolchain, cache: Arc<Mutex<TcCache>>) -> String {
+        let container = {
+            let mut map = container_lists.lock().unwrap();
+            map.entry(tc.clone()).or_insert_with(Vec::new).pop()
+        };
+        match container {
+            Some(cid) => cid,
+            None => {
+                // TODO: can improve parallelism (of creating multiple images at a time) by using another
+                // (more fine-grained) mutex around the entry value and checking if its empty a second time
+                let image = {
+                    let mut map = image_map.lock().unwrap();
+                    map.entry(tc.clone()).or_insert_with(|| {
+                        info!("Creating Docker image for {:?} (will block other requests)", tc);
+                        Self::make_image(tc, cache)
+                    }).clone()
+                };
+                Self::start_container(&image)
+            },
+        }
+    }
+
+    fn finish_container(container_lists: &Mutex<HashMap<Toolchain, Vec<String>>>, tc: &Toolchain, cid: String) {
+        // Clean up any running processes
+        let output = Command::new("docker").args(&["exec", &cid, "/busybox", "kill", "-9", "-1"]).output().unwrap();
+        check_output(&output);
+
+        // Check the diff and clean up the FS
+        let diff = {
+            let output = Command::new("docker").args(&["diff", &cid]).output().unwrap();
+            check_output(&output);
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            stdout.trim().to_owned()
+        };
+        let mut lastpath = None;
+        for line in diff.split(|c| c == '\n') {
+            let mut iter = line.splitn(2, ' ');
+            let changetype = iter.next().unwrap();
+            let changepath = iter.next().unwrap();
+            if iter.next() != None { panic!() }
+            if changetype != "A" {
+                warn!("Deleting container {}: path {} had a non-A changetype of {}", &cid, changepath, changetype);
+                let output = Command::new("docker").args(&["rm", "-f", &cid]).output().unwrap();
+                check_output(&output);
+                return
+            }
+            // Docker diff paths are in alphabetical order and we do `rm -rf`, so we might be able to skip
+            // calling Docker more than necessary (since it's slow)
+            if let Some(lastpath) = lastpath {
+                if Path::new(changepath).starts_with(lastpath) {
+                    continue
+                }
+            }
+            lastpath = Some(changepath.clone());
+            let output = Command::new("docker").args(&["exec", &cid, "/busybox", "rm", "-rf", changepath]).output().unwrap();
+            check_output(&output);
+        }
+
+        // Good as new, add it back to the container list
+        container_lists.lock().unwrap().get_mut(&tc).unwrap().push(cid);
+    }
+
+    fn make_image(tc: &Toolchain, cache: Arc<Mutex<TcCache>>) -> String {
         let cid = {
-            let mut cmd = Command::new("docker");
-            cmd.args(&["create", "-w", command.cwd.to_str().unwrap()]);
-            for (k, v) in command.env_vars {
-                let mut env = k;
-                env.push("=");
-                env.push(v);
-                cmd.arg("-e").arg(env);
-            }
-            cmd.arg(tc.docker_img);
-            cmd.arg(command.executable.to_str().unwrap());
-            cmd.args(command.arguments);
-            let output = cmd.output().unwrap();
-            if !output.status.success() {
-                error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                    String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-                panic!()
-            }
+            let output = Command::new("docker").args(&["create", &tc.docker_img, "/busybox", "true"]).output().unwrap();
+            check_output(&output);
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
         };
@@ -388,66 +488,92 @@ impl SccacheBuilder {
             Err(e) => panic!("{}", e),
         };
 
-        error!("copying in toolchain");
+        error!("Copying in toolchain");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
         io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
-        if !output.status.success() {
-            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            panic!()
+        check_output(&output);
+
+        let imagename = format!("sccache-builder-{}", &tc.archive_id);
+        let output = Command::new("docker").args(&["commit", &cid, &imagename]).output().unwrap();
+        check_output(&output);
+
+        let output = Command::new("docker").args(&["rm", "-f", &cid]).output().unwrap();
+        check_output(&output);
+
+        imagename
+    }
+
+    fn start_container(image: &str) -> String {
+        // Make sure sh doesn't exec the final command, since we need it to do
+        // init duties (reaping zombies). Also, because we kill -9 -1, that kills
+        // the sleep (it's not a builtin) so it needs to be a loop.
+        let output = Command::new("docker")
+            .args(&["run", "-d", image, "/busybox", "sh", "-c", "while true; do /busybox sleep 365d && /busybox true; done"]).output().unwrap();
+        check_output(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        stdout.trim().to_owned()
+    }
+
+    fn perform_build(compile_command: CompileCommand, inputs_archive: Vec<u8>, output_paths: Vec<PathBuf>, cid: &str) -> BuildResult {
+        info!("{:?}", compile_command.env_vars);
+        info!("{:?} {:?}", compile_command.executable, compile_command.arguments);
+
+        error!("copying in build dir");
+        let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
+        io::copy(&mut inputs_archive.as_slice(), &mut process.stdin.take().unwrap()).unwrap();
+        let output = process.wait_with_output().unwrap();
+        check_output(&output);
+
+        error!("performing compile");
+        // TODO: likely shouldn't perform the compile as root in the container
+        let mut cmd = Command::new("docker");
+        cmd.arg("exec");
+        for (k, v) in compile_command.env_vars {
+            let mut env = k;
+            env.push("=");
+            env.push(v);
+            cmd.arg("-e").arg(env);
+        }
+        let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
+        cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
+        cmd.arg(&compile_command.executable);
+        cmd.arg(&compile_command.cwd);
+        cmd.arg(compile_command.executable);
+        cmd.args(compile_command.arguments);
+        let compile_output = cmd.output().unwrap();
+        info!("compile_output: {:?}", compile_output);
+
+        let mut outputs = vec![];
+        error!("retrieving {:?}", output_paths);
+        for path in output_paths {
+            let path = compile_command.cwd.join(path); // Resolve in case it's relative
+            let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
+            check_output(&output);
+            outputs.push((path, output.stdout))
         }
 
-        cid
+        BuildResult { output: compile_output.into(), outputs }
     }
 }
 
 impl BuilderHandler for SccacheBuilder {
     // From DaemonServer
     fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
-        let BuildRequest(job_req, cache) = req;
-        let command = job_req.command;
-        let cwd = command.cwd.to_owned();
-        info!("{:?}", command.env_vars);
-        info!("{:?} {:?}", command.executable, command.arguments);
+        let image_map = self.image_map.clone();
+        let container_lists = self.container_lists.clone();
+        Box::new(self.pool.spawn_fn(move || -> Result<_> {
+            let BuildRequest(job_req, cache) = req;
+            let command = job_req.command;
 
-        let container_entry = self.get_container(job_req.toolchain, cache, command);
-        let cid = container_entry.lock().unwrap();
-
-        error!("copying in build dir");
-        let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        io::copy(&mut job_req.inputs_archive.as_slice(), &mut process.stdin.take().unwrap()).unwrap();
-        let output = process.wait_with_output().unwrap();
-        if !output.status.success() {
-            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            panic!()
-        }
-
-        error!("performing compile");
-        let compile_output = Command::new("docker").args(&["start", "-a", &cid]).output().unwrap();
-        info!("compile_output: {:?}", compile_output);
-
-        let mut outputs = vec![];
-        error!("retrieving {:?}", job_req.outputs);
-        for path in job_req.outputs {
-            let path = cwd.join(path); // Resolve in case it's relative
-            let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
-            if !output.status.success() {
-                error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                    String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-                panic!()
-            }
-            outputs.push((path, output.stdout))
-        }
-
-        let output = Command::new("docker").args(&["rm", "-f", &cid]).output().unwrap();
-        if !output.status.success() {
-            error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            panic!()
-        }
-
-        f_ok(BuildResult { output: compile_output.into(), outputs })
+            info!("Finding container");
+            let cid = Self::get_container(&image_map, &container_lists, &job_req.toolchain, cache);
+            info!("Performing build with container {}", cid);
+            let res = Self::perform_build(command, job_req.inputs_archive, job_req.outputs, &cid);
+            info!("Finishing with container {}", cid);
+            Self::finish_container(&container_lists, &job_req.toolchain, cid);
+            info!("Returning result");
+            Ok(res)
+        }))
     }
 }
