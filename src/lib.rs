@@ -18,6 +18,7 @@ extern crate atty;
 extern crate base64;
 extern crate bincode;
 extern crate byteorder;
+extern crate bytes;
 #[cfg(feature = "chrono")]
 extern crate chrono;
 #[macro_use]

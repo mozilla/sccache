@@ -1,11 +1,12 @@
 #![allow(non_camel_case_types)]
 
 use bincode;
+use bytes::IntoBuf;
 use compiler::CompileCommand;
 use directories::ProjectDirs;
 use dist::cache::{CacheOwner, TcCache};
 use lru_disk_cache::Error as LruError;
-use futures::{Future, future};
+use futures::{Future, Sink, Stream, future};
 use futures_cpupool::CpuPool;
 use mock_command::exit_status;
 use serde_json;
@@ -14,11 +15,14 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio_core;
+use tokio_serde_bincode::{ReadBincode, WriteBincode};
+use tokio_io::{AsyncRead, AsyncWrite};
+use tokio_io::codec::length_delimited::{self, Framed};
 
 use errors::*;
 
@@ -161,6 +165,12 @@ enum JobStatus {
     JobFailed(ServerId, JobAllocRequest, JobAllocResult),
 }
 
+fn large_delimited<T, B>(inner: T) -> Framed<T, B> where T: AsyncRead + AsyncWrite, B: IntoBuf {
+    length_delimited::Builder::new()
+        .max_frame_length(1*1024*1024*1024) // 1GiB
+        .new_framed(inner)
+}
+
 pub struct SccacheScheduler {
     job_count: Cell<u64>,
     jobs: HashMap<JobId, JobStatus>,
@@ -168,7 +178,10 @@ pub struct SccacheScheduler {
     // Acts as a ring buffer of most recently completed jobs
     finished_jobs: VecDeque<JobStatus>,
 
-    servers: Vec<TcpStream>,
+    servers: Arc<Mutex<Vec<(
+        SocketAddr,
+        Option<WriteBincode<ReadBincode<Framed<tokio_core::net::TcpStream>, ()>, AllocAssignment>>,
+    )>>>,
 }
 
 impl SccacheScheduler {
@@ -177,25 +190,36 @@ impl SccacheScheduler {
             job_count: Cell::new(0),
             jobs: HashMap::new(),
             finished_jobs: VecDeque::new(),
-            servers: vec![],
+            servers: Arc::new(Mutex::new(vec![])),
         }
     }
 
-    pub fn start(mut self) -> ! {
+    pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
-        assert!(self.servers.is_empty());
         {
+            let mut servers = self.servers.lock().unwrap();
+            assert!(servers.is_empty());
+
             let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_SERVERS_PORT)).unwrap();
             let conn = listener.accept().unwrap().0;
-            self.servers.push(conn);
-            assert!(self.servers.len() == 1);
+            let addr = conn.peer_addr().unwrap();
+            info!("Accepted server connection from {}", addr);
+            let handle = core.handle();
+            let conn = tokio_core::net::TcpStream::from_stream(conn, &handle).unwrap();
+            let conn = WriteBincode::new(ReadBincode::new(Framed::new(conn)));
+
+            servers.push((addr, Some(conn)));
+            assert!(servers.len() == 1);
         }
         let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
         loop {
             let conn = listener.accept().unwrap().0;
+            debug!("Accepted client connection from {}", conn.peer_addr().unwrap());
             core.run(future::lazy(|| {
                 let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
+                trace!("Handling allocation request");
                 self.handle_allocation_request(req).and_then(|res| {
+                    trace!("Handled allocation request, returning response");
                     f_ok(bincode::serialize_into(&mut &conn, &res, bincode::Infinite).unwrap())
                 })
             })).unwrap()
@@ -205,17 +229,31 @@ impl SccacheScheduler {
 
 impl SchedulerHandler for SccacheScheduler {
     fn handle_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        assert!(self.servers.len() == 1);
+        let (server_id, ip_addr) = {
+            let servers = self.servers.lock().unwrap();
+            assert!(servers.len() == 1);
+            let ip_addr = servers[0].0.ip();
+            (ServerId(0), ip_addr)
+        };
         let job_id = JobId(self.job_count.get());
-        self.do_allocation_assign(ServerId(0), AllocAssignment { job_id });
         self.job_count.set(self.job_count.get() + 1);
-        let ip_addr = self.servers[0].peer_addr().unwrap().ip();
-        f_ok(JobAllocResult { addr: SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT), job_id })
+        let res = JobAllocResult { addr: SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT), job_id };
+        Box::new(self.do_allocation_assign(server_id, AllocAssignment { job_id }).map(|()| res))
     }
 }
 impl SchedulerRequester for SccacheScheduler {
     fn do_allocation_assign(&self, server_id: ServerId, req: AllocAssignment) -> SFuture<()> {
-        f_ok(bincode::serialize_into(&mut &self.servers[server_id.0 as usize], &req, bincode::Infinite).unwrap())
+        let servers = self.servers.clone();
+        let conn = servers.lock().unwrap()[server_id.0 as usize].1.take().unwrap();
+        Box::new(
+            conn
+                .send(req)
+                .map(move |conn| {
+                    let mut servers = servers.lock().unwrap();
+                    servers[server_id.0 as usize].1 = Some(conn)
+                })
+                .from_err()
+        )
     }
 }
 
@@ -277,9 +315,17 @@ impl DaemonClientRequester for SccacheDaemonClient {
     }
     fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
         Box::new(self.pool.spawn(future::lazy(move || {
-            let conn = TcpStream::connect(ja_res.addr).unwrap();
-            bincode::serialize_into(&mut &conn, &req, bincode::Infinite).unwrap();
-            future::ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
+            let mut core = tokio_core::reactor::Core::new().unwrap();
+            let handle = core.handle();
+            core.run(
+                tokio_core::net::TcpStream::connect(&ja_res.addr, &handle)
+                    .map(|conn| WriteBincode::new(ReadBincode::new(large_delimited(conn))))
+                    .and_then(|conn| conn.send(req))
+                    .from_err()
+                    .and_then(|conn| conn.into_future()
+                        .map_err(|(e, _conn)| format!("{}", e).into())) // Mismatched bincode versions, so format
+                    .map(|(res, _conn)| res.unwrap())
+            )
         })))
     }
 
@@ -311,7 +357,7 @@ impl DaemonClientRequester for SccacheDaemonClient {
 pub struct SccacheDaemonServer {
     builder: Box<BuilderHandler>,
     cache: Arc<Mutex<TcCache>>,
-    sched_conn: TcpStream,
+    sched_addr: SocketAddr,
 }
 
 impl SccacheDaemonServer {
@@ -319,48 +365,53 @@ impl SccacheDaemonServer {
         SccacheDaemonServer {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Server).unwrap())),
-            sched_conn: TcpStream::connect(("127.0.0.1", SCHEDULER_SERVERS_PORT)).unwrap(),
+            sched_addr: ("127.0.0.1".parse::<IpAddr>().unwrap(), SCHEDULER_SERVERS_PORT).into(),
         }
     }
 
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
-        let remote = core.remote();
-        let pool = Arc::new(CpuPool::new(5));
-        let outerpool = pool.clone();
+        let handle = core.handle();
+        let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
+            tokio_core::net::TcpStream::connect(&self.sched_addr, &handle)
+                .map(|conn| ReadBincode::new(Framed::new(conn)))
+        ).unwrap();
+        let self1 = Arc::new(self);
+        let self2 = self1.clone();
 
-        core.run(outerpool.spawn(future::lazy(move || -> Box<Future<Item=(), Error=()> + Send> { // TODO: use never type
-            let self_ = Arc::new(self);
-            let mut sched_conn = self_.sched_conn.try_clone().unwrap();
-            let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), SERVER_CLIENTS_PORT);
-            let listener = Arc::new(TcpListener::bind(&addr).unwrap());
-            loop {
-                let req = bincode::deserialize_from(&mut sched_conn, bincode::Infinite).unwrap();
+        core.handle().spawn(
+            sched_conn
+                .map_err(|e| format!("{}", e).into()) // Mismatched bincode versions, so format
+                .and_then(move |req| {
+                    trace!("Received request from scheduler");
+                    self1.handle_allocation_assign(req)
+                })
+                .for_each(|()| Ok(()))
+                .map_err(|e| panic!(e))
+        );
 
-                let pool1 = pool.clone();
-                let pool2 = pool.clone();
-                let self_ = self_.clone();
-                let listener = listener.clone();
-                remote.spawn(move |_handle|
-                    self_.handle_allocation_assign(req)
-                    .and_then(move |()| {
-                        pool1.spawn(future::lazy(move || {
-                            let conn = listener.accept().unwrap().0;
-                            let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
-                            future::ok((conn, req))
-                        }))
-                    })
-                    .and_then(move |(conn, req)| self_.handle_compile_request(req).map(|res| (conn, res)))
-                    .and_then(move |(conn, res)| {
-                        pool2.spawn(future::lazy(move || {
-                            bincode::serialize_into(&mut &conn, &res, bincode::Infinite).unwrap();
-                            future::ok(())
-                        }))
-                    })
-                    .map_err(|e| panic!("{}", e))
-                )
-            }
-        }))).unwrap();
+        let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), SERVER_CLIENTS_PORT);
+        let listener = tokio_core::net::TcpListener::bind(&addr, &core.handle()).unwrap();
+        core.run(
+            listener.incoming()
+                .from_err()
+                .map(|(conn, addr)| {
+                    trace!("Accepted connection from {}", addr);
+                    let conn = WriteBincode::new(ReadBincode::new(large_delimited(conn)));
+                    conn.into_future()
+                        .map_err(|(e, _conn)| format!("{}", e).into()) // Mismatched bincode versions, so format
+                        .and_then(|(req, conn)| { trace!("received request"); self2.handle_compile_request(req.unwrap()).map(|res| (res, conn)) })
+                        .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
+                })
+                .buffer_unordered(10)
+                .map(|_conn| ())
+                .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
+                    error!("Encountered error while serving request: {}", err);
+                    Ok(())
+                })
+                .for_each(|()| Ok(()))
+        ).unwrap();
+
         panic!()
     }
 }
