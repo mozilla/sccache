@@ -709,6 +709,16 @@ impl SccacheBuilder {
         let output = process.wait_with_output().unwrap();
         check_output(&output);
 
+        trace!("creating output directories");
+        assert!(!output_paths.is_empty());
+        let mut cmd = Command::new("docker");
+        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]);
+        for path in output_paths.iter() {
+            cmd.arg(compile_command.cwd.join(path.parent().unwrap()));
+        }
+        let output = cmd.output().unwrap();
+        check_output(&output);
+
         trace!("performing compile");
         // TODO: likely shouldn't perform the compile as root in the container
         let mut cmd = Command::new("docker");
@@ -732,9 +742,13 @@ impl SccacheBuilder {
         trace!("retrieving {:?}", output_paths);
         for path in output_paths {
             let path = compile_command.cwd.join(path); // Resolve in case it's relative
-            let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
-            check_output(&output);
-            outputs.push((path, output.stdout))
+            // TODO: this isn't great, but cp gives it out as a tar
+            let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(&path).output().unwrap();
+            if output.status.success() {
+                outputs.push((path, output.stdout))
+            } else {
+                debug!("Missing output path {:?}", path)
+            }
         }
 
         BuildResult { output: compile_output.into(), outputs }

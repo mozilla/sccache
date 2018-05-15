@@ -325,7 +325,8 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             let mut preprocessed = File::create("/tmp/preprocessed.c").unwrap();
             preprocessed.write_all(&self.preprocessed_input).unwrap();
         }
-        let preprocessed_path = compile_cmd.cwd.strip_prefix("/").unwrap().join(&self.parsed_args.input);
+        let preprocessed_path = compile_cmd.cwd.join(&self.parsed_args.input);
+        let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
         let mut preprocessed = File::open("/tmp/preprocessed.c").unwrap();
         builder.append_file(preprocessed_path, &mut preprocessed).unwrap();
         let inputs_archive = builder.into_inner().unwrap();
