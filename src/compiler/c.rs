@@ -328,7 +328,6 @@ pub fn hash_key(compiler_digest: &str,
 
     if let Ok(strip_dirs) = env::var("SCCACHE_STRIP_DIRS") {
         trace!("Attempting to strip dirs from preprocessor output");
-        m.update(strip_dirs.as_bytes());
         let output_result = str::from_utf8(preprocessor_output);
 
         if output_result.is_ok() {
