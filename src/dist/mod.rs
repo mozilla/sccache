@@ -1,6 +1,5 @@
 #![allow(non_camel_case_types)]
 
-use bincode;
 use bytes::IntoBuf;
 use compiler::CompileCommand;
 use directories::ProjectDirs;
@@ -15,11 +14,12 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio_core;
+use tokio_core::net::TcpStream;
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::length_delimited::{self, Framed};
@@ -70,6 +70,9 @@ pub struct ServerId(u64);
 const SCHEDULER_SERVERS_PORT: u16 = 10500;
 const SCHEDULER_CLIENTS_PORT: u16 = 10501;
 const SERVER_CLIENTS_PORT: u16 = 10502;
+
+const CONCURRENT_CLIENT_REQS: usize = 50;
+const CONCURRENT_REQS: usize = 20;
 
 struct Cfg;
 
@@ -213,7 +216,7 @@ pub struct SccacheScheduler {
 
     servers: Arc<Mutex<Vec<(
         SocketAddr,
-        Option<WriteBincode<ReadBincode<Framed<tokio_core::net::TcpStream>, ()>, AllocAssignment>>,
+        Option<WriteBincode<ReadBincode<Framed<TcpStream>, ()>, AllocAssignment>>,
     )>>>,
 }
 
@@ -229,6 +232,8 @@ impl SccacheScheduler {
 
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
+        let handle = core.handle();
+
         {
             let mut servers = self.servers.lock().unwrap();
             assert!(servers.is_empty());
@@ -239,28 +244,37 @@ impl SccacheScheduler {
             let conn = listener.accept().unwrap().0;
             let addr = conn.peer_addr().unwrap();
             info!("Accepted server connection from {}", addr);
-            let handle = core.handle();
-            let conn = tokio_core::net::TcpStream::from_stream(conn, &handle).unwrap();
+            let conn = TcpStream::from_stream(conn, &handle).unwrap();
             let conn = WriteBincode::new(ReadBincode::new(Framed::new(conn)));
 
             servers.push((addr, Some(conn)));
             assert!(servers.len() == 1);
         }
+
         let addr = Cfg::scheduler_listen_client_addr();
         info!("Scheduler listening for clients on {}", addr);
-        let listener = TcpListener::bind(addr).unwrap();
-        loop {
-            let conn = listener.accept().unwrap().0;
-            debug!("Accepted client connection from {}", conn.peer_addr().unwrap());
-            core.run(future::lazy(|| {
-                let req = bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap();
-                trace!("Handling allocation request");
-                self.handle_allocation_request(req).and_then(|res| {
-                    trace!("Handled allocation request, returning response");
-                    f_ok(bincode::serialize_into(&mut &conn, &res, bincode::Infinite).unwrap())
+        let listener = tokio_core::net::TcpListener::bind(&addr, &handle).unwrap();
+        core.run(
+            listener.incoming()
+                .from_err()
+                .map(|(conn, addr)| {
+                    trace!("Accepted connection from {}", addr);
+                    let conn = WriteBincode::new(ReadBincode::new(Framed::new(conn)));
+                    conn.into_future()
+                        .map_err(|(e, _conn)| format!("{}", e).into()) // Mismatched bincode versions, so format
+                        .and_then(|(req, conn)| { trace!("received request"); self.handle_allocation_request(req.unwrap()).map(|res| (res, conn)) })
+                        .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
                 })
-            })).unwrap()
-        }
+                .buffer_unordered(CONCURRENT_REQS)
+                .map(|_conn| ())
+                .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
+                    error!("Encountered error while serving request: {}", err);
+                    Ok(())
+                })
+                .for_each(|()| Ok(()))
+        ).unwrap();
+
+        panic!()
     }
 }
 
@@ -325,7 +339,7 @@ impl SccacheDaemonClient {
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
             weak_map: Mutex::new(weak_map),
-            pool: CpuPool::new(5),
+            pool: CpuPool::new(CONCURRENT_CLIENT_REQS),
         }
     }
 
@@ -345,9 +359,17 @@ impl DaemonClientHandler for SccacheDaemonClient {
 impl DaemonClientRequester for SccacheDaemonClient {
     fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
         Box::new(self.pool.spawn(future::lazy(move || {
-            let conn = TcpStream::connect(Cfg::client_connect_scheduler_addr()).unwrap();
-            bincode::serialize_into(&mut &conn, &req, bincode::Infinite).unwrap();
-            future::ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
+            let mut core = tokio_core::reactor::Core::new().unwrap();
+            let handle = core.handle();
+            core.run(
+                TcpStream::connect(&Cfg::client_connect_scheduler_addr(), &handle)
+                    .map(|conn| WriteBincode::new(ReadBincode::new(Framed::new(conn))))
+                    .and_then(|conn| conn.send(req))
+                    .from_err()
+                    .and_then(|conn| conn.into_future()
+                        .map_err(|(e, _conn)| format!("{}", e).into())) // Mismatched bincode versions, so format
+                    .map(|(res, _conn)| res.unwrap())
+            )
         })))
     }
     fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
@@ -355,7 +377,7 @@ impl DaemonClientRequester for SccacheDaemonClient {
             let mut core = tokio_core::reactor::Core::new().unwrap();
             let handle = core.handle();
             core.run(
-                tokio_core::net::TcpStream::connect(&ja_res.addr, &handle)
+                TcpStream::connect(&ja_res.addr, &handle)
                     .map(|conn| WriteBincode::new(ReadBincode::new(large_delimited(conn))))
                     .and_then(|conn| conn.send(req))
                     .from_err()
@@ -411,7 +433,7 @@ impl SccacheDaemonServer {
         let handle = core.handle();
         info!("Daemon server connecting to scheduler at {}", self.sched_addr);
         let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
-            tokio_core::net::TcpStream::connect(&self.sched_addr, &handle)
+            TcpStream::connect(&self.sched_addr, &handle)
                 .map(|conn| ReadBincode::new(Framed::new(conn)))
         ).unwrap();
         let self1 = Arc::new(self);
@@ -441,7 +463,7 @@ impl SccacheDaemonServer {
                         .and_then(|(req, conn)| { trace!("received request"); self2.handle_compile_request(req.unwrap()).map(|res| (res, conn)) })
                         .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
                 })
-                .buffer_unordered(10)
+                .buffer_unordered(CONCURRENT_REQS)
                 .map(|_conn| ())
                 .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
                     error!("Encountered error while serving request: {}", err);
@@ -495,7 +517,7 @@ impl SccacheBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
             // TODO: maybe pass this in from global pool? Maybe not
-            pool: CpuPool::new(5),
+            pool: CpuPool::new(CONCURRENT_REQS),
         }
     }
 
