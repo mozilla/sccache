@@ -513,6 +513,7 @@ fn check_output(output: &Output) {
 
 impl SccacheBuilder {
     pub fn new() -> SccacheBuilder {
+        Self::cleanup();
         SccacheBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
@@ -521,7 +522,63 @@ impl SccacheBuilder {
         }
     }
 
-    // TODO: this is an odd dance that needs explaining, maybe should have a queue of containers being created
+    // TODO: this should really reclaim, and should check in the image map and container lists, so
+    // that when things are removed from there it becomes a form of GC
+    fn cleanup() {
+        info!("Performing initial Docker cleanup");
+
+        let containers = {
+            let output = Command::new("docker").args(&["ps", "--format", "{{.ID}} {{.Image}}"]).output().unwrap();
+            check_output(&output);
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            stdout.trim().to_owned()
+        };
+        if containers != "" {
+            let mut containers_to_rm = vec![];
+            for line in containers.split(|c| c == '\n') {
+                let mut iter = line.splitn(2, ' ');
+                let container_id = iter.next().unwrap();
+                let image_name = iter.next().unwrap();
+                if iter.next() != None { panic!() }
+                if image_name.starts_with("sccache-builder-") {
+                    containers_to_rm.push(container_id)
+                }
+            }
+            if !containers_to_rm.is_empty() {
+                let output = Command::new("docker").args(&["rm", "-f"]).args(containers_to_rm).output().unwrap();
+                check_output(&output)
+            }
+        }
+
+        let images = {
+            let output = Command::new("docker").args(&["images", "--format", "{{.ID}} {{.Repository}}"]).output().unwrap();
+            check_output(&output);
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            stdout.trim().to_owned()
+        };
+        if images != "" {
+            let mut images_to_rm = vec![];
+            for line in images.split(|c| c == '\n') {
+                let mut iter = line.splitn(2, ' ');
+                let image_id = iter.next().unwrap();
+                let image_name = iter.next().unwrap();
+                if iter.next() != None { panic!() }
+                if image_name.starts_with("sccache-builder-") {
+                    images_to_rm.push(image_id)
+                }
+            }
+            if !images_to_rm.is_empty() {
+                let output = Command::new("docker").args(&["rmi"]).args(images_to_rm).output().unwrap();
+                check_output(&output)
+            }
+        }
+
+        info!("Completed initial Docker cleanup");
+    }
+
+    // If we have a spare running container, claim it and remove it from the available list,
+    // otherwise try and create a new container (possibly creating the Docker image along
+    // the way)
     fn get_container(image_map: &Mutex<HashMap<Toolchain, String>>, container_lists: &Mutex<HashMap<Toolchain, Vec<String>>>, tc: &Toolchain, cache: Arc<Mutex<TcCache>>) -> String {
         let container = {
             let mut map = container_lists.lock().unwrap();
@@ -550,37 +607,53 @@ impl SccacheBuilder {
         check_output(&output);
 
         // Check the diff and clean up the FS
-        let diff = {
-            let output = Command::new("docker").args(&["diff", &cid]).output().unwrap();
+        fn dodiff(cid: &str) -> String {
+            let output = Command::new("docker").args(&["diff", cid]).output().unwrap();
             check_output(&output);
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
-        };
-        let mut lastpath = None;
-        for line in diff.split(|c| c == '\n') {
-            let mut iter = line.splitn(2, ' ');
-            let changetype = iter.next().unwrap();
-            let changepath = iter.next().unwrap();
-            if iter.next() != None { panic!() }
-            if changetype != "A" {
-                warn!("Deleting container {}: path {} had a non-A changetype of {}", &cid, changepath, changetype);
+        }
+        let diff = dodiff(&cid);
+        if diff != "" {
+            let mut shoulddelete = false;
+            let mut lastpath = None;
+            for line in diff.split(|c| c == '\n') {
+                let mut iter = line.splitn(2, ' ');
+                let changetype = iter.next().unwrap();
+                let changepath = iter.next().unwrap();
+                if iter.next() != None { panic!() }
+                if changetype != "A" {
+                    warn!("Deleting container {}: path {} had a non-A changetype of {}", &cid, changepath, changetype);
+                    shoulddelete = true;
+                    break
+                }
+                // Docker diff paths are in alphabetical order and we do `rm -rf`, so we might be able to skip
+                // calling Docker more than necessary (since it's slow)
+                if let Some(lastpath) = lastpath {
+                    if Path::new(changepath).starts_with(lastpath) {
+                        continue
+                    }
+                }
+                lastpath = Some(changepath.clone());
+                let output = Command::new("docker").args(&["exec", &cid, "/busybox", "rm", "-rf", changepath]).output().unwrap();
+                check_output(&output);
+            }
+
+            let newdiff = dodiff(&cid);
+            if !shoulddelete && newdiff != "" {
+                warn!("Deleted files, but container still has a diff: {:?}", newdiff);
+                shoulddelete = true
+            }
+
+            if shoulddelete {
                 let output = Command::new("docker").args(&["rm", "-f", &cid]).output().unwrap();
                 check_output(&output);
                 return
             }
-            // Docker diff paths are in alphabetical order and we do `rm -rf`, so we might be able to skip
-            // calling Docker more than necessary (since it's slow)
-            if let Some(lastpath) = lastpath {
-                if Path::new(changepath).starts_with(lastpath) {
-                    continue
-                }
-            }
-            lastpath = Some(changepath.clone());
-            let output = Command::new("docker").args(&["exec", &cid, "/busybox", "rm", "-rf", changepath]).output().unwrap();
-            check_output(&output);
         }
 
         // Good as new, add it back to the container list
+        trace!("Reclaimed container");
         container_lists.lock().unwrap().get_mut(&tc).unwrap().push(cid);
     }
 
