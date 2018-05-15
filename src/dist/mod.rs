@@ -71,6 +71,39 @@ const SCHEDULER_SERVERS_PORT: u16 = 10500;
 const SCHEDULER_CLIENTS_PORT: u16 = 10501;
 const SERVER_CLIENTS_PORT: u16 = 10502;
 
+struct Cfg;
+
+impl Cfg {
+    fn scheduler_addr() -> IpAddr {
+        env::var("SCCACHE_SCHEDULER_ADDR")
+            .as_ref().map(String::as_str)
+            .unwrap_or("127.0.0.1")
+            .parse()
+            .unwrap()
+    }
+
+    fn scheduler_listen_client_addr() -> SocketAddr {
+        let ip_addr = "0.0.0.0".parse().unwrap();
+        SocketAddr::new(ip_addr, SCHEDULER_CLIENTS_PORT)
+    }
+    fn client_connect_scheduler_addr() -> SocketAddr {
+        SocketAddr::new(Self::scheduler_addr(), SCHEDULER_CLIENTS_PORT)
+    }
+
+    fn scheduler_listen_server_addr() -> SocketAddr {
+        let ip_addr = "0.0.0.0".parse().unwrap();
+        SocketAddr::new(ip_addr, SCHEDULER_SERVERS_PORT)
+    }
+    fn server_connect_scheduler_addr() -> SocketAddr {
+        SocketAddr::new(Self::scheduler_addr(), SCHEDULER_SERVERS_PORT)
+    }
+
+    fn server_listen_client_addr() -> SocketAddr {
+        let ip_addr = "0.0.0.0".parse().unwrap();
+        SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT)
+    }
+}
+
 // TODO: make these fields not public
 
 // TODO: any OsString or PathBuf shouldn't be sent across the wire
@@ -200,7 +233,9 @@ impl SccacheScheduler {
             let mut servers = self.servers.lock().unwrap();
             assert!(servers.is_empty());
 
-            let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_SERVERS_PORT)).unwrap();
+            let sched_addr = Cfg::scheduler_listen_server_addr();
+            info!("Scheduler listening for servers on {}", sched_addr);
+            let listener = TcpListener::bind(sched_addr).unwrap();
             let conn = listener.accept().unwrap().0;
             let addr = conn.peer_addr().unwrap();
             info!("Accepted server connection from {}", addr);
@@ -211,7 +246,9 @@ impl SccacheScheduler {
             servers.push((addr, Some(conn)));
             assert!(servers.len() == 1);
         }
-        let listener = TcpListener::bind(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
+        let addr = Cfg::scheduler_listen_client_addr();
+        info!("Scheduler listening for clients on {}", addr);
+        let listener = TcpListener::bind(addr).unwrap();
         loop {
             let conn = listener.accept().unwrap().0;
             debug!("Accepted client connection from {}", conn.peer_addr().unwrap());
@@ -308,7 +345,7 @@ impl DaemonClientHandler for SccacheDaemonClient {
 impl DaemonClientRequester for SccacheDaemonClient {
     fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
         Box::new(self.pool.spawn(future::lazy(move || {
-            let conn = TcpStream::connect(("127.0.0.1", SCHEDULER_CLIENTS_PORT)).unwrap();
+            let conn = TcpStream::connect(Cfg::client_connect_scheduler_addr()).unwrap();
             bincode::serialize_into(&mut &conn, &req, bincode::Infinite).unwrap();
             future::ok(bincode::deserialize_from(&mut &conn, bincode::Infinite).unwrap())
         })))
@@ -365,13 +402,14 @@ impl SccacheDaemonServer {
         SccacheDaemonServer {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Server).unwrap())),
-            sched_addr: ("127.0.0.1".parse::<IpAddr>().unwrap(), SCHEDULER_SERVERS_PORT).into(),
+            sched_addr: Cfg::server_connect_scheduler_addr(),
         }
     }
 
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
         let handle = core.handle();
+        info!("Daemon server connecting to scheduler at {}", self.sched_addr);
         let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
             tokio_core::net::TcpStream::connect(&self.sched_addr, &handle)
                 .map(|conn| ReadBincode::new(Framed::new(conn)))
@@ -390,7 +428,7 @@ impl SccacheDaemonServer {
                 .map_err(|e| panic!(e))
         );
 
-        let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), SERVER_CLIENTS_PORT);
+        let addr = Cfg::server_listen_client_addr();
         let listener = tokio_core::net::TcpListener::bind(&addr, &core.handle()).unwrap();
         core.run(
             listener.incoming()
@@ -475,7 +513,7 @@ impl SccacheBuilder {
                 let image = {
                     let mut map = image_map.lock().unwrap();
                     map.entry(tc.clone()).or_insert_with(|| {
-                        info!("Creating Docker image for {:?} (will block other requests)", tc);
+                        info!("Creating Docker image for {:?} (may block requests)", tc);
                         Self::make_image(tc, cache)
                     }).clone()
                 };
@@ -539,7 +577,7 @@ impl SccacheBuilder {
             Err(e) => panic!("{}", e),
         };
 
-        error!("Copying in toolchain");
+        trace!("Copying in toolchain");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
         io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
@@ -567,16 +605,16 @@ impl SccacheBuilder {
     }
 
     fn perform_build(compile_command: CompileCommand, inputs_archive: Vec<u8>, output_paths: Vec<PathBuf>, cid: &str) -> BuildResult {
-        info!("{:?}", compile_command.env_vars);
-        info!("{:?} {:?}", compile_command.executable, compile_command.arguments);
+        trace!("Compile environment: {:?}", compile_command.env_vars);
+        trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
-        error!("copying in build dir");
+        trace!("copying in build dir");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
         io::copy(&mut inputs_archive.as_slice(), &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         check_output(&output);
 
-        error!("performing compile");
+        trace!("performing compile");
         // TODO: likely shouldn't perform the compile as root in the container
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
@@ -593,10 +631,10 @@ impl SccacheBuilder {
         cmd.arg(compile_command.executable);
         cmd.args(compile_command.arguments);
         let compile_output = cmd.output().unwrap();
-        info!("compile_output: {:?}", compile_output);
+        trace!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
-        error!("retrieving {:?}", output_paths);
+        trace!("retrieving {:?}", output_paths);
         for path in output_paths {
             let path = compile_command.cwd.join(path); // Resolve in case it's relative
             let output = Command::new("docker").args(&["cp", &format!("{}:{}", cid, path.to_str().unwrap()), "-"]).output().unwrap();
@@ -617,13 +655,13 @@ impl BuilderHandler for SccacheBuilder {
             let BuildRequest(job_req, cache) = req;
             let command = job_req.command;
 
-            info!("Finding container");
+            debug!("Finding container");
             let cid = Self::get_container(&image_map, &container_lists, &job_req.toolchain, cache);
-            info!("Performing build with container {}", cid);
+            debug!("Performing build with container {}", cid);
             let res = Self::perform_build(command, job_req.inputs_archive, job_req.outputs, &cid);
-            info!("Finishing with container {}", cid);
+            debug!("Finishing with container {}", cid);
             Self::finish_container(&container_lists, &job_req.toolchain, cid);
-            info!("Returning result");
+            debug!("Returning result");
             Ok(res)
         }))
     }
