@@ -102,6 +102,10 @@ pub struct RustCompilation {
     outputs: HashMap<String, PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
+    /// The current working directory
+    cwd: PathBuf,
+    /// The environment variables
+    env_vars: Vec<(OsString, OsString)>,
 }
 
 lazy_static! {
@@ -590,8 +594,8 @@ impl<T> CompilerHasher<T> for RustHasher
     fn generate_hash_key(self: Box<Self>,
                          daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
-                         cwd: &Path,
-                         env_vars: &[(OsString, OsString)],
+                         cwd: PathBuf,
+                         env_vars: Vec<(OsString, OsString)>,
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
@@ -612,12 +616,11 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
-        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, cwd, env_vars, pool);
+        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, &cwd, &env_vars, pool);
         // Hash the contents of the externs listed on the commandline.
-        let cwp = Path::new(cwd);
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
         let extern_hashes = hash_all(externs.iter()
-                                     .map(|e| cwp.join(e).to_string_lossy().into_owned())
+                                     .map(|e| cwd.join(e).to_string_lossy().into_owned())
                                      .collect(),
                                      &pool);
         // Hash the contents of the staticlibs listed on the commandline.
@@ -627,8 +630,6 @@ impl<T> CompilerHasher<T> for RustHasher
                                         .collect(),
                                         &pool);
         let creator = creator.clone();
-        let cwd = cwd.to_owned();
-        let env_vars = env_vars.to_vec();
         let toolchain_pool = pool.clone();
         let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
@@ -729,6 +730,8 @@ impl<T> CompilerHasher<T> for RustHasher
                         arguments: arguments,
                         outputs: outputs,
                         crate_name: crate_name,
+                        cwd,
+                        env_vars,
                     }),
                     dist_toolchain: toolchain_future,
                 }
@@ -752,12 +755,10 @@ impl<T> CompilerHasher<T> for RustHasher
 impl<T> Compilation<T> for RustCompilation
     where T: CommandCreatorSync,
 {
-    fn generate_compile_command(&self,
-                                cwd: &Path,
-                                env_vars: &[(OsString, OsString)])
+    fn generate_compile_command(&self)
                                 -> Result<(CompileCommand, Cacheable)>
     {
-        let RustCompilation { ref executable, ref arguments, ref crate_name, .. } = *self;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, .. } = *self;
         trace!("[{}]: compile", crate_name);
         Ok((CompileCommand {
             executable: executable.to_owned(),

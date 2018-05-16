@@ -402,12 +402,13 @@ impl DaemonClientRequester for SccacheDaemonClient {
             .create(true)
             .write(true)
             .truncate(true)
-            .open("/tmp/sccache_rust_cache.tar");
+            .open("/tmp/toolchain_cache.tar");
         match file {
             Ok(f) => create(f),
             Err(e) => panic!("{}", e),
         }
-        let strong_key = self.cache.lock().unwrap().insert_file("/tmp/sccache_rust_cache.tar").unwrap();
+        // TODO: after, if still exists, remove it
+        let strong_key = self.cache.lock().unwrap().insert_file("/tmp/toolchain_cache.tar").unwrap();
         self.record_weak(weak_key.to_owned(), strong_key.clone());
         strong_key
     }
@@ -712,7 +713,7 @@ impl SccacheBuilder {
         trace!("creating output directories");
         assert!(!output_paths.is_empty());
         let mut cmd = Command::new("docker");
-        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]);
+        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(&compile_command.cwd);
         for path in output_paths.iter() {
             cmd.arg(compile_command.cwd.join(path.parent().unwrap()));
         }

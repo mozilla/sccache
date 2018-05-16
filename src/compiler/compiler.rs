@@ -101,8 +101,8 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     fn generate_hash_key(self: Box<Self>,
                          daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
-                         cwd: &Path,
-                         env_vars: &[(OsString, OsString)],
+                         cwd: PathBuf,
+                         env_vars: Vec<(OsString, OsString)>,
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>;
 
@@ -126,7 +126,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let result = self.generate_hash_key(daemon_client.clone(), &creator, &cwd, &env_vars, &pool);
+        let result = self.generate_hash_key(daemon_client.clone(), &creator, cwd.clone(), env_vars, &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
             let (key, compilation, dist_toolchain) = match res {
@@ -224,13 +224,12 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let (compile_cmd, cacheable) = compilation.generate_compile_command(&cwd, &env_vars).unwrap(); // TODO
                 debug!("[{}]: Attempting distributed compilation", out_pretty);
                 let compile_out_pretty = out_pretty.clone();
-                let compile = compilation.generate_dist_requests(&compile_cmd, dist_toolchain)
-                    .then(move |reqs| -> SFuture<process::Output> {
+                let compile = compilation.generate_dist_requests(dist_toolchain)
+                    .then(move |reqs| -> SFuture<(process::Output, Cacheable)> {
                         match reqs {
-                            Ok((jareq, jreq)) => {
+                            Ok((jareq, jreq, cacheable)) => {
                                 debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
                                 let retry_out_pretty = compile_out_pretty.clone();
                                 Box::new(daemon_client.do_allocation_request(jareq).map(|jares| (daemon_client, jares))
@@ -258,22 +257,23 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                         for (path, bytes) in jc.outputs {
                                             File::create(path).unwrap().write_all(&bytes).unwrap();
                                         }
-                                        jc.output.into()
+                                        (jc.output.into(), cacheable)
                                     }))
                             },
                             Err(e) => {
                                 debug!("[{}]: Could not create distributed compile request, falling back to local: {}", compile_out_pretty, e);
+                                let (compile_cmd, cacheable) = compilation.generate_compile_command().unwrap();
                                 let mut cmd = creator.clone().new_command_sync(&compile_cmd.executable);
                                 cmd.args(&compile_cmd.arguments)
                                     .env_clear()
                                     .envs(compile_cmd.env_vars)
                                     .current_dir(compile_cmd.cwd);
                                 trace!("compile: {:?}", cmd);
-                                Box::new(run_input_output(cmd, None))
+                                Box::new(run_input_output(cmd, None).map(move |o| (o, cacheable)))
                             },
                         }
                     });
-                Box::new(compile.and_then(move |compiler_result| {
+                Box::new(compile.and_then(move |(compiler_result, cacheable)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -353,16 +353,13 @@ pub trait Compilation<T>
 {
     /// Given information about a compiler command, generate a command that can
     /// execute the compiler.
-    fn generate_compile_command(&self,
-                                cwd: &Path,
-                                env_vars: &[(OsString, OsString)])
+    fn generate_compile_command(&self)
                                 -> Result<(CompileCommand, Cacheable)>;
 
     /// Generate the requests that will be used to perform a distributed compilation
     fn generate_dist_requests(&self,
-                              _compile_cmd: &CompileCommand,
                               _toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
 
         f_err("distributed compilation not implemented")
     }
