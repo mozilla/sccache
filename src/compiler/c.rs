@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::hash::Hash;
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -125,6 +125,8 @@ struct CCompilation<I: CCompilerImpl> {
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
     compiler: I,
+    cwd: PathBuf,
+    env_vars: Vec<(OsString, OsString)>,
 }
 
 /// Supported C compilers.
@@ -210,14 +212,14 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
     fn generate_hash_key(self: Box<Self>,
                          daemon_client: Arc<dist::DaemonClientRequester>,
                          creator: &T,
-                         cwd: &Path,
-                         env_vars: &[(OsString, OsString)],
+                         cwd: PathBuf,
+                         env_vars: Vec<(OsString, OsString)>,
                          pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
         let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
-        let result = compiler.preprocess(creator, &executable, &parsed_args, cwd, env_vars);
+        let result = compiler.preprocess(creator, &executable, &parsed_args, &cwd, &env_vars);
         let out_pretty = parsed_args.output_pretty().into_owned();
         let env_vars = env_vars.to_vec();
         let toolchain_pool = pool.clone();
@@ -253,7 +255,10 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          &env_vars,
                          &preprocessor_result.stdout)
             };
-            let weak_toolchain_key = executable_digest.to_owned();
+            // A compiler binary may be a symlink to another and so has the same digest, but that means
+            // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
+            // executable path to try and prevent this
+            let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
             // CPU pool futures are eager, delay until poll is called
             let env_executable = executable.clone();
             let toolchain_future = Box::new(future::lazy(move || {
@@ -261,11 +266,19 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     let archive_id = daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
                         info!("Packaging C compiler");
                         // TODO: write our own, since this is GPL
+                        let curdir = env::current_dir().unwrap();
                         env::set_current_dir("/tmp").unwrap();
                         let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
+                        if !output.status.success() {
+                            println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
+                            panic!("failed to create toolchain")
+                        }
                         let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
                         let filename = &file_line[b"creating ".len()..];
-                        io::copy(&mut File::open(OsStr::from_bytes(filename)).unwrap(), &mut {f}).unwrap();
+                        let filename = OsStr::from_bytes(filename);
+                        io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
+                        fs::remove_file(filename).unwrap();
+                        env::set_current_dir(curdir).unwrap()
                     });
                     future::ok(dist::Toolchain {
                         docker_img: "aidanhs/busybox".to_owned(),
@@ -280,6 +293,8 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     preprocessed_input: preprocessor_result.stdout,
                     executable: executable,
                     compiler: compiler,
+                    cwd,
+                    env_vars,
                 }),
                 dist_toolchain: toolchain_future,
             })
@@ -303,29 +318,43 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
-    fn generate_compile_command(&self,
-                                cwd: &Path,
-                                env_vars: &[(OsString, OsString)])
+    fn generate_compile_command(&self)
                                 -> Result<(CompileCommand, Cacheable)>
     {
-        let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _ } = *self;
+        let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _, ref cwd, ref env_vars } = *self;
         compiler.generate_compile_command(executable, parsed_args, cwd, env_vars)
     }
 
     fn generate_dist_requests(&self,
-                              compile_cmd: &CompileCommand,
                               toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
 
-        let mut command = compile_cmd.clone();
-        command.arguments.push(OsString::from("-fpreprocessed"));
+        // Unsure why this needs UFCS
+        let (mut command, cacheable) = <Self as Compilation<T>>::generate_compile_command(self).unwrap();
+
+        // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
+        let language = match self.parsed_args.language {
+            Language::C => "cpp-output",
+            Language::Cxx => "c++-cpp-output",
+            Language::ObjectiveC => "objective-c-cpp-output",
+            Language::ObjectiveCxx => "objective-c++-cpp-output",
+        };
+        let mut lang_next = false;
+        for arg in command.arguments.iter_mut() {
+            if arg == "-x" {
+                lang_next = true
+            } else if lang_next {
+                *arg = OsString::from(language);
+                break
+            }
+        }
 
         let mut builder = tar::Builder::new(vec![]);
         {
             let mut preprocessed = File::create("/tmp/preprocessed.c").unwrap();
             preprocessed.write_all(&self.preprocessed_input).unwrap();
         }
-        let preprocessed_path = compile_cmd.cwd.join(&self.parsed_args.input);
+        let preprocessed_path = command.cwd.join(&self.parsed_args.input);
         let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
         let mut preprocessed = File::open("/tmp/preprocessed.c").unwrap();
         builder.append_file(preprocessed_path, &mut preprocessed).unwrap();
@@ -343,7 +372,8 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                 outputs,
                 toolchain,
                 toolchain_data: None,
-            }
+            },
+            cacheable
         )))
     }
 
