@@ -768,33 +768,34 @@ impl<T> Compilation<T> for RustCompilation
         }, Cacheable::Yes))
     }
 
-    fn generate_dist_requests(&self,
-                              compile_cmd: &CompileCommand,
-                              toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+    //fn generate_dist_requests(&self,
+    //                          toolchain: SFuture<dist::Toolchain>)
+    //                          -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
 
-        let mut command = compile_cmd.clone();
-        command.executable = self.sysroot.join("bin").join("rustc");
+    //    // Unsure why this needs UFCS
+    //    let (mut command, cacheable) = <Self as Compilation<T>>::generate_compile_command(self).unwrap();
+    //    command.executable = self.sysroot.join("bin").join("rustc");
 
-        let mut builder = tar::Builder::new(vec![]);
-        builder.append_dir_all(compile_cmd.cwd.strip_prefix("/").unwrap(), &compile_cmd.cwd).unwrap();
-        let inputs_archive = builder.into_inner().unwrap();
-        // Unsure why this needs UFCS
-        let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
+    //    let mut builder = tar::Builder::new(vec![]);
+    //    builder.append_dir_all(command.cwd.strip_prefix("/").unwrap(), &command.cwd).unwrap();
+    //    let inputs_archive = builder.into_inner().unwrap();
+    //    // Unsure why this needs UFCS
+    //    let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
 
-        Box::new(toolchain.map(move |toolchain| (
-            dist::JobAllocRequest {
-                toolchain: toolchain.clone(),
-            },
-            dist::JobRequest {
-                command,
-                inputs_archive,
-                outputs,
-                toolchain,
-                toolchain_data: None,
-            }
-        )))
-    }
+    //    Box::new(toolchain.map(move |toolchain| (
+    //        dist::JobAllocRequest {
+    //            toolchain: toolchain.clone(),
+    //        },
+    //        dist::JobRequest {
+    //            command,
+    //            inputs_archive,
+    //            outputs,
+    //            toolchain,
+    //            toolchain_data: None,
+    //        },
+    //        cacheable
+    //    )))
+    //}
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
