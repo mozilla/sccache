@@ -23,7 +23,7 @@ use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
 use compiler::rust::Rust;
-use dist::{self, DaemonClientRequester, JobResult};
+use dist::{self, JobResult};
 use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -112,6 +112,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     fn get_cached_or_compile(self: Box<Self>,
+                             daemon_client: Arc<dist::DaemonClientRequester>,
                              creator: T,
                              storage: Arc<Storage>,
                              arguments: Vec<OsString>,
@@ -122,7 +123,6 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                              handle: Handle)
                              -> SFuture<(CompileResult, process::Output)>
     {
-        let daemon_client = Arc::new(dist::SccacheDaemonClient::new()); // TODO: pass this in from elsewhere
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();

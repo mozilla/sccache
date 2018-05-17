@@ -25,7 +25,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -350,14 +350,17 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         }
 
         let mut builder = tar::Builder::new(vec![]);
-        {
-            let mut preprocessed = File::create("/tmp/preprocessed.c").unwrap();
-            preprocessed.write_all(&self.preprocessed_input).unwrap();
-        }
         let preprocessed_path = command.cwd.join(&self.parsed_args.input);
+        let metadata = fs::metadata(&preprocessed_path).unwrap();
         let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
-        let mut preprocessed = File::open("/tmp/preprocessed.c").unwrap();
-        builder.append_file(preprocessed_path, &mut preprocessed).unwrap();
+
+        let mut file_header = tar::Header::new_ustar();
+        file_header.set_metadata(&metadata);
+        file_header.set_path(preprocessed_path).unwrap();
+        file_header.set_size(self.preprocessed_input.len() as u64); // Metadata is non-preprocessed
+        file_header.set_cksum();
+
+        builder.append(&file_header, self.preprocessed_input.as_slice()).unwrap();
         let inputs_archive = builder.into_inner().unwrap();
         // Unsure why this needs UFCS
         let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
