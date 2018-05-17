@@ -321,7 +321,7 @@ pub struct SccacheDaemonClient {
 
 impl SccacheDaemonClient {
     pub fn new() -> Self {
-        let client_config_dir = env::var_os("SCCACHE_CLIENT_CONFIG_DIR")
+        let client_config_dir = env::var_os("SCCACHE_CLIENT_CACHE_DIR")
             .map(|p| PathBuf::from(p))
             .unwrap_or_else(|| {
                 let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
