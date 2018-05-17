@@ -8,6 +8,7 @@ use lru_disk_cache::Error as LruError;
 use futures::{Future, Sink, Stream, future};
 use futures_cpupool::CpuPool;
 use mock_command::exit_status;
+use num_cpus;
 use serde_json;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
@@ -72,7 +73,7 @@ const SCHEDULER_CLIENTS_PORT: u16 = 10501;
 const SERVER_CLIENTS_PORT: u16 = 10502;
 
 const CONCURRENT_CLIENT_REQS: usize = 50;
-const CONCURRENT_REQS: usize = 20;
+const MAX_CONCURRENT_SCHEDULER_REQS: usize = 50;
 
 struct Cfg;
 
@@ -266,7 +267,7 @@ impl SccacheScheduler {
                         .and_then(|(req, conn)| { trace!("received request"); self.handle_allocation_request(req.unwrap()).map(|res| (res, conn)) })
                         .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
                 })
-                .buffer_unordered(CONCURRENT_REQS)
+                .buffer_unordered(MAX_CONCURRENT_SCHEDULER_REQS)
                 .map(|_conn| ())
                 .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
                     error!("Encountered error while serving request: {}", err);
@@ -422,6 +423,7 @@ pub struct SccacheDaemonServer {
     builder: Box<BuilderHandler>,
     cache: Arc<Mutex<TcCache>>,
     sched_addr: SocketAddr,
+    parallelism: usize,
 }
 
 impl SccacheDaemonServer {
@@ -430,6 +432,7 @@ impl SccacheDaemonServer {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Server).unwrap())),
             sched_addr: Cfg::server_connect_scheduler_addr(),
+            parallelism: num_cpus::get() * 2,
         }
     }
 
@@ -441,6 +444,7 @@ impl SccacheDaemonServer {
             TcpStream::connect(&self.sched_addr, &handle)
                 .map(|conn| ReadBincode::new(Framed::new(conn)))
         ).unwrap();
+        let parallelism = self.parallelism;
         let self1 = Arc::new(self);
         let self2 = self1.clone();
 
@@ -468,7 +472,7 @@ impl SccacheDaemonServer {
                         .and_then(|(req, conn)| { trace!("received request"); self2.handle_compile_request(req.unwrap()).map(|res| (res, conn)) })
                         .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
                 })
-                .buffer_unordered(CONCURRENT_REQS)
+                .buffer_unordered(parallelism)
                 .map(|_conn| ())
                 .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
                     error!("Encountered error while serving request: {}", err);
@@ -520,11 +524,12 @@ fn check_output(output: &Output) {
 impl SccacheBuilder {
     pub fn new() -> SccacheBuilder {
         Self::cleanup();
+        let parallelism = num_cpus::get() * 2;
         SccacheBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
             // TODO: maybe pass this in from global pool? Maybe not
-            pool: CpuPool::new(CONCURRENT_REQS),
+            pool: CpuPool::new(parallelism),
         }
     }
 
