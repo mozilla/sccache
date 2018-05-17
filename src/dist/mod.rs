@@ -115,6 +115,7 @@ impl Cfg {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobRequest {
     pub command: CompileCommand,
+    // TODO: standardise on compressed or not for inputs and toolchain
     pub inputs_archive: Vec<u8>,
     pub outputs: Vec<PathBuf>,
     pub toolchain: Toolchain,
@@ -398,6 +399,9 @@ impl DaemonClientRequester for SccacheDaemonClient {
             debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
             return strong_key
         }
+        debug!("Weak key {} appears to be new", weak_key);
+        // TODO: don't use this as a poor exclusive lock on this global file
+        let mut cache = self.cache.lock().unwrap();
         let file = fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -408,7 +412,7 @@ impl DaemonClientRequester for SccacheDaemonClient {
             Err(e) => panic!("{}", e),
         }
         // TODO: after, if still exists, remove it
-        let strong_key = self.cache.lock().unwrap().insert_file("/tmp/toolchain_cache.tar").unwrap();
+        let strong_key = cache.insert_file("/tmp/toolchain_cache.tar").unwrap();
         self.record_weak(weak_key.to_owned(), strong_key.clone());
         strong_key
     }
@@ -488,6 +492,7 @@ impl DaemonServerHandler for SccacheDaemonServer {
                 file.write_all(&toolchain_data)
             }).unwrap()
         }
+        // TODO: this causes a thundering herd
         if !self.cache.lock().unwrap().contains_key(&req.toolchain.archive_id) {
             return f_ok(JobResult::NeedToolchain)
         }
@@ -623,6 +628,11 @@ impl SccacheBuilder {
                 let changetype = iter.next().unwrap();
                 let changepath = iter.next().unwrap();
                 if iter.next() != None { panic!() }
+                // TODO: If files are created in this dir, it gets marked as modified.
+                // A similar thing applies to /root or /build etc
+                if changepath == "/tmp" {
+                    continue
+                }
                 if changetype != "A" {
                     warn!("Deleting container {}: path {} had a non-A changetype of {}", &cid, changepath, changetype);
                     shoulddelete = true;
@@ -641,7 +651,8 @@ impl SccacheBuilder {
             }
 
             let newdiff = dodiff(&cid);
-            if !shoulddelete && newdiff != "" {
+            // See note about changepath == "/tmp" above
+            if !shoulddelete && newdiff != "" && newdiff != "C /tmp" {
                 warn!("Deleted files, but container still has a diff: {:?}", newdiff);
                 shoulddelete = true
             }

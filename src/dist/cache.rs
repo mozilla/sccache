@@ -64,6 +64,7 @@ impl TcCache {
     fn file_key<RS: ReadSeek + 'static>(&self, rs: RS) -> Result<String> {
         // TODO: should be dispatched on the event loop rather than relying on it being
         // dispatched on a cpu pool (`.wait()` could end up blocking)
+        // TODO: should also really explicitly pick the hash
         util::Digest::reader(rs, &self.pool).wait()
     }
 
