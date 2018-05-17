@@ -347,10 +347,6 @@ pub fn preprocess<T>(creator: &T,
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language)
         .arg("-E");
-    // With -fprofile-generate line number information is important, so don't use -P.
-    if !parsed_args.profile_generate {
-        cmd.arg("-P");
-    }
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
