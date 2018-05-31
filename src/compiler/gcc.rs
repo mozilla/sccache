@@ -87,7 +87,7 @@ pub enum GCCArgAttribute {
 
 use self::GCCArgAttribute::*;
 
-// Mostly taken from https://github.com/ccache/ccache/blob/master/compopt.c#L32-L84
+// Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
 pub static ARGS: [(ArgInfo, GCCArgAttribute); 61] = [
     flag!("-", TooHard),
     take_arg!("--param", String, Separated, PassThrough),
@@ -102,10 +102,10 @@ pub static ARGS: [(ArgInfo, GCCArgAttribute); 61] = [
     take_arg!("-G", String, Separated, PassThrough),
     take_arg!("-I", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-L", String, Separated, PassThrough),
-    flag!("-M", NeedDepTarget),
+    flag!("-M", TooHard),
     flag!("-MD", NeedDepTarget),
     take_arg!("-MF", Path, Separated, PreprocessorArgument),
-    flag!("-MM", NeedDepTarget),
+    flag!("-MM", TooHard),
     flag!("-MMD", NeedDepTarget),
     flag!("-MP", NeedDepTarget),
     take_arg!("-MQ", String, Separated, PreprocessorArgument),
