@@ -23,12 +23,10 @@ use cache::redis::RedisCache;
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
 use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
-use directories::ProjectDirs;
+use config::{self, CONFIG, CacheType};
 use futures_cpupool::CpuPool;
-use regex::Regex;
 #[cfg(feature = "gcs")]
 use serde_json;
-use std::env;
 use std::fmt;
 use std::io::{
     self,
@@ -38,8 +36,6 @@ use std::io::{
 };
 #[cfg(feature = "gcs")]
 use std::fs::File;
-use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_core::reactor::Handle;
@@ -47,11 +43,6 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use zip::write::FileOptions;
 
 use errors::*;
-
-//TODO: might need to put this somewhere more central
-const ORGANIZATION: &str = "Mozilla";
-const APP_NAME: &str = "sccache";
-const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Result of a cache lookup.
 pub enum Cache {
@@ -173,173 +164,108 @@ pub trait Storage {
     fn max_size(&self) -> Option<u64>;
 }
 
-fn parse_size(val: &str) -> Option<u64> {
-    let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
-    re.captures(val)
-        .and_then(|caps| {
-            caps.get(1)
-                .and_then(|size| u64::from_str(size.as_str()).ok())
-                .and_then(|size| Some((size, caps.get(2))))
-        })
-        .and_then(|(size, suffix)| {
-            match suffix.map(|s| s.as_str()) {
-                Some("K") => Some(1024 * size),
-                Some("M") => Some(1024 * 1024 * size),
-                Some("G") => Some(1024 * 1024 * 1024 * size),
-                Some("T") => Some(1024 * 1024 * 1024 * 1024 * size),
-                _ => None,
-            }
-        })
-}
-
-/// Get a suitable `Storage` implementation from the environment.
-pub fn storage_from_environment(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
-    if cfg!(feature = "s3") {
-        if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
-            let endpoint = match env::var("SCCACHE_ENDPOINT") {
-                Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-                _ => match env::var("SCCACHE_REGION") {
-                    Ok(ref region) if region != "us-east-1" =>
-                        format!("{}.s3-{}.amazonaws.com", bucket, region),
-                    _ => format!("{}.s3.amazonaws.com", bucket),
-                },
-            };
-            debug!("Trying S3Cache({})", endpoint);
-            #[cfg(feature = "s3")]
-            match S3Cache::new(&bucket, &endpoint, _handle) {
-                Ok(s) => {
-                    trace!("Using S3Cache");
-                    return Arc::new(s);
-                }
-                Err(e) => warn!("Failed to create S3Cache: {:?}", e),
-            }
-        }
-    }
-
-    if cfg!(feature = "redis") {
-        if let Ok(url) = env::var("SCCACHE_REDIS") {
-            debug!("Trying Redis({})", url);
-            #[cfg(feature = "redis")]
-            match RedisCache::new(&url, pool) {
-                Ok(s) => {
-                    trace!("Using Redis: {}", url);
-                    return Arc::new(s);
-                }
-                Err(e) => warn!("Failed to create RedisCache: {:?}", e),
-            }
-        }
-    }
-
-    if cfg!(feature = "memcached") {
-        if let Ok(url) = env::var("SCCACHE_MEMCACHED") {
-            debug!("Trying Memcached({})", url);
-            #[cfg(feature = "memcached")]
-            match MemcachedCache::new(&url, pool) {
-                Ok(s) => {
-                    trace!("Using Memcached: {}", url);
-                    return Arc::new(s);
-                }
-                Err(e) => warn!("Failed to create MemcachedCache: {:?}", e),
-            }
-        }
-    }
-
-    if cfg!(feature = "gcs") {
-        if let Ok(bucket) = env::var("SCCACHE_GCS_BUCKET")
-        {
-            debug!("Trying GCS bucket({})", bucket);
-            #[cfg(feature = "gcs")]
-            {
-                let cred_path_res = env::var("SCCACHE_GCS_KEY_PATH");
-                if cred_path_res.is_err() {
-                    warn!("No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
-                }
-
-                let service_account_key_opt: Option<gcs::ServiceAccountKey> =
-                    if let Ok(cred_path) = cred_path_res
-                {
-                    // Attempt to read the service account key from file
-                    let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
-                        let mut file = File::open(&cred_path)?;
-                        let mut service_account_json = String::new();
-                        file.read_to_string(&mut service_account_json)?;
-                        Ok(serde_json::from_str(&service_account_json)?)
-                    })();
-
-                    // warn! if an error was encountered reading the key from the file
-                    if let Err(ref e) = service_account_key_res {
-                        warn!("Failed to parse service account credentials from file: {:?}. \
-                            Continuing without authentication.", e);
+/// Get a suitable `Storage` implementation from configuration.
+pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
+    for cache_type in CONFIG.caches.iter() {
+        match *cache_type {
+            CacheType::Azure(config::AzureCacheConfig) => {
+                debug!("Trying Azure Blob Store account");
+                #[cfg(feature = "azure")]
+                match AzureBlobCache::new(_handle) {
+                    Ok(storage) => {
+                        trace!("Using AzureBlobCache");
+                        return Arc::new(storage);
                     }
-
-                    service_account_key_res.ok()
-                } else { None };
-
-                let gcs_read_write_mode = match env::var("SCCACHE_GCS_RW_MODE")
-                                          .as_ref().map(String::as_str)
+                    Err(e) => warn!("Failed to create Azure cache: {:?}", e),
+                }
+            },
+            CacheType::Disk(config::DiskCacheConfig { ref dir, size }) => {
+                trace!("Using DiskCache({:?}, {})", dir, size);
+                return Arc::new(DiskCache::new(dir, size, pool))
+            },
+            CacheType::GCS(config::GCSCacheConfig { ref bucket, ref cred_path, rw_mode }) => {
+                debug!("Trying GCS bucket({}, {:?}, {:?})", bucket, cred_path, rw_mode);
+                #[cfg(feature = "gcs")]
                 {
-                    Ok("READ_ONLY") => RWMode::ReadOnly,
-                    Ok("READ_WRITE") => RWMode::ReadWrite,
-                    Ok(_) => {
-                        warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
-                        RWMode::ReadOnly
-                    },
-                    _ => {
-                        warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
-                        RWMode::ReadOnly
+                    let service_account_key_opt: Option<gcs::ServiceAccountKey> =
+                        if let Some(ref cred_path) = *cred_path
+                    {
+                        // Attempt to read the service account key from file
+                        let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
+                            let mut file = File::open(&cred_path)?;
+                            let mut service_account_json = String::new();
+                            file.read_to_string(&mut service_account_json)?;
+                            Ok(serde_json::from_str(&service_account_json)?)
+                        })();
+
+                        // warn! if an error was encountered reading the key from the file
+                        if let Err(ref e) = service_account_key_res {
+                            warn!("Failed to parse service account credentials from file: {:?}. \
+                                Continuing without authentication.", e);
+                        }
+
+                        service_account_key_res.ok()
+                    } else {
+                        warn!("No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used.");
+                        None
+                    };
+
+                    let gcs_read_write_mode = match rw_mode {
+                        config::GCSCacheRWMode::ReadOnly => RWMode::ReadOnly,
+                        config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
+                    };
+
+                    let gcs_cred_provider =
+                        service_account_key_opt.map(|path|
+                            GCSCredentialProvider::new(gcs_read_write_mode, path));
+
+                    match GCSCache::new(bucket.to_owned(), gcs_cred_provider, gcs_read_write_mode, _handle) {
+                        Ok(s) => {
+                            trace!("Using GCSCache");
+                            return Arc::new(s);
+                        }
+                        Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
                     }
-                };
-
-                let gcs_cred_provider =
-                    service_account_key_opt.map(|path|
-                        GCSCredentialProvider::new(gcs_read_write_mode, path));
-
-                match GCSCache::new(bucket, gcs_cred_provider, gcs_read_write_mode, _handle) {
+                }
+            },
+            CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
+                debug!("Trying Memcached({})", url);
+                #[cfg(feature = "memcached")]
+                match MemcachedCache::new(&url, pool) {
                     Ok(s) => {
-                        trace!("Using GCSCache");
+                        trace!("Using Memcached: {}", url);
                         return Arc::new(s);
                     }
-                    Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
+                    Err(e) => warn!("Failed to create MemcachedCache: {:?}", e),
                 }
-            }
+            },
+            CacheType::Redis(config::RedisCacheConfig { ref url }) => {
+                debug!("Trying Redis({})", url);
+                #[cfg(feature = "redis")]
+                match RedisCache::new(&url, pool) {
+                    Ok(s) => {
+                        trace!("Using Redis: {}", url);
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create RedisCache: {:?}", e),
+                }
+            },
+            CacheType::S3(config::S3CacheConfig { ref bucket, ref endpoint }) => {
+                debug!("Trying S3Cache({}, {})", bucket, endpoint);
+                #[cfg(feature = "s3")]
+                match S3Cache::new(&bucket, &endpoint, _handle) {
+                    Ok(s) => {
+                        trace!("Using S3Cache");
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create S3Cache: {:?}", e),
+                }
+            },
         }
     }
 
-    if cfg!(feature = "azure") {
-        if let Ok(_) = env::var("SCCACHE_AZURE_CONNECTION_STRING") {
-            debug!("Trying Azure Blob Store account");
-            #[cfg(feature = "azure")]
-            match AzureBlobCache::new(_handle) {
-                Ok(storage) => {
-                    trace!("Using AzureBlobCache");
-                    return Arc::new(storage);
-                }
-                Err(e) => warn!("Failed to create Azure cache: {:?}", e),
-            }
-        }
-    }
-
-    let d = env::var_os("SCCACHE_DIR")
-        .map(|p| PathBuf::from(p))
-        .unwrap_or_else(|| {
-            let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
-            dirs.cache_dir().to_owned()
-        });
-    trace!("Using DiskCache({:?})", d);
-    let cache_size: u64 = env::var("SCCACHE_CACHE_SIZE")
-        .ok()
-        .and_then(|v| parse_size(&v))
-        .unwrap_or(TEN_GIGS);
-    trace!("DiskCache size: {}", cache_size);
-    Arc::new(DiskCache::new(&d, cache_size, pool))
-}
-
-#[test]
-fn test_parse_size() {
-    assert_eq!(None, parse_size(""));
-    assert_eq!(None, parse_size("100"));
-    assert_eq!(Some(2048), parse_size("2K"));
-    assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
-    assert_eq!(Some(TEN_GIGS), parse_size("10G"));
-    assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+    info!("No configured caches successful, falling back to default");
+    let (dir, size) = (&CONFIG.fallback_cache.dir, CONFIG.fallback_cache.size);
+    trace!("Using DiskCache({:?}, {})", dir, size);
+    Arc::new(DiskCache::new(dir, size, pool))
 }
