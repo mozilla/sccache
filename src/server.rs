@@ -14,7 +14,7 @@
 
 use cache::{
     Storage,
-    storage_from_environment,
+    storage_from_config,
 };
 use compiler::{
     CacheControl,
@@ -125,7 +125,7 @@ pub fn start_server(port: u16) -> Result<()> {
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
-    let storage = storage_from_environment(&pool, &core.handle());
+    let storage = storage_from_config(&pool, &core.handle());
     let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {

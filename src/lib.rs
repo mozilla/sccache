@@ -78,6 +78,7 @@ extern crate tokio_process;
 extern crate tokio_proto;
 extern crate tokio_service;
 extern crate tokio_serde_bincode;
+extern crate toml;
 #[cfg(feature = "gcs")]
 extern crate url;
 extern crate uuid;
@@ -101,6 +102,7 @@ mod client;
 mod cmdline;
 mod commands;
 mod compiler;
+mod config;
 mod jobserver;
 mod mock_command;
 mod protocol;
@@ -114,6 +116,8 @@ use std::io::Write;
 
 pub fn main() {
     init_logging();
+    // Initialise config
+    let _ = config::CONFIG.caches.len();
     std::process::exit(match cmdline::parse() {
         Ok(cmd) => {
             match commands::run_command(cmd) {
