@@ -263,7 +263,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             let env_executable = executable.clone();
             let toolchain_future = Box::new(future::lazy(move || {
                 toolchain_pool.spawn_fn(move || {
-                    let archive_id = daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
+                    daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
                         info!("Packaging C compiler");
                         // TODO: write our own, since this is GPL
                         let curdir = env::current_dir().unwrap();
@@ -279,10 +279,12 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                         io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
                         fs::remove_file(filename).unwrap();
                         env::set_current_dir(curdir).unwrap()
-                    });
-                    future::ok(dist::Toolchain {
-                        docker_img: "aidanhs/busybox".to_owned(),
-                        archive_id,
+                    })
+                    .map(|archive_id| {
+                        dist::Toolchain {
+                            docker_img: "aidanhs/busybox".to_owned(),
+                            archive_id,
+                        }
                     })
                 })
             }));
@@ -351,11 +353,24 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
 
         let mut builder = tar::Builder::new(vec![]);
         let preprocessed_path = command.cwd.join(&self.parsed_args.input);
-        let metadata = fs::metadata(&preprocessed_path).unwrap();
+        let metadata_res = fs::metadata(&preprocessed_path);
         let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
 
         let mut file_header = tar::Header::new_ustar();
-        file_header.set_metadata(&metadata);
+        // TODO: test this works
+        if let Ok(metadata) = metadata_res {
+            // TODO: if the source file is a symlink, I think this does bad things
+            file_header.set_metadata(&metadata);
+        } else {
+            warn!("Couldn't get metadata of input file, falling back to some defaults");
+            file_header.set_mode(0o644);
+            file_header.set_uid(0);
+            file_header.set_gid(0);
+            file_header.set_mtime(0);
+            file_header.set_device_major(0).expect("expected a ustar header");
+            file_header.set_device_minor(0).expect("expected a ustar header");
+            file_header.set_entry_type(tar::EntryType::file());
+        }
         file_header.set_path(preprocessed_path).unwrap();
         file_header.set_size(self.preprocessed_input.len() as u64); // Metadata is non-preprocessed
         file_header.set_cksum();

@@ -25,6 +25,7 @@ use compiler::{
     MissType,
     get_compiler_info,
 };
+use config::CONFIG;
 use dist;
 use filetime::FileTime;
 use futures::future;
@@ -135,8 +136,15 @@ pub fn start_server(port: u16) -> Result<()> {
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
+    let daemon_client: Arc<dist::DaemonClientRequester> = match CONFIG.dist.scheduler_addr {
+        Some(addr) => Arc::new(dist::SccacheDaemonClient::new(addr)),
+        None => {
+            info!("No scheduler address configured, disabling distributed sccache");
+            Arc::new(dist::NoopDaemonClient)
+        },
+    };
     let storage = storage_from_config(&pool, &core.handle());
-    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, storage);
+    let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, daemon_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
@@ -169,6 +177,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                pool: CpuPool,
                core: Core,
                client: Client,
+               daemon_client: Arc<dist::DaemonClientRequester>,
                storage: Arc<Storage>) -> Result<SccacheServer<C>> {
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
@@ -178,7 +187,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
-        let service = SccacheService::new(storage,
+        let service = SccacheService::new(daemon_client,
+                                          storage,
                                           core.handle(),
                                           &client,
                                           pool,
@@ -320,7 +330,7 @@ struct SccacheService<C: CommandCreatorSync> {
     stats: Rc<RefCell<ServerStats>>,
 
     /// Distributed sccache client
-    daemon_client: Arc<dist::SccacheDaemonClient>,
+    daemon_client: Arc<dist::DaemonClientRequester>,
 
     /// Cache storage.
     storage: Arc<Storage>,
@@ -414,7 +424,8 @@ impl<C> Service for SccacheService<C>
 impl<C> SccacheService<C>
     where C: CommandCreatorSync,
 {
-    pub fn new(storage: Arc<Storage>,
+    pub fn new(daemon_client: Arc<dist::DaemonClientRequester>,
+               storage: Arc<Storage>,
                handle: Handle,
                client: &Client,
                pool: CpuPool,
@@ -422,7 +433,7 @@ impl<C> SccacheService<C>
                info: ActiveInfo) -> SccacheService<C> {
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
-            daemon_client: Arc::new(dist::SccacheDaemonClient::new()),
+            daemon_client,
             storage: storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
             pool: pool,

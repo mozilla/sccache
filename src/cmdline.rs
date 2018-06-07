@@ -17,6 +17,7 @@ use clap::{
     AppSettings,
     Arg,
 };
+use config::CONFIG;
 use errors::*;
 use std::env;
 use std::ffi::OsString;
@@ -88,6 +89,8 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                 )
 }
 
+enum Void {}
+
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Result<Command> {
     trace!("parse");
@@ -97,9 +100,13 @@ pub fn parse() -> Result<Command> {
         Err(_) => false,
     };
     if start_daemon_worker {
-        let builder = dist::SccacheBuilder::new();
-        let server = dist::SccacheDaemonServer::new(Box::new(builder));
-        server.start()
+        if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
+            let builder = dist::SccacheBuilder::new();
+            let server = dist::SccacheDaemonServer::new(scheduler_addr, Box::new(builder));
+            let _: Void = server.start();
+        } else {
+            bail!("Cannot start daemon worker without a configured scheduler")
+        }
     }
     let start_scheduler = match env::var("SCCACHE_START_SCHEDULER") {
         Ok(val) => val == "1",
@@ -107,7 +114,7 @@ pub fn parse() -> Result<Command> {
     };
     if start_scheduler {
         let scheduler = dist::SccacheScheduler::new();
-        scheduler.start()
+        let _: Void = scheduler.start();
     }
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
