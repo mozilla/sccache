@@ -17,7 +17,7 @@ use regex::Regex;
 use std::env;
 use std::io::Read;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use toml;
@@ -141,7 +141,7 @@ pub struct CacheConfigs {
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct DistConfig {
-    pub scheduler_addr: IpAddr,
+    pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
     pub toolchain_cache_size: u64,
 }
@@ -149,7 +149,7 @@ pub struct DistConfig {
 impl Default for DistConfig {
     fn default() -> Self {
         DistConfig {
-            scheduler_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            scheduler_addr: None,
             cache_dir: default_dist_cache_dir(),
             toolchain_cache_size: TEN_GIGS,
         }
@@ -368,6 +368,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
+        dist: Default::default(),
     };
 
     assert_eq!(

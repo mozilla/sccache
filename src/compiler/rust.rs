@@ -710,15 +710,17 @@ impl<T> CompilerHasher<T> for RustHasher
                 let toolchain_sysroot = sysroot.clone();
                 let toolchain_future = Box::new(future::lazy(move || {
                     toolchain_pool.spawn_fn(move || {
-                        let archive_id = daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
+                        daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
                             info!("Packaging Rust compiler");
                             let mut builder = tar::Builder::new(f);
                             builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
                             builder.finish().unwrap()
-                        });
-                        future::ok(dist::Toolchain {
-                            docker_img: "ubuntu:16.04".to_owned(),
-                            archive_id,
+                        })
+                        .map(|archive_id| {
+                            dist::Toolchain {
+                                docker_img: "aidanhs/busybox".to_owned(),
+                                archive_id,
+                            }
                         })
                     })
                 }));
@@ -768,35 +770,6 @@ impl<T> Compilation<T> for RustCompilation
         }, Cacheable::Yes))
     }
 
-    //fn generate_dist_requests(&self,
-    //                          toolchain: SFuture<dist::Toolchain>)
-    //                          -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
-
-    //    // Unsure why this needs UFCS
-    //    let (mut command, cacheable) = <Self as Compilation<T>>::generate_compile_command(self).unwrap();
-    //    command.executable = self.sysroot.join("bin").join("rustc");
-
-    //    let mut builder = tar::Builder::new(vec![]);
-    //    builder.append_dir_all(command.cwd.strip_prefix("/").unwrap(), &command.cwd).unwrap();
-    //    let inputs_archive = builder.into_inner().unwrap();
-    //    // Unsure why this needs UFCS
-    //    let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
-
-    //    Box::new(toolchain.map(move |toolchain| (
-    //        dist::JobAllocRequest {
-    //            toolchain: toolchain.clone(),
-    //        },
-    //        dist::JobRequest {
-    //            command,
-    //            inputs_archive,
-    //            outputs,
-    //            toolchain,
-    //            toolchain_data: None,
-    //        },
-    //        cacheable
-    //    )))
-    //}
-
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
     }
@@ -806,7 +779,8 @@ impl<T> Compilation<T> for RustCompilation
 mod test {
     use super::*;
 
-    use ::compiler::*;
+    use compiler::*;
+    use dist::NoopDaemonClient;
     use itertools::Itertools;
     use mock_command::*;
     use std::ffi::OsStr;
@@ -1082,6 +1056,7 @@ c:/foo/bar.rs:
         }
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
             parsed_args: ParsedArguments {
                 arguments: vec![("a".into(), None),
@@ -1101,11 +1076,13 @@ c:/foo/bar.rs:
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
         let pool = CpuPool::new(1);
-        let res = hasher.generate_hash_key(&creator,
-                                           f.tempdir.path(),
-                                           &[(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
-                                             (OsString::from("FOO"), OsString::from("bar")),
-                                             (OsString::from("CARGO_BLAH"), OsString::from("abc"))],
+        let daemon_client = Arc::new(NoopDaemonClient);
+        let res = hasher.generate_hash_key(daemon_client,
+                                           &creator,
+                                           f.tempdir.path().to_owned(),
+                                           [(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
+                                            (OsString::from("FOO"), OsString::from("bar")),
+                                            (OsString::from("CARGO_BLAH"), OsString::from("abc"))].to_vec(),
                                            &pool).wait().unwrap();
         let m = Digest::new();
         let empty_digest = m.finish();
@@ -1161,15 +1138,18 @@ c:/foo/bar.rs:
         pre_func(&f.tempdir.path()).expect("Failed to execute pre_func");
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![],
             parsed_args: parsed_args,
         });
 
         let creator = new_creator();
         let pool = CpuPool::new(1);
+        let daemon_client = Arc::new(NoopDaemonClient);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        hasher.generate_hash_key(&creator, f.tempdir.path(), env_vars, &pool).wait().unwrap().key
+        hasher.generate_hash_key(daemon_client, &creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
+            .wait().unwrap().key
     }
 
     fn nothing(_path: &Path) -> Result<()> { Ok(()) }

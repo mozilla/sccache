@@ -64,6 +64,19 @@ pub struct CompileCommand {
     pub cwd: PathBuf,
 }
 
+impl CompileCommand {
+    pub fn execute<T>(self, creator: &T) -> SFuture<process::Output>
+        where T: CommandCreatorSync
+    {
+        let mut cmd = creator.clone().new_command_sync(self.executable);
+        cmd.args(&self.arguments)
+            .env_clear()
+            .envs(self.env_vars)
+            .current_dir(self.cwd);
+        Box::new(run_input_output(cmd, None))
+    }
+}
+
 /// Supported compilers.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompilerKind {
@@ -242,7 +255,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                             // Issue the request again, but with the toolchain data added
                                             JobResult::NeedToolchain => {
                                                 debug!("[{}]: Re-sending compile with toolchain (missing on server)", retry_out_pretty);
-                                                jreq.toolchain_data = Some(daemon_client.get_toolchain_cache(&jreq.toolchain.archive_id));
+                                                jreq.toolchain_data = Some(daemon_client.get_toolchain_cache(&jreq.toolchain.archive_id)).unwrap();
                                                 Box::new(daemon_client.do_compile_request(jares, jreq).and_then(|jres| {
                                                     match jres {
                                                         JobResult::Complete(jc) => f_ok(jc),
@@ -263,13 +276,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                             Err(e) => {
                                 debug!("[{}]: Could not create distributed compile request, falling back to local: {}", compile_out_pretty, e);
                                 let (compile_cmd, cacheable) = compilation.generate_compile_command().unwrap();
-                                let mut cmd = creator.clone().new_command_sync(&compile_cmd.executable);
-                                cmd.args(&compile_cmd.arguments)
-                                    .env_clear()
-                                    .envs(compile_cmd.env_vars)
-                                    .current_dir(compile_cmd.cwd);
-                                trace!("compile: {:?}", cmd);
-                                Box::new(run_input_output(cmd, None).map(move |o| (o, cacheable)))
+                                Box::new(compile_cmd.execute(&creator).map(move |o| (o, cacheable)))
                             },
                         }
                     });
@@ -377,6 +384,8 @@ pub struct HashResult<T: CommandCreatorSync> {
     pub key: String,
     /// An object to use for the actual compilation, if necessary.
     pub compilation: Box<Compilation<T> + 'static>,
+    // TODO: this should probable be a thunk so generate_hash_key
+    // doesn't need a dist client
     /// A future that may resolve to a packaged toolchain if required.
     pub dist_toolchain: SFuture<dist::Toolchain>,
 }
@@ -686,6 +695,7 @@ mod test {
     use super::*;
     use cache::Storage;
     use cache::disk::DiskCache;
+    use dist::NoopDaemonClient;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use mock_command::*;
@@ -798,6 +808,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
+        let daemon_client = Arc::new(NoopDaemonClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -828,7 +839,8 @@ mod test {
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
-        let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
+        let (cached, res) = hasher.get_cached_or_compile(daemon_client.clone(),
+                                                         creator.clone(),
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.to_path_buf(),
@@ -853,7 +865,8 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = hasher2.get_cached_or_compile(creator.clone(),
+        let (cached, res) = hasher2.get_cached_or_compile(daemon_client.clone(),
+                                                          creator.clone(),
                                                           storage.clone(),
                                                           arguments,
                                                           cwd.to_path_buf(),
@@ -878,6 +891,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
+        let daemon_client = Arc::new(NoopDaemonClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -908,7 +922,8 @@ mod test {
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
-        let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
+        let (cached, res) = hasher.get_cached_or_compile(daemon_client.clone(),
+                                                         creator.clone(),
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.to_path_buf(),
@@ -934,7 +949,8 @@ mod test {
         // The preprocessor invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
         // There should be no actual compiler invocation.
-        let (cached, res) = hasher2.get_cached_or_compile(creator,
+        let (cached, res) = hasher2.get_cached_or_compile(daemon_client.clone(),
+                                                          creator,
                                                           storage,
                                                           arguments,
                                                           cwd.to_path_buf(),
@@ -961,6 +977,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
+        let daemon_client = Arc::new(NoopDaemonClient);
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -990,7 +1007,8 @@ mod test {
         };
         // The cache will return an error.
         storage.next_get(f_err("Some Error"));
-        let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
+        let (cached, res) = hasher.get_cached_or_compile(daemon_client.clone(),
+                                                         creator.clone(),
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.to_path_buf(),
@@ -1022,6 +1040,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
+        let daemon_client = Arc::new(NoopDaemonClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1056,7 +1075,8 @@ mod test {
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
-        let (cached, res) = hasher.get_cached_or_compile(creator.clone(),
+        let (cached, res) = hasher.get_cached_or_compile(daemon_client.clone(),
+                                                         creator.clone(),
                                                          storage.clone(),
                                                          arguments.clone(),
                                                          cwd.to_path_buf(),
@@ -1078,7 +1098,8 @@ mod test {
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
         // Now compile again, but force recaching.
         fs::remove_file(&obj).unwrap();
-        let (cached, res) = hasher2.get_cached_or_compile(creator,
+        let (cached, res) = hasher2.get_cached_or_compile(daemon_client.clone(),
+                                                          creator,
                                                           storage,
                                                           arguments,
                                                           cwd.to_path_buf(),
@@ -1109,6 +1130,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
+        let daemon_client = Arc::new(NoopDaemonClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1128,7 +1150,8 @@ mod test {
             CompilerArguments::Ok(h) => h,
             o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
         };
-        let (cached, res) = hasher.get_cached_or_compile(creator,
+        let (cached, res) = hasher.get_cached_or_compile(daemon_client.clone(),
+                                                         creator,
                                                          storage,
                                                          arguments,
                                                          cwd.to_path_buf(),

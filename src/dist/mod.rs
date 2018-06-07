@@ -28,7 +28,6 @@ use errors::*;
 
 mod cache;
 #[cfg(test)]
-#[macro_use]
 mod test;
 
 // TODO: Clone by assuming immutable/no GC for now
@@ -71,27 +70,24 @@ const SERVER_CLIENTS_PORT: u16 = 10502;
 const CONCURRENT_CLIENT_REQS: usize = 50;
 const MAX_CONCURRENT_SCHEDULER_REQS: usize = 50;
 
+// TODO: move this into the config module
 struct Cfg;
 
 impl Cfg {
-    fn scheduler_addr() -> IpAddr {
-        CONFIG.dist.scheduler_addr
-    }
-
     fn scheduler_listen_client_addr() -> SocketAddr {
         let ip_addr = "0.0.0.0".parse().unwrap();
         SocketAddr::new(ip_addr, SCHEDULER_CLIENTS_PORT)
     }
-    fn client_connect_scheduler_addr() -> SocketAddr {
-        SocketAddr::new(Self::scheduler_addr(), SCHEDULER_CLIENTS_PORT)
+    fn client_connect_scheduler_addr(scheduler_addr: IpAddr) -> SocketAddr {
+        SocketAddr::new(scheduler_addr, SCHEDULER_CLIENTS_PORT)
     }
 
     fn scheduler_listen_server_addr() -> SocketAddr {
         let ip_addr = "0.0.0.0".parse().unwrap();
         SocketAddr::new(ip_addr, SCHEDULER_SERVERS_PORT)
     }
-    fn server_connect_scheduler_addr() -> SocketAddr {
-        SocketAddr::new(Self::scheduler_addr(), SCHEDULER_SERVERS_PORT)
+    fn server_connect_scheduler_addr(scheduler_addr: IpAddr) -> SocketAddr {
+        SocketAddr::new(scheduler_addr, SCHEDULER_SERVERS_PORT)
     }
 
     fn server_listen_client_addr() -> SocketAddr {
@@ -164,9 +160,9 @@ pub trait DaemonClientRequester: Send + Sync {
     // To DaemonServer
     fn do_compile_request(&self, JobAllocResult, JobRequest) -> SFuture<JobResult>;
 
-    fn get_toolchain_cache(&self, key: &str) -> Vec<u8>;
+    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>>;
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> String;
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String>;
 }
 
 trait DaemonServerHandler {
@@ -306,13 +302,14 @@ impl SchedulerRequester for SccacheScheduler {
 pub struct SccacheDaemonClient {
     client_cache_dir: PathBuf,
     cache: Mutex<TcCache>,
+    scheduler_addr: SocketAddr,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     weak_map: Mutex<HashMap<String, String>>,
     pool: CpuPool,
 }
 
 impl SccacheDaemonClient {
-    pub fn new() -> Self {
+    pub fn new(scheduler_addr: IpAddr) -> Self {
         let client_cache_dir = CONFIG.dist.cache_dir.join("client");
         fs::create_dir_all(&client_cache_dir).unwrap();
 
@@ -327,6 +324,7 @@ impl SccacheDaemonClient {
         SccacheDaemonClient {
             client_cache_dir,
             cache,
+            scheduler_addr: Cfg::client_connect_scheduler_addr(scheduler_addr),
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
             weak_map: Mutex::new(weak_map),
@@ -349,11 +347,12 @@ impl DaemonClientHandler for SccacheDaemonClient {
 }
 impl DaemonClientRequester for SccacheDaemonClient {
     fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
+        let scheduler_addr = self.scheduler_addr;
         Box::new(self.pool.spawn(future::lazy(move || {
             let mut core = tokio_core::reactor::Core::new().unwrap();
             let handle = core.handle();
             core.run(
-                TcpStream::connect(&Cfg::client_connect_scheduler_addr(), &handle)
+                TcpStream::connect(&scheduler_addr, &handle)
                     .map(|conn| WriteBincode::new(ReadBincode::new(Framed::new(conn))))
                     .and_then(|conn| conn.send(req))
                     .from_err()
@@ -379,15 +378,20 @@ impl DaemonClientRequester for SccacheDaemonClient {
         })))
     }
 
-    fn get_toolchain_cache(&self, key: &str) -> Vec<u8> {
+    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>> {
+        let mut toolchain_reader = match self.cache.lock().unwrap().get(key) {
+            Ok(rdr) => rdr,
+            Err(LruError::FileNotInCache) => return None,
+            Err(e) => panic!("{}", e),
+        };
         let mut ret = vec![];
-        self.cache.lock().unwrap().get(key).unwrap().read_to_end(&mut ret).unwrap();
-        ret
+        toolchain_reader.read_to_end(&mut ret).unwrap();
+        Some(ret)
     }
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> String {
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
         if let Some(strong_key) = self.weak_to_strong(weak_key) {
             debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
-            return strong_key
+            return Ok(strong_key)
         }
         debug!("Weak key {} appears to be new", weak_key);
         // TODO: don't use this as a poor exclusive lock on this global file
@@ -396,31 +400,48 @@ impl DaemonClientRequester for SccacheDaemonClient {
             .create(true)
             .write(true)
             .truncate(true)
-            .open("/tmp/toolchain_cache.tar");
-        match file {
-            Ok(f) => create(f),
-            Err(e) => panic!("{}", e),
-        }
+            .open("/tmp/toolchain_cache.tar")?;
+        create(file);
         // TODO: after, if still exists, remove it
-        let strong_key = cache.insert_file("/tmp/toolchain_cache.tar").unwrap();
+        let strong_key = cache.insert_file("/tmp/toolchain_cache.tar")?;
         self.record_weak(weak_key.to_owned(), strong_key.clone());
-        strong_key
+        Ok(strong_key)
+    }
+}
+
+pub struct NoopDaemonClient;
+
+impl DaemonClientHandler for NoopDaemonClient {
+}
+impl DaemonClientRequester for NoopDaemonClient {
+    fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
+        f_err("noop daemon client")
+    }
+    fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
+        f_err("noop daemon client")
+    }
+
+    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>> {
+        None
+    }
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
+        Err("noop daemon client".into())
     }
 }
 
 pub struct SccacheDaemonServer {
     builder: Box<BuilderHandler>,
     cache: Arc<Mutex<TcCache>>,
-    sched_addr: SocketAddr,
+    scheduler_addr: SocketAddr,
     parallelism: usize,
 }
 
 impl SccacheDaemonServer {
-    pub fn new(builder: Box<BuilderHandler>) -> SccacheDaemonServer {
+    pub fn new(scheduler_addr: IpAddr, builder: Box<BuilderHandler>) -> SccacheDaemonServer {
         SccacheDaemonServer {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap())),
-            sched_addr: Cfg::server_connect_scheduler_addr(),
+            scheduler_addr: Cfg::server_connect_scheduler_addr(scheduler_addr),
             parallelism: num_cpus::get() * 2,
         }
     }
@@ -428,9 +449,9 @@ impl SccacheDaemonServer {
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
         let handle = core.handle();
-        info!("Daemon server connecting to scheduler at {}", self.sched_addr);
+        info!("Daemon server connecting to scheduler at {}", self.scheduler_addr);
         let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
-            TcpStream::connect(&self.sched_addr, &handle)
+            TcpStream::connect(&self.scheduler_addr, &handle)
                 .map(|conn| ReadBincode::new(Framed::new(conn)))
         ).unwrap();
         let parallelism = self.parallelism;

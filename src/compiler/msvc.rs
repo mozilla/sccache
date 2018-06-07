@@ -750,11 +750,11 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(&creator,
-                                     &compiler,
-                                     &parsed_args,
-                                     &f.tempdir.path(),
-                                     &[]).wait().unwrap();
+        let (command, cacheable) = generate_compile_command(&compiler,
+                                                            &parsed_args,
+                                                            f.tempdir.path(),
+                                                            &[]).unwrap();
+        let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
@@ -779,11 +779,11 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (cacheable, _) = compile(&creator,
-                                     &compiler,
-                                     &parsed_args,
-                                     f.tempdir.path(),
-                                     &[]).wait().unwrap();
+        let (command, cacheable) = generate_compile_command(&compiler,
+                                                            &parsed_args,
+                                                            f.tempdir.path(),
+                                                            &[]).unwrap();
+        let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
