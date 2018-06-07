@@ -17,6 +17,7 @@ use regex::Regex;
 use std::env;
 use std::io::Read;
 use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use toml;
@@ -25,13 +26,19 @@ lazy_static! {
     pub static ref CONFIG: Config = { Config::create() };
 }
 
-pub const ORGANIZATION: &str = "Mozilla";
+const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
-pub const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
+const DIST_APP_NAME: &str = "sccache";
+const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
-// Unfortunately this means that nothing else can use the cache dir
+// Unfortunately this means that nothing else can use the sccache cache dir
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
+        .cache_dir().to_owned()
+}
+
+pub fn default_dist_cache_dir() -> PathBuf {
+    ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
         .cache_dir().to_owned()
 }
 
@@ -131,6 +138,24 @@ pub struct CacheConfigs {
     s3: Option<S3CacheConfig>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+#[derive(Deserialize)]
+pub struct DistConfig {
+    pub scheduler_addr: IpAddr,
+    pub cache_dir: PathBuf,
+    pub toolchain_cache_size: u64,
+}
+
+impl Default for DistConfig {
+    fn default() -> Self {
+        DistConfig {
+            scheduler_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            cache_dir: default_dist_cache_dir(),
+            toolchain_cache_size: TEN_GIGS,
+        }
+    }
+}
+
 impl CacheConfigs {
     /// Return a vec of the available cache types in an arbitrary but
     /// consistent ordering
@@ -169,6 +194,7 @@ impl CacheConfigs {
 #[derive(Deserialize)]
 pub struct FileConfig {
     cache: CacheConfigs,
+    dist: DistConfig,
 }
 
 fn try_read_config_file(path: &Path) -> Option<FileConfig> {
@@ -269,6 +295,7 @@ fn config_from_env() -> EnvConfig {
 pub struct Config {
     pub caches: Vec<CacheType>,
     pub fallback_cache: DiskCacheConfig,
+    pub dist: DistConfig,
 }
 
 impl Config {
@@ -290,14 +317,14 @@ impl Config {
     fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
         let mut conf_caches: CacheConfigs = Default::default();
 
-        let FileConfig { cache } = file_conf;
+        let FileConfig { cache, dist } = file_conf;
         conf_caches.merge(cache);
 
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
-        Config { caches, fallback_cache }
+        Config { caches, fallback_cache, dist }
     }
 }
 
@@ -355,6 +382,7 @@ fn config_overrides() {
                 dir: "/env-cache".into(),
                 size: 5,
             },
+            dist: Default::default(),
         }
     );
 }

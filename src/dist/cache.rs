@@ -1,37 +1,15 @@
-use config::parse_size;
-use directories::ProjectDirs;
+use config::CONFIG;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Result as LruResult;
-use std::env;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
-use std::path::PathBuf;
+use std::path::Path;
 use util;
 
 use errors::*;
-
-use config::{
-    ORGANIZATION,
-    TEN_GIGS,
-};
-const APP_NAME: &str = "sccache-dist";
-
-pub enum CacheOwner {
-    Client,
-    Server,
-}
-
-impl CacheOwner {
-    fn to_dirname(&self) -> &str {
-        match *self {
-            CacheOwner::Client => "client",
-            CacheOwner::Server => "server",
-        }
-    }
-}
 
 pub struct TcCache {
     inner: LruDiskCache,
@@ -39,19 +17,10 @@ pub struct TcCache {
 }
 
 impl TcCache {
-    pub fn new(owner: CacheOwner) -> Result<TcCache> {
-        let d = env::var_os("SCCACHE_TC_DIR")
-            .map(|p| PathBuf::from(p))
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
-                dirs.cache_dir().join(owner.to_dirname()).join("tc")
-            });
-        trace!("Using TcCache({:?})", d);
-        let cache_size: u64 = env::var("SCCACHE_TC_CACHE_SIZE")
-            .ok()
-            .and_then(|v| parse_size(&v))
-            .unwrap_or(TEN_GIGS);
-        trace!("TcCache size: {}", cache_size);
+    pub fn new(cache_dir: &Path) -> Result<TcCache> {
+        let d = cache_dir.join("tc");
+        let cache_size = CONFIG.dist.toolchain_cache_size;
+        trace!("Using TcCache({:?}, {})", d, cache_size);
         // TODO: pass this in from the global pool
         let pool = CpuPool::new(1);
         Ok(TcCache { inner: LruDiskCache::new(d, cache_size)?, pool })
