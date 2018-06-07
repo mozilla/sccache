@@ -2,8 +2,8 @@
 
 use bytes::IntoBuf;
 use compiler::CompileCommand;
-use directories::ProjectDirs;
-use dist::cache::{CacheOwner, TcCache};
+use config::CONFIG;
+use dist::cache::TcCache;
 use lru_disk_cache::Error as LruError;
 use futures::{Future, Sink, Stream, future};
 use futures_cpupool::CpuPool;
@@ -12,7 +12,6 @@ use num_cpus;
 use serde_json;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
@@ -26,9 +25,6 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::length_delimited::{self, Framed};
 
 use errors::*;
-
-use config::ORGANIZATION;
-const APP_NAME: &str = "sccache-dist";
 
 mod cache;
 #[cfg(test)]
@@ -79,11 +75,7 @@ struct Cfg;
 
 impl Cfg {
     fn scheduler_addr() -> IpAddr {
-        env::var("SCCACHE_SCHEDULER_ADDR")
-            .as_ref().map(String::as_str)
-            .unwrap_or("127.0.0.1")
-            .parse()
-            .unwrap()
+        CONFIG.dist.scheduler_addr
     }
 
     fn scheduler_listen_client_addr() -> SocketAddr {
@@ -312,7 +304,7 @@ impl SchedulerRequester for SccacheScheduler {
 
 // TODO: possibly shouldn't be public
 pub struct SccacheDaemonClient {
-    client_config_dir: PathBuf,
+    client_cache_dir: PathBuf,
     cache: Mutex<TcCache>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     weak_map: Mutex<HashMap<String, String>>,
@@ -321,23 +313,20 @@ pub struct SccacheDaemonClient {
 
 impl SccacheDaemonClient {
     pub fn new() -> Self {
-        let client_config_dir = env::var_os("SCCACHE_CLIENT_CACHE_DIR")
-            .map(|p| PathBuf::from(p))
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
-                dirs.cache_dir().join("client")
-            });
-        fs::create_dir_all(&client_config_dir).unwrap();
+        let client_cache_dir = CONFIG.dist.cache_dir.join("client");
+        fs::create_dir_all(&client_cache_dir).unwrap();
 
-        let weak_map_path = client_config_dir.join("weak_map.json");
+        let weak_map_path = client_cache_dir.join("weak_map.json");
         if !weak_map_path.exists() {
             fs::File::create(&weak_map_path).unwrap().write_all(b"{}").unwrap()
         }
         let weak_map = serde_json::from_reader(fs::File::open(weak_map_path).unwrap()).unwrap();
 
+        let cache = Mutex::new(TcCache::new(&client_cache_dir).unwrap());
+
         SccacheDaemonClient {
-            client_config_dir,
-            cache: Mutex::new(TcCache::new(CacheOwner::Client).unwrap()),
+            client_cache_dir,
+            cache,
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
             weak_map: Mutex::new(weak_map),
@@ -351,7 +340,7 @@ impl SccacheDaemonClient {
     fn record_weak(&self, weak_key: String, key: String) {
         let mut weak_map = self.weak_map.lock().unwrap();
         weak_map.insert(weak_key, key);
-        let weak_map_path = self.client_config_dir.join("weak_map.json");
+        let weak_map_path = self.client_cache_dir.join("weak_map.json");
         serde_json::to_writer(fs::File::create(weak_map_path).unwrap(), &*weak_map).unwrap()
     }
 }
@@ -430,7 +419,7 @@ impl SccacheDaemonServer {
     pub fn new(builder: Box<BuilderHandler>) -> SccacheDaemonServer {
         SccacheDaemonServer {
             builder,
-            cache: Arc::new(Mutex::new(TcCache::new(CacheOwner::Server).unwrap())),
+            cache: Arc::new(Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap())),
             sched_addr: Cfg::server_connect_scheduler_addr(),
             parallelism: num_cpus::get() * 2,
         }
