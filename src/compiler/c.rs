@@ -328,11 +328,9 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
     }
 
     fn generate_dist_requests(&self,
+                              mut command: CompileCommand,
                               toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
-
-        // Unsure why this needs UFCS
-        let (mut command, cacheable) = <Self as Compilation<T>>::generate_compile_command(self).unwrap();
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
 
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
         let language = match self.parsed_args.language {
@@ -341,58 +339,63 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             Language::ObjectiveC => "objective-c-cpp-output",
             Language::ObjectiveCxx => "objective-c++-cpp-output",
         };
-        let mut lang_next = false;
-        for arg in command.arguments.iter_mut() {
-            if arg == "-x" {
-                lang_next = true
-            } else if lang_next {
-                *arg = OsString::from(language);
-                break
-            }
-        }
-
-        let mut builder = tar::Builder::new(vec![]);
         let preprocessed_path = command.cwd.join(&self.parsed_args.input);
-        let metadata_res = fs::metadata(&preprocessed_path);
-        let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
-
-        let mut file_header = tar::Header::new_ustar();
-        // TODO: test this works
-        if let Ok(metadata) = metadata_res {
-            // TODO: if the source file is a symlink, I think this does bad things
-            file_header.set_metadata(&metadata);
-        } else {
-            warn!("Couldn't get metadata of input file, falling back to some defaults");
-            file_header.set_mode(0o644);
-            file_header.set_uid(0);
-            file_header.set_gid(0);
-            file_header.set_mtime(0);
-            file_header.set_device_major(0).expect("expected a ustar header");
-            file_header.set_device_minor(0).expect("expected a ustar header");
-            file_header.set_entry_type(tar::EntryType::file());
-        }
-        file_header.set_path(preprocessed_path).unwrap();
-        file_header.set_size(self.preprocessed_input.len() as u64); // Metadata is non-preprocessed
-        file_header.set_cksum();
-
-        builder.append(&file_header, self.preprocessed_input.as_slice()).unwrap();
-        let inputs_archive = builder.into_inner().unwrap();
+        let preprocessed_input = self.preprocessed_input.clone();
         // Unsure why this needs UFCS
         let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
 
-        Box::new(toolchain.map(move |toolchain| (
-            dist::JobAllocRequest {
-                toolchain: toolchain.clone(),
-            },
-            dist::JobRequest {
-                command,
-                inputs_archive,
-                outputs,
-                toolchain,
-                toolchain_data: None,
-            },
-            cacheable
-        )))
+        Box::new(toolchain.map(move |toolchain| {
+            // TODO: handle MSVC
+            let mut lang_next = false;
+            for arg in command.arguments.iter_mut() {
+                if arg == "-x" {
+                    lang_next = true
+                } else if lang_next {
+                    *arg = OsString::from(language);
+                    break
+                }
+            }
+            assert!(lang_next);
+
+            let mut builder = tar::Builder::new(vec![]);
+            let metadata_res = fs::metadata(&preprocessed_path);
+            let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
+
+            let mut file_header = tar::Header::new_ustar();
+            // TODO: test this works
+            if let Ok(metadata) = metadata_res {
+                // TODO: if the source file is a symlink, I think this does bad things
+                file_header.set_metadata(&metadata);
+            } else {
+                warn!("Couldn't get metadata of input file, falling back to some defaults");
+                file_header.set_mode(0o644);
+                file_header.set_uid(0);
+                file_header.set_gid(0);
+                file_header.set_mtime(0);
+                file_header.set_device_major(0).expect("expected a ustar header");
+                file_header.set_device_minor(0).expect("expected a ustar header");
+                file_header.set_entry_type(tar::EntryType::file());
+            }
+            file_header.set_path(preprocessed_path).unwrap();
+            file_header.set_size(preprocessed_input.len() as u64); // Metadata is non-preprocessed
+            file_header.set_cksum();
+
+            builder.append(&file_header, preprocessed_input.as_slice()).unwrap();
+            let inputs_archive = builder.into_inner().unwrap();
+
+            (
+                dist::JobAllocRequest {
+                    toolchain: toolchain.clone(),
+                },
+                dist::JobRequest {
+                    command,
+                    inputs_archive,
+                    outputs,
+                    toolchain,
+                    toolchain_data: None,
+                }
+            )
+        }))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>

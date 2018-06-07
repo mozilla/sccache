@@ -239,10 +239,11 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 let start = Instant::now();
                 debug!("[{}]: Attempting distributed compilation", out_pretty);
                 let compile_out_pretty = out_pretty.clone();
-                let compile = compilation.generate_dist_requests(dist_toolchain)
-                    .then(move |reqs| -> SFuture<(process::Output, Cacheable)> {
+                let (compile_cmd, cacheable) = compilation.generate_compile_command().unwrap();
+                let compile = compilation.generate_dist_requests(compile_cmd.clone(), dist_toolchain)
+                    .then(move |reqs| -> SFuture<process::Output> {
                         match reqs {
-                            Ok((jareq, jreq, cacheable)) => {
+                            Ok((jareq, jreq)) => {
                                 debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
                                 let retry_out_pretty = compile_out_pretty.clone();
                                 Box::new(daemon_client.do_allocation_request(jareq).map(|jares| (daemon_client, jares))
@@ -270,17 +271,16 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                         for (path, bytes) in jc.outputs {
                                             File::create(path).unwrap().write_all(&bytes).unwrap();
                                         }
-                                        (jc.output.into(), cacheable)
+                                        jc.output.into()
                                     }))
                             },
                             Err(e) => {
                                 debug!("[{}]: Could not create distributed compile request, falling back to local: {}", compile_out_pretty, e);
-                                let (compile_cmd, cacheable) = compilation.generate_compile_command().unwrap();
-                                Box::new(compile_cmd.execute(&creator).map(move |o| (o, cacheable)))
+                                compile_cmd.execute(&creator)
                             },
                         }
                     });
-                Box::new(compile.and_then(move |(compiler_result, cacheable)| {
+                Box::new(compile.and_then(move |compiler_result| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -365,8 +365,9 @@ pub trait Compilation<T>
 
     /// Generate the requests that will be used to perform a distributed compilation
     fn generate_dist_requests(&self,
+                              _command: CompileCommand,
                               _toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest, Cacheable)> {
+                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
 
         f_err("distributed compilation not implemented")
     }

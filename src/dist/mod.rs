@@ -414,17 +414,17 @@ pub struct NoopDaemonClient;
 impl DaemonClientHandler for NoopDaemonClient {
 }
 impl DaemonClientRequester for NoopDaemonClient {
-    fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
+    fn do_allocation_request(&self, _req: JobAllocRequest) -> SFuture<JobAllocResult> {
         f_err("noop daemon client")
     }
-    fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
+    fn do_compile_request(&self, _ja_res: JobAllocResult, _req: JobRequest) -> SFuture<JobResult> {
         f_err("noop daemon client")
     }
 
-    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>> {
+    fn get_toolchain_cache(&self, _key: &str) -> Option<Vec<u8>> {
         None
     }
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
+    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
         Err("noop daemon client".into())
     }
 }
