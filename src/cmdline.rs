@@ -18,13 +18,12 @@ use clap::{
     Arg,
 };
 use config::CONFIG;
+use dist::{SccacheDistBuilder, SccacheDistServer, SccacheScheduler};
 use errors::*;
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use which::which_in;
-
-use dist;
 
 arg_enum!{
     #[derive(Debug)]
@@ -95,17 +94,17 @@ enum Void {}
 pub fn parse() -> Result<Command> {
     trace!("parse");
     let cwd = env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
-    let start_daemon_worker = match env::var("SCCACHE_START_DAEMON_WORKER") {
+    let start_dist_worker = match env::var("SCCACHE_START_DIST_SERVER") {
         Ok(val) => val == "1",
         Err(_) => false,
     };
-    if start_daemon_worker {
+    if start_dist_worker {
         if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
-            let builder = dist::SccacheBuilder::new();
-            let server = dist::SccacheDaemonServer::new(scheduler_addr, Box::new(builder));
+            let builder = SccacheDistBuilder::new();
+            let server = SccacheDistServer::new(scheduler_addr, Box::new(builder));
             let _: Void = server.start();
         } else {
-            bail!("Cannot start daemon worker without a configured scheduler")
+            bail!("Cannot start dist worker without a configured scheduler")
         }
     }
     let start_scheduler = match env::var("SCCACHE_START_SCHEDULER") {
@@ -113,7 +112,7 @@ pub fn parse() -> Result<Command> {
         Err(_) => false,
     };
     if start_scheduler {
-        let scheduler = dist::SccacheScheduler::new();
+        let scheduler = SccacheScheduler::new();
         let _: Void = scheduler.start();
     }
     // The internal start server command is passed in the environment.
