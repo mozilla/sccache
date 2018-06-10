@@ -253,8 +253,8 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                                 }))
                                             },
                                         }
-                                    }).map(|jc| {
-                                        error!("fetched {:?}", jc.outputs.iter().map(|(p, _)| p).collect::<Vec<_>>());
+                                    }).map(move |jc| {
+                                        error!("fetched {:?}", jc.outputs.iter().map(|&(ref p, _)| p).collect::<Vec<_>>());
                                         for (path, bytes) in jc.outputs {
                                             File::create(path).unwrap().write_all(&bytes).unwrap();
                                         }
