@@ -53,11 +53,11 @@ fn parse_size(val: &str) -> Option<u64> {
         })
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct AzureCacheConfig;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
@@ -65,7 +65,16 @@ pub struct DiskCacheConfig {
     pub size: u64,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+impl Default for DiskCacheConfig {
+    fn default() -> Self {
+        DiskCacheConfig {
+            dir: default_disk_cache_dir(),
+            size: TEN_GIGS,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub enum GCSCacheRWMode {
     #[serde(rename = "READ_ONLY")]
@@ -74,7 +83,7 @@ pub enum GCSCacheRWMode {
     ReadWrite,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct GCSCacheConfig {
     pub bucket: String,
@@ -82,29 +91,28 @@ pub struct GCSCacheConfig {
     pub rw_mode: GCSCacheRWMode,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct RedisCacheConfig {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 #[derive(Deserialize)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
-    Disk(DiskCacheConfig),
     GCS(GCSCacheConfig),
     Memcached(MemcachedCacheConfig),
     Redis(RedisCacheConfig),
@@ -123,20 +131,36 @@ pub struct CacheConfigs {
 }
 
 impl CacheConfigs {
-    /// Return a vec of the available cache types in a specific
+    /// Return a vec of the available cache types in an arbitrary but
     /// consistent ordering
-    fn into_vec(self) -> Vec<CacheType> {
+    fn into_vec_and_fallback(self) -> (Vec<CacheType>, DiskCacheConfig) {
         let CacheConfigs {
             azure, disk, gcs, memcached, redis, s3
         } = self;
 
-        s3.map(CacheType::S3).into_iter()
+        let caches = s3.map(CacheType::S3).into_iter()
             .chain(redis.map(CacheType::Redis))
             .chain(memcached.map(CacheType::Memcached))
             .chain(gcs.map(CacheType::GCS))
             .chain(azure.map(CacheType::Azure))
-            .chain(disk.map(CacheType::Disk))
-            .collect()
+            .collect();
+        let fallback = disk.unwrap_or_else(Default::default);
+
+        (caches, fallback)
+    }
+
+    /// Override self with any existing fields from other
+    fn merge(&mut self, other: Self) {
+        let CacheConfigs {
+            azure, disk, gcs, memcached, redis, s3
+        } = other;
+
+        if azure.is_some()     { self.azure = azure }
+        if disk.is_some()      { self.disk = disk }
+        if gcs.is_some()       { self.gcs = gcs }
+        if memcached.is_some() { self.memcached = memcached }
+        if redis.is_some()     { self.redis = redis }
+        if s3.is_some()        { self.s3 = s3 }
     }
 }
 
@@ -240,7 +264,7 @@ fn config_from_env() -> EnvConfig {
     EnvConfig { cache }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub caches: Vec<CacheType>,
     pub fallback_cache: DiskCacheConfig,
@@ -248,15 +272,14 @@ pub struct Config {
 
 impl Config {
     pub fn create() -> Config {
+        let env_conf = config_from_env();
+
         let file_conf_path = env::var_os("SCCACHE_CONF")
             .map(|p| PathBuf::from(p))
             .unwrap_or_else(|| {
                 let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
                 dirs.config_dir().join("config")
             });
-
-        let env_conf = config_from_env();
-
         let file_conf = try_read_config_file(&file_conf_path)
             .unwrap_or_default();
 
@@ -264,35 +287,16 @@ impl Config {
     }
 
     fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
-        let fallback_cache = DiskCacheConfig {
-            dir: default_disk_cache_dir(),
-            size: TEN_GIGS,
-        };
-
-        let mut conf = Config {
-            caches: vec![],
-            fallback_cache,
-        };
-
-        let EnvConfig { cache } = env_conf;
-        conf.caches.extend(cache.into_vec());
+        let mut conf_caches: CacheConfigs = Default::default();
 
         let FileConfig { cache } = file_conf;
-        conf.caches.extend(cache.into_vec());
+        conf_caches.merge(cache);
 
-        // Push any DiskConfigs down to the bottom, preserving relative ordering
-        // (i.e. env disk config is still before file disk config)
-        conf.caches.sort_by(|c1, c2| {
-            use std::cmp::Ordering::*;
-            match (c1, c2) {
-                (&CacheType::Disk(_), &CacheType::Disk(_)) => Equal,
-                (&CacheType::Disk(_), _                  ) => Greater,
-                (_                  , &CacheType::Disk(_)) => Less,
-                (_                  , _                  ) => Equal,
-            }
-        });
+        let EnvConfig { cache } = env_conf;
+        conf_caches.merge(cache);
 
-        conf
+        let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
+        Config { caches, fallback_cache }
     }
 }
 
@@ -307,7 +311,7 @@ fn test_parse_size() {
 }
 
 #[test]
-fn disk_config_ordering() {
+fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
             azure: Some(AzureCacheConfig),
@@ -315,36 +319,41 @@ fn disk_config_ordering() {
                 dir: "/env-cache".into(),
                 size: 5,
             }),
+            redis: Some(RedisCacheConfig {
+                url: "myotherredisurl".to_owned(),
+            }),
             ..Default::default()
         },
     };
 
     let file_conf = FileConfig {
         cache: CacheConfigs {
-            redis: Some(RedisCacheConfig {
-                url: "myredisurl".to_owned(),
-            }),
             disk: Some(DiskCacheConfig {
                 dir: "/file-cache".into(),
                 size: 15,
+            }),
+            memcached: Some(MemcachedCacheConfig {
+                url: "memurl".to_owned(),
+            }),
+            redis: Some(RedisCacheConfig {
+                url: "myredisurl".to_owned(),
             }),
             ..Default::default()
         },
     };
 
     assert_eq!(
-        Config::from_env_and_file_configs(env_conf, file_conf).caches,
-        vec![
-            CacheType::Azure(AzureCacheConfig),
-            CacheType::Redis(RedisCacheConfig { url: "myredisurl".to_owned() }),
-            CacheType::Disk(DiskCacheConfig {
+        Config::from_env_and_file_configs(env_conf, file_conf),
+        Config {
+            caches: vec![
+                CacheType::Redis(RedisCacheConfig { url: "myotherredisurl".to_owned() }),
+                CacheType::Memcached(MemcachedCacheConfig { url: "memurl".to_owned() }),
+                CacheType::Azure(AzureCacheConfig),
+            ],
+            fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
-            }),
-            CacheType::Disk(DiskCacheConfig {
-                dir: "/file-cache".into(),
-                size: 15,
-            }),
-        ]
+            },
+        }
     );
 }
