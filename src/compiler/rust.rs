@@ -15,7 +15,7 @@
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
-use dist;
+use dist::{self, DistClientRequester};
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
@@ -592,7 +592,7 @@ impl<T> CompilerHasher<T> for RustHasher
     where T: CommandCreatorSync,
 {
     fn generate_hash_key(self: Box<Self>,
-                         daemon_client: Arc<dist::DaemonClientRequester>,
+                         dist_client: Arc<DistClientRequester>,
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
@@ -710,7 +710,7 @@ impl<T> CompilerHasher<T> for RustHasher
                 let toolchain_sysroot = sysroot.clone();
                 let toolchain_future = Box::new(future::lazy(move || {
                     toolchain_pool.spawn_fn(move || {
-                        daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
+                        dist_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
                             info!("Packaging Rust compiler");
                             let mut builder = tar::Builder::new(f);
                             builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
@@ -780,7 +780,7 @@ mod test {
     use super::*;
 
     use compiler::*;
-    use dist::NoopDaemonClient;
+    use dist::NoopDistClient;
     use itertools::Itertools;
     use mock_command::*;
     use std::ffi::OsStr;
@@ -1076,8 +1076,8 @@ c:/foo/bar.rs:
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
         let pool = CpuPool::new(1);
-        let daemon_client = Arc::new(NoopDaemonClient);
-        let res = hasher.generate_hash_key(daemon_client,
+        let dist_client = Arc::new(NoopDistClient);
+        let res = hasher.generate_hash_key(dist_client,
                                            &creator,
                                            f.tempdir.path().to_owned(),
                                            [(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
@@ -1145,10 +1145,10 @@ c:/foo/bar.rs:
 
         let creator = new_creator();
         let pool = CpuPool::new(1);
-        let daemon_client = Arc::new(NoopDaemonClient);
+        let dist_client = Arc::new(NoopDistClient);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        hasher.generate_hash_key(daemon_client, &creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
+        hasher.generate_hash_key(dist_client, &creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
             .wait().unwrap().key
     }
 

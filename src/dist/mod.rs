@@ -144,20 +144,20 @@ pub struct BuildResult {
 }
 
 trait SchedulerHandler {
-    // From DaemonClient
+    // From DistClient
     fn handle_allocation_request(&self, JobAllocRequest) -> SFuture<JobAllocResult>;
 }
 pub trait SchedulerRequester {
-    // To DaemonServer
+    // To DistServer
     fn do_allocation_assign(&self, ServerId, AllocAssignment) -> SFuture<()>;
 }
 
-trait DaemonClientHandler {
+trait DistClientHandler {
 }
-pub trait DaemonClientRequester: Send + Sync {
+pub trait DistClientRequester: Send + Sync {
     // To Scheduler
     fn do_allocation_request(&self, JobAllocRequest) -> SFuture<JobAllocResult>;
-    // To DaemonServer
+    // To DistServer
     fn do_compile_request(&self, JobAllocResult, JobRequest) -> SFuture<JobResult>;
 
     fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>>;
@@ -165,18 +165,18 @@ pub trait DaemonClientRequester: Send + Sync {
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String>;
 }
 
-trait DaemonServerHandler {
+trait DistServerHandler {
     // From Scheduler
     fn handle_allocation_assign(&self, AllocAssignment) -> SFuture<()>;
-    // From DaemonClient
+    // From DistClient
     fn handle_compile_request(&self, JobRequest) -> SFuture<JobResult>;
 }
-pub trait DaemonServerRequester {
+pub trait DistServerRequester {
 }
 
 // TODO: this being public is asymmetric
-pub trait BuilderHandler: Send + Sync {
-    // From DaemonServer
+pub trait DistBuilderHandler: Send + Sync {
+    // From DistServer
     fn handle_compile_request(&self, BuildRequest) -> SFuture<BuildResult>;
 }
 
@@ -299,7 +299,7 @@ impl SchedulerRequester for SccacheScheduler {
 }
 
 // TODO: possibly shouldn't be public
-pub struct SccacheDaemonClient {
+pub struct SccacheDistClient {
     client_cache_dir: PathBuf,
     cache: Mutex<TcCache>,
     scheduler_addr: SocketAddr,
@@ -308,7 +308,7 @@ pub struct SccacheDaemonClient {
     pool: CpuPool,
 }
 
-impl SccacheDaemonClient {
+impl SccacheDistClient {
     pub fn new(scheduler_addr: IpAddr) -> Self {
         let client_cache_dir = CONFIG.dist.cache_dir.join("client");
         fs::create_dir_all(&client_cache_dir).unwrap();
@@ -321,7 +321,7 @@ impl SccacheDaemonClient {
 
         let cache = Mutex::new(TcCache::new(&client_cache_dir).unwrap());
 
-        SccacheDaemonClient {
+        SccacheDistClient {
             client_cache_dir,
             cache,
             scheduler_addr: Cfg::client_connect_scheduler_addr(scheduler_addr),
@@ -343,9 +343,9 @@ impl SccacheDaemonClient {
     }
 }
 
-impl DaemonClientHandler for SccacheDaemonClient {
+impl DistClientHandler for SccacheDistClient {
 }
-impl DaemonClientRequester for SccacheDaemonClient {
+impl DistClientRequester for SccacheDistClient {
     fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
         let scheduler_addr = self.scheduler_addr;
         Box::new(self.pool.spawn(future::lazy(move || {
@@ -409,36 +409,36 @@ impl DaemonClientRequester for SccacheDaemonClient {
     }
 }
 
-pub struct NoopDaemonClient;
+pub struct NoopDistClient;
 
-impl DaemonClientHandler for NoopDaemonClient {
+impl DistClientHandler for NoopDistClient {
 }
-impl DaemonClientRequester for NoopDaemonClient {
+impl DistClientRequester for NoopDistClient {
     fn do_allocation_request(&self, _req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        f_err("noop daemon client")
+        f_err("noop dist client")
     }
     fn do_compile_request(&self, _ja_res: JobAllocResult, _req: JobRequest) -> SFuture<JobResult> {
-        f_err("noop daemon client")
+        f_err("noop dist client")
     }
 
     fn get_toolchain_cache(&self, _key: &str) -> Option<Vec<u8>> {
         None
     }
     fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
-        Err("noop daemon client".into())
+        Err("noop dist client".into())
     }
 }
 
-pub struct SccacheDaemonServer {
-    builder: Box<BuilderHandler>,
+pub struct SccacheDistServer {
+    builder: Box<DistBuilderHandler>,
     cache: Arc<Mutex<TcCache>>,
     scheduler_addr: SocketAddr,
     parallelism: usize,
 }
 
-impl SccacheDaemonServer {
-    pub fn new(scheduler_addr: IpAddr, builder: Box<BuilderHandler>) -> SccacheDaemonServer {
-        SccacheDaemonServer {
+impl SccacheDistServer {
+    pub fn new(scheduler_addr: IpAddr, builder: Box<DistBuilderHandler>) -> SccacheDistServer {
+        SccacheDistServer {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap())),
             scheduler_addr: Cfg::server_connect_scheduler_addr(scheduler_addr),
@@ -449,7 +449,7 @@ impl SccacheDaemonServer {
     pub fn start(self) -> ! {
         let mut core = tokio_core::reactor::Core::new().unwrap();
         let handle = core.handle();
-        info!("Daemon server connecting to scheduler at {}", self.scheduler_addr);
+        info!("Dist server connecting to scheduler at {}", self.scheduler_addr);
         let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
             TcpStream::connect(&self.scheduler_addr, &handle)
                 .map(|conn| ReadBincode::new(Framed::new(conn)))
@@ -495,7 +495,7 @@ impl SccacheDaemonServer {
     }
 }
 
-impl DaemonServerHandler for SccacheDaemonServer {
+impl DistServerHandler for SccacheDistServer {
     fn handle_allocation_assign(&self, alloc: AllocAssignment) -> SFuture<()> {
         // TODO: track ID of incoming job so scheduler is kept up-do-date
         f_ok(())
@@ -514,10 +514,10 @@ impl DaemonServerHandler for SccacheDaemonServer {
             .map(|res| JobResult::Complete(JobComplete { output: res.output, outputs: res.outputs })))
     }
 }
-impl DaemonServerRequester for SccacheDaemonServer {
+impl DistServerRequester for SccacheDistServer {
 }
 
-pub struct SccacheBuilder {
+pub struct SccacheDistBuilder {
     image_map: Arc<Mutex<HashMap<Toolchain, String>>>,
     container_lists: Arc<Mutex<HashMap<Toolchain, Vec<String>>>>,
     pool: CpuPool,
@@ -531,11 +531,11 @@ fn check_output(output: &Output) {
     }
 }
 
-impl SccacheBuilder {
-    pub fn new() -> SccacheBuilder {
+impl SccacheDistBuilder {
+    pub fn new() -> SccacheDistBuilder {
         Self::cleanup();
         let parallelism = num_cpus::get() * 2;
-        SccacheBuilder {
+        SccacheDistBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
             // TODO: maybe pass this in from global pool? Maybe not
@@ -782,8 +782,8 @@ impl SccacheBuilder {
     }
 }
 
-impl BuilderHandler for SccacheBuilder {
-    // From DaemonServer
+impl DistBuilderHandler for SccacheDistBuilder {
+    // From DistServer
     fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
         let image_map = self.image_map.clone();
         let container_lists = self.container_lists.clone();

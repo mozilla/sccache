@@ -14,7 +14,7 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
-use dist;
+use dist::{self, DistClientRequester};
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
@@ -210,7 +210,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
           I: CCompilerImpl,
 {
     fn generate_hash_key(self: Box<Self>,
-                         daemon_client: Arc<dist::DaemonClientRequester>,
+                         dist_client: Arc<DistClientRequester>,
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
@@ -263,7 +263,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             let env_executable = executable.clone();
             let toolchain_future = Box::new(future::lazy(move || {
                 toolchain_pool.spawn_fn(move || {
-                    daemon_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
+                    dist_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
                         info!("Packaging C compiler");
                         // TODO: write our own, since this is GPL
                         let curdir = env::current_dir().unwrap();
@@ -339,7 +339,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             Language::ObjectiveC => "objective-c-cpp-output",
             Language::ObjectiveCxx => "objective-c++-cpp-output",
         };
-        let preprocessed_path = command.cwd.join(&self.parsed_args.input);
+        let input_path = command.cwd.join(&self.parsed_args.input);
         let preprocessed_input = self.preprocessed_input.clone();
         // Unsure why this needs UFCS
         let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
@@ -358,8 +358,8 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             assert!(lang_next);
 
             let mut builder = tar::Builder::new(vec![]);
-            let metadata_res = fs::metadata(&preprocessed_path);
-            let preprocessed_path = preprocessed_path.strip_prefix("/").unwrap();
+            let metadata_res = fs::metadata(&input_path);
+            let input_path = input_path.strip_prefix("/").unwrap();
 
             let mut file_header = tar::Header::new_ustar();
             // TODO: test this works
@@ -376,7 +376,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                 file_header.set_device_minor(0).expect("expected a ustar header");
                 file_header.set_entry_type(tar::EntryType::file());
             }
-            file_header.set_path(preprocessed_path).unwrap();
+            file_header.set_path(input_path).unwrap();
             file_header.set_size(preprocessed_input.len() as u64); // Metadata is non-preprocessed
             file_header.set_cksum();
 
