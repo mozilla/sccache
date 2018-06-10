@@ -179,10 +179,6 @@ pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
                     Err(e) => warn!("Failed to create Azure cache: {:?}", e),
                 }
             },
-            CacheType::Disk(config::DiskCacheConfig { ref dir, size }) => {
-                trace!("Using DiskCache({:?}, {})", dir, size);
-                return Arc::new(DiskCache::new(dir, size, pool))
-            },
             CacheType::GCS(config::GCSCacheConfig { ref bucket, ref cred_path, rw_mode }) => {
                 debug!("Trying GCS bucket({}, {:?}, {:?})", bucket, cred_path, rw_mode);
                 #[cfg(feature = "gcs")]
