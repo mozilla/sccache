@@ -549,7 +549,7 @@ impl SccacheDistBuilder {
         info!("Performing initial Docker cleanup");
 
         let containers = {
-            let output = Command::new("docker").args(&["ps", "--format", "{{.ID}} {{.Image}}"]).output().unwrap();
+            let output = Command::new("docker").args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"]).output().unwrap();
             check_output(&output);
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
