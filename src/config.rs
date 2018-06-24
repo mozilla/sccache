@@ -14,6 +14,7 @@
 
 use directories::ProjectDirs;
 use regex::Regex;
+use serde_json;
 use std::env;
 use std::io::Read;
 use std::fs::File;
@@ -30,6 +31,8 @@ const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
 const DIST_APP_NAME: &str = "sccache";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
+
+pub const HIDDEN_FILE_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CONFIG";
 
 // Unfortunately this means that nothing else can use the sccache cache dir
 pub fn default_disk_cache_dir() -> PathBuf {
@@ -62,11 +65,11 @@ pub fn parse_size(val: &str) -> Option<u64> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AzureCacheConfig;
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
     // TODO: use deserialize_with to allow human-readable sizes in toml
@@ -83,7 +86,7 @@ impl Default for DiskCacheConfig {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub enum GCSCacheRWMode {
     #[serde(rename = "READ_ONLY")]
     ReadOnly,
@@ -92,7 +95,7 @@ pub enum GCSCacheRWMode {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GCSCacheConfig {
     pub bucket: String,
     pub cred_path: Option<PathBuf>,
@@ -100,19 +103,19 @@ pub struct GCSCacheConfig {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct RedisCacheConfig {
     pub url: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
@@ -128,9 +131,10 @@ pub enum CacheType {
 }
 
 #[derive(Debug, Default)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CacheConfigs {
     azure: Option<AzureCacheConfig>,
+    // TODO: use serde(default)
     disk: Option<DiskCacheConfig>,
     gcs: Option<GCSCacheConfig>,
     memcached: Option<MemcachedCacheConfig>,
@@ -139,7 +143,7 @@ pub struct CacheConfigs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DistConfig {
     pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
@@ -190,11 +194,14 @@ impl CacheConfigs {
     }
 }
 
+// TODO: fields only pub for tests
 #[derive(Debug, Default)]
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct FileConfig {
-    cache: CacheConfigs,
-    dist: DistConfig,
+    #[serde(default)]
+    pub cache: CacheConfigs,
+    #[serde(default)]
+    pub dist: DistConfig,
 }
 
 fn try_read_config_file(path: &Path) -> Option<FileConfig> {
@@ -302,13 +309,20 @@ impl Config {
     pub fn create() -> Config {
         let env_conf = config_from_env();
 
-        let file_conf_path = env::var_os("SCCACHE_CONF")
-            .map(|p| PathBuf::from(p))
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
-                dirs.config_dir().join("config")
-            });
-        let file_conf = try_read_config_file(&file_conf_path)
+        let file_conf = env::var_os(HIDDEN_FILE_CONFIG_DATA_VAR)
+            .map(|cfg_os_str| {
+                let cfg_str = cfg_os_str.into_string().expect("Test config invalid utf8");
+                serde_json::from_str(&cfg_str).expect("Invalid test config")
+            })
+            .or_else(|| {
+                let file_conf_path = env::var_os("SCCACHE_CONF")
+                    .map(|p| PathBuf::from(p))
+                    .unwrap_or_else(|| {
+                        let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
+                        dirs.config_dir().join("config")
+                    });
+                try_read_config_file(&file_conf_path)
+            })
             .unwrap_or_default();
 
         Config::from_env_and_file_configs(env_conf, file_conf)
