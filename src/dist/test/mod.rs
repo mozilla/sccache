@@ -3,5 +3,6 @@
 //
 //#[cfg(target_os = "linux")]
 //mod fuzz;
-//
-//mod system;
+
+#[cfg(target_os = "linux")]
+mod system;

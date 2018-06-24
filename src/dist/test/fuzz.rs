@@ -86,10 +86,10 @@ impl Machine {
     fn add_scheduler(&self) -> SocketAddr {
         panic!()
     }
-    fn add_daemon_server(&self, sched_addr: SocketAddr) {
+    fn add_dist_server(&self, sched_addr: SocketAddr) {
         panic!()
     }
-    fn add_daemon_client(&self, sched_addr: Option<SocketAddr>, cache_loc: CacheLocation) -> SocketAddr {
+    fn add_dist_client(&self, sched_addr: Option<SocketAddr>, cache_loc: CacheLocation) -> SocketAddr {
         let mut cmd = Command::new("docker");
         cmd.args(&["exec", "-d"]).arg("-e=SCCACHE_SERVER_PORT=9000");
         match cache_loc {
@@ -160,7 +160,7 @@ fn flaky_connection_to_s3() {
 
     let client_machine = sys.new_machine();
     let cacheloc = CacheLocation::S3(s3_addr, BUCKET_NAME.to_owned());
-    let dclient_addr = client_machine.add_daemon_client(None, cacheloc);
+    let dclient_addr = client_machine.add_dist_client(None, cacheloc);
     client_machine.add_monkey(MachineMonkey::ConnectionDrops);
 
     let input = Path::new("src/test/test.c");
@@ -182,10 +182,10 @@ fn unclean_dserver_disconnects() {
     let sched_addr = sched_machine.add_scheduler();
 
     let build_machine = sys.new_machine();
-    build_machine.add_daemon_server(sched_addr);
+    build_machine.add_dist_server(sched_addr);
 
     let client_machine = sys.new_machine();
-    let dclient_addr = client_machine.add_daemon_client(Some(sched_addr), CacheLocation::None);
+    let dclient_addr = client_machine.add_dist_client(Some(sched_addr), CacheLocation::None);
 
     build_machine.add_monkey(MachineMonkey::ConnectionDrops);
 
