@@ -103,6 +103,9 @@ fn test_rust_cargo() {
     trace!("cargo build: {:?}", a);
     a.unwrap();
     // Now get the stats and ensure that we had a cache hit for the second build.
+    // Ideally we'd check the stats more usefully here--the test crate has one dependency (itoa)
+    // so there are two separate compilations, but cargo will build the test crate with
+    // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
     Assert::command(&[&sccache.to_string_lossy()])
         .with_args(&["--show-stats", "--stats-format=json"])

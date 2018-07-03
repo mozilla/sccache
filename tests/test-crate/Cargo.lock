@@ -1,4 +1,14 @@
 [[package]]
+name = "itoa"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "test-crate"
 version = "0.1.0"
+dependencies = [
+ "itoa 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
+[metadata]
+"checksum itoa 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)" = "8324a32baf01e2ae060e9de58ed0bc2320c9a2833491ee36cd3b4c414de4db8c"
