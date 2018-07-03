@@ -4,3 +4,5 @@ version = "0.1.0"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 
 [dependencies]
+# Arbitrary crate dependency that doesn't pull in any transitive dependencies.
+itoa = "0.3.4"

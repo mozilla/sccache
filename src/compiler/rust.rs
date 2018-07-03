@@ -464,6 +464,15 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     if let (Some(name), Some(val)) = (name, val) {
                         match name {
                             "extra-filename" => extra_filename = Some(val.to_owned()),
+                            // Incremental compilation makes a mess of sccache's entire world
+                            // view. It produces additional compiler outputs that we don't cache,
+                            // and just letting rustc do its work in incremental mode is likely
+                            // to be faster than trying to fetch a result from cache anyway, so
+                            // don't bother caching compiles where it's enabled currently.
+                            // Longer-term we would like to figure out better integration between
+                            // sccache and rustc in the incremental scenario:
+                            // https://github.com/mozilla/sccache/issues/236
+                            "incremental" => return CompilerArguments::CannotCache("incremental"),
                             _ => {},
                         }
                     }
@@ -768,7 +777,7 @@ mod test {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(_) => panic!("Should not have parsed ok: `{}`", stringify!($( $s, )*)),
 
-                _ => {}
+                o @ _ => o,
             }
         }
     }
@@ -813,6 +822,14 @@ mod test {
         assert_eq!(h.dep_info.unwrap().to_str().unwrap(),
                    "foo-d6ae26f5bcfb7733.d");
         assert_eq!(h.externs, ovec!["/foo/target/debug/deps/liblibc-89a24418d48d484a.rlib", "/foo/target/debug/deps/liblog-2f7366be74992849.rlib"]);
+    }
+
+    #[test]
+    fn test_parse_arguments_incremental() {
+        parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                       "-C", "incremental=/foo");
+        assert_eq!(r, CompilerArguments::CannotCache("incremental"))
     }
 
     #[test]
