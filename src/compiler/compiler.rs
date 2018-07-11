@@ -23,8 +23,8 @@ use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
 use compiler::rust::Rust;
-use dist::{self, DistClientRequester, JobResult};
-use futures::{Future, IntoFuture};
+use dist;
+use futures::{Future, IntoFuture, future};
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandChild,
@@ -55,8 +55,7 @@ use tokio_core::reactor::{Handle, Timeout};
 
 use errors::*;
 
-// TODO: needs a custom serializer that fails if it's not utf8
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct CompileCommand {
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
@@ -112,7 +111,6 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
     fn generate_hash_key(self: Box<Self>,
-                         dist_client: Arc<DistClientRequester>,
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
@@ -125,7 +123,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     fn get_cached_or_compile(self: Box<Self>,
-                             dist_client: Arc<DistClientRequester>,
+                             dist_client: Arc<dist::Client>,
                              creator: T,
                              storage: Arc<Storage>,
                              arguments: Vec<OsString>,
@@ -139,15 +137,16 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let result = self.generate_hash_key(dist_client.clone(), &creator, cwd.clone(), env_vars, &pool);
+        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
-            let (key, compilation, dist_toolchain) = match res {
+            let (key, compilation, weak_toolchain_key, toolchain_creator) = match res {
                 Err(Error(ErrorKind::ProcessError(output), _)) => {
                     return f_ok((CompileResult::Error, output));
                 }
                 Err(e) => return f_err(e),
-                Ok(HashResult { key, compilation, dist_toolchain }) => (key, compilation, dist_toolchain),
+                Ok(HashResult { key, compilation, weak_toolchain_key, toolchain_creator }) =>
+                    (key, compilation, weak_toolchain_key, toolchain_creator),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -239,48 +238,63 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 let start = Instant::now();
                 debug!("[{}]: Attempting distributed compilation", out_pretty);
                 let compile_out_pretty = out_pretty.clone();
-                let (compile_cmd, cacheable) = compilation.generate_compile_command().unwrap();
-                let compile = compilation.generate_dist_requests(compile_cmd.clone(), dist_toolchain)
-                    .then(move |reqs| -> SFuture<process::Output> {
-                        match reqs {
-                            Ok((jareq, jreq)) => {
-                                debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
-                                let retry_out_pretty = compile_out_pretty.clone();
-                                Box::new(dist_client.do_allocation_request(jareq).map(|jares| (dist_client, jares))
-                                    .and_then(move |(dist_client, jares)| {
-                                        debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
-                                        dist_client.do_compile_request(jares.clone(), jreq.clone()).map(|jres| (dist_client, jares, jreq, jres))
-                                    }).and_then(move |(dist_client, jares, mut jreq, jres)| {
-                                        match jres {
-                                            JobResult::Complete(jc) => f_ok(jc),
-                                            // Issue the request again, but with the toolchain data added
-                                            JobResult::NeedToolchain => {
-                                                debug!("[{}]: Re-sending compile with toolchain (missing on server)", retry_out_pretty);
-                                                jreq.toolchain_data = Some(dist_client.get_toolchain_cache(&jreq.toolchain.archive_id)).unwrap();
-                                                Box::new(dist_client.do_compile_request(jares, jreq).and_then(|jres| {
-                                                    match jres {
-                                                        JobResult::Complete(jc) => f_ok(jc),
-                                                        // Send the toolchain, then issue the request again
-                                                        JobResult::NeedToolchain => f_err("sent toolchain but dist server lost it"),
-                                                    }
-                                                }))
-                                            },
-                                        }
-                                    }).map(move |jc| {
-                                        error!("fetched {:?}", jc.outputs.iter().map(|&(ref p, _)| p).collect::<Vec<_>>());
-                                        for (path, bytes) in jc.outputs {
-                                            File::create(path).unwrap().write_all(&bytes).unwrap();
-                                        }
-                                        jc.output.into()
-                                    }))
-                            },
-                            Err(e) => {
-                                debug!("[{}]: Could not create distributed compile request, falling back to local: {}", compile_out_pretty, e);
-                                compile_cmd.execute(&creator)
-                            },
-                        }
+                let compile_out_pretty2 = out_pretty.clone();
+                let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+                let compile =
+                    future::result(
+                        dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into())
+                    )
+                    .and_then(move |dist_compile_cmd| {
+                        let output_paths = compilation.outputs().map(|(_key, path)| cwd.join(path)).collect();
+                        // TODO: does this need to be in future::result?
+                        compilation.into_inputs_creator()
+                            .map(|inputs_creator| (dist_compile_cmd, inputs_creator, output_paths))
+                    })
+                    .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
+                        debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
+                        // TODO: put on a thread
+                        let archive_id = dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}).unwrap();
+                        let dist_toolchain = dist::Toolchain {
+                            docker_img: "aidanhs/busybox".to_owned(),
+                            archive_id,
+                        };
+                        Box::new(dist_client.do_alloc_job(dist_toolchain.clone())
+                            .and_then(move |jares| {
+                                debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
+                                match jares {
+                                    dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
+                                        Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
+                                            .map(move |res| {
+                                                match res {
+                                                    dist::SubmitToolchainResult::Success => job_alloc,
+                                                    dist::SubmitToolchainResult::JobNotFound |
+                                                    dist::SubmitToolchainResult::CannotCache => panic!(),
+                                                }
+                                            })),
+                                    dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
+                                    dist::AllocJobResult::Fail { msg: _ } => panic!(),
+                                }.and_then(move |job_alloc| {
+                                    dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
+                                })
+                            }).map(move |jres| {
+                                let jc = match jres {
+                                    dist::RunJobResult::Complete(jc) => jc,
+                                    dist::RunJobResult::JobNotFound => panic!(),
+                                };
+                                info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.len())).collect::<Vec<_>>());
+                                for (path, bytes) in jc.outputs {
+                                    File::create(path).unwrap().write_all(&bytes).unwrap();
+                                }
+                                jc.output.into()
+                            })
+                        )
+                    })
+                    .or_else(move |e| {
+                        info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty2, e);
+                        compile_cmd.execute(&creator)
                     });
-                Box::new(compile.and_then(move |compiler_result| {
+
+                Box::new(compile.and_then(move |compiler_result: process::Output| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -360,16 +374,13 @@ pub trait Compilation<T>
 {
     /// Given information about a compiler command, generate a command that can
     /// execute the compiler.
-    fn generate_compile_command(&self)
-                                -> Result<(CompileCommand, Cacheable)>;
+    fn generate_compile_commands(&self)
+                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 
     /// Generate the requests that will be used to perform a distributed compilation
-    fn generate_dist_requests(&self,
-                              _command: CompileCommand,
-                              _toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
+    fn into_inputs_creator(self: Box<Self>) -> Result<Box<FnMut(&mut Write)>> {
 
-        f_err("distributed compilation not implemented")
+        bail!("distributed compilation not implemented")
     }
 
     /// Returns an iterator over the results of this compilation.
@@ -385,10 +396,11 @@ pub struct HashResult<T: CommandCreatorSync> {
     pub key: String,
     /// An object to use for the actual compilation, if necessary.
     pub compilation: Box<Compilation<T> + 'static>,
-    // TODO: this should probable be a thunk so generate_hash_key
-    // doesn't need a dist client
-    /// A future that may resolve to a packaged toolchain if required.
-    pub dist_toolchain: SFuture<dist::Toolchain>,
+    /// A weak key that may be used to identify the toolchain
+    pub weak_toolchain_key: String,
+    /// A function that may be called to save the toolchain to a file
+    // TODO: more correct to be a Box<FnOnce> or FnBox
+    pub toolchain_creator: Box<FnMut(File)>,
 }
 
 /// Possible results of parsing compiler arguments.
@@ -696,7 +708,7 @@ mod test {
     use super::*;
     use cache::Storage;
     use cache::disk::DiskCache;
-    use dist::NoopDistClient;
+    use dist;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use mock_command::*;
@@ -809,7 +821,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(NoopDistClient);
+        let dist_client = Arc::new(dist::NoopClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -892,7 +904,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(NoopDistClient);
+        let dist_client = Arc::new(dist::NoopClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -978,7 +990,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(NoopDistClient);
+        let dist_client = Arc::new(dist::NoopClient);
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1041,7 +1053,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(NoopDistClient);
+        let dist_client = Arc::new(dist::NoopClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1131,7 +1143,7 @@ mod test {
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(NoopDistClient);
+        let dist_client = Arc::new(dist::NoopClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);

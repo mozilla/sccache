@@ -18,7 +18,7 @@ use clap::{
     Arg,
 };
 use config::CONFIG;
-use dist::{SccacheDistBuilder, SccacheDistServer, SccacheScheduler};
+use dist;
 use errors::*;
 use std::env;
 use std::ffi::OsString;
@@ -100,9 +100,10 @@ pub fn parse() -> Result<Command> {
     };
     if start_dist_worker {
         if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
-            let builder = SccacheDistBuilder::new();
-            let server = SccacheDistServer::new(scheduler_addr, Box::new(builder));
-            let _: Void = server.start();
+            let builder = dist::Builder::new();
+            let server = dist::Server::new(Box::new(builder));
+            let http_server = dist::http::Server::new(scheduler_addr, server);
+            let _: Void = http_server.start();
         } else {
             bail!("Cannot start dist worker without a configured scheduler")
         }
@@ -112,8 +113,9 @@ pub fn parse() -> Result<Command> {
         Err(_) => false,
     };
     if start_scheduler {
-        let scheduler = SccacheScheduler::new();
-        let _: Void = scheduler.start();
+        let scheduler = dist::Scheduler::new();
+        let http_scheduler = dist::http::Scheduler::new(scheduler);
+        let _: Void = http_scheduler.start();
     }
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {

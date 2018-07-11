@@ -203,7 +203,7 @@ impl LruDiskCache {
     }
 
     /// Add a file by calling `with` with the open `File` corresponding to the cache at path `key`.
-    pub fn insert_with<K: AsRef<OsStr>, F: Fn(File) -> io::Result<()>>(&mut self, key: K, with: F) -> Result<()> {
+    pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(&mut self, key: K, with: F) -> Result<()> {
         let rel_path = key.as_ref();
         let path = self.root.join(rel_path);
         try!(fs::create_dir_all(path.parent().expect("Bad path?")));

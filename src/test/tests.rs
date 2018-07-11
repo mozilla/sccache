@@ -21,7 +21,7 @@ use ::commands::{
     request_shutdown,
     request_stats,
 };
-use dist::NoopDistClient;
+use dist::NoopClient;
 use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
@@ -75,7 +75,7 @@ fn run_server_thread<T>(cache_dir: &Path, options: T)
                             .map(|s| *s)
                             .unwrap_or(u64::MAX);
     let pool = CpuPool::new(1);
-    let dist_client = Arc::new(NoopDistClient);
+    let dist_client = Arc::new(NoopClient);
     let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
 
     // Create a server on a background thread, get some useful bits from it.

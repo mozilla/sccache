@@ -12,22 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use config::{self, HIDDEN_FILE_CONFIG_DATA_VAR, FileConfig};
-use dist::{
-    DistBuilderHandler,
-    BuildResult,
-};
+use config::{HIDDEN_FILE_CONFIG_DATA_VAR, FileConfig};
+use dist;
 use compiler::CompileResult;
 use env_logger;
+use serde_json;
 use std::env;
-use std::net::SocketAddr;
-use std::sync::{Mutex, MutexGuard};
+use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
+use std::process::{Command, Output};
+use std::sync::{Arc, Mutex, MutexGuard};
+use super::super::{BuildResult, CompileCommand, InputsReader, TcCache, Toolchain};
 use tempdir::TempDir;
 use test::system::{find_compilers, run_sccache_command_test};
 use test::utils::{find_sccache_binary};
 use uuid::Uuid;
 
-use super::super::*;
+use errors::*;
 
 const IMAGE: &str = "aidanhs/ubuntu-docker:18.04-17.03.2-ce";
 const CONTAINER_NAME_PREFIX: &str = "sccache_dist_test";
@@ -129,9 +130,9 @@ impl Drop for DistSystem {
 
 struct FailingBuilder;
 
-impl DistBuilderHandler for FailingBuilder {
-    fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
-        f_err("FailingBuilder")
+impl dist::BuilderIncoming for FailingBuilder {
+    fn run_build(&self, _toolchain: Toolchain, _command: CompileCommand, _outputs: Vec<String>, _inputs_rdr: InputsReader, _cache: Arc<Mutex<TcCache>>) -> Result<BuildResult> {
+        Err("FailingBuilder".into())
     }
 }
 
