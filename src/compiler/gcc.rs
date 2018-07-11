@@ -25,6 +25,7 @@ use mock_command::{
     RunCommand,
 };
 use std::collections::HashMap;
+use dist;
 use std::io::Read;
 use std::ffi::OsString;
 use std::fs::File;
@@ -58,14 +59,14 @@ impl CCompilerImpl for GCC {
         preprocess(creator, executable, parsed_args, cwd, env_vars)
     }
 
-    fn generate_compile_command(&self,
+    fn generate_compile_commands(&self,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Cacheable)>
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        generate_compile_command(executable, parsed_args, cwd, env_vars)
+        generate_compile_commands(executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -360,11 +361,11 @@ pub fn preprocess<T>(creator: &T,
     run_input_output(cmd, None)
 }
 
-pub fn generate_compile_command(executable: &Path,
+pub fn generate_compile_commands(executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Cacheable)>
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
 {
     trace!("compile");
 
@@ -391,12 +392,35 @@ pub fn generate_compile_command(executable: &Path,
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
-    Ok((CompileCommand {
+
+    let command = CompileCommand {
         executable: executable.to_owned(),
         arguments: arguments.to_owned(),
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
-    }, Cacheable::Yes))
+    };
+
+    let mut dist_command = command.clone();
+    // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
+    let dist_language = match parsed_args.language {
+        Language::C => "cpp-output",
+        Language::Cxx => "c++-cpp-output",
+        Language::ObjectiveC => "objective-c-cpp-output",
+        Language::ObjectiveCxx => "objective-c++-cpp-output",
+    };
+    let mut lang_next = false;
+    for arg in dist_command.arguments.iter_mut() {
+        if arg == "-x" {
+            lang_next = true
+        } else if lang_next {
+            *arg = OsString::from(dist_language);
+            break
+        }
+    }
+    assert!(lang_next);
+    let dist_command = dist::CompileCommand::try_from_compiler(dist_command);
+
+    Ok((command, dist_command, Cacheable::Yes))
 }
 
 struct ExpandIncludeFile<'a> {
@@ -896,10 +920,10 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, cacheable) = generate_compile_command(&compiler,
-                                                            &parsed_args,
-                                                            f.tempdir.path(),
-                                                            &[]).unwrap();
+        let (command, _, cacheable) = generate_compile_commands(&compiler,
+                                                                &parsed_args,
+                                                                f.tempdir.path(),
+                                                                &[]).unwrap();
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.

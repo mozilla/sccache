@@ -20,6 +20,7 @@ use ::compiler::{
 };
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use dist;
 use local_encoding::{Encoding, Encoder};
 use log::LogLevel::Debug;
 use futures::future::Future;
@@ -71,14 +72,14 @@ impl CCompilerImpl for MSVC {
         preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix)
     }
 
-    fn generate_compile_command(&self,
+    fn generate_compile_commands(&self,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Cacheable)>
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        generate_compile_command(executable, parsed_args, cwd, env_vars)
+        generate_compile_commands(executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -456,11 +457,11 @@ pub fn preprocess<T>(creator: &T,
     }))
 }
 
-fn generate_compile_command(executable: &Path,
+fn generate_compile_commands(executable: &Path,
                             parsed_args: &ParsedArguments,
                             cwd: &Path,
                             env_vars: &[(OsString, OsString)])
-                            -> Result<(CompileCommand, Cacheable)>
+                            -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
 {
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
@@ -496,7 +497,7 @@ fn generate_compile_command(executable: &Path,
         arguments: arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
-    }, cacheable))
+    }, None, cacheable))
 }
 
 
@@ -750,10 +751,10 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, cacheable) = generate_compile_command(&compiler,
-                                                            &parsed_args,
-                                                            f.tempdir.path(),
-                                                            &[]).unwrap();
+        let (command, _, cacheable) = generate_compile_commands(&compiler,
+                                                                &parsed_args,
+                                                                f.tempdir.path(),
+                                                                &[]).unwrap();
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
@@ -779,10 +780,10 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, cacheable) = generate_compile_command(&compiler,
-                                                            &parsed_args,
-                                                            f.tempdir.path(),
-                                                            &[]).unwrap();
+        let (command, _, cacheable) = generate_compile_commands(&compiler,
+                                                                &parsed_args,
+                                                                f.tempdir.path(),
+                                                                &[]).unwrap();
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.

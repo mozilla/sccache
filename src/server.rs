@@ -26,7 +26,7 @@ use compiler::{
     get_compiler_info,
 };
 use config::CONFIG;
-use dist::{DistClientRequester, NoopDistClient, SccacheDistClient};
+use dist;
 use filetime::FileTime;
 use futures::future;
 use futures::sync::mpsc;
@@ -136,11 +136,11 @@ pub fn start_server(port: u16) -> Result<()> {
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
-    let dist_client: Arc<DistClientRequester> = match CONFIG.dist.scheduler_addr {
-        Some(addr) => Arc::new(SccacheDistClient::new(addr)),
+    let dist_client: Arc<dist::Client> = match CONFIG.dist.scheduler_addr {
+        Some(addr) => Arc::new(dist::http::Client::new(&core.handle(), addr)),
         None => {
             info!("No scheduler address configured, disabling distributed sccache");
-            Arc::new(NoopDistClient)
+            Arc::new(dist::NoopClient)
         },
     };
     let storage = storage_from_config(&pool, &core.handle());
@@ -177,7 +177,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                pool: CpuPool,
                core: Core,
                client: Client,
-               dist_client: Arc<DistClientRequester>,
+               dist_client: Arc<dist::Client>,
                storage: Arc<Storage>) -> Result<SccacheServer<C>> {
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
@@ -330,7 +330,7 @@ struct SccacheService<C: CommandCreatorSync> {
     stats: Rc<RefCell<ServerStats>>,
 
     /// Distributed sccache client
-    dist_client: Arc<DistClientRequester>,
+    dist_client: Arc<dist::Client>,
 
     /// Cache storage.
     storage: Arc<Storage>,
@@ -424,7 +424,7 @@ impl<C> Service for SccacheService<C>
 impl<C> SccacheService<C>
     where C: CommandCreatorSync,
 {
-    pub fn new(dist_client: Arc<DistClientRequester>,
+    pub fn new(dist_client: Arc<dist::Client>,
                storage: Arc<Storage>,
                handle: Handle,
                client: &Client,

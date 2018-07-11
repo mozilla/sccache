@@ -21,6 +21,7 @@ use ::compiler::{
     CompileCommand,
     write_temp_file,
 };
+use dist;
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use compiler::gcc::GCCArgAttribute::*;
@@ -67,14 +68,14 @@ impl CCompilerImpl for Clang {
         gcc::preprocess(creator, executable, parsed_args, cwd, env_vars)
     }
 
-    fn generate_compile_command(&self,
+    fn generate_compile_commands(&self,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Cacheable)>
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        gcc::generate_compile_command(executable, parsed_args, cwd, env_vars)
+        gcc::generate_compile_commands(executable, parsed_args, cwd, env_vars)
     }
 }
 

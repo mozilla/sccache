@@ -29,21 +29,25 @@ lazy_static! {
 
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
-const DIST_APP_NAME: &str = "sccache";
+const DIST_APP_NAME: &str = "sccache-dist";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const HIDDEN_FILE_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CONFIG";
 
-// Unfortunately this means that nothing else can use the sccache cache dir
+// Unfortunately this means that nothing else can use the sccache cache dir as
+// this top level directory is used directly to store sccache cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
         .cache_dir().to_owned()
 }
-
+// ...whereas subdirectories are used of this one
 pub fn default_dist_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
         .cache_dir().to_owned()
 }
+
+fn default_disk_cache_size() -> u64 { TEN_GIGS }
+fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
 
 pub fn parse_size(val: &str) -> Option<u64> {
     let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
@@ -71,8 +75,10 @@ pub struct AzureCacheConfig;
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
 pub struct DiskCacheConfig {
+    #[serde(default = "default_disk_cache_dir")]
     pub dir: PathBuf,
     // TODO: use deserialize_with to allow human-readable sizes in toml
+    #[serde(default = "default_disk_cache_size")]
     pub size: u64,
 }
 
@@ -80,7 +86,7 @@ impl Default for DiskCacheConfig {
     fn default() -> Self {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
-            size: TEN_GIGS,
+            size: default_disk_cache_size(),
         }
     }
 }
@@ -134,30 +140,11 @@ pub enum CacheType {
 #[derive(Serialize, Deserialize)]
 pub struct CacheConfigs {
     azure: Option<AzureCacheConfig>,
-    // TODO: use serde(default)
     disk: Option<DiskCacheConfig>,
     gcs: Option<GCSCacheConfig>,
     memcached: Option<MemcachedCacheConfig>,
     redis: Option<RedisCacheConfig>,
     s3: Option<S3CacheConfig>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
-pub struct DistConfig {
-    pub scheduler_addr: Option<IpAddr>,
-    pub cache_dir: PathBuf,
-    pub toolchain_cache_size: u64,
-}
-
-impl Default for DistConfig {
-    fn default() -> Self {
-        DistConfig {
-            scheduler_addr: None,
-            cache_dir: default_dist_cache_dir(),
-            toolchain_cache_size: TEN_GIGS,
-        }
-    }
 }
 
 impl CacheConfigs {
@@ -191,6 +178,26 @@ impl CacheConfigs {
         if memcached.is_some() { self.memcached = memcached }
         if redis.is_some()     { self.redis = redis }
         if s3.is_some()        { self.s3 = s3 }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
+pub struct DistConfig {
+    pub scheduler_addr: Option<IpAddr>,
+    #[serde(default="default_dist_cache_dir")]
+    pub cache_dir: PathBuf,
+    #[serde(default="default_toolchain_cache_size")]
+    pub toolchain_cache_size: u64,
+}
+
+impl Default for DistConfig {
+    fn default() -> Self {
+        DistConfig {
+            scheduler_addr: None,
+            cache_dir: default_dist_cache_dir(),
+            toolchain_cache_size: default_toolchain_cache_size(),
+        }
     }
 }
 

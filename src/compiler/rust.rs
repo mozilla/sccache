@@ -15,7 +15,7 @@
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
-use dist::{self, DistClientRequester};
+use dist;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::LogLevel::Trace;
@@ -31,7 +31,6 @@ use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Instant;
 use tar;
 use tempdir::TempDir;
@@ -592,7 +591,6 @@ impl<T> CompilerHasher<T> for RustHasher
     where T: CommandCreatorSync,
 {
     fn generate_hash_key(self: Box<Self>,
-                         dist_client: Arc<DistClientRequester>,
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
@@ -630,7 +628,6 @@ impl<T> CompilerHasher<T> for RustHasher
                                         .collect(),
                                         &pool);
         let creator = creator.clone();
-        let toolchain_pool = pool.clone();
         let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
         Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
                                         -> SFuture<_> {
@@ -706,24 +703,13 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info);
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
-                // CPU pool futures are eager, delay until poll is called
                 let toolchain_sysroot = sysroot.clone();
-                let toolchain_future = Box::new(future::lazy(move || {
-                    toolchain_pool.spawn_fn(move || {
-                        dist_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
-                            info!("Packaging Rust compiler");
-                            let mut builder = tar::Builder::new(f);
-                            builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
-                            builder.finish().unwrap()
-                        })
-                        .map(|archive_id| {
-                            dist::Toolchain {
-                                docker_img: "aidanhs/busybox".to_owned(),
-                                archive_id,
-                            }
-                        })
-                    })
-                }));
+                let toolchain_creator = Box::new(move |f| {
+                    info!("Packaging Rust compiler");
+                    let mut builder = tar::Builder::new(f);
+                    builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
+                    builder.finish().unwrap()
+                });
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
@@ -735,7 +721,8 @@ impl<T> CompilerHasher<T> for RustHasher
                         cwd,
                         env_vars,
                     }),
-                    dist_toolchain: toolchain_future,
+                    weak_toolchain_key,
+                    toolchain_creator,
                 }
             }))
         }))
@@ -757,8 +744,8 @@ impl<T> CompilerHasher<T> for RustHasher
 impl<T> Compilation<T> for RustCompilation
     where T: CommandCreatorSync,
 {
-    fn generate_compile_command(&self)
-                                -> Result<(CompileCommand, Cacheable)>
+    fn generate_compile_commands(&self)
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
         let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, .. } = *self;
         trace!("[{}]: compile", crate_name);
@@ -767,7 +754,7 @@ impl<T> Compilation<T> for RustCompilation
             arguments: arguments.to_owned(),
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
-        }, Cacheable::Yes))
+        }, None, Cacheable::Yes))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
@@ -780,7 +767,7 @@ mod test {
     use super::*;
 
     use compiler::*;
-    use dist::NoopDistClient;
+    use dist;
     use itertools::Itertools;
     use mock_command::*;
     use std::ffi::OsStr;
@@ -1076,9 +1063,7 @@ c:/foo/bar.rs:
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
         let pool = CpuPool::new(1);
-        let dist_client = Arc::new(NoopDistClient);
-        let res = hasher.generate_hash_key(dist_client,
-                                           &creator,
+        let res = hasher.generate_hash_key(&creator,
                                            f.tempdir.path().to_owned(),
                                            [(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
                                             (OsString::from("FOO"), OsString::from("bar")),
@@ -1145,10 +1130,9 @@ c:/foo/bar.rs:
 
         let creator = new_creator();
         let pool = CpuPool::new(1);
-        let dist_client = Arc::new(NoopDistClient);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        hasher.generate_hash_key(dist_client, &creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
+        hasher.generate_hash_key(&creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
             .wait().unwrap().key
     }
 

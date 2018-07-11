@@ -14,8 +14,8 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
-use dist::{self, DistClientRequester};
-use futures::{Future, future};
+use dist;
+use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
 use std::borrow::Cow;
@@ -29,7 +29,6 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
 use tar;
 use util::{HashToDigest, Digest};
 
@@ -158,12 +157,12 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                      -> SFuture<process::Output> where T: CommandCreatorSync;
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
-    fn generate_compile_command(&self,
+    fn generate_compile_commands(&self,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Cacheable)>;
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 }
 
 impl <I> CCompiler<I>
@@ -210,11 +209,10 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
           I: CCompilerImpl,
 {
     fn generate_hash_key(self: Box<Self>,
-                         dist_client: Arc<DistClientRequester>,
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
-                         pool: &CpuPool)
+                         _pool: &CpuPool)
                          -> SFuture<HashResult<T>>
     {
         let me = *self;
@@ -222,7 +220,6 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
         let result = compiler.preprocess(creator, &executable, &parsed_args, &cwd, &env_vars);
         let out_pretty = parsed_args.output_pretty().into_owned();
         let env_vars = env_vars.to_vec();
-        let toolchain_pool = pool.clone();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
@@ -259,35 +256,24 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
             // executable path to try and prevent this
             let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
-            // CPU pool futures are eager, delay until poll is called
             let env_executable = executable.clone();
-            let toolchain_future = Box::new(future::lazy(move || {
-                toolchain_pool.spawn_fn(move || {
-                    dist_client.put_toolchain_cache(&weak_toolchain_key, &mut move |f| {
-                        info!("Packaging C compiler");
-                        // TODO: write our own, since this is GPL
-                        let curdir = env::current_dir().unwrap();
-                        env::set_current_dir("/tmp").unwrap();
-                        let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
-                        if !output.status.success() {
-                            println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
-                            panic!("failed to create toolchain")
-                        }
-                        let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
-                        let filename = &file_line[b"creating ".len()..];
-                        let filename = OsStr::from_bytes(filename);
-                        io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
-                        fs::remove_file(filename).unwrap();
-                        env::set_current_dir(curdir).unwrap()
-                    })
-                    .map(|archive_id| {
-                        dist::Toolchain {
-                            docker_img: "aidanhs/busybox".to_owned(),
-                            archive_id,
-                        }
-                    })
-                })
-            }));
+            let toolchain_creator = Box::new(move |f| {
+                info!("Packaging C compiler");
+                // TODO: write our own, since this is GPL
+                let curdir = env::current_dir().unwrap();
+                env::set_current_dir("/tmp").unwrap();
+                let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
+                if !output.status.success() {
+                    println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
+                    panic!("failed to create toolchain")
+                }
+                let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
+                let filename = &file_line[b"creating ".len()..];
+                let filename = OsStr::from_bytes(filename);
+                io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
+                fs::remove_file(filename).unwrap();
+                env::set_current_dir(curdir).unwrap()
+            });
             Ok(HashResult {
                 key: key,
                 compilation: Box::new(CCompilation {
@@ -298,7 +284,8 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     cwd,
                     env_vars,
                 }),
-                dist_toolchain: toolchain_future,
+                weak_toolchain_key,
+                toolchain_creator,
             })
         }))
     }
@@ -320,44 +307,17 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
-    fn generate_compile_command(&self)
-                                -> Result<(CompileCommand, Cacheable)>
+    fn generate_compile_commands(&self)
+                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
         let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _, ref cwd, ref env_vars } = *self;
-        compiler.generate_compile_command(executable, parsed_args, cwd, env_vars)
+        compiler.generate_compile_commands(executable, parsed_args, cwd, env_vars)
     }
 
-    fn generate_dist_requests(&self,
-                              mut command: CompileCommand,
-                              toolchain: SFuture<dist::Toolchain>)
-                              -> SFuture<(dist::JobAllocRequest, dist::JobRequest)> {
-
-        // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let language = match self.parsed_args.language {
-            Language::C => "cpp-output",
-            Language::Cxx => "c++-cpp-output",
-            Language::ObjectiveC => "objective-c-cpp-output",
-            Language::ObjectiveCxx => "objective-c++-cpp-output",
-        };
-        let input_path = command.cwd.join(&self.parsed_args.input);
-        let preprocessed_input = self.preprocessed_input.clone();
-        // Unsure why this needs UFCS
-        let outputs = <Self as Compilation<T>>::outputs(self).map(|(_, p)| p.to_owned()).collect();
-
-        Box::new(toolchain.map(move |toolchain| {
-            // TODO: handle MSVC
-            let mut lang_next = false;
-            for arg in command.arguments.iter_mut() {
-                if arg == "-x" {
-                    lang_next = true
-                } else if lang_next {
-                    *arg = OsString::from(language);
-                    break
-                }
-            }
-            assert!(lang_next);
-
-            let mut builder = tar::Builder::new(vec![]);
+    fn into_inputs_creator(self: Box<Self>) -> Result<Box<FnMut(&mut io::Write)>> {
+        Ok(Box::new(move |wtr| {
+            let mut builder = tar::Builder::new(wtr);
+            let input_path = self.cwd.join(&self.parsed_args.input);
             let metadata_res = fs::metadata(&input_path);
             let input_path = input_path.strip_prefix("/").unwrap();
 
@@ -377,24 +337,12 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
                 file_header.set_entry_type(tar::EntryType::file());
             }
             file_header.set_path(input_path).unwrap();
-            file_header.set_size(preprocessed_input.len() as u64); // Metadata is non-preprocessed
+            file_header.set_size(self.preprocessed_input.len() as u64); // The metadata is from non-preprocessed
             file_header.set_cksum();
 
-            builder.append(&file_header, preprocessed_input.as_slice()).unwrap();
-            let inputs_archive = builder.into_inner().unwrap();
-
-            (
-                dist::JobAllocRequest {
-                    toolchain: toolchain.clone(),
-                },
-                dist::JobRequest {
-                    command,
-                    inputs_archive,
-                    outputs,
-                    toolchain,
-                    toolchain_data: None,
-                }
-            )
+            builder.append(&file_header, self.preprocessed_input.as_slice()).unwrap();
+            // Finish archive
+            let _ = builder.into_inner().unwrap();
         }))
     }
 

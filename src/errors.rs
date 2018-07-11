@@ -35,6 +35,7 @@ use openssl;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
+use reqwest;
 use tempfile;
 
 error_chain! {
@@ -48,6 +49,7 @@ error_chain! {
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
+        Reqwest(reqwest::Error);
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         Tls(native_tls::Error);

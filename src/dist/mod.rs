@@ -1,32 +1,39 @@
+// Copyright 2016 Mozilla Foundation
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #![allow(non_camel_case_types)]
 
-use bytes::IntoBuf;
-use compiler::CompileCommand;
+use compiler;
 use config::CONFIG;
 use dist::cache::TcCache;
 use lru_disk_cache::Error as LruError;
-use futures::{Future, Sink, Stream, future};
-use futures_cpupool::CpuPool;
 use mock_command::exit_status;
-use num_cpus;
-use serde_json;
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::fs;
-use std::io::{self, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Output, Stdio};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use tokio_core;
-use tokio_core::net::TcpStream;
-use tokio_serde_bincode::{ReadBincode, WriteBincode};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::length_delimited::{self, Framed};
+use std::time::Instant;
 
 use errors::*;
 
 mod cache;
+pub mod http;
 #[cfg(test)]
 mod test;
 
@@ -37,6 +44,58 @@ mod test;
 pub struct Toolchain {
     pub docker_img: String,
     pub archive_id: String,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct JobId(u64);
+impl fmt::Display for JobId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl FromStr for JobId {
+    type Err = <u64 as FromStr>::Err;
+    fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+        u64::from_str(s).map(JobId)
+    }
+}
+#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ServerId(SocketAddr);
+impl ServerId {
+    fn addr(&self) -> SocketAddr {
+        self.0
+    }
+}
+
+const MAX_PER_CORE_LOAD: f64 = 10f64;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompileCommand {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub env_vars: Vec<(String, String)>,
+    pub cwd: String,
+}
+// TODO: TryFrom
+impl CompileCommand {
+    pub fn try_from_compiler(command: compiler::CompileCommand) -> Option<Self> {
+        let compiler::CompileCommand {
+            executable,
+            arguments,
+            env_vars,
+            cwd,
+        } = command;
+        Some(Self {
+            executable: executable.into_os_string().into_string().ok()?,
+            arguments: arguments.into_iter().map(|arg| arg.into_string().ok()).collect::<Option<_>>()?,
+            env_vars: env_vars.into_iter()
+                .map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+                .collect::<Option<_>>()?,
+            cwd: cwd.into_os_string().into_string().ok()?,
+        })
+    }
 }
 
 // process::Output is not serialize
@@ -58,469 +117,318 @@ impl From<ProcessOutput> for process::Output {
     }
 }
 
-#[derive(Hash, Eq, PartialEq)]
-#[derive(Clone, Copy, Serialize, Deserialize)]
-struct JobId(u64);
-pub struct ServerId(u64);
+// TODO: standardise on compressed or not for inputs and toolchain
 
-const SCHEDULER_SERVERS_PORT: u16 = 10500;
-const SCHEDULER_CLIENTS_PORT: u16 = 10501;
-const SERVER_CLIENTS_PORT: u16 = 10502;
+// TODO: make fields not public
 
-const CONCURRENT_CLIENT_REQS: usize = 50;
-const MAX_CONCURRENT_SCHEDULER_REQS: usize = 50;
+// AllocJob
 
-// TODO: move this into the config module
-struct Cfg;
-
-impl Cfg {
-    fn scheduler_listen_client_addr() -> SocketAddr {
-        let ip_addr = "0.0.0.0".parse().unwrap();
-        SocketAddr::new(ip_addr, SCHEDULER_CLIENTS_PORT)
-    }
-    fn client_connect_scheduler_addr(scheduler_addr: IpAddr) -> SocketAddr {
-        SocketAddr::new(scheduler_addr, SCHEDULER_CLIENTS_PORT)
-    }
-
-    fn scheduler_listen_server_addr() -> SocketAddr {
-        let ip_addr = "0.0.0.0".parse().unwrap();
-        SocketAddr::new(ip_addr, SCHEDULER_SERVERS_PORT)
-    }
-    fn server_connect_scheduler_addr(scheduler_addr: IpAddr) -> SocketAddr {
-        SocketAddr::new(scheduler_addr, SCHEDULER_SERVERS_PORT)
-    }
-
-    fn server_listen_client_addr() -> SocketAddr {
-        let ip_addr = "0.0.0.0".parse().unwrap();
-        SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT)
-    }
-}
-
-// TODO: make these fields not public
-
-// TODO: any OsString or PathBuf shouldn't be sent across the wire
-// from Windows
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct JobRequest {
-    pub command: CompileCommand,
-    // TODO: standardise on compressed or not for inputs and toolchain
-    pub inputs_archive: Vec<u8>,
-    pub outputs: Vec<PathBuf>,
-    pub toolchain: Toolchain,
-    // TODO: should be sent as part of a separate request, not in here
-    pub toolchain_data: Option<Vec<u8>>,
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct JobAlloc {
+    job_id: JobId,
+    server_id: ServerId,
 }
 #[derive(Clone, Serialize, Deserialize)]
-pub enum JobResult {
+#[serde(tag = "status")]
+pub enum AllocJobResult {
+    Success { job_alloc: JobAlloc, need_toolchain: bool },
+    Fail { msg: String },
+}
+
+// AssignJob
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AssignJobResult {
+    need_toolchain: bool,
+}
+
+// JobStatus
+
+pub enum JobStatus {
+    Pending,
+    Started,
+    Complete,
+}
+#[derive(Clone)]
+pub struct UpdateJobStatusResult;
+
+// HeartbeatServer
+
+#[derive(Clone)]
+pub struct HeartbeatServerResult;
+
+// RunJob
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum RunJobResult {
+    JobNotFound,
     Complete(JobComplete),
-    NeedToolchain,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobComplete {
     pub output: ProcessOutput,
-    pub outputs: Vec<(PathBuf, Vec<u8>)>,
+    pub outputs: Vec<(String, Vec<u8>)>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct JobAllocRequest {
-    pub toolchain: Toolchain,
-}
-#[derive(Clone, Serialize, Deserialize)]
-pub struct JobAllocResult {
-    job_id: JobId,
-    addr: SocketAddr,
-}
+// Status
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct AllocAssignment {
-    job_id: JobId,
+pub struct StatusResult {
+    num_servers: usize,
 }
 
-pub struct BuildRequest(JobRequest, Arc<Mutex<TcCache>>);
+// SubmitToolchain
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum SubmitToolchainResult {
+    Success,
+    JobNotFound,
+    CannotCache,
+}
+
+///////////////////
+
+// BuildResult
+
 pub struct BuildResult {
     output: ProcessOutput,
-    outputs: Vec<(PathBuf, Vec<u8>)>,
+    outputs: Vec<(String, Vec<u8>)>,
 }
 
-trait SchedulerHandler {
-    // From DistClient
-    fn handle_allocation_request(&self, JobAllocRequest) -> SFuture<JobAllocResult>;
-}
-pub trait SchedulerRequester {
-    // To DistServer
-    fn do_allocation_assign(&self, ServerId, AllocAssignment) -> SFuture<()>;
+///////////////////
+
+// TODO: it's unfortunate all these are public, but in order to describe the trait
+// bound on the instance (e.g. scheduler) we pass to the actual communication (e.g.
+// http implementation) they need to be public, which has knock-on effects for private
+// structs
+
+pub struct ToolchainReader<'a>(Box<Read + 'a>);
+impl<'a> Read for ToolchainReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
 
-trait DistClientHandler {
+pub struct InputsReader<'a>(Box<Read + 'a>);
+impl<'a> Read for InputsReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
-pub trait DistClientRequester: Send + Sync {
+
+pub trait SchedulerOutgoing {
+    // To Server
+    fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+}
+
+pub trait ServerOutgoing {
     // To Scheduler
-    fn do_allocation_request(&self, JobAllocRequest) -> SFuture<JobAllocResult>;
-    // To DistServer
-    fn do_compile_request(&self, JobAllocResult, JobRequest) -> SFuture<JobResult>;
+    fn do_update_job_status(&self, job_id: JobId, status: JobStatus) -> Result<UpdateJobStatusResult>;
+}
 
-    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>>;
-    // TODO: It's more correct to have a FnBox or Box<FnOnce> here
+pub trait SchedulerIncoming: Send + Sync {
+    // From Client
+    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult>;
+    // From Server
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> Result<HeartbeatServerResult>;
+    // From anyone
+    fn handle_status(&self) -> Result<StatusResult>;
+}
+
+pub trait ServerIncoming: Send + Sync {
+    // From Scheduler
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+    // From Client
+    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult>;
+    // From Client
+    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult>;
+}
+
+pub trait BuilderIncoming: Send + Sync {
+    // From Server
+    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: Arc<Mutex<TcCache>>) -> Result<BuildResult>;
+}
+
+/////////
+
+pub trait Client {
+    // To Scheduler
+    fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult>;
+    // To Server
+    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
+    // To Server
+    // TODO: ideally Box<FnOnce or FnBox
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
+
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String>;
 }
 
-trait DistServerHandler {
-    // From Scheduler
-    fn handle_allocation_assign(&self, AllocAssignment) -> SFuture<()>;
-    // From DistClient
-    fn handle_compile_request(&self, JobRequest) -> SFuture<JobResult>;
-}
-pub trait DistServerRequester {
+/////////
+
+pub struct NoopClient;
+
+impl Client for NoopClient {
+    fn do_alloc_job(&self, _tc: Toolchain) -> SFuture<AllocJobResult> {
+        f_ok(AllocJobResult::Fail { msg: "Using NoopClient".to_string() })
+    }
+    fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+        panic!("NoopClient");
+    }
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<PathBuf>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+        panic!("NoopClient");
+    }
+
+    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
+        panic!("NoopClient");
+    }
 }
 
-// TODO: this being public is asymmetric
-pub trait DistBuilderHandler: Send + Sync {
-    // From DistServer
-    fn handle_compile_request(&self, BuildRequest) -> SFuture<BuildResult>;
-}
+//enum JobState {
+//    AllocRequested(AllocJobRequest),
+//    AllocSuccess(ServerId, AllocJobRequest, AllocJobResult),
+//    JobStarted(ServerId, AllocJobRequest, AllocJobResult),
+//    JobCompleted(ServerId, AllocJobRequest, AllocJobResult),
+//    // Interrupted by some error in distributed sccache
+//    // or maybe a failure to allocate. Nothing to do with the
+//    // compilation itself.
+//    JobFailed(ServerId, AllocJobRequest, AllocJobResult),
+//}
 
-enum JobStatus {
-    AllocRequested(JobAllocRequest),
-    AllocSuccess(ServerId, JobAllocRequest, JobAllocResult),
-    JobStarted(ServerId, JobAllocRequest, JobAllocResult),
-    JobCompleted(ServerId, JobAllocRequest, JobAllocResult),
-    // Interrupted by some error in distributed sccache
-    // or maybe a failure to allocate. Nothing to do with the
-    // compilation itself.
-    JobFailed(ServerId, JobAllocRequest, JobAllocResult),
-}
-
-fn large_delimited<T, B>(inner: T) -> Framed<T, B> where T: AsyncRead + AsyncWrite, B: IntoBuf {
-    length_delimited::Builder::new()
-        .max_frame_length(1*1024*1024*1024) // 1GiB
-        .new_framed(inner)
-}
-
-pub struct SccacheScheduler {
-    job_count: Cell<u64>,
-    jobs: HashMap<JobId, JobStatus>,
+pub struct Scheduler {
+    job_count: Mutex<u64>,
+    //jobs: HashMap<JobId, JobState>,
 
     // Acts as a ring buffer of most recently completed jobs
     finished_jobs: VecDeque<JobStatus>,
 
-    servers: Arc<Mutex<Vec<(
-        SocketAddr,
-        Option<WriteBincode<ReadBincode<Framed<TcpStream>, ()>, AllocAssignment>>,
-    )>>>,
+    servers: Arc<Mutex<HashMap<ServerId, ServerDetails>>>,
 }
 
-impl SccacheScheduler {
+struct ServerDetails {
+    jobs_assigned: usize,
+    last_seen: Instant,
+    num_cpus: usize,
+}
+
+impl Scheduler {
     pub fn new() -> Self {
-        SccacheScheduler {
-            job_count: Cell::new(0),
-            jobs: HashMap::new(),
+        Scheduler {
+            job_count: Mutex::new(0),
+            //jobs: HashMap::new(),
             finished_jobs: VecDeque::new(),
-            servers: Arc::new(Mutex::new(vec![])),
+            servers: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    pub fn start(self) -> ! {
-        let mut core = tokio_core::reactor::Core::new().unwrap();
-        let handle = core.handle();
-
-        {
-            let mut servers = self.servers.lock().unwrap();
-            assert!(servers.is_empty());
-
-            let sched_addr = Cfg::scheduler_listen_server_addr();
-            info!("Scheduler listening for servers on {}", sched_addr);
-            let listener = TcpListener::bind(sched_addr).unwrap();
-            let conn = listener.accept().unwrap().0;
-            let addr = conn.peer_addr().unwrap();
-            info!("Accepted server connection from {}", addr);
-            let conn = TcpStream::from_stream(conn, &handle).unwrap();
-            let conn = WriteBincode::new(ReadBincode::new(Framed::new(conn)));
-
-            servers.push((addr, Some(conn)));
-            assert!(servers.len() == 1);
-        }
-
-        let addr = Cfg::scheduler_listen_client_addr();
-        info!("Scheduler listening for clients on {}", addr);
-        let listener = tokio_core::net::TcpListener::bind(&addr, &handle).unwrap();
-        core.run(
-            listener.incoming()
-                .from_err()
-                .map(|(conn, addr)| {
-                    trace!("Accepted connection from {}", addr);
-                    let conn = WriteBincode::new(ReadBincode::new(Framed::new(conn)));
-                    conn.into_future()
-                        .map_err(|(e, _conn)| format!("{}", e).into()) // Mismatched bincode versions, so format
-                        .and_then(|(req, conn)| { trace!("received request"); self.handle_allocation_request(req.unwrap()).map(|res| (res, conn)) })
-                        .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
-                })
-                .buffer_unordered(MAX_CONCURRENT_SCHEDULER_REQS)
-                .map(|_conn| ())
-                .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
-                    error!("Encountered error while serving request: {}", err);
-                    Ok(())
-                })
-                .for_each(|()| Ok(()))
-        ).unwrap();
-
-        panic!()
     }
 }
 
-impl SchedulerHandler for SccacheScheduler {
-    fn handle_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        let (server_id, ip_addr) = {
+impl SchedulerIncoming for Scheduler {
+    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult> {
+        // TODO: prune old servers
+        let server_id = {
             let servers = self.servers.lock().unwrap();
-            assert!(servers.len() == 1);
-            let ip_addr = servers[0].0.ip();
-            (ServerId(0), ip_addr)
+            let mut best = None;
+            let mut best_load: f64 = MAX_PER_CORE_LOAD;
+            for (id, details) in servers.iter() {
+                let load = details.jobs_assigned as f64 / details.num_cpus as f64;
+                if load < best_load {
+                    best = Some(id);
+                    best_load = load;
+                    if load == 0f64 {
+                        break
+                    }
+                }
+            }
+            if let Some(id) = best {
+                *id
+            } else {
+                let msg = format!("Insufficient capacity: {} available servers", servers.len());
+                return Ok(AllocJobResult::Fail { msg })
+            }
         };
-        let job_id = JobId(self.job_count.get());
-        self.job_count.set(self.job_count.get() + 1);
-        let res = JobAllocResult { addr: SocketAddr::new(ip_addr, SERVER_CLIENTS_PORT), job_id };
-        Box::new(self.do_allocation_assign(server_id, AllocAssignment { job_id }).map(|()| res))
-    }
-}
-impl SchedulerRequester for SccacheScheduler {
-    fn do_allocation_assign(&self, server_id: ServerId, req: AllocAssignment) -> SFuture<()> {
-        let servers = self.servers.clone();
-        let conn = servers.lock().unwrap()[server_id.0 as usize].1.take().unwrap();
-        Box::new(
-            conn
-                .send(req)
-                .map(move |conn| {
-                    let mut servers = servers.lock().unwrap();
-                    servers[server_id.0 as usize].1 = Some(conn)
-                })
-                .from_err()
-        )
-    }
-}
-
-// TODO: possibly shouldn't be public
-pub struct SccacheDistClient {
-    client_cache_dir: PathBuf,
-    cache: Mutex<TcCache>,
-    scheduler_addr: SocketAddr,
-    // Local machine mapping from 'weak' hashes to strong toolchain hashes
-    weak_map: Mutex<HashMap<String, String>>,
-    pool: CpuPool,
-}
-
-impl SccacheDistClient {
-    pub fn new(scheduler_addr: IpAddr) -> Self {
-        let client_cache_dir = CONFIG.dist.cache_dir.join("client");
-        fs::create_dir_all(&client_cache_dir).unwrap();
-
-        let weak_map_path = client_cache_dir.join("weak_map.json");
-        if !weak_map_path.exists() {
-            fs::File::create(&weak_map_path).unwrap().write_all(b"{}").unwrap()
-        }
-        let weak_map = serde_json::from_reader(fs::File::open(weak_map_path).unwrap()).unwrap();
-
-        let cache = Mutex::new(TcCache::new(&client_cache_dir).unwrap());
-
-        SccacheDistClient {
-            client_cache_dir,
-            cache,
-            scheduler_addr: Cfg::client_connect_scheduler_addr(scheduler_addr),
-            // TODO: shouldn't clear on restart, but also should have some
-            // form of pruning
-            weak_map: Mutex::new(weak_map),
-            pool: CpuPool::new(CONCURRENT_CLIENT_REQS),
-        }
-    }
-
-    fn weak_to_strong(&self, weak_key: &str) -> Option<String> {
-        self.weak_map.lock().unwrap().get(weak_key).map(String::to_owned)
-    }
-    fn record_weak(&self, weak_key: String, key: String) {
-        let mut weak_map = self.weak_map.lock().unwrap();
-        weak_map.insert(weak_key, key);
-        let weak_map_path = self.client_cache_dir.join("weak_map.json");
-        serde_json::to_writer(fs::File::create(weak_map_path).unwrap(), &*weak_map).unwrap()
-    }
-}
-
-impl DistClientHandler for SccacheDistClient {
-}
-impl DistClientRequester for SccacheDistClient {
-    fn do_allocation_request(&self, req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        let scheduler_addr = self.scheduler_addr;
-        Box::new(self.pool.spawn(future::lazy(move || {
-            let mut core = tokio_core::reactor::Core::new().unwrap();
-            let handle = core.handle();
-            core.run(
-                TcpStream::connect(&scheduler_addr, &handle)
-                    .map(|conn| WriteBincode::new(ReadBincode::new(Framed::new(conn))))
-                    .and_then(|conn| conn.send(req))
-                    .from_err()
-                    .and_then(|conn| conn.into_future()
-                        .map_err(|(e, _conn)| format!("{}", e).into())) // Mismatched bincode versions, so format
-                    .map(|(res, _conn)| res.unwrap())
-            )
-        })))
-    }
-    fn do_compile_request(&self, ja_res: JobAllocResult, req: JobRequest) -> SFuture<JobResult> {
-        Box::new(self.pool.spawn(future::lazy(move || {
-            let mut core = tokio_core::reactor::Core::new().unwrap();
-            let handle = core.handle();
-            core.run(
-                TcpStream::connect(&ja_res.addr, &handle)
-                    .map(|conn| WriteBincode::new(ReadBincode::new(large_delimited(conn))))
-                    .and_then(|conn| conn.send(req))
-                    .from_err()
-                    .and_then(|conn| conn.into_future()
-                        .map_err(|(e, _conn)| format!("{}", e).into())) // Mismatched bincode versions, so format
-                    .map(|(res, _conn)| res.unwrap())
-            )
-        })))
-    }
-
-    fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>> {
-        let mut toolchain_reader = match self.cache.lock().unwrap().get(key) {
-            Ok(rdr) => rdr,
-            Err(LruError::FileNotInCache) => return None,
-            Err(e) => panic!("{}", e),
+        let job_id = {
+            let mut job_count = self.job_count.lock().unwrap();
+            let job_id = JobId(*job_count);
+            *job_count += 1;
+            job_id
         };
-        let mut ret = vec![];
-        toolchain_reader.read_to_end(&mut ret).unwrap();
-        Some(ret)
+        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc).unwrap();
+        let job_alloc = JobAlloc { job_id, server_id };
+        Ok(AllocJobResult::Success { job_alloc, need_toolchain })
     }
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
-        if let Some(strong_key) = self.weak_to_strong(weak_key) {
-            debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
-            return Ok(strong_key)
+    fn handle_status(&self) -> Result<StatusResult> {
+        Ok(StatusResult {
+            num_servers: self.servers.lock().unwrap().len(),
+        })
+    }
+
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> Result<HeartbeatServerResult> {
+        if num_cpus == 0 {
+            return Err("invalid heartbeat num_cpus".into())
         }
-        debug!("Weak key {} appears to be new", weak_key);
-        // TODO: don't use this as a poor exclusive lock on this global file
-        let mut cache = self.cache.lock().unwrap();
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("/tmp/toolchain_cache.tar")?;
-        create(file);
-        // TODO: after, if still exists, remove it
-        let strong_key = cache.insert_file("/tmp/toolchain_cache.tar")?;
-        self.record_weak(weak_key.to_owned(), strong_key.clone());
-        Ok(strong_key)
+        self.servers.lock().unwrap().entry(server_id)
+            .and_modify(|details| details.last_seen = Instant::now())
+            .or_insert_with(|| {
+                info!("Registered new server {:?}", server_id);
+                ServerDetails { jobs_assigned: 0, num_cpus, last_seen: Instant::now() }
+            });
+        Ok(HeartbeatServerResult)
     }
 }
 
-pub struct NoopDistClient;
-
-impl DistClientHandler for NoopDistClient {
-}
-impl DistClientRequester for NoopDistClient {
-    fn do_allocation_request(&self, _req: JobAllocRequest) -> SFuture<JobAllocResult> {
-        f_err("noop dist client")
-    }
-    fn do_compile_request(&self, _ja_res: JobAllocResult, _req: JobRequest) -> SFuture<JobResult> {
-        f_err("noop dist client")
-    }
-
-    fn get_toolchain_cache(&self, _key: &str) -> Option<Vec<u8>> {
-        None
-    }
-    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
-        Err("noop dist client".into())
-    }
-}
-
-pub struct SccacheDistServer {
-    builder: Box<DistBuilderHandler>,
+pub struct Server {
+    builder: Box<BuilderIncoming>,
     cache: Arc<Mutex<TcCache>>,
-    scheduler_addr: SocketAddr,
-    parallelism: usize,
+    job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
-impl SccacheDistServer {
-    pub fn new(scheduler_addr: IpAddr, builder: Box<DistBuilderHandler>) -> SccacheDistServer {
-        SccacheDistServer {
+impl Server {
+    pub fn new(builder: Box<BuilderIncoming>) -> Server {
+        Server {
             builder,
             cache: Arc::new(Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap())),
-            scheduler_addr: Cfg::server_connect_scheduler_addr(scheduler_addr),
-            parallelism: num_cpus::get() * 2,
+            job_toolchains: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn start(self) -> ! {
-        let mut core = tokio_core::reactor::Core::new().unwrap();
-        let handle = core.handle();
-        info!("Dist server connecting to scheduler at {}", self.scheduler_addr);
-        let sched_conn: ReadBincode<Framed<_>, AllocAssignment> = core.run(
-            TcpStream::connect(&self.scheduler_addr, &handle)
-                .map(|conn| ReadBincode::new(Framed::new(conn)))
-        ).unwrap();
-        let parallelism = self.parallelism;
-        let self1 = Arc::new(self);
-        let self2 = self1.clone();
-
-        core.handle().spawn(
-            sched_conn
-                .map_err(|e| format!("{}", e).into()) // Mismatched bincode versions, so format
-                .and_then(move |req| {
-                    trace!("Received request from scheduler");
-                    self1.handle_allocation_assign(req)
-                })
-                .for_each(|()| Ok(()))
-                .map_err(|e| panic!(e))
-        );
-
-        let addr = Cfg::server_listen_client_addr();
-        let listener = tokio_core::net::TcpListener::bind(&addr, &core.handle()).unwrap();
-        core.run(
-            listener.incoming()
-                .from_err()
-                .map(|(conn, addr)| {
-                    trace!("Accepted connection from {}", addr);
-                    let conn = WriteBincode::new(ReadBincode::new(large_delimited(conn)));
-                    conn.into_future()
-                        .map_err(|(e, _conn)| format!("{}", e).into()) // Mismatched bincode versions, so format
-                        .and_then(|(req, conn)| { trace!("received request"); self2.handle_compile_request(req.unwrap()).map(|res| (res, conn)) })
-                        .and_then(|(res, conn)| { trace!("sending result"); conn.send(res).map_err(Into::into) })
-                })
-                .buffer_unordered(parallelism)
-                .map(|_conn| ())
-                .or_else(|err| -> ::std::result::Result<(), ()> { // Recover
-                    error!("Encountered error while serving request: {}", err);
-                    Ok(())
-                })
-                .for_each(|()| Ok(()))
-        ).unwrap();
-
-        panic!()
     }
 }
 
-impl DistServerHandler for SccacheDistServer {
-    fn handle_allocation_assign(&self, alloc: AllocAssignment) -> SFuture<()> {
-        // TODO: track ID of incoming job so scheduler is kept up-do-date
-        f_ok(())
-    }
-    fn handle_compile_request(&self, req: JobRequest) -> SFuture<JobResult> {
-        if let Some(toolchain_data) = req.toolchain_data.as_ref() {
-            self.cache.lock().unwrap().insert_with(&req.toolchain.archive_id, |mut file| {
-                file.write_all(&toolchain_data)
-            }).unwrap()
+impl ServerIncoming for Server {
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
+        let need_toolchain = !self.cache.lock().unwrap().contains_key(&tc.archive_id);
+        assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
+        if !need_toolchain {
+            // TODO: can start prepping the container now
         }
-        // TODO: this causes a thundering herd
-        if !self.cache.lock().unwrap().contains_key(&req.toolchain.archive_id) {
-            return f_ok(JobResult::NeedToolchain)
-        }
-        Box::new(self.builder.handle_compile_request(BuildRequest(req, self.cache.clone()))
-            .map(|res| JobResult::Complete(JobComplete { output: res.output, outputs: res.outputs })))
+        Ok(AssignJobResult { need_toolchain })
     }
-}
-impl DistServerRequester for SccacheDistServer {
+    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
+        requester.do_update_job_status(job_id, JobStatus::Started).unwrap();
+        // TODO: need to lock the toolchain until the container has started
+        // TODO: can start prepping container
+        let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
+            Some(tc) => tc,
+            None => return Ok(SubmitToolchainResult::JobNotFound),
+        };
+        let mut cache = self.cache.lock().unwrap();
+        // TODO: this returns before reading all the data, is that valid?
+        if cache.contains_key(&tc.archive_id) {
+            return Ok(SubmitToolchainResult::Success)
+        }
+        Ok(cache.insert_with(&tc.archive_id, |mut file| io::copy(&mut {tc_rdr}, &mut file).map(|_| ()))
+            .map(|_| SubmitToolchainResult::Success)
+            .unwrap_or(SubmitToolchainResult::CannotCache))
+    }
+    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult> {
+        let tc = match self.job_toolchains.lock().unwrap().remove(&job_id) {
+            Some(tc) => tc,
+            None => return Ok(RunJobResult::JobNotFound),
+        };
+        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, self.cache.clone()).unwrap();
+        requester.do_update_job_status(job_id, JobStatus::Complete).unwrap();
+        Ok(RunJobResult::Complete(JobComplete { output: res.output, outputs: res.outputs }))
+    }
 }
 
-pub struct SccacheDistBuilder {
+pub struct Builder {
     image_map: Arc<Mutex<HashMap<Toolchain, String>>>,
     container_lists: Arc<Mutex<HashMap<Toolchain, Vec<String>>>>,
-    pool: CpuPool,
 }
 
 fn check_output(output: &Output) {
@@ -531,15 +439,12 @@ fn check_output(output: &Output) {
     }
 }
 
-impl SccacheDistBuilder {
-    pub fn new() -> SccacheDistBuilder {
+impl Builder {
+    pub fn new() -> Builder {
         Self::cleanup();
-        let parallelism = num_cpus::get() * 2;
-        SccacheDistBuilder {
+        Builder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
-            // TODO: maybe pass this in from global pool? Maybe not
-            pool: CpuPool::new(parallelism),
         }
     }
 
@@ -726,22 +631,24 @@ impl SccacheDistBuilder {
         stdout.trim().to_owned()
     }
 
-    fn perform_build(compile_command: CompileCommand, inputs_archive: Vec<u8>, output_paths: Vec<PathBuf>, cid: &str) -> BuildResult {
+    fn perform_build(compile_command: CompileCommand, inputs_rdr: InputsReader, output_paths: Vec<String>, cid: &str) -> BuildResult {
+        let cwd = PathBuf::from(compile_command.cwd);
+
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
         trace!("copying in build dir");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        io::copy(&mut inputs_archive.as_slice(), &mut process.stdin.take().unwrap()).unwrap();
+        io::copy(&mut {inputs_rdr}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         check_output(&output);
 
         trace!("creating output directories");
         assert!(!output_paths.is_empty());
         let mut cmd = Command::new("docker");
-        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(&compile_command.cwd);
+        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(&cwd);
         for path in output_paths.iter() {
-            cmd.arg(compile_command.cwd.join(path.parent().unwrap()));
+            cmd.arg(cwd.join(Path::new(path).parent().unwrap()));
         }
         let output = cmd.output().unwrap();
         check_output(&output);
@@ -752,14 +659,14 @@ impl SccacheDistBuilder {
         cmd.arg("exec");
         for (k, v) in compile_command.env_vars {
             let mut env = k;
-            env.push("=");
-            env.push(v);
+            env.push('=');
+            env.push_str(&v);
             cmd.arg("-e").arg(env);
         }
         let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
         cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
         cmd.arg(&compile_command.executable);
-        cmd.arg(&compile_command.cwd);
+        cmd.arg(&cwd);
         cmd.arg(compile_command.executable);
         cmd.args(compile_command.arguments);
         let compile_output = cmd.output().unwrap();
@@ -768,9 +675,9 @@ impl SccacheDistBuilder {
         let mut outputs = vec![];
         trace!("retrieving {:?}", output_paths);
         for path in output_paths {
-            let path = compile_command.cwd.join(path); // Resolve in case it's relative
+            let dockerpath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
             // TODO: this isn't great, but cp gives it out as a tar
-            let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(&path).output().unwrap();
+            let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(dockerpath).output().unwrap();
             if output.status.success() {
                 outputs.push((path, output.stdout))
             } else {
@@ -782,23 +689,19 @@ impl SccacheDistBuilder {
     }
 }
 
-impl DistBuilderHandler for SccacheDistBuilder {
-    // From DistServer
-    fn handle_compile_request(&self, req: BuildRequest) -> SFuture<BuildResult> {
+impl BuilderIncoming for Builder {
+    // From Server
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: Arc<Mutex<TcCache>>) -> Result<BuildResult> {
         let image_map = self.image_map.clone();
         let container_lists = self.container_lists.clone();
-        Box::new(self.pool.spawn_fn(move || -> Result<_> {
-            let BuildRequest(job_req, cache) = req;
-            let command = job_req.command;
 
-            debug!("Finding container");
-            let cid = Self::get_container(&image_map, &container_lists, &job_req.toolchain, cache);
-            debug!("Performing build with container {}", cid);
-            let res = Self::perform_build(command, job_req.inputs_archive, job_req.outputs, &cid);
-            debug!("Finishing with container {}", cid);
-            Self::finish_container(&container_lists, &job_req.toolchain, cid);
-            debug!("Returning result");
-            Ok(res)
-        }))
+        debug!("Finding container");
+        let cid = Self::get_container(&image_map, &container_lists, &tc, cache);
+        debug!("Performing build with container {}", cid);
+        let res = Self::perform_build(command, inputs_rdr, outputs, &cid);
+        debug!("Finishing with container {}", cid);
+        Self::finish_container(&container_lists, &tc, cid);
+        debug!("Returning result");
+        Ok(res)
     }
 }
