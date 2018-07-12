@@ -83,13 +83,16 @@ pub enum GCCArgAttribute {
     Language,
     SplitDwarf,
     ProfileGenerate,
+    TestCoverage,
+    Coverage,
 }
 
 use self::GCCArgAttribute::*;
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
-pub static ARGS: [(ArgInfo, GCCArgAttribute); 61] = [
+pub static ARGS: [(ArgInfo, GCCArgAttribute); 64] = [
     flag!("-", TooHard),
+    flag!("--coverage", Coverage),
     take_arg!("--param", String, Separated, PassThrough),
     flag!("--save-temps", TooHard),
     take_arg!("--serialize-diagnostics", Path, Separated, PassThrough),
@@ -122,10 +125,12 @@ pub static ARGS: [(ArgInfo, GCCArgAttribute); 61] = [
     flag!("-c", DoCompilation),
     flag!("-fno-working-directory", PreprocessorArgument),
     flag!("-fplugin=libcc1plugin", TooHard),
+    flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
     flag!("-fprofile-use", TooHard),
     flag!("-frepo", TooHard),
     flag!("-fsyntax-only", TooHard),
+    flag!("-ftest-coverage", TestCoverage),
     flag!("-fworking-directory", PreprocessorArgument),
     flag!("-gsplit-dwarf", SplitDwarf),
     take_arg!("-idirafter", Path, CanBeSeparated, PreprocessorArgument),
@@ -180,6 +185,7 @@ where
     let mut need_explicit_dep_target = false;
     let mut language = None;
     let mut profile_generate = false;
+    let mut outputs_gcno = false;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -205,6 +211,11 @@ where
             Some(SplitDwarf) => split_dwarf = true,
             Some(DoCompilation) => compilation = true,
             Some(ProfileGenerate) => profile_generate = true,
+            Some(TestCoverage) => outputs_gcno = true,
+            Some(Coverage) => {
+                outputs_gcno = true;
+                profile_generate = true;
+            }
             Some(Output) => output_arg = item.arg.get_value().map(|s| s.unwrap_path()),
             Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget) => dep_target = item.arg.get_value().map(OsString::from),
@@ -237,6 +248,8 @@ where
         let args = match item.data {
             Some(SplitDwarf) |
             Some(ProfileGenerate) |
+            Some(TestCoverage) |
+            Some(Coverage) |
             Some(PassThrough) => Some(&mut common_args),
             Some(PreprocessorArgument) |
             Some(NeedDepTarget) => Some(&mut preprocessor_args),
@@ -294,6 +307,10 @@ where
     if split_dwarf {
         let dwo = output.with_extension("dwo");
         outputs.insert("dwo", dwo);
+    }
+    if outputs_gcno {
+        let gcno = output.with_extension("gcno");
+        outputs.insert("gcno", gcno);
     }
     if need_explicit_dep_target {
         preprocessor_args.push("-MT".into());
@@ -547,6 +564,95 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-gsplit-dwarf"], common_args);
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_coverage_outputs_gcno() {
+        let args = stringvec!["--coverage", "-c", "foo.cpp", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            profile_generate,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_map_contains!(outputs,
+                             ("obj", PathBuf::from("foo.o")),
+                             ("gcno", PathBuf::from("foo.gcno")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(2, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["--coverage"], common_args);
+        assert!(!msvc_show_includes);
+        assert!(profile_generate);
+    }
+
+    #[test]
+    fn test_parse_arguments_test_coverage_outputs_gcno() {
+        let args = stringvec!["-ftest-coverage", "-c", "foo.cpp", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            profile_generate,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_map_contains!(outputs,
+                             ("obj", PathBuf::from("foo.o")),
+                             ("gcno", PathBuf::from("foo.gcno")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(2, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-ftest-coverage"], common_args);
+        assert!(!msvc_show_includes);
+        assert!(!profile_generate);
+    }
+
+    #[test]
+    fn test_parse_arguments_profile_generate() {
+        let args = stringvec!["-fprofile-generate", "-c", "foo.cpp", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            profile_generate,
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_map_contains!(outputs,
+                             ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fprofile-generate"], common_args);
+        assert!(!msvc_show_includes);
+        assert!(profile_generate);
     }
 
     #[test]
