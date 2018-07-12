@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::{Future, IntoFuture};
+use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
 use ring::digest::{SHA512, Context};
@@ -111,7 +111,7 @@ fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
     });
 
     // Finish writing stdin before waiting, because waiting drops stdin.
-    let status = Future::and_then(stdin.into_future(), |io| {
+    let status = Future::and_then(stdin, |io| {
         drop(io);
         child.wait().chain_err(|| "failed to wait for child")
     });
