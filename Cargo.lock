@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "sccache"
-version = "0.2.7-alpha.0"
+version = "0.2.7"
 dependencies = [
  "assert_cli 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "atty 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
