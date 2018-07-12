@@ -10,7 +10,7 @@ use hyper::client::{HttpConnector, Request};
 use hyper::header::Connection;
 use regex::Regex;
 use serde_json::{Value, from_str};
-#[allow(unused_imports)]
+#[allow(unused_imports, deprecated)]
 use std::ascii::AsciiExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
