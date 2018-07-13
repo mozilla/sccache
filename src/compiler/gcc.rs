@@ -311,6 +311,7 @@ where
     if outputs_gcno {
         let gcno = output.with_extension("gcno");
         outputs.insert("gcno", gcno);
+        profile_generate = true;
     }
     if need_explicit_dep_target {
         preprocessor_args.push("-MT".into());
@@ -623,7 +624,7 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-ftest-coverage"], common_args);
         assert!(!msvc_show_includes);
-        assert!(!profile_generate);
+        assert!(profile_generate);
     }
 
     #[test]
