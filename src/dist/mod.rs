@@ -24,7 +24,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 use std::time::Instant;
 
 use errors::*;
@@ -242,7 +242,7 @@ pub trait ServerIncoming: Send + Sync {
 
 pub trait BuilderIncoming: Send + Sync {
     // From Server
-    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: Arc<Mutex<TcCache>>) -> Result<BuildResult>;
+    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> Result<BuildResult>;
 }
 
 /////////
@@ -297,7 +297,7 @@ pub struct Scheduler {
     // Acts as a ring buffer of most recently completed jobs
     finished_jobs: VecDeque<JobStatus>,
 
-    servers: Arc<Mutex<HashMap<ServerId, ServerDetails>>>,
+    servers: Mutex<HashMap<ServerId, ServerDetails>>,
 }
 
 struct ServerDetails {
@@ -312,7 +312,7 @@ impl Scheduler {
             job_count: Mutex::new(0),
             //jobs: HashMap::new(),
             finished_jobs: VecDeque::new(),
-            servers: Arc::new(Mutex::new(HashMap::new())),
+            servers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -373,7 +373,7 @@ impl SchedulerIncoming for Scheduler {
 
 pub struct Server {
     builder: Box<BuilderIncoming>,
-    cache: Arc<Mutex<TcCache>>,
+    cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
@@ -381,7 +381,7 @@ impl Server {
     pub fn new(builder: Box<BuilderIncoming>) -> Server {
         Server {
             builder,
-            cache: Arc::new(Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap())),
+            cache: Mutex::new(TcCache::new(&CONFIG.dist.cache_dir.join("server")).unwrap()),
             job_toolchains: Mutex::new(HashMap::new()),
         }
     }
@@ -418,7 +418,7 @@ impl ServerIncoming for Server {
             Some(tc) => tc,
             None => return Ok(RunJobResult::JobNotFound),
         };
-        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, self.cache.clone()).unwrap();
+        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache).unwrap();
         requester.do_update_job_status(job_id, JobStatus::Complete).unwrap();
         Ok(RunJobResult::Complete(JobComplete { output: res.output, outputs: res.outputs }))
     }
