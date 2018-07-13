@@ -131,7 +131,7 @@ impl Drop for DistSystem {
 struct FailingBuilder;
 
 impl dist::BuilderIncoming for FailingBuilder {
-    fn run_build(&self, _toolchain: Toolchain, _command: CompileCommand, _outputs: Vec<String>, _inputs_rdr: InputsReader, _cache: Arc<Mutex<TcCache>>) -> Result<BuildResult> {
+    fn run_build(&self, _toolchain: Toolchain, _command: CompileCommand, _outputs: Vec<String>, _inputs_rdr: InputsReader, _cache: &Mutex<TcCache>) -> Result<BuildResult> {
         Err("FailingBuilder".into())
     }
 }
