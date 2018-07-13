@@ -100,7 +100,7 @@ pub fn parse() -> Result<Command> {
     };
     if start_dist_worker {
         if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
-            let builder = dist::Builder::new();
+            let builder = dist::build::DockerBuilder::new();
             let server = dist::Server::new(Box::new(builder));
             let http_server = dist::http::Server::new(scheduler_addr, server);
             let _: Void = http_server.start();
