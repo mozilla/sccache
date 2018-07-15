@@ -12,18 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bincode;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use futures::Future;
+use futures::{Future, Stream};
 use num_cpus;
 use reqwest;
 use rouille;
-use serde_json;
-use std::time::Duration;
+use serde;
+use std;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::thread;
+use std::time::Duration;
 use super::cache;
 use super::{
     ServerId, JobId, Toolchain, CompileCommand,
@@ -62,6 +64,100 @@ impl Cfg {
     fn server_listen_addr() -> SocketAddr {
         let ip_addr = "0.0.0.0".parse().unwrap();
         SocketAddr::new(ip_addr, SERVER_PORT)
+    }
+}
+
+// Based on rouille::input::json::json_input
+#[derive(Debug)]
+pub enum RouilleBincodeError {
+    BodyAlreadyExtracted,
+    WrongContentType,
+    ParseError(bincode::Error),
+}
+impl From<bincode::Error> for RouilleBincodeError {
+    fn from(err: bincode::Error) -> RouilleBincodeError {
+        RouilleBincodeError::ParseError(err)
+    }
+}
+impl std::error::Error for RouilleBincodeError {
+    fn description(&self) -> &str {
+        match *self {
+            RouilleBincodeError::BodyAlreadyExtracted => {
+                "the body of the request was already extracted"
+            },
+            RouilleBincodeError::WrongContentType => {
+                "the request didn't have a binary content type"
+            },
+            RouilleBincodeError::ParseError(_) => {
+                "error while parsing the bincode body"
+            },
+        }
+    }
+    fn cause(&self) -> Option<&std::error::Error> {
+        match *self {
+            RouilleBincodeError::ParseError(ref e) => Some(e),
+            _ => None
+        }
+    }
+}
+impl std::fmt::Display for RouilleBincodeError {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
+        write!(fmt, "{}", std::error::Error::description(self))
+    }
+}
+fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError> where O: serde::de::DeserializeOwned {
+    if let Some(header) = request.header("Content-Type") {
+        if !header.starts_with("application/octet-stream") {
+            return Err(RouilleBincodeError::WrongContentType);
+        }
+    } else {
+        return Err(RouilleBincodeError::WrongContentType);
+    }
+
+    if let Some(mut b) = request.data() {
+        bincode::deserialize_from::<_, O, _>(&mut b, bincode::Infinite).map_err(From::from)
+    } else {
+        Err(RouilleBincodeError::BodyAlreadyExtracted)
+    }
+}
+
+// Based on rouille::Response::json
+pub fn bincode_response<T>(content: &T) -> rouille::Response where T: serde::Serialize {
+    let data = bincode::serialize(content, bincode::Infinite).unwrap();
+
+    rouille::Response {
+        status_code: 200,
+        headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+        data: rouille::ResponseBody::from_data(data),
+        upgrade: None,
+    }
+}
+
+// Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
+trait ReqwestRequestBuilderExt {
+    fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self>;
+    fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self;
+}
+impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
+    fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
+        let bytes = bincode::serialize(bincode, bincode::Infinite)?;
+        Ok(self.bytes(bytes))
+    }
+    fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
+        self.header(reqwest::header::ContentType::octet_stream())
+            .header(reqwest::header::ContentLength(bytes.len() as u64))
+            .body(bytes)
+    }
+}
+impl ReqwestRequestBuilderExt for reqwest::unstable::async::RequestBuilder {
+    fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
+        let bytes = bincode::serialize(bincode, bincode::Infinite)?;
+        Ok(self.bytes(bytes))
+    }
+    fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
+        self.header(reqwest::header::ContentType::octet_stream())
+            .header(reqwest::header::ContentLength(bytes.len() as u64))
+            .body(bytes)
     }
 }
 
@@ -110,15 +206,15 @@ impl<S: SchedulerIncoming + 'static> Scheduler<S> {
             trace!("Req {}: {:?}", request_id, request);
             let response = (|| router!(request,
                 (POST) (/api/v1/scheduler/alloc_job) => {
-                    let toolchain = try_or_400!(rouille::input::json_input(request));
+                    let toolchain = try_or_400!(bincode_input(request));
                     trace!("Req {}: alloc_job: {:?}", request_id, toolchain);
 
                     let res: AllocJobResult = handler.handle_alloc_job(&requester, toolchain).unwrap();
-                    rouille::Response::json(&res)
+                    bincode_response(&res)
                 },
                 (POST) (/api/v1/scheduler/heartbeat_server) => {
-                    let heartbeat_server = try_or_400!(rouille::input::json_input(request));
-                    trace!("Req {}: alloc_job: {:?}", request_id, heartbeat_server);
+                    let heartbeat_server = try_or_400!(bincode_input(request));
+                    trace!("Req {}: heartbeat_server: {:?}", request_id, heartbeat_server);
                     let HeartbeatServerHttpRequest { num_cpus, port } = heartbeat_server;
                     let server_id = ServerId(SocketAddr::new(request.remote_addr().ip(), port));
 
@@ -127,7 +223,7 @@ impl<S: SchedulerIncoming + 'static> Scheduler<S> {
                 },
                 (GET) (/api/v1/scheduler/status) => {
                     let res: StatusResult = handler.handle_status().unwrap();
-                    rouille::Response::json(&res)
+                    bincode_response(&res)
                 },
                 _ => {
                     warn!("Unknown request {:?}", request);
@@ -139,7 +235,7 @@ impl<S: SchedulerIncoming + 'static> Scheduler<S> {
         }).unwrap();
         server.run();
 
-        panic!()
+        unreachable!()
     }
 }
 
@@ -150,14 +246,13 @@ struct SchedulerRequester {
 impl SchedulerOutgoing for SchedulerRequester {
     fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let url = format!("http://{}/api/v1/distserver/assign_job/{}", server_id.addr(), job_id);
-        let mut res = self.client.post(&url)
-            .json(&tc)
-            .send()
-            .unwrap();
+        let mut res = self.client.post(&url).bincode(&tc).unwrap().send().unwrap();
         if !res.status().is_success() {
-            panic!()
+            panic!("{:?}", res)
         }
-        Ok(res.json().unwrap())
+        let mut body = vec![];
+        res.copy_to(&mut body).unwrap();
+        Ok(bincode::deserialize(&body).unwrap())
     }
 }
 
@@ -185,7 +280,7 @@ impl<S: ServerIncoming + 'static> Server<S> {
             let req = HeartbeatServerHttpRequest { num_cpus: num_cpus::get(), port: addr.port() };
             let client = reqwest::Client::new();
             loop {
-                match client.post(&url).json(&req).send() {
+                match client.post(&url).bincode(&req).unwrap().send() {
                     Ok(ref res) if res.status().is_success() => (),
                     Ok(res) => error!("Response {} from server when heartbeating {:?}", res.status(), req),
                     Err(e) => error!("Failed to send heartbeat to server: {}", e),
@@ -200,33 +295,33 @@ impl<S: ServerIncoming + 'static> Server<S> {
             trace!("Req {}: {:?}", request_id, request);
             let response = (|| router!(request,
                 (POST) (/api/v1/distserver/assign_job/{job_id: JobId}) => {
-                    let toolchain = try_or_400!(rouille::input::json_input(request));
+                    let toolchain = try_or_400!(bincode_input(request));
                     trace!("Req {}: assign_job: {:?}", request_id, toolchain);
 
                     let res: AssignJobResult = handler.handle_assign_job(job_id, toolchain).unwrap();
-                    rouille::Response::json(&res)
+                    bincode_response(&res)
                 },
                 (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
                     let mut body = request.data().unwrap();
                     let toolchain_rdr = ToolchainReader(Box::new(body));
 
                     let res: SubmitToolchainResult = handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr).unwrap();
-                    rouille::Response::json(&res)
+                    bincode_response(&res)
                 },
                 (POST) (/api/v1/distserver/run_job) => {
                     let mut body = request.data().unwrap();
-                    let json_length = body.read_u32::<BigEndian>().unwrap() as u64;
+                    let bincode_length = body.read_u32::<BigEndian>().unwrap() as u64;
 
-                    let mut json_reader = body.take(json_length);
-                    let runjob = serde_json::from_reader(&mut json_reader).unwrap();
+                    let mut bincode_reader = body.take(bincode_length);
+                    let runjob = bincode::deserialize_from(&mut bincode_reader, bincode::Infinite).unwrap();
                     trace!("Req {}: run_job: {:?}", request_id, runjob);
                     let RunJobHttpRequest { job_id, command, outputs } = runjob;
-                    let body = json_reader.into_inner();
+                    let body = bincode_reader.into_inner();
                     let inputs_rdr = InputsReader(Box::new(body));
                     let outputs = outputs.into_iter().collect();
 
                     let res: RunJobResult = handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr).unwrap();
-                    rouille::Response::json(&res)
+                    bincode_response(&res)
                 },
                 _ => {
                     warn!("Unknown request {:?}", request);
@@ -238,7 +333,7 @@ impl<S: ServerIncoming + 'static> Server<S> {
         }).unwrap();
         server.run();
 
-        panic!()
+        unreachable!()
     }
 }
 
@@ -273,24 +368,30 @@ impl Client {
 impl super::Client for Client {
     fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
         let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-        Box::new(self.client.post(&url).json(&tc).send()
-            .and_then(|mut res| {
+        Box::new(self.client.post(&url).bincode(&tc).unwrap().send()
+            .and_then(|res| {
                 if !res.status().is_success() {
-                    panic!()
+                    panic!("{:?}", res)
                 }
-                res.json()
+                res.into_body().concat2()
+            })
+            .and_then(|body| {
+                Ok(bincode::deserialize(&body).unwrap())
             })
             .map_err(Into::into))
     }
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
         if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
-            Box::new(self.client.post(&url).body(toolchain_bytes).send()
-                .and_then(|mut res| {
+            Box::new(self.client.post(&url).bytes(toolchain_bytes).send()
+                .and_then(|res| {
                     if !res.status().is_success() {
-                        panic!()
+                        panic!("{:?}", res)
                     }
-                    res.json()
+                    res.into_body().concat2()
+                })
+                .and_then(|body| {
+                    Ok(bincode::deserialize(&body).unwrap())
                 })
                 .map_err(Into::into))
         } else {
@@ -300,22 +401,25 @@ impl super::Client for Client {
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
         let url = format!("http://{}/api/v1/distserver/run_job", job_alloc.server_id.addr());
         let outputs = outputs.into_iter().map(|output| output.into_os_string().into_string().unwrap()).collect();
-        let json = serde_json::to_vec(&RunJobHttpRequest { job_id: job_alloc.job_id, command, outputs }).unwrap();
-        let json_length = json.len();
+        let bincode = bincode::serialize(&RunJobHttpRequest { job_id: job_alloc.job_id, command, outputs }, bincode::Infinite).unwrap();
+        let bincode_length = bincode.len();
         let mut inputs = vec![];
         write_inputs(&mut inputs);
 
         let mut body = vec![];
-        body.write_u32::<BigEndian>(json_length as u32).unwrap();
-        body.write(&json).unwrap();
+        body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
+        body.write(&bincode).unwrap();
         body.write(&inputs).unwrap();
 
-        Box::new(self.client.post(&url).body(body).send()
-            .and_then(|mut res| {
+        Box::new(self.client.post(&url).bytes(body).send()
+            .and_then(|res| {
                 if !res.status().is_success() {
-                    panic!()
+                    panic!("{:?}", res)
                 }
-                res.json()
+                res.into_body().concat2()
+            })
+            .and_then(|body| {
+                Ok(bincode::deserialize(&body).unwrap())
             })
             .map_err(Into::into))
     }

@@ -136,7 +136,6 @@ pub struct JobAlloc {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(tag = "status")]
 pub enum AllocJobResult {
     Success { job_alloc: JobAlloc, need_toolchain: bool },
     Fail { msg: String },
@@ -169,7 +168,6 @@ pub struct HeartbeatServerResult;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(tag = "status")]
 pub enum RunJobResult {
     JobNotFound,
     Complete(JobComplete),
@@ -193,7 +191,6 @@ pub struct StatusResult {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(tag = "status")]
 pub enum SubmitToolchainResult {
     Success,
     JobNotFound,
