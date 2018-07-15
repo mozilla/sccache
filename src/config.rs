@@ -74,11 +74,10 @@ pub struct AzureCacheConfig;
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct DiskCacheConfig {
-    #[serde(default = "default_disk_cache_dir")]
     pub dir: PathBuf,
     // TODO: use deserialize_with to allow human-readable sizes in toml
-    #[serde(default = "default_disk_cache_size")]
     pub size: u64,
 }
 
@@ -183,18 +182,37 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DistBuilderType {
+    #[serde(rename = "docker")]
+    Docker,
+    #[serde(rename = "overlay")]
+    Overlay { bubblewrap_path: PathBuf, overlay_dir: PathBuf },
+
+}
+
+impl Default for DistBuilderType {
+    fn default() -> Self {
+        DistBuilderType::Docker
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct DistConfig {
+    pub builder: DistBuilderType,
     pub scheduler_addr: Option<IpAddr>,
-    #[serde(default="default_dist_cache_dir")]
     pub cache_dir: PathBuf,
-    #[serde(default="default_toolchain_cache_size")]
     pub toolchain_cache_size: u64,
 }
 
 impl Default for DistConfig {
     fn default() -> Self {
-        DistConfig {
-            scheduler_addr: None,
+        Self {
+            builder: Default::default(),
+            scheduler_addr: Default::default(),
             cache_dir: default_dist_cache_dir(),
             toolchain_cache_size: default_toolchain_cache_size(),
         }
@@ -204,10 +222,10 @@ impl Default for DistConfig {
 // TODO: fields only pub for tests
 #[derive(Debug, Default)]
 #[derive(Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct FileConfig {
-    #[serde(default)]
     pub cache: CacheConfigs,
-    #[serde(default)]
     pub dist: DistConfig,
 }
 

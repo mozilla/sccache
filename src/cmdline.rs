@@ -17,7 +17,7 @@ use clap::{
     AppSettings,
     Arg,
 };
-use config::CONFIG;
+use config::{self, CONFIG};
 use dist;
 use errors::*;
 use std::env;
@@ -100,8 +100,12 @@ pub fn parse() -> Result<Command> {
     };
     if start_dist_worker {
         if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
-            let builder = dist::build::DockerBuilder::new();
-            let server = dist::Server::new(Box::new(builder));
+            let builder: Box<dist::BuilderIncoming> = match CONFIG.dist.builder {
+                config::DistBuilderType::Docker => Box::new(dist::build::DockerBuilder::new()),
+                config::DistBuilderType::Overlay { ref bubblewrap_path, ref overlay_dir } =>
+                    Box::new(dist::build::OverlayBuilder::new(bubblewrap_path, overlay_dir))
+            };
+            let server = dist::Server::new(builder);
             let http_server = dist::http::Server::new(scheduler_addr, server);
             let _: Void = http_server.start();
         } else {

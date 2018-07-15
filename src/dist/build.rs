@@ -12,15 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crossbeam_utils;
 use dist::cache::TcCache;
+use flate2::read::GzDecoder;
+use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
+use nix;
 use std::collections::HashMap;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::{self, Read};
+use std::iter;
+use std::path::{self, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex};
 use super::{CompileCommand, InputsReader, Toolchain};
 use super::{BuildResult, BuilderIncoming};
+use tar;
 
 use errors::*;
 
@@ -29,6 +36,202 @@ fn check_output(output: &Output) {
         error!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
             String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
         panic!()
+    }
+}
+
+fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
+    let suffixpath = suffix.as_ref();
+    let mut components = suffixpath.components();
+    if suffixpath.has_root() {
+        assert_eq!(components.next(), Some(path::Component::RootDir));
+    }
+    path.join(components)
+}
+
+pub struct OverlayBuilder {
+    bubblewrap: PathBuf,
+    dir: PathBuf,
+    toolchain_dir_map: Mutex<HashMap<Toolchain, (PathBuf, u64)>>, // toolchain_dir, num_builds
+}
+
+#[derive(Debug)]
+struct OverlaySpec {
+    build_dir: PathBuf,
+    toolchain_dir: PathBuf,
+}
+
+impl OverlayBuilder {
+    pub fn new(bubblewrap: &Path, dir: &Path) -> Self {
+        info!("Creating overlay builder");
+
+        if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
+            // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
+            panic!("Please run as root")
+        }
+
+        let bubblewrap = bubblewrap.to_owned();
+        let dir = dir.to_owned();
+
+        // TODO: pidfile
+        let ret = Self {
+            bubblewrap,
+            dir,
+            toolchain_dir_map: Mutex::new(HashMap::new()),
+        };
+        ret.cleanup();
+        fs::create_dir(&ret.dir).unwrap();
+        fs::create_dir(ret.dir.join("builds")).unwrap();
+        fs::create_dir(ret.dir.join("toolchains")).unwrap();
+        ret
+    }
+
+    fn cleanup(&self) {
+        if self.dir.exists() {
+            fs::remove_dir_all(&self.dir).unwrap()
+        }
+    }
+
+    fn prepare_overlay_dirs(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> OverlaySpec {
+        let (toolchain_dir, id) = {
+            let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
+            // Create the toolchain dir (if necessary) while we have an exclusive lock
+            let entry = toolchain_dir_map.entry(tc.clone())
+                .or_insert_with(|| {
+                    trace!("Creating toolchain directory for {}", tc.archive_id);
+                    let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+                    fs::create_dir(&toolchain_dir).unwrap();
+
+                    let mut tccache = tccache.lock().unwrap();
+                    let toolchain_rdr = match tccache.get(&tc.archive_id) {
+                        Ok(rdr) => rdr,
+                        Err(LruError::FileNotInCache) => panic!("expected toolchain, but not available"),
+                        Err(e) => panic!("{}", e),
+                    };
+                    tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir).unwrap();
+
+                    (toolchain_dir, 0)
+                });
+            entry.1 += 1;
+            entry.clone()
+        };
+
+        let build_dir = self.dir.join("builds").join(format!("{}-{}", tc.archive_id, id));
+        fs::create_dir(&build_dir).unwrap();
+        OverlaySpec { build_dir, toolchain_dir }
+    }
+
+    fn perform_build(bubblewrap: &Path, compile_command: CompileCommand, inputs_rdr: InputsReader, output_paths: Vec<String>, overlay: &OverlaySpec) -> BuildResult {
+        trace!("Compile environment: {:?}", compile_command.env_vars);
+        trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
+
+        crossbeam_utils::scoped::scope(|scope| { scope.spawn(|| {
+
+            // Now mounted filesystems will be automatically unmounted when this thread dies
+            // (and tmpfs filesystems will be completely destroyed)
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS).unwrap();
+            // Make sure that all future mount changes are private to this namespace
+            // TODO: shouldn't need to add these annotations
+            let source: Option<&str> = None;
+            let fstype: Option<&str> = None;
+            let data: Option<&str> = None;
+            nix::mount::mount(source, "/", fstype, nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_PRIVATE, data).unwrap();
+
+            let work_dir = overlay.build_dir.join("work");
+            let upper_dir = overlay.build_dir.join("upper");
+            let target_dir = overlay.build_dir.join("target");
+            fs::create_dir(&work_dir).unwrap();
+            fs::create_dir(&upper_dir).unwrap();
+            fs::create_dir(&target_dir).unwrap();
+
+            let () = Overlay::writable(
+                iter::once(overlay.toolchain_dir.as_path()),
+                upper_dir,
+                work_dir,
+                &target_dir,
+            ).mount().unwrap();
+
+            trace!("copying in inputs");
+            // Note that we don't unpack directly into the upperdir since there overlayfs has some
+            // special marker files that we don't want to create by accident (or malicious intent)
+            tar::Archive::new(inputs_rdr).unpack(&target_dir).unwrap();
+
+            let CompileCommand { executable, arguments, env_vars, cwd } = compile_command;
+            let cwd = Path::new(&cwd);
+
+            trace!("creating output directories");
+            fs::create_dir_all(join_suffix(&target_dir, cwd)).unwrap();
+            for path in output_paths.iter() {
+                fs::create_dir_all(join_suffix(&target_dir, cwd.join(Path::new(path).parent().unwrap()))).unwrap();
+            }
+
+            trace!("performing compile");
+            // Bubblewrap notes:
+            // - We're running as uid 0 (to do the mounts above), and so bubblewrap is run as uid 0
+            // - There's special handling in bubblewrap to compare uid and euid - of interest to us,
+            //   if uid == euid == 0, bubblewrap preserves capabilities (not good!)
+            // - By entering a new user namespace, your set of capabilities do not apply to any
+            //   other user namespace, i.e. you lose privileges
+            // - --unshare-all attempts to drop everything, but we *must* make sure we've gone into
+            //   a new user namespace (because of capabilities) so we override the 'try' mode
+            let mut cmd = Command::new(bubblewrap);
+            cmd
+                .args(&["--die-with-parent", "--unshare-all", "--unshare-user"])
+                .args(&["--proc", "/proc", "--dev", "/dev"])
+                .arg("--bind").arg(&target_dir).arg("/")
+                .arg("--chdir").arg(cwd);
+
+            for (k, v) in env_vars {
+                cmd.arg("--setenv").arg(k).arg(v);
+            }
+            cmd.arg("--");
+            cmd.arg(executable);
+            cmd.args(arguments);
+            let compile_output = cmd.output().unwrap();
+            trace!("compile_output: {:?}", compile_output);
+
+            let mut outputs = vec![];
+            trace!("retrieving {:?}", output_paths);
+            for path in output_paths {
+                let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
+                match fs::File::open(abspath) {
+                    Ok(mut file) => {
+                        let mut output = vec![];
+                        file.read_to_end(&mut output).unwrap();
+                        outputs.push((path, output))
+                    },
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::NotFound {
+                            debug!("Missing output path {:?}", path)
+                        } else {
+                            panic!(e)
+                        }
+                    },
+                }
+            }
+            BuildResult { output: compile_output.into(), outputs }
+
+        }).join().unwrap() })
+    }
+
+    fn finish_overlay(&self, _tc: &Toolchain, overlay: OverlaySpec) {
+        // TODO: collect toolchain directories
+
+        let OverlaySpec { build_dir, toolchain_dir: _ } = overlay;
+        fs::remove_dir_all(build_dir).unwrap();
+    }
+}
+
+impl BuilderIncoming for OverlayBuilder {
+    // From Server
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
+        debug!("Preparing overlay");
+        let overlay = self.prepare_overlay_dirs(&tc, tccache);
+        debug!("Performing build in {:?}", overlay);
+        let res = Self::perform_build(&self.bubblewrap, command, inputs_rdr, outputs, &overlay);
+        debug!("Finishing with overlay");
+        self.finish_overlay(&tc, overlay);
+        debug!("Returning result");
+        Ok(res)
     }
 }
 
@@ -42,6 +245,8 @@ impl DockerBuilder {
     // having locked a pidfile, or at minimum should loudly detect other running
     // instances - pidfile in /tmp
     pub fn new() -> Self {
+        info!("Creating docker builder");
+
         let ret = Self {
             image_map: Mutex::new(HashMap::new()),
             container_lists: Mutex::new(HashMap::new()),
@@ -107,7 +312,7 @@ impl DockerBuilder {
     // If we have a spare running container, claim it and remove it from the available list,
     // otherwise try and create a new container (possibly creating the Docker image along
     // the way)
-    fn get_container(&self, tc: &Toolchain, cache: &Mutex<TcCache>) -> String {
+    fn get_container(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> String {
         let container = {
             let mut map = self.container_lists.lock().unwrap();
             map.entry(tc.clone()).or_insert_with(Vec::new).pop()
@@ -121,7 +326,7 @@ impl DockerBuilder {
                     let mut map = self.image_map.lock().unwrap();
                     map.entry(tc.clone()).or_insert_with(|| {
                         info!("Creating Docker image for {:?} (may block requests)", tc);
-                        Self::make_image(tc, cache)
+                        Self::make_image(tc, tccache)
                     }).clone()
                 };
                 Self::start_container(&image)
@@ -193,7 +398,7 @@ impl DockerBuilder {
         self.container_lists.lock().unwrap().get_mut(&tc).unwrap().push(cid);
     }
 
-    fn make_image(tc: &Toolchain, cache: &Mutex<TcCache>) -> String {
+    fn make_image(tc: &Toolchain, tccache: &Mutex<TcCache>) -> String {
         let cid = {
             let output = Command::new("docker").args(&["create", &tc.docker_img, "/busybox", "true"]).output().unwrap();
             check_output(&output);
@@ -201,8 +406,8 @@ impl DockerBuilder {
             stdout.trim().to_owned()
         };
 
-        let mut toolchain_cache = cache.lock().unwrap();
-        let toolchain_reader = match toolchain_cache.get(&tc.archive_id) {
+        let mut tccache = tccache.lock().unwrap();
+        let toolchain_rdr = match tccache.get(&tc.archive_id) {
             Ok(rdr) => rdr,
             Err(LruError::FileNotInCache) => panic!("expected toolchain, but not available"),
             Err(e) => panic!("{}", e),
@@ -210,7 +415,7 @@ impl DockerBuilder {
 
         trace!("Copying in toolchain");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
-        io::copy(&mut {toolchain_reader}, &mut process.stdin.take().unwrap()).unwrap();
+        io::copy(&mut {toolchain_rdr}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         check_output(&output);
 
@@ -236,21 +441,22 @@ impl DockerBuilder {
     }
 
     fn perform_build(compile_command: CompileCommand, inputs_rdr: InputsReader, output_paths: Vec<String>, cid: &str) -> BuildResult {
-        let cwd = PathBuf::from(compile_command.cwd);
-
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
-        trace!("copying in build dir");
+        trace!("copying in inputs");
         let mut process = Command::new("docker").args(&["cp", "-", &format!("{}:/", cid)]).stdin(Stdio::piped()).spawn().unwrap();
         io::copy(&mut {inputs_rdr}, &mut process.stdin.take().unwrap()).unwrap();
         let output = process.wait_with_output().unwrap();
         check_output(&output);
 
+        let CompileCommand { executable, arguments, env_vars, cwd } = compile_command;
+        let cwd = Path::new(&cwd);
+
         trace!("creating output directories");
         assert!(!output_paths.is_empty());
         let mut cmd = Command::new("docker");
-        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(&cwd);
+        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(cwd);
         for path in output_paths.iter() {
             cmd.arg(cwd.join(Path::new(path).parent().unwrap()));
         }
@@ -261,7 +467,7 @@ impl DockerBuilder {
         // TODO: likely shouldn't perform the compile as root in the container
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
-        for (k, v) in compile_command.env_vars {
+        for (k, v) in env_vars {
             let mut env = k;
             env.push('=');
             env.push_str(&v);
@@ -269,19 +475,19 @@ impl DockerBuilder {
         }
         let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
         cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
-        cmd.arg(&compile_command.executable);
-        cmd.arg(&cwd);
-        cmd.arg(compile_command.executable);
-        cmd.args(compile_command.arguments);
+        cmd.arg(&executable);
+        cmd.arg(cwd);
+        cmd.arg(executable);
+        cmd.args(arguments);
         let compile_output = cmd.output().unwrap();
         trace!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
         trace!("retrieving {:?}", output_paths);
         for path in output_paths {
-            let dockerpath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
+            let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
             // TODO: this isn't great, but cp gives it out as a tar
-            let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(dockerpath).output().unwrap();
+            let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(abspath).output().unwrap();
             if output.status.success() {
                 outputs.push((path, output.stdout))
             } else {
@@ -295,9 +501,9 @@ impl DockerBuilder {
 
 impl BuilderIncoming for DockerBuilder {
     // From Server
-    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> Result<BuildResult> {
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
         debug!("Finding container");
-        let cid = self.get_container(&tc, cache);
+        let cid = self.get_container(&tc, tccache);
         debug!("Performing build with container {}", cid);
         let res = Self::perform_build(command, inputs_rdr, outputs, &cid);
         debug!("Finishing with container {}", cid);
