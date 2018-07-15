@@ -37,13 +37,11 @@ mod test;
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
-// TODO: remove docker_img
 // TODO: make archive_id validate that it's just a bunch of hex chars
 #[derive(Debug, Hash, Eq, PartialEq)]
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
-    pub docker_img: String,
     pub archive_id: String,
 }
 
@@ -363,6 +361,7 @@ impl SchedulerIncoming for Scheduler {
         let job_alloc = JobAlloc { job_id, server_id };
         Ok(AllocJobResult::Success { job_alloc, need_toolchain })
     }
+
     fn handle_status(&self) -> Result<StatusResult> {
         Ok(StatusResult {
             num_servers: self.servers.lock().unwrap().len(),

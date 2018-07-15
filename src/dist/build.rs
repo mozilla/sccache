@@ -235,6 +235,8 @@ impl BuilderIncoming for OverlayBuilder {
     }
 }
 
+const BASE_DOCKER_IMAGE: &str = "aidanhs/busybox";
+
 pub struct DockerBuilder {
     image_map: Mutex<HashMap<Toolchain, String>>,
     container_lists: Mutex<HashMap<Toolchain, Vec<String>>>,
@@ -400,7 +402,7 @@ impl DockerBuilder {
 
     fn make_image(tc: &Toolchain, tccache: &Mutex<TcCache>) -> String {
         let cid = {
-            let output = Command::new("docker").args(&["create", &tc.docker_img, "/busybox", "true"]).output().unwrap();
+            let output = Command::new("docker").args(&["create", BASE_DOCKER_IMAGE, "/busybox", "true"]).output().unwrap();
             check_output(&output);
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()

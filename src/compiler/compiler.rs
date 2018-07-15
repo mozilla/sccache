@@ -254,10 +254,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
                         // TODO: put on a thread
                         let archive_id = dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}).unwrap();
-                        let dist_toolchain = dist::Toolchain {
-                            docker_img: "aidanhs/busybox".to_owned(),
-                            archive_id,
-                        };
+                        let dist_toolchain = dist::Toolchain { archive_id };
                         Box::new(dist_client.do_alloc_job(dist_toolchain.clone())
                             .and_then(move |jares| {
                                 debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
