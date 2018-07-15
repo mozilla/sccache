@@ -23,6 +23,7 @@ extern crate bytes;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
+extern crate crossbeam_utils;
 #[cfg(feature = "rust-crypto")]
 extern crate crypto;
 #[cfg(unix)]
@@ -32,6 +33,7 @@ extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
 extern crate filetime;
+extern crate flate2;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
@@ -39,6 +41,8 @@ extern crate futures_cpupool;
 extern crate hyper;
 #[cfg(feature = "hyper-tls")]
 extern crate hyper_tls;
+#[cfg(test)]
+extern crate itertools;
 #[cfg(feature = "jsonwebtoken")]
 extern crate jsonwebtoken as jwt;
 #[cfg(windows)]
@@ -48,15 +52,15 @@ extern crate lazy_static;
 extern crate local_encoding;
 #[macro_use]
 extern crate log;
-extern crate lru_disk_cache;
-#[cfg(test)]
-extern crate itertools;
+extern crate libmount;
 extern crate libc;
+extern crate lru_disk_cache;
 #[cfg(feature = "memcached")]
 extern crate memcached;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate native_tls;
+extern crate nix;
 extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]

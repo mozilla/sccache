@@ -66,20 +66,24 @@ impl Cfg {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HeartbeatServerHttpRequest {
     num_cpus: usize,
     port: u16,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AllocJobHttpRequest {
     pub toolchain: Toolchain,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssignJobHttpRequest {
     job_id: JobId,
     toolchain: Toolchain,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunJobHttpRequest {
     job_id: JobId,
     command: CompileCommand,

@@ -37,8 +37,11 @@ mod test;
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
+// TODO: remove docker_img
+// TODO: make archive_id validate that it's just a bunch of hex chars
 #[derive(Debug, Hash, Eq, PartialEq)]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub docker_img: String,
     pub archive_id: String,
@@ -46,6 +49,7 @@ pub struct Toolchain {
 
 #[derive(Hash, Eq, PartialEq)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobId(u64);
 impl fmt::Display for JobId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -60,6 +64,7 @@ impl FromStr for JobId {
 }
 #[derive(Hash, Eq, PartialEq)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerId(SocketAddr);
 impl ServerId {
     fn addr(&self) -> SocketAddr {
@@ -70,6 +75,7 @@ impl ServerId {
 const MAX_PER_CORE_LOAD: f64 = 10f64;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompileCommand {
     pub executable: String,
     pub arguments: Vec<String>,
@@ -98,6 +104,7 @@ impl CompileCommand {
 
 // process::Output is not serialize
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessOutput {
     code: Option<i32>, // TODO: extract the extra info from the UnixCommandExt
     stdout: Vec<u8>,
@@ -122,11 +129,13 @@ impl From<ProcessOutput> for process::Output {
 // AllocJob
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobAlloc {
     job_id: JobId,
     server_id: ServerId,
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "status")]
 pub enum AllocJobResult {
     Success { job_alloc: JobAlloc, need_toolchain: bool },
@@ -136,6 +145,7 @@ pub enum AllocJobResult {
 // AssignJob
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssignJobResult {
     need_toolchain: bool,
 }
@@ -158,12 +168,14 @@ pub struct HeartbeatServerResult;
 // RunJob
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "status")]
 pub enum RunJobResult {
     JobNotFound,
     Complete(JobComplete),
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobComplete {
     pub output: ProcessOutput,
     pub outputs: Vec<(String, Vec<u8>)>,
@@ -172,6 +184,7 @@ pub struct JobComplete {
 // Status
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusResult {
     num_servers: usize,
 }
@@ -179,6 +192,7 @@ pub struct StatusResult {
 // SubmitToolchain
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "status")]
 pub enum SubmitToolchainResult {
     Success,
@@ -207,7 +221,7 @@ impl<'a> Read for ToolchainReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
 
-pub struct InputsReader<'a>(Box<Read + 'a>);
+pub struct InputsReader<'a>(Box<Read + Send + 'a>);
 impl<'a> Read for InputsReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
@@ -242,6 +256,7 @@ pub trait ServerIncoming: Send + Sync {
 
 pub trait BuilderIncoming: Send + Sync {
     // From Server
+    // TODO: outputs should be a vec of some pre-sanitised AbsPath type
     fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> Result<BuildResult>;
 }
 
