@@ -45,8 +45,6 @@
 //! then create an `Arc<Mutex<MockCommandCreator>>` and safely provide
 //! `MockChild` outputs.
 
-#[cfg(unix)]
-use libc;
 use errors::*;
 use futures::future::{self, Future};
 use jobserver::{Acquired, Client};
@@ -327,20 +325,18 @@ impl CommandCreatorSync for ProcessCommandCreator {
 }
 
 #[cfg(unix)]
-pub type ExitStatusValue = libc::c_int;
-
+use std::os::unix::process::ExitStatusExt;
 #[cfg(windows)]
-// DWORD
+use std::os::windows::process::ExitStatusExt;
+
+#[cfg(unix)]
+pub type ExitStatusValue = i32;
+#[cfg(windows)]
 pub type ExitStatusValue = u32;
 
 #[allow(dead_code)]
-struct InnerExitStatus(ExitStatusValue);
-
-/// Hack until `ExitStatus::from_raw()` is stable.
-#[allow(dead_code)]
 pub fn exit_status(v : ExitStatusValue) -> ExitStatus {
-    use std::mem::transmute;
-    unsafe { transmute(InnerExitStatus(v)) }
+    ExitStatus::from_raw(v)
 }
 
 /// A struct that mocks `std::process::Child`.
