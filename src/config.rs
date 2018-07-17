@@ -182,27 +182,9 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum DistBuilderType {
-    #[serde(rename = "docker")]
-    Docker,
-    #[serde(rename = "overlay")]
-    Overlay { bubblewrap_path: PathBuf, overlay_dir: PathBuf },
-
-}
-
-impl Default for DistBuilderType {
-    fn default() -> Self {
-        DistBuilderType::Docker
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
-    pub builder: DistBuilderType,
     pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
     pub toolchain_cache_size: u64,
@@ -211,7 +193,6 @@ pub struct DistConfig {
 impl Default for DistConfig {
     fn default() -> Self {
         Self {
-            builder: Default::default(),
             scheduler_addr: Default::default(),
             cache_dir: default_dist_cache_dir(),
             toolchain_cache_size: default_toolchain_cache_size(),

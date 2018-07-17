@@ -36,9 +36,14 @@ use serde_json;
 #[cfg(feature = "redis")]
 use redis;
 use reqwest;
+use sccache_dist;
 use tempfile;
 
 error_chain! {
+    links {
+        Dist(sccache_dist::errors::Error, sccache_dist::errors::ErrorKind);
+    }
+
     foreign_links {
         Hyper(hyper::Error) #[cfg(feature = "hyper")];
         Io(io::Error);
@@ -62,7 +67,6 @@ error_chain! {
             display("didn't get a successful HTTP status, got `{}`", status)
         }
         ProcessError(output: process::Output)
-        DistError(msg: String) // TODO: make this not a string
     }
 }
 
@@ -91,7 +95,7 @@ macro_rules! ftry {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())),
+            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>
         }
     }
 }

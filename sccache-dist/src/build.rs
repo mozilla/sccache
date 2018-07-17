@@ -13,11 +13,15 @@
 // limitations under the License.
 
 use crossbeam_utils;
-use dist::cache::TcCache;
 use flate2::read::GzDecoder;
 use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
 use nix;
+use dist::{
+    DistResult,
+    BuildResult, CompileCommand, InputsReader, TcCache, Toolchain,
+    BuilderIncoming,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
@@ -25,11 +29,9 @@ use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex};
-use super::{CompileCommand, InputsReader, Toolchain};
-use super::{BuildResult, BuilderIncoming};
 use tar;
 
-use errors::*;
+//use errors::*;
 
 fn check_output(output: &Output) {
     if !output.status.success() {
@@ -48,16 +50,16 @@ fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
     path.join(components)
 }
 
-pub struct OverlayBuilder {
-    bubblewrap: PathBuf,
-    dir: PathBuf,
-    toolchain_dir_map: Mutex<HashMap<Toolchain, (PathBuf, u64)>>, // toolchain_dir, num_builds
-}
-
 #[derive(Debug)]
 struct OverlaySpec {
     build_dir: PathBuf,
     toolchain_dir: PathBuf,
+}
+
+pub struct OverlayBuilder {
+    bubblewrap: PathBuf,
+    dir: PathBuf,
+    toolchain_dir_map: Mutex<HashMap<Toolchain, (PathBuf, u64)>>, // toolchain_dir, num_builds
 }
 
 impl OverlayBuilder {
@@ -223,7 +225,7 @@ impl OverlayBuilder {
 
 impl BuilderIncoming for OverlayBuilder {
     // From Server
-    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> DistResult<BuildResult> {
         debug!("Preparing overlay");
         let overlay = self.prepare_overlay_dirs(&tc, tccache);
         debug!("Performing build in {:?}", overlay);
@@ -503,7 +505,7 @@ impl DockerBuilder {
 
 impl BuilderIncoming for DockerBuilder {
     // From Server
-    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> DistResult<BuildResult> {
         debug!("Finding container");
         let cid = self.get_container(&tc, tccache);
         debug!("Performing build with container {}", cid);

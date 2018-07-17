@@ -23,7 +23,7 @@ use std;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 use super::cache;
@@ -356,17 +356,17 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr) -> Self {
+    pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64) -> Self {
         Self {
             scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
             client: reqwest::unstable::async::Client::new(handle),
-            tc_cache: cache::ClientToolchainCache::new(),
+            tc_cache: cache::ClientToolchainCache::new(cache_dir, cache_size),
         }
     }
 }
 
 impl super::Client for Client {
-    fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+    fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult> {
         let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
         Box::new(self.client.post(&url).bincode(&tc).unwrap().send()
             .and_then(|res| {
@@ -380,7 +380,7 @@ impl super::Client for Client {
             })
             .map_err(Into::into))
     }
-    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
         if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
             Box::new(self.client.post(&url).bytes(toolchain_bytes).send()
@@ -398,7 +398,7 @@ impl super::Client for Client {
             f_err("couldn't find toolchain locally")
         }
     }
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult> {
         let url = format!("http://{}/api/v1/distserver/run_job", job_alloc.server_id.addr());
         let outputs = outputs.into_iter().map(|output| output.into_os_string().into_string().unwrap()).collect();
         let bincode = bincode::serialize(&RunJobHttpRequest { job_id: job_alloc.job_id, command, outputs }, bincode::Infinite).unwrap();

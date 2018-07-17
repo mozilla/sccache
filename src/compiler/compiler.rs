@@ -240,6 +240,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 let compile_out_pretty = out_pretty.clone();
                 let compile_out_pretty2 = out_pretty.clone();
                 let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+                // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait
                 let compile =
                     future::result(
                         dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into())
@@ -253,12 +254,12 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                     .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
                         debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
                         // TODO: put on a thread
-                        let archive_id = dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}).unwrap();
+                        let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}));
                         let dist_toolchain = dist::Toolchain { archive_id };
-                        Box::new(dist_client.do_alloc_job(dist_toolchain.clone())
+                        Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
                             .and_then(move |jares| {
                                 debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
-                                match jares {
+                                let alloc = match jares {
                                     dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
                                         Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
                                             .map(move |res| {
@@ -267,12 +268,15 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                                     dist::SubmitToolchainResult::JobNotFound |
                                                     dist::SubmitToolchainResult::CannotCache => panic!(),
                                                 }
-                                            })),
+                                            }).map_err(Into::into)),
                                     dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
                                     dist::AllocJobResult::Fail { msg: _ } => panic!(),
-                                }.and_then(move |job_alloc| {
-                                    dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
-                                })
+                                };
+                                alloc
+                                    .and_then(move |job_alloc| {
+                                        dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
+                                            .map_err(Into::into)
+                                    })
                             }).map(move |jres| {
                                 let jc = match jres {
                                     dist::RunJobResult::Complete(jc) => jc,
