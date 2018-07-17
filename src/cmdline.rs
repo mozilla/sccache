@@ -17,8 +17,6 @@ use clap::{
     AppSettings,
     Arg,
 };
-use config::{self, CONFIG};
-use dist;
 use errors::*;
 use std::env;
 use std::ffi::OsString;
@@ -88,39 +86,10 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                 )
 }
 
-enum Void {}
-
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Result<Command> {
     trace!("parse");
     let cwd = env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
-    let start_dist_worker = match env::var("SCCACHE_START_DIST_SERVER") {
-        Ok(val) => val == "1",
-        Err(_) => false,
-    };
-    if start_dist_worker {
-        if let Some(scheduler_addr) = CONFIG.dist.scheduler_addr {
-            let builder: Box<dist::BuilderIncoming> = match CONFIG.dist.builder {
-                config::DistBuilderType::Docker => Box::new(dist::build::DockerBuilder::new()),
-                config::DistBuilderType::Overlay { ref bubblewrap_path, ref overlay_dir } =>
-                    Box::new(dist::build::OverlayBuilder::new(bubblewrap_path, overlay_dir))
-            };
-            let server = dist::Server::new(builder);
-            let http_server = dist::http::Server::new(scheduler_addr, server);
-            let _: Void = http_server.start();
-        } else {
-            bail!("Cannot start dist worker without a configured scheduler")
-        }
-    }
-    let start_scheduler = match env::var("SCCACHE_START_SCHEDULER") {
-        Ok(val) => val == "1",
-        Err(_) => false,
-    };
-    if start_scheduler {
-        let scheduler = dist::Scheduler::new();
-        let http_scheduler = dist::http::Scheduler::new(scheduler);
-        let _: Void = http_scheduler.start();
-    }
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",

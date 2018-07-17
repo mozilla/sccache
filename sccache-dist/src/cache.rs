@@ -1,43 +1,41 @@
-use config::CONFIG;
-use futures::Future;
-use futures_cpupool::CpuPool;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::Result as LruResult;
+use ring::digest::{SHA512, Context};
 use serde_json;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use util;
 
 use errors::*;
 
 // TODO: possibly shouldn't be public
 pub struct ClientToolchainCache {
-    client_cache_dir: PathBuf,
+    cache_dir: PathBuf,
     cache: Mutex<TcCache>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     weak_map: Mutex<HashMap<String, String>>,
 }
 
 impl ClientToolchainCache {
-    pub fn new() -> Self {
-        let client_cache_dir = CONFIG.dist.cache_dir.join("client");
-        fs::create_dir_all(&client_cache_dir).unwrap();
+    pub fn new(cache_dir: &Path, cache_size: u64) -> Self {
+        let cache_dir = cache_dir.to_owned();
+        fs::create_dir_all(&cache_dir).unwrap();
 
-        let weak_map_path = client_cache_dir.join("weak_map.json");
+        let weak_map_path = cache_dir.join("weak_map.json");
         if !weak_map_path.exists() {
             fs::File::create(&weak_map_path).unwrap().write_all(b"{}").unwrap()
         }
         let weak_map = serde_json::from_reader(fs::File::open(weak_map_path).unwrap()).unwrap();
 
-        let cache = Mutex::new(TcCache::new(&client_cache_dir).unwrap());
+        let tc_cache_dir = cache_dir.join("tc");
+        let cache = Mutex::new(TcCache::new(&tc_cache_dir, cache_size).unwrap());
 
         Self {
-            client_cache_dir,
+            cache_dir,
             cache,
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
@@ -84,24 +82,50 @@ impl ClientToolchainCache {
     fn record_weak(&self, weak_key: String, key: String) {
         let mut weak_map = self.weak_map.lock().unwrap();
         weak_map.insert(weak_key, key);
-        let weak_map_path = self.client_cache_dir.join("weak_map.json");
+        let weak_map_path = self.cache_dir.join("weak_map.json");
         serde_json::to_writer(fs::File::create(weak_map_path).unwrap(), &*weak_map).unwrap()
+    }
+}
+
+// Partially copied from util.rs
+fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
+    let mut m = Context::new(&SHA512);
+    let mut reader = BufReader::new(rdr);
+    loop {
+        let mut buffer = [0; 1024];
+        let count = reader.read(&mut buffer[..])?;
+        if count == 0 {
+            break;
+        }
+        m.update(&buffer[..count]);
+    }
+    Ok(hex(m.finish().as_ref()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        s.push(hex(byte & 0xf));
+        s.push(hex((byte >> 4)& 0xf));
+    }
+    return s;
+
+    fn hex(byte: u8) -> char {
+        match byte {
+            0...9 => (b'0' + byte) as char,
+            _ => (b'a' + byte - 10) as char,
+        }
     }
 }
 
 pub struct TcCache {
     inner: LruDiskCache,
-    pool: CpuPool,
 }
 
 impl TcCache {
-    pub fn new(cache_dir: &Path) -> Result<TcCache> {
-        let d = cache_dir.join("tc");
-        let cache_size = CONFIG.dist.toolchain_cache_size;
-        trace!("Using TcCache({:?}, {})", d, cache_size);
-        // TODO: pass this in from the global pool
-        let pool = CpuPool::new(1);
-        Ok(TcCache { inner: LruDiskCache::new(d, cache_size)?, pool })
+    pub fn new(cache_dir: &Path, cache_size: u64) -> Result<TcCache> {
+        trace!("Using TcCache({:?}, {})", cache_dir, cache_size);
+        Ok(TcCache { inner: LruDiskCache::new(cache_dir, cache_size)? })
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
@@ -109,10 +133,8 @@ impl TcCache {
     }
 
     fn file_key<RS: ReadSeek + 'static>(&self, rs: RS) -> Result<String> {
-        // TODO: should be dispatched on the event loop rather than relying on it being
-        // dispatched on a cpu pool (`.wait()` could end up blocking)
-        // TODO: should also really explicitly pick the hash
-        util::Digest::reader(rs, &self.pool).wait()
+        // TODO: should explicitly pick the hash
+        hash_reader(rs)
     }
 
     pub fn insert_with<F: FnOnce(File) -> io::Result<()>>(&mut self, key: &str, with: F) -> Result<()> {

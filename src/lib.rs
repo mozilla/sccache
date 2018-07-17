@@ -23,7 +23,6 @@ extern crate bytes;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
-extern crate crossbeam_utils;
 #[cfg(feature = "rust-crypto")]
 extern crate crypto;
 #[cfg(unix)]
@@ -33,7 +32,6 @@ extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
 extern crate filetime;
-extern crate flate2;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
@@ -52,7 +50,6 @@ extern crate lazy_static;
 extern crate local_encoding;
 #[macro_use]
 extern crate log;
-extern crate libmount;
 extern crate libc;
 extern crate lru_disk_cache;
 #[cfg(feature = "memcached")]
@@ -60,7 +57,6 @@ extern crate memcached;
 #[cfg(windows)]
 extern crate mio_named_pipes;
 extern crate native_tls;
-extern crate nix;
 extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]
@@ -71,8 +67,7 @@ extern crate redis;
 extern crate regex;
 extern crate reqwest;
 extern crate retry;
-#[macro_use]
-extern crate rouille;
+extern crate sccache_dist;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]

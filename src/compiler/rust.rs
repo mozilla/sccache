@@ -767,7 +767,6 @@ mod test {
     use super::*;
 
     use compiler::*;
-    use dist;
     use itertools::Itertools;
     use mock_command::*;
     use std::ffi::OsStr;

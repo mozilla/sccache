@@ -1,0 +1,286 @@
+// Copyright 2016 Mozilla Foundation
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+extern crate bincode;
+extern crate byteorder;
+#[macro_use]
+extern crate error_chain;
+extern crate futures;
+#[macro_use]
+extern crate log;
+extern crate lru_disk_cache;
+extern crate num_cpus;
+extern crate reqwest;
+extern crate ring;
+#[macro_use]
+extern crate rouille;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_json;
+extern crate tokio_core;
+
+pub use cache::TcCache;
+use std::fmt;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::net::SocketAddr;
+use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
+use std::process;
+use std::str::FromStr;
+use std::sync::Mutex;
+
+use errors::*;
+
+mod cache;
+pub mod errors;
+pub mod http;
+#[cfg(test)]
+mod test;
+
+pub type DistResult<T> = Result<T>;
+
+// TODO: Clone by assuming immutable/no GC for now
+// TODO: make fields non-public?
+// TODO: make archive_id validate that it's just a bunch of hex chars
+#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Toolchain {
+    pub archive_id: String,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobId(pub u64);
+impl fmt::Display for JobId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl FromStr for JobId {
+    type Err = <u64 as FromStr>::Err;
+    fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+        u64::from_str(s).map(JobId)
+    }
+}
+#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerId(pub SocketAddr);
+impl ServerId {
+    fn addr(&self) -> SocketAddr {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileCommand {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub env_vars: Vec<(String, String)>,
+    pub cwd: String,
+}
+
+// process::Output is not serialize
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessOutput {
+    code: Option<i32>, // TODO: extract the extra info from the UnixCommandExt
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+impl From<process::Output> for ProcessOutput {
+    fn from(o: process::Output) -> Self {
+        ProcessOutput { code: o.status.code(), stdout: o.stdout, stderr: o.stderr }
+    }
+}
+impl From<ProcessOutput> for process::Output {
+    fn from(o: ProcessOutput) -> Self {
+        // TODO: handle signals, i.e. None code
+        process::Output { status: process::ExitStatus::from_raw(o.code.unwrap()), stdout: o.stdout, stderr: o.stderr }
+    }
+}
+
+// TODO: standardise on compressed or not for inputs and toolchain
+
+// TODO: make fields not public
+
+// AllocJob
+
+#[derive(Copy, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobAlloc {
+    pub job_id: JobId,
+    pub server_id: ServerId,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AllocJobResult {
+    Success { job_alloc: JobAlloc, need_toolchain: bool },
+    Fail { msg: String },
+}
+
+// AssignJob
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignJobResult {
+    pub need_toolchain: bool,
+}
+
+// JobStatus
+
+pub enum JobStatus {
+    Pending,
+    Started,
+    Complete,
+}
+#[derive(Clone)]
+pub struct UpdateJobStatusResult;
+
+// HeartbeatServer
+
+#[derive(Clone)]
+pub struct HeartbeatServerResult;
+
+// RunJob
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum RunJobResult {
+    JobNotFound,
+    Complete(JobComplete),
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobComplete {
+    pub output: ProcessOutput,
+    pub outputs: Vec<(String, Vec<u8>)>,
+}
+
+// Status
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusResult {
+    pub num_servers: usize,
+}
+
+// SubmitToolchain
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum SubmitToolchainResult {
+    Success,
+    JobNotFound,
+    CannotCache,
+}
+
+///////////////////
+
+// BuildResult
+
+pub struct BuildResult {
+    pub output: ProcessOutput,
+    pub outputs: Vec<(String, Vec<u8>)>,
+}
+
+///////////////////
+
+// TODO: it's unfortunate all these are public, but in order to describe the trait
+// bound on the instance (e.g. scheduler) we pass to the actual communication (e.g.
+// http implementation) they need to be public, which has knock-on effects for private
+// structs
+
+pub struct ToolchainReader<'a>(Box<Read + 'a>);
+impl<'a> Read for ToolchainReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+}
+
+pub struct InputsReader<'a>(Box<Read + Send + 'a>);
+impl<'a> Read for InputsReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+}
+
+pub trait SchedulerOutgoing {
+    // To Server
+    fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+}
+
+pub trait ServerOutgoing {
+    // To Scheduler
+    fn do_update_job_status(&self, job_id: JobId, status: JobStatus) -> Result<UpdateJobStatusResult>;
+}
+
+pub trait SchedulerIncoming: Send + Sync {
+    // From Client
+    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult>;
+    // From Server
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> Result<HeartbeatServerResult>;
+    // From anyone
+    fn handle_status(&self) -> Result<StatusResult>;
+}
+
+pub trait ServerIncoming: Send + Sync {
+    // From Scheduler
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+    // From Client
+    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult>;
+    // From Client
+    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult>;
+}
+
+pub trait BuilderIncoming: Send + Sync {
+    // From Server
+    // TODO: outputs should be a vec of some pre-sanitised AbsPath type
+    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> Result<BuildResult>;
+}
+
+/////////
+
+pub trait Client {
+    // To Scheduler
+    fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult>;
+    // To Server
+    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult>;
+    // To Server
+    // TODO: ideally Box<FnOnce or FnBox
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult>;
+
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String>;
+}
+
+/////////
+
+pub struct NoopClient;
+
+impl Client for NoopClient {
+    fn do_alloc_job(&self, _tc: Toolchain) -> SDFuture<AllocJobResult> {
+        f_ok(AllocJobResult::Fail { msg: "Using NoopClient".to_string() })
+    }
+    fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
+        panic!("NoopClient");
+    }
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<PathBuf>, _write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult> {
+        panic!("NoopClient");
+    }
+
+    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
+        bail!("NoopClient");
+    }
+}

@@ -418,7 +418,7 @@ pub fn generate_compile_commands(executable: &Path,
         }
     }
     assert!(lang_next);
-    let dist_command = dist::CompileCommand::try_from_compiler(dist_command);
+    let dist_command = dist::try_compile_command_to_dist(dist_command);
 
     Ok((command, dist_command, Cacheable::Yes))
 }
