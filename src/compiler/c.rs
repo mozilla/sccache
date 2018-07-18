@@ -13,14 +13,13 @@
 // limitations under the License.
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
-               Compilation, HashResult};
+               pkg::CompilerPackager, Compilation, HashResult};
 use dist;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File};
@@ -257,30 +256,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
             // executable path to try and prevent this
             let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
-            let env_executable = executable.clone();
-            #[cfg(windows)]
-            let toolchain_creator = Box::new(|_| Err(io::Error::new(io::ErrorKind::Other, "packaging not supported on Windows")));
-            // TODO: detect OSX
-            #[cfg(unix)]
-            let toolchain_creator = Box::new(move |f| {
-                use std::os::unix::ffi::OsStrExt;
-                info!("Packaging C compiler");
-                // TODO: write our own, since this is GPL
-                let curdir = env::current_dir().unwrap();
-                env::set_current_dir("/tmp").unwrap();
-                let output = process::Command::new("icecc-create-env").arg(&env_executable).output().unwrap();
-                if !output.status.success() {
-                    println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
-                    panic!("failed to create toolchain")
-                }
-                let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
-                let filename = &file_line[b"creating ".len()..];
-                let filename = OsStr::from_bytes(filename);
-                io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
-                fs::remove_file(filename).unwrap();
-                env::set_current_dir(curdir).unwrap();
-                Ok(())
-            });
+            let toolchain_creator = Box::new(CCompilerPackager { executable: executable.clone() });
             Ok(HashResult {
                 key: key,
                 compilation: Box::new(CCompilation {
@@ -356,6 +332,40 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
     {
         Box::new(self.parsed_args.outputs.iter().map(|(k, v)| (*k, &**v)))
+    }
+}
+
+struct CCompilerPackager {
+    executable: PathBuf,
+}
+
+impl CompilerPackager for CCompilerPackager {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+        use std::env;
+        use std::os::unix::ffi::OsStrExt;
+
+        info!("Packaging C compiler");
+        // TODO: write our own, since this is GPL
+        let curdir = env::current_dir().unwrap();
+        env::set_current_dir("/tmp").unwrap();
+        let output = process::Command::new("icecc-create-env").arg(&self.executable).output().unwrap();
+        if !output.status.success() {
+            println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
+            panic!("failed to create toolchain")
+        }
+        let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
+        let filename = &file_line[b"creating ".len()..];
+        let filename = OsStr::from_bytes(filename);
+        io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
+        fs::remove_file(filename).unwrap();
+        env::set_current_dir(curdir).unwrap();
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
     }
 }
 

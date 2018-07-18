@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use boxfnonce::BoxFnOnce;
 use compiler;
 pub use dist::cache::TcCache;
 use std::fmt;
@@ -274,9 +275,9 @@ pub trait Client {
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
     // TODO: ideally Box<FnOnce or FnBox
+    // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
-
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String>;
+    fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String>;
     fn may_dist(&self) -> bool;
 }
 
@@ -295,7 +296,7 @@ impl Client for NoopClient {
         panic!("NoopClient");
     }
 
-    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
+    fn put_toolchain_cache(&self, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
         bail!("NoopClient");
     }
     fn may_dist(&self) -> bool {

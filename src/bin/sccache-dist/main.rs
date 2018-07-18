@@ -73,6 +73,8 @@ enum BuilderType {
 
 enum Void {}
 
+// Only supported on x86_64 Linux machines
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
     init_logging();
     std::process::exit(match parse() {

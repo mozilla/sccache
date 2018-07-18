@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use bincode;
+use boxfnonce::BoxFnOnce;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use futures::{Future, Stream};
 use num_cpus;
@@ -443,7 +444,7 @@ impl super::Client for Client {
         bincode_req_fut(self.client.post(&url).bytes(body))
     }
 
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
+    fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
         self.tc_cache.put_toolchain_cache(weak_key, create)
     }
     fn may_dist(&self) -> bool {
