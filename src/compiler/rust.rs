@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
-               Compilation, HashResult};
+               pkg::CompilerPackager, Compilation, HashResult};
 use compiler::args::*;
 use dist;
 use futures::{Future, future};
@@ -27,12 +27,11 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::Read;
+use std::io::{self, Read};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
-use tar;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt};
@@ -704,14 +703,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info);
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
-                let toolchain_sysroot = sysroot.clone();
-                let toolchain_creator = Box::new(move |f| {
-                    info!("Packaging Rust compiler");
-                    let mut builder = tar::Builder::new(f);
-                    builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
-                    builder.finish().unwrap();
-                    Ok(())
-                });
+                let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot.clone() });
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
@@ -759,6 +751,28 @@ impl Compilation for RustCompilation {
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
+    }
+}
+
+struct RustCompilerPackager {
+    sysroot: PathBuf,
+}
+
+impl CompilerPackager for RustCompilerPackager {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+        use tar;
+
+        info!("Packaging Rust compiler");
+        let mut builder = tar::Builder::new(f);
+        builder.append_dir_all(&self.sysroot.strip_prefix("/").unwrap(), &self.sysroot).unwrap();
+        builder.finish().unwrap();
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
     }
 }
 

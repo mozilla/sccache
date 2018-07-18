@@ -1,3 +1,4 @@
+use boxfnonce::BoxFnOnce;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::Result as LruResult;
@@ -71,7 +72,7 @@ impl ClientToolchainCache {
     }
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     // If the toolchain doesn't already exist, create it and insert into the cache
-    pub fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
+    pub fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
         if let Some(strong_key) = self.weak_to_strong(weak_key) {
             debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
             return Ok(strong_key)
@@ -81,7 +82,7 @@ impl ClientToolchainCache {
         // to create the same toolchain, just a waste of time
         let mut cache = self.cache.lock().unwrap();
         let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
-        create(tmpfile.reopen()?)?;
+        create.call(tmpfile.reopen()?)?;
         let strong_key = cache.insert_file(tmpfile.path())?;
         self.record_weak(weak_key.to_owned(), strong_key.clone());
         Ok(strong_key)

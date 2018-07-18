@@ -23,6 +23,7 @@ required-features = ["dist-server"]
 [dependencies]
 base64 = "0.9.0"
 bincode = "0.9" # TODO: update to 1.0
+boxfnonce = "0.1"
 byteorder = "1.0"
 bytes = "0.4"
 chrono = { version = "0.3", optional = true }

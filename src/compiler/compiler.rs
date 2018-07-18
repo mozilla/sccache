@@ -22,6 +22,7 @@ use compiler::c::{CCompiler, CCompilerKind};
 use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
+use compiler::pkg::CompilerPackager;
 use compiler::rust::Rust;
 use dist;
 use futures::{Future, IntoFuture};
@@ -39,7 +40,6 @@ use std::fmt;
 #[cfg(unix)]
 use std::fs;
 use std::fs::File;
-use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
@@ -316,7 +316,7 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
                             _cwd: PathBuf,
                             compilation: Box<Compilation>,
                             _weak_toolchain_key: String,
-                            _toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
+                            _toolchain_creator: Box<CompilerPackager>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
@@ -332,10 +332,11 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             cwd: PathBuf,
                             compilation: Box<Compilation>,
                             weak_toolchain_key: String,
-                            toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
+                            toolchain_creator: Box<CompilerPackager>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
+    use boxfnonce::BoxFnOnce;
     use futures::future;
 
     debug!("[{}]: Attempting distributed compilation", out_pretty);
@@ -352,8 +353,9 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
         })
         .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
             debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
+            let toolchain_creator_cb = BoxFnOnce::from(move |f| toolchain_creator.write_pkg(f));
             // TODO: put on a thread
-            let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}));
+            let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, toolchain_creator_cb));
             let dist_toolchain = dist::Toolchain { archive_id };
             Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
                 .and_then(move |jares| {
@@ -432,7 +434,7 @@ pub struct HashResult {
     pub weak_toolchain_key: String,
     /// A function that may be called to save the toolchain to a file
     // TODO: more correct to be a Box<FnOnce> or FnBox
-    pub toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
+    pub toolchain_creator: Box<CompilerPackager>,
 }
 
 /// Possible results of parsing compiler arguments.

@@ -12,14 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[macro_use]
-mod args;
-mod c;
-mod clang;
-mod compiler;
-mod gcc;
-mod msvc;
-mod pkg;
-mod rust;
+use std::io;
+use std::fs::File;
 
-pub use compiler::compiler::*;
+pub trait CompilerPackager {
+    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()>;
+}
