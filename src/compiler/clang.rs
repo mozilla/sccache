@@ -70,13 +70,14 @@ impl CCompilerImpl for Clang {
     }
 
     fn generate_compile_commands(&self,
+                                path_transformer: &mut dist::PathTransformer,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        gcc::generate_compile_commands(executable, parsed_args, cwd, env_vars)
+        gcc::generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 }
 

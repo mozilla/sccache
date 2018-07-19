@@ -74,13 +74,14 @@ impl CCompilerImpl for MSVC {
     }
 
     fn generate_compile_commands(&self,
+                                path_transformer: &mut dist::PathTransformer,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        generate_compile_commands(executable, parsed_args, cwd, env_vars)
+        generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -459,7 +460,8 @@ pub fn preprocess<T>(creator: &T,
     }))
 }
 
-fn generate_compile_commands(executable: &Path,
+fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
+                            executable: &Path,
                             parsed_args: &ParsedArguments,
                             cwd: &Path,
                             env_vars: &[(OsString, OsString)])
@@ -494,12 +496,36 @@ fn generate_compile_commands(executable: &Path,
         fo,
     ];
     arguments.extend(parsed_args.common_args.clone());
-    Ok((CompileCommand {
+
+    let command = CompileCommand {
         executable: executable.to_owned(),
         arguments: arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
-    }, None, cacheable))
+    };
+
+    let dist_command = (|| {
+        // http://releases.llvm.org/6.0.0/tools/clang/docs/UsersManual.html#clang-cl
+        // Use /T... for language?
+        let mut fo = String::from("-Fo");
+        fo.push_str(&path_transformer.to_dist(out_file)?);
+
+        let mut arguments: Vec<String> = vec![
+            "-c".into(),
+            path_transformer.to_dist(&parsed_args.input)?,
+            fo,
+        ];
+        arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
+
+        Some(dist::CompileCommand {
+            executable: path_transformer.to_dist(&executable)?,
+            arguments: arguments,
+            env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+            cwd: path_transformer.to_dist(cwd)?,
+        })
+    })();
+
+    Ok((command, dist_command, cacheable))
 }
 
 
@@ -753,7 +779,9 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, _, cacheable) = generate_compile_commands(&compiler,
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, _, cacheable) = generate_compile_commands(&mut path_transformer,
+                                                                &compiler,
                                                                 &parsed_args,
                                                                 f.tempdir.path(),
                                                                 &[]).unwrap();
@@ -782,7 +810,9 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, _, cacheable) = generate_compile_commands(&compiler,
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, _, cacheable) = generate_compile_commands(&mut path_transformer,
+                                                                &compiler,
                                                                 &parsed_args,
                                                                 f.tempdir.path(),
                                                                 &[]).unwrap();

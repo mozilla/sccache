@@ -30,7 +30,7 @@ pub struct ClientToolchains {
     // Lookup from dist toolchain -> toolchain details
     custom_toolchains: Mutex<HashMap<Toolchain, CustomToolchain>>,
     // Lookup from local path -> toolchain details
-    custom_toolchain_paths: Mutex<HashMap<String, (CustomToolchain, Option<Toolchain>)>>,
+    custom_toolchain_paths: Mutex<HashMap<PathBuf, (CustomToolchain, Option<Toolchain>)>>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     // - Weak hashes are what sccache uses to determine if a compiler has changed
     //   on the local machine - they're fast and 'good enough' (assuming we trust
@@ -69,7 +69,7 @@ impl ClientToolchains {
             }
             let config::CustomToolchain { compiler_executable, archive, archive_compiler_executable } = ct;
 
-            debug!("Registering custom toolchain for {}", compiler_executable);
+            debug!("Registering custom toolchain for {:?}", compiler_executable);
             let custom_tc = CustomToolchain {
                 archive: archive.clone(),
                 compiler_executable: archive_compiler_executable.clone(),
@@ -92,6 +92,7 @@ impl ClientToolchains {
     // Get the bytes of a toolchain tar
     // TODO: by this point the toolchain should be known to exist
     pub fn get_toolchain(&self, tc: &Toolchain) -> Option<Vec<u8>> {
+        // TODO: be more relaxed about path casing and slashes on Windows
         let mut rdr = if let Some(custom_tc) = self.custom_toolchains.lock().unwrap().get(tc) {
             Box::new(fs::File::open(&custom_tc.archive).unwrap())
         } else {
@@ -107,14 +108,15 @@ impl ClientToolchains {
     }
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     // If the toolchain doesn't already exist, create it and insert into the cache
-    pub fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
+    pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
         if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
             debug!("Using custom toolchain for {:?}", compiler_path);
-            return Ok(tc_and_compiler_path.unwrap())
+            let (tc, compiler_path) = tc_and_compiler_path.unwrap();
+            return Ok((tc, Some(compiler_path)))
         }
         if let Some(archive_id) = self.weak_to_strong(weak_key) {
             debug!("Using cached toolchain {} -> {}", weak_key, archive_id);
-            return Ok((Toolchain { archive_id }, compiler_path.to_owned()))
+            return Ok((Toolchain { archive_id }, None))
         }
         debug!("Weak key {} appears to be new", weak_key);
         // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
@@ -124,10 +126,10 @@ impl ClientToolchains {
         create.call(tmpfile.reopen()?)?;
         let tc = cache.insert_file(tmpfile.path())?;
         self.record_weak(weak_key.to_owned(), tc.archive_id.clone());
-        Ok((tc, compiler_path.to_owned()))
+        Ok((tc, None))
     }
 
-    fn get_custom_toolchain(&self, compiler_path: &str) -> Option<Result<(Toolchain, String)>> {
+    fn get_custom_toolchain(&self, compiler_path: &Path) -> Option<Result<(Toolchain, String)>> {
         return match self.custom_toolchain_paths.lock().unwrap().get_mut(compiler_path) {
             Some((custom_tc, Some(tc))) => Some(Ok((tc.clone(), custom_tc.compiler_executable.clone()))),
             Some((custom_tc, maybe_tc @ None)) => {

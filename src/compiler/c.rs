@@ -157,6 +157,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
     fn generate_compile_commands(&self,
+                                path_transformer: &mut dist::PathTransformer,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
@@ -290,19 +291,24 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 }
 
 impl<I: CCompilerImpl> Compilation for CCompilation<I> {
-    fn generate_compile_commands(&self)
+    fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
         let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _, ref cwd, ref env_vars } = *self;
-        compiler.generate_compile_commands(executable, parsed_args, cwd, env_vars)
+        compiler.generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 
-    fn into_inputs_creator(self: Box<Self>) -> Result<Box<FnMut(&mut io::Write)>> {
+    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut io::Write)>> {
+        let input_path = self.cwd.join(&self.parsed_args.input);
+        let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+        // tar-rs imposes that `set_path` takes a relative path
+        assert!(dist_input_path.starts_with("/"));
+        let dist_input_path = dist_input_path.trim_left_matches("/").to_owned();
+        assert!(!dist_input_path.starts_with("/"));
+
         Ok(Box::new(move |wtr| {
             let mut builder = tar::Builder::new(wtr);
-            let input_path = self.cwd.join(&self.parsed_args.input);
             let metadata_res = fs::metadata(&input_path);
-            let input_path = input_path.strip_prefix("/").unwrap();
 
             let mut file_header = tar::Header::new_ustar();
             // TODO: test this works
@@ -319,7 +325,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
                 file_header.set_device_minor(0).expect("expected a ustar header");
                 file_header.set_entry_type(tar::EntryType::file());
             }
-            file_header.set_path(input_path).unwrap();
+            file_header.set_path(&dist_input_path).unwrap();
             file_header.set_size(self.preprocessed_input.len() as u64); // The metadata is from non-preprocessed
             file_header.set_cksum();
 
@@ -364,7 +370,7 @@ impl CompilerPackager for CCompilerPackager {
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+    fn write_pkg(self: Box<Self>, _f: File) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
     }
 }

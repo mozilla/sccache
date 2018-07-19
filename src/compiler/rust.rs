@@ -736,7 +736,7 @@ impl<T> CompilerHasher<T> for RustHasher
 }
 
 impl Compilation for RustCompilation {
-    fn generate_compile_commands(&self)
+    fn generate_compile_commands(&self, _path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
         let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, .. } = *self;
@@ -771,7 +771,7 @@ impl CompilerPackager for RustCompilerPackager {
     }
 
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+    fn write_pkg(self: Box<Self>, _f: File) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
     }
 }

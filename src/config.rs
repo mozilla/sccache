@@ -183,7 +183,7 @@ impl CacheConfigs {
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
 pub struct CustomToolchain {
-    pub compiler_executable: String,
+    pub compiler_executable: PathBuf,
     pub archive: PathBuf,
     pub archive_compiler_executable: String,
 }
@@ -221,6 +221,7 @@ pub struct FileConfig {
 }
 
 fn try_read_config_file(path: &Path) -> Option<FileConfig> {
+    debug!("Attempting to read config file at {:?}", path);
     let mut file = File::open(path)
         .map_err(|e| debug!("Couldn't open config file: {}", e))
         .ok()?;
