@@ -61,13 +61,14 @@ impl CCompilerImpl for GCC {
     }
 
     fn generate_compile_commands(&self,
+                                path_transformer: &mut dist::PathTransformer,
                                 executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        generate_compile_commands(executable, parsed_args, cwd, env_vars)
+        generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 }
 
@@ -370,7 +371,8 @@ pub fn preprocess<T>(creator: &T,
     run_input_output(cmd, None)
 }
 
-pub fn generate_compile_commands(executable: &Path,
+pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
+                                executable: &Path,
                                 parsed_args: &ParsedArguments,
                                 cwd: &Path,
                                 env_vars: &[(OsString, OsString)])
@@ -401,33 +403,36 @@ pub fn generate_compile_commands(executable: &Path,
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
-
     let command = CompileCommand {
         executable: executable.to_owned(),
-        arguments: arguments.to_owned(),
+        arguments: arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
     };
 
-    let mut dist_command = command.clone();
-    // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-    let dist_language = match parsed_args.language {
-        Language::C => "cpp-output",
-        Language::Cxx => "c++-cpp-output",
-        Language::ObjectiveC => "objective-c-cpp-output",
-        Language::ObjectiveCxx => "objective-c++-cpp-output",
-    };
-    let mut lang_next = false;
-    for arg in dist_command.arguments.iter_mut() {
-        if arg == "-x" {
-            lang_next = true
-        } else if lang_next {
-            *arg = OsString::from(dist_language);
-            break
-        }
-    }
-    assert!(lang_next);
-    let dist_command = dist::try_compile_command_to_dist(dist_command);
+    let dist_command = (|| {
+        // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
+        let language = match parsed_args.language {
+            Language::C => "cpp-output",
+            Language::Cxx => "c++-cpp-output",
+            Language::ObjectiveC => "objective-c-cpp-output",
+            Language::ObjectiveCxx => "objective-c++-cpp-output",
+        };
+        let mut arguments: Vec<String> = vec![
+            "-x".into(), language.into(),
+            "-c".into(),
+            path_transformer.to_dist(&parsed_args.input)?,
+            "-o".into(), path_transformer.to_dist(out_file)?,
+        ];
+        arguments.extend(dist::osstrings_to_strings(&parsed_args.preprocessor_args)?);
+        arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
+        Some(dist::CompileCommand {
+            executable: path_transformer.to_dist(&executable)?,
+            arguments: arguments,
+            env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+            cwd: path_transformer.to_dist(cwd)?,
+        })
+    })();
 
     Ok((command, dist_command, Cacheable::Yes))
 }
@@ -929,7 +934,9 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let (command, _, cacheable) = generate_compile_commands(&compiler,
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, _, cacheable) = generate_compile_commands(&mut path_transformer,
+                                                                &compiler,
                                                                 &parsed_args,
                                                                 f.tempdir.path(),
                                                                 &[]).unwrap();

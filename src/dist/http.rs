@@ -25,7 +25,7 @@ use std;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use super::cache;
@@ -429,9 +429,8 @@ impl super::Client for Client {
             f_err("couldn't find toolchain locally")
         }
     }
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
         let url = format!("http://{}/api/v1/distserver/run_job", job_alloc.server_id.addr());
-        let outputs = outputs.into_iter().map(|output| output.into_os_string().into_string().unwrap()).collect();
         let bincode = bincode::serialize(&RunJobHttpRequest { job_id: job_alloc.job_id, command, outputs }, bincode::Infinite).unwrap();
         let bincode_length = bincode.len();
         let mut inputs = vec![];
@@ -445,7 +444,7 @@ impl super::Client for Client {
         bincode_req_fut(self.client.post(&url).bytes(body))
     }
 
-    fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
         self.tc_cache.put_toolchain(compiler_path, weak_key, create)
     }
     fn may_dist(&self) -> bool {

@@ -321,7 +321,9 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
     debug!("[{}]: Compiling locally", out_pretty);
-    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+
+    let path_transformer = dist::PathTransformer::new();
+    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&path_transformer).unwrap();
     Box::new(compile_cmd.execute(&creator)
         .map(move |o| (cacheable, o)))
 }
@@ -342,25 +344,35 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
     debug!("[{}]: Attempting distributed compilation", out_pretty);
     let compile_out_pretty = out_pretty.clone();
     let compile_out_pretty2 = out_pretty.clone();
-    let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+    let compile_out_pretty3 = out_pretty.clone();
+    let mut path_transformer = dist::PathTransformer::new();
+    let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&mut path_transformer).unwrap();
+    let local_executable = compile_cmd.executable.clone();
     // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
     Box::new(future::result(dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into()))
         .and_then(move |dist_compile_cmd| {
-            let output_paths = compilation.outputs().map(|(_key, path)| cwd.join(path)).collect();
-            // TODO: does this need to be in future::result?
-            compilation.into_inputs_creator()
-                .map(|inputs_creator| (dist_compile_cmd, inputs_creator, output_paths))
+            debug!("[{}]: Creating distributed compile request", compile_out_pretty);
+            let dist_output_paths = compilation.outputs()
+                .map(|(_key, path)| path_transformer.to_dist_abs(&cwd.join(path)))
+                .collect::<Option<_>>()
+                .unwrap();
+            compilation.into_dist_inputs_creator(&mut path_transformer)
+                .map(|dist_inputs_creator| (path_transformer, dist_compile_cmd, dist_inputs_creator, dist_output_paths))
         })
-        .and_then(move |(mut dist_compile_cmd, inputs_creator, output_paths)| {
-            debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
+        .and_then(move |(path_transformer, mut dist_compile_cmd, dist_inputs_creator, dist_output_paths)| {
+            debug!("[{}]: Identifying toolchain", compile_out_pretty2);
             let toolchain_creator_cb = BoxFnOnce::from(move |f| toolchain_creator.write_pkg(f));
             // TODO: put on a thread
-            let (dist_toolchain, dist_compile_executable) =
-                ftry!(dist_client.put_toolchain(&dist_compile_cmd.executable, &weak_toolchain_key, toolchain_creator_cb));
-            dist_compile_cmd.executable = dist_compile_executable;
+            let (dist_toolchain, maybe_dist_compile_executable) =
+                ftry!(dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_creator_cb));
+            if let Some(dist_compile_executable) = maybe_dist_compile_executable {
+                dist_compile_cmd.executable = dist_compile_executable;
+            }
+
+            debug!("[{}]: Requesting allocation", compile_out_pretty2);
             Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
                 .and_then(move |jares| {
-                    debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
+                    debug!("[{}]: Sending compile", compile_out_pretty2);
                     let alloc = match jares {
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
                             Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
@@ -376,24 +388,26 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                     };
                     alloc
                         .and_then(move |job_alloc| {
-                            dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
+                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, dist_inputs_creator)
                                 .map_err(Into::into)
                         })
-                }).map(move |jres| {
+                })
+                .map(move |jres| {
                     let jc = match jres {
                         dist::RunJobResult::Complete(jc) => jc,
                         dist::RunJobResult::JobNotFound => panic!(),
                     };
                     info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.len())).collect::<Vec<_>>());
                     for (path, bytes) in jc.outputs {
-                        File::create(path).unwrap().write_all(&bytes).unwrap();
+                        File::create(path_transformer.to_local(&path)).unwrap().write_all(&bytes).unwrap();
                     }
                     jc.output.into()
                 })
             )
         })
+        // Something failed, do a local compilation
         .or_else(move |e| {
-            info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty2, e);
+            info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty3, e);
             compile_cmd.execute(&creator)
         })
         .map(move |o| (cacheable, o))
@@ -409,11 +423,11 @@ impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
 pub trait Compilation {
     /// Given information about a compiler command, generate a command that can
     /// execute the compiler.
-    fn generate_compile_commands(&self)
+    fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                  -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 
     /// Create a function that will create the inputs used to perform a distributed compilation
-    fn into_inputs_creator(self: Box<Self>) -> Result<Box<FnMut(&mut Write)>> {
+    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
 
         bail!("distributed compilation not implemented")
     }

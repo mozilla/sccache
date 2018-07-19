@@ -19,7 +19,8 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::Path;
 use std::process;
 use std::str::FromStr;
 use std::sync::Mutex;
@@ -30,6 +31,124 @@ mod cache;
 pub mod http;
 #[cfg(test)]
 mod test;
+
+// TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
+// should be some pre-sanitised AbsPath type
+
+pub use self::path_transform::PathTransformer;
+
+#[cfg(target_os = "windows")]
+mod path_transform {
+    use std::collections::HashMap;
+    use std::path::{Component, Path, PathBuf, Prefix};
+    use std::str;
+
+    pub struct PathTransformer {
+        dist_to_local_path: HashMap<String, PathBuf>,
+    }
+
+    impl PathTransformer {
+        pub fn new() -> Self {
+            PathTransformer {
+                dist_to_local_path: HashMap::new(),
+            }
+        }
+        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+            if !p.is_absolute() { panic!("non absolute path {:?}", p) }
+            self.to_dist(p)
+        }
+        pub fn to_dist(&mut self, p: &Path) -> Option<String> {
+            let mut components = p.components();
+
+            let maybe_dist_prefix = if p.is_absolute() {
+                let prefix = components.next().unwrap();
+                let dist_prefix = match prefix {
+                    Component::Prefix(pc) => {
+                        match pc.kind() {
+                            // Transforming these to the same place means these may flip-flop
+                            // in the tracking map, but they're equivalent so not really an
+                            // issue
+                            Prefix::Disk(diskchar) |
+                            Prefix::VerbatimDisk(diskchar) => {
+                                assert!(diskchar.is_ascii_alphabetic());
+                                format!("disk-{}", str::from_utf8(&[diskchar]).unwrap())
+                            },
+                            Prefix::Verbatim(_) |
+                            Prefix::VerbatimUNC(_, _) |
+                            Prefix::DeviceNS(_) |
+                            Prefix::UNC(_, _) => return None,
+                        }
+                    },
+                    _ => panic!("unrecognised start to path {:?}", p),
+                };
+
+                let root = components.next().unwrap();
+                if root != Component::RootDir { panic!("unexpected non-root component in {:?}", p) }
+
+                Some(dist_prefix)
+            } else {
+                None
+            };
+
+            let mut dist_suffix = String::new();
+            for component in components {
+                let part = match component {
+                    Component::Prefix(_) |
+                    Component::RootDir => panic!("unexpected part in path {:?}", p),
+                    Component::Normal(osstr) => osstr.to_str()?,
+                    // TODO: should be forbidden
+                    Component::CurDir => ".",
+                    Component::ParentDir => "..",
+                };
+                if !dist_suffix.is_empty() {
+                    dist_suffix.push('/')
+                }
+                dist_suffix.push_str(part)
+            }
+
+            let dist_path = if let Some(dist_prefix) = maybe_dist_prefix {
+                format!("/prefix/{}/{}", dist_prefix, dist_suffix)
+            } else {
+                dist_suffix
+            };
+            self.dist_to_local_path.insert(dist_path.clone(), p.to_owned());
+            Some(dist_path)
+        }
+        pub fn to_local(&self, p: &str) -> PathBuf {
+            self.dist_to_local_path.get(p).unwrap().clone()
+        }
+    }
+}
+
+#[cfg(unix)]
+mod path_transform {
+    use std::path::{Path, PathBuf};
+
+    pub struct PathTransformer;
+
+    impl PathTransformer {
+        pub fn new() -> Self { PathTransformer }
+        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+            if !p.is_absolute() { panic!("non absolute path {:?}", p) }
+            self.to_dist(p)
+        }
+        pub fn to_dist(&mut self, p: &Path) -> Option<String> {
+            p.as_os_str().to_str().map(Into::into)
+        }
+        pub fn to_local(&self, p: &str) -> PathBuf {
+            PathBuf::from(p)
+        }
+    }
+}
+
+pub fn osstrings_to_strings(osstrings: &[OsString]) -> Option<Vec<String>> {
+    osstrings.into_iter().map(|arg| arg.clone().into_string().ok()).collect::<Option<_>>()
+}
+pub fn osstring_tuples_to_strings(osstring_tuples: &[(OsString, OsString)]) -> Option<Vec<(String, String)>> {
+    osstring_tuples.into_iter()
+        .map(|(k, v)| Some((k.clone().into_string().ok()?, v.clone().into_string().ok()?)))
+        .collect::<Option<_>>()
+}
 
 // TODO: TryFrom
 pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<CompileCommand> {
@@ -262,7 +381,6 @@ pub trait ServerIncoming: Send + Sync {
 pub trait BuilderIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Server
-    // TODO: outputs should be a vec of some pre-sanitised AbsPath type
     fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
 }
 
@@ -276,8 +394,8 @@ pub trait Client {
     // To Server
     // TODO: ideally Box<FnOnce or FnBox
     // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
-    fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)>;
     fn may_dist(&self) -> bool;
 }
 
@@ -292,11 +410,11 @@ impl Client for NoopClient {
     fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<PathBuf>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
         panic!("NoopClient");
     }
 
-    fn put_toolchain(&self, _compiler_path: &str, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
+    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
         bail!("NoopClient");
     }
     fn may_dist(&self) -> bool {
