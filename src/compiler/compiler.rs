@@ -351,12 +351,13 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
             compilation.into_inputs_creator()
                 .map(|inputs_creator| (dist_compile_cmd, inputs_creator, output_paths))
         })
-        .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
+        .and_then(move |(mut dist_compile_cmd, inputs_creator, output_paths)| {
             debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
             let toolchain_creator_cb = BoxFnOnce::from(move |f| toolchain_creator.write_pkg(f));
             // TODO: put on a thread
-            let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, toolchain_creator_cb));
-            let dist_toolchain = dist::Toolchain { archive_id };
+            let (dist_toolchain, dist_compile_executable) =
+                ftry!(dist_client.put_toolchain(&dist_compile_cmd.executable, &weak_toolchain_key, toolchain_creator_cb));
+            dist_compile_cmd.executable = dist_compile_executable;
             Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
                 .and_then(move |jares| {
                     debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
@@ -371,7 +372,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                                     }
                                 }).map_err(Into::into)),
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
-                        dist::AllocJobResult::Fail { msg: _ } => panic!(),
+                        dist::AllocJobResult::Fail { msg: _ } => panic!("failed to allocate"),
                     };
                     alloc
                         .and_then(move |job_alloc| {
@@ -432,8 +433,7 @@ pub struct HashResult {
     pub compilation: Box<Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
-    /// A function that may be called to save the toolchain to a file
-    // TODO: more correct to be a Box<FnOnce> or FnBox
+    /// A object that may be used to package the toolchain into a file
     pub toolchain_creator: Box<CompilerPackager>,
 }
 

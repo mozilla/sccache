@@ -182,11 +182,20 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+pub struct CustomToolchain {
+    pub compiler_executable: String,
+    pub archive: PathBuf,
+    pub archive_compiler_executable: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
     pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
+    pub custom_toolchains: Vec<CustomToolchain>,
     pub toolchain_cache_size: u64,
 }
 
@@ -195,6 +204,7 @@ impl Default for DistConfig {
         Self {
             scheduler_addr: Default::default(),
             cache_dir: default_dist_cache_dir(),
+            custom_toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
         }
     }

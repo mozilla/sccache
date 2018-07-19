@@ -277,7 +277,7 @@ pub trait Client {
     // TODO: ideally Box<FnOnce or FnBox
     // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
-    fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String>;
+    fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)>;
     fn may_dist(&self) -> bool;
 }
 
@@ -296,7 +296,7 @@ impl Client for NoopClient {
         panic!("NoopClient");
     }
 
-    fn put_toolchain_cache(&self, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
+    fn put_toolchain(&self, _compiler_path: &str, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
         bail!("NoopClient");
     }
     fn may_dist(&self) -> bool {
