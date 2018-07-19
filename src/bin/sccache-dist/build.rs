@@ -102,7 +102,7 @@ impl OverlayBuilder {
                 fs::create_dir(&toolchain_dir)?;
 
                 let mut tccache = tccache.lock().unwrap();
-                let toolchain_rdr = match tccache.get(&tc.archive_id) {
+                let toolchain_rdr = match tccache.get(tc) {
                     Ok(rdr) => rdr,
                     Err(LruError::FileNotInCache) => bail!("expected toolchain {}, but not available", tc.archive_id),
                     Err(e) => return Err(Error::with_chain(e, "failed to get toolchain from cache")),
@@ -397,7 +397,7 @@ impl DockerBuilder {
 
         // Good as new, add it back to the container list
         trace!("Reclaimed container");
-        self.container_lists.lock().unwrap().get_mut(&tc).unwrap().push(cid);
+        self.container_lists.lock().unwrap().get_mut(tc).unwrap().push(cid);
     }
 
     fn make_image(tc: &Toolchain, tccache: &Mutex<TcCache>) -> String {
@@ -409,7 +409,7 @@ impl DockerBuilder {
         };
 
         let mut tccache = tccache.lock().unwrap();
-        let toolchain_rdr = match tccache.get(&tc.archive_id) {
+        let toolchain_rdr = match tccache.get(tc) {
             Ok(rdr) => rdr,
             Err(LruError::FileNotInCache) => panic!("expected toolchain, but not available"),
             Err(e) => panic!("{}", e),

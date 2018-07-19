@@ -1,4 +1,6 @@
 use boxfnonce::BoxFnOnce;
+use config;
+use dist::Toolchain;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::Result as LruResult;
@@ -15,23 +17,33 @@ use util;
 
 use errors::*;
 
+#[derive(Clone, Debug)]
+pub struct CustomToolchain {
+    archive: PathBuf,
+    compiler_executable: String,
+}
+
 // TODO: possibly shouldn't be public
-pub struct ClientToolchainCache {
+pub struct ClientToolchains {
     cache_dir: PathBuf,
     cache: Mutex<TcCache>,
+    // Lookup from dist toolchain -> toolchain details
+    custom_toolchains: Mutex<HashMap<Toolchain, CustomToolchain>>,
+    // Lookup from local path -> toolchain details
+    custom_toolchain_paths: Mutex<HashMap<String, (CustomToolchain, Option<Toolchain>)>>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
     // - Weak hashes are what sccache uses to determine if a compiler has changed
     //   on the local machine - they're fast and 'good enough' (assuming we trust
     //   the local machine), but not safe if other users can update the cache.
-    // - Strong hashes are the hash of the complete compiler contents that will
-    //   be sent over the wire for use in distributed compilation - it is assumed
+    // - Strong hashes (or archive ids) are the hash of the complete compiler contents that
+    //   will be sent over the wire for use in distributed compilation - it is assumed
     //   that if two of them match, the contents of a compiler archive cannot
     //   have been tampered with
     weak_map: Mutex<HashMap<String, String>>,
 }
 
-impl ClientToolchainCache {
-    pub fn new(cache_dir: &Path, cache_size: u64) -> Self {
+impl ClientToolchains {
+    pub fn new(cache_dir: &Path, cache_size: u64, config_custom_toolchains: &[config::CustomToolchain]) -> Self {
         let cache_dir = cache_dir.to_owned();
         fs::create_dir_all(&cache_dir).unwrap();
 
@@ -50,9 +62,27 @@ impl ClientToolchainCache {
         let tc_cache_dir = cache_dir.join("tc");
         let cache = Mutex::new(TcCache::new(&tc_cache_dir, cache_size).unwrap());
 
+        let mut custom_toolchain_paths = HashMap::new();
+        for ct in config_custom_toolchains.into_iter() {
+            if custom_toolchain_paths.contains_key(&ct.compiler_executable) {
+                panic!("Multiple toolchains for {:?}", ct.compiler_executable)
+            }
+            let config::CustomToolchain { compiler_executable, archive, archive_compiler_executable } = ct;
+
+            debug!("Registering custom toolchain for {}", compiler_executable);
+            let custom_tc = CustomToolchain {
+                archive: archive.clone(),
+                compiler_executable: archive_compiler_executable.clone(),
+            };
+            assert!(custom_toolchain_paths.insert(compiler_executable.clone(), (custom_tc, None)).is_none());
+        }
+        let custom_toolchain_paths = Mutex::new(custom_toolchain_paths);
+
         Self {
             cache_dir,
             cache,
+            custom_toolchains: Mutex::new(HashMap::new()),
+            custom_toolchain_paths,
             // TODO: shouldn't clear on restart, but also should have some
             // form of pruning
             weak_map: Mutex::new(weak_map),
@@ -60,22 +90,31 @@ impl ClientToolchainCache {
     }
 
     // Get the bytes of a toolchain tar
-    pub fn get_toolchain_cache(&self, key: &str) -> Option<Vec<u8>> {
-        let mut toolchain_reader = match self.cache.lock().unwrap().get(key) {
-            Ok(rdr) => rdr,
-            Err(LruError::FileNotInCache) => return None,
-            Err(e) => panic!("{}", e),
+    // TODO: by this point the toolchain should be known to exist
+    pub fn get_toolchain(&self, tc: &Toolchain) -> Option<Vec<u8>> {
+        let mut rdr = if let Some(custom_tc) = self.custom_toolchains.lock().unwrap().get(tc) {
+            Box::new(fs::File::open(&custom_tc.archive).unwrap())
+        } else {
+            match self.cache.lock().unwrap().get(tc) {
+                Ok(rdr) => rdr,
+                Err(LruError::FileNotInCache) => return None,
+                Err(e) => panic!("{}", e),
+            }
         };
         let mut ret = vec![];
-        toolchain_reader.read_to_end(&mut ret).unwrap();
+        rdr.read_to_end(&mut ret).unwrap();
         Some(ret)
     }
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     // If the toolchain doesn't already exist, create it and insert into the cache
-    pub fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
-        if let Some(strong_key) = self.weak_to_strong(weak_key) {
-            debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
-            return Ok(strong_key)
+    pub fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
+        if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
+            debug!("Using custom toolchain for {:?}", compiler_path);
+            return Ok(tc_and_compiler_path.unwrap())
+        }
+        if let Some(archive_id) = self.weak_to_strong(weak_key) {
+            debug!("Using cached toolchain {} -> {}", weak_key, archive_id);
+            return Ok((Toolchain { archive_id }, compiler_path.to_owned()))
         }
         debug!("Weak key {} appears to be new", weak_key);
         // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
@@ -83,9 +122,26 @@ impl ClientToolchainCache {
         let mut cache = self.cache.lock().unwrap();
         let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
         create.call(tmpfile.reopen()?)?;
-        let strong_key = cache.insert_file(tmpfile.path())?;
-        self.record_weak(weak_key.to_owned(), strong_key.clone());
-        Ok(strong_key)
+        let tc = cache.insert_file(tmpfile.path())?;
+        self.record_weak(weak_key.to_owned(), tc.archive_id.clone());
+        Ok((tc, compiler_path.to_owned()))
+    }
+
+    fn get_custom_toolchain(&self, compiler_path: &str) -> Option<Result<(Toolchain, String)>> {
+        return match self.custom_toolchain_paths.lock().unwrap().get_mut(compiler_path) {
+            Some((custom_tc, Some(tc))) => Some(Ok((tc.clone(), custom_tc.compiler_executable.clone()))),
+            Some((custom_tc, maybe_tc @ None)) => {
+                let archive_id = match path_key(&custom_tc.archive) {
+                    Ok(archive_id) => archive_id,
+                    Err(e) => return Some(Err(e)),
+                };
+                let tc = Toolchain { archive_id };
+                *maybe_tc = Some(tc.clone());
+                assert!(self.custom_toolchains.lock().unwrap().insert(tc.clone(), custom_tc.clone()).is_none());
+                Some(Ok((tc, custom_tc.compiler_executable.clone())))
+            },
+            None => None,
+        }
     }
 
     fn weak_to_strong(&self, weak_key: &str) -> Option<String> {
@@ -97,6 +153,49 @@ impl ClientToolchainCache {
         let weak_map_path = self.cache_dir.join("weak_map.json");
         serde_json::to_writer(fs::File::create(weak_map_path).unwrap(), &*weak_map).unwrap()
     }
+}
+
+pub struct TcCache {
+    inner: LruDiskCache,
+}
+
+impl TcCache {
+    pub fn new(cache_dir: &Path, cache_size: u64) -> Result<TcCache> {
+        trace!("Using TcCache({:?}, {})", cache_dir, cache_size);
+        Ok(TcCache { inner: LruDiskCache::new(cache_dir, cache_size)? })
+    }
+
+    pub fn contains_toolchain(&self, tc: &Toolchain) -> bool {
+        self.inner.contains_key(make_lru_key_path(&tc.archive_id))
+    }
+
+    pub fn insert_with<F: FnOnce(File) -> io::Result<()>>(&mut self, tc: &Toolchain, with: F) -> Result<()> {
+        self.inner.insert_with(make_lru_key_path(&tc.archive_id), with).map_err(|e| -> Error { e.into() })?;
+        let verified_archive_id = file_key(self.get(tc)?)?;
+        // TODO: remove created toolchain?
+        if verified_archive_id == tc.archive_id { Ok(()) } else { Err("written file does not match expected hash key".into()) }
+    }
+
+    pub fn get(&mut self, tc: &Toolchain) -> LruResult<Box<ReadSeek>> {
+        self.inner.get(make_lru_key_path(&tc.archive_id))
+    }
+
+    fn insert_file<P: AsRef<OsStr>>(&mut self, path: P) -> Result<Toolchain> {
+        let archive_id = path_key(&path)?;
+        self.inner.insert_file(make_lru_key_path(&archive_id), path).map_err(|e| -> Error { e.into() })?;
+        Ok(Toolchain { archive_id })
+    }
+}
+
+fn path_key<P: AsRef<OsStr>>(path: P) -> Result<String> {
+    file_key(File::open(path.as_ref())?)
+}
+fn file_key<RS: ReadSeek + 'static>(rs: RS) -> Result<String> {
+    hash_reader(rs)
+}
+/// Make a path to the cache entry with key `key`.
+fn make_lru_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
 // Partially copied from util.rs
@@ -112,48 +211,4 @@ fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
         m.update(&buffer[..count]);
     }
     Ok(util::hex(m.finish().as_ref()))
-}
-
-/// Make a path to the cache entry with key `key`.
-fn make_key_path(key: &str) -> PathBuf {
-    Path::new(&key[0..1]).join(&key[1..2]).join(key)
-}
-
-pub struct TcCache {
-    inner: LruDiskCache,
-}
-
-impl TcCache {
-    pub fn new(cache_dir: &Path, cache_size: u64) -> Result<TcCache> {
-        trace!("Using TcCache({:?}, {})", cache_dir, cache_size);
-        Ok(TcCache { inner: LruDiskCache::new(cache_dir, cache_size)? })
-    }
-
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.inner.contains_key(make_key_path(key))
-    }
-
-    fn file_key<RS: ReadSeek + 'static>(&self, rs: RS) -> Result<String> {
-        // TODO: should explicitly pick the hash
-        hash_reader(rs)
-    }
-
-    pub fn insert_with<F: FnOnce(File) -> io::Result<()>>(&mut self, key: &str, with: F) -> Result<()> {
-        self.inner.insert_with(make_key_path(key), with).map_err(|e| -> Error { e.into() })?;
-        let verified_key = self.get(key).map_err(Into::into)
-            .and_then(|rs| self.file_key(rs))?;
-        // TODO: remove created toolchain?
-        if verified_key == key { Ok(()) } else { Err("written file does not match expected hash key".into()) }
-    }
-
-    pub fn insert_file<P: AsRef<OsStr>>(&mut self, path: P) -> Result<String> {
-        let file = File::open(path.as_ref())?;
-        let key = self.file_key(file)?;
-        self.inner.insert_file(make_key_path(&key), path).map_err(|e| -> Error { e.into() })?;
-        Ok(key)
-    }
-
-    pub fn get(&mut self, key: &str) -> LruResult<Box<ReadSeek>> {
-        self.inner.get(make_key_path(key))
-    }
 }

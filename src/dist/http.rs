@@ -15,6 +15,7 @@
 use bincode;
 use boxfnonce::BoxFnOnce;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use config;
 use futures::{Future, Stream};
 use num_cpus;
 use reqwest;
@@ -402,15 +403,15 @@ impl ServerOutgoing for ServerRequester {
 pub struct Client {
     scheduler_addr: SocketAddr,
     client: reqwest::unstable::async::Client,
-    tc_cache: cache::ClientToolchainCache,
+    tc_cache: cache::ClientToolchains,
 }
 
 impl Client {
-    pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64) -> Self {
+    pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::CustomToolchain]) -> Self {
         Self {
             scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
             client: reqwest::unstable::async::Client::new(handle),
-            tc_cache: cache::ClientToolchainCache::new(cache_dir, cache_size),
+            tc_cache: cache::ClientToolchains::new(cache_dir, cache_size, custom_toolchains),
         }
     }
 }
@@ -422,7 +423,7 @@ impl super::Client for Client {
     }
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
-        if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
+        if let Some(toolchain_bytes) = self.tc_cache.get_toolchain(&tc) {
             bincode_req_fut(self.client.post(&url).bytes(toolchain_bytes))
         } else {
             f_err("couldn't find toolchain locally")
@@ -444,8 +445,8 @@ impl super::Client for Client {
         bincode_req_fut(self.client.post(&url).bytes(body))
     }
 
-    fn put_toolchain_cache(&self, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<String> {
-        self.tc_cache.put_toolchain_cache(weak_key, create)
+    fn put_toolchain(&self, compiler_path: &str, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, String)> {
+        self.tc_cache.put_toolchain(compiler_path, weak_key, create)
     }
     fn may_dist(&self) -> bool {
         true

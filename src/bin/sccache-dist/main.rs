@@ -296,7 +296,7 @@ impl Server {
 impl ServerIncoming for Server {
     type Error = Error;
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
-        let need_toolchain = !self.cache.lock().unwrap().contains_key(&tc.archive_id);
+        let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
         if !need_toolchain {
             // TODO: can start prepping the container now
@@ -313,10 +313,10 @@ impl ServerIncoming for Server {
         };
         let mut cache = self.cache.lock().unwrap();
         // TODO: this returns before reading all the data, is that valid?
-        if cache.contains_key(&tc.archive_id) {
+        if cache.contains_toolchain(&tc) {
             return Ok(SubmitToolchainResult::Success)
         }
-        Ok(cache.insert_with(&tc.archive_id, |mut file| io::copy(&mut {tc_rdr}, &mut file).map(|_| ()))
+        Ok(cache.insert_with(&tc, |mut file| io::copy(&mut {tc_rdr}, &mut file).map(|_| ()))
             .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
