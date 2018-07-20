@@ -27,7 +27,7 @@ futures = "0.1.11"
 log = "0.3.6"
 lru-disk-cache = { path = "../lru-disk-cache" }
 num_cpus = "1.0"
-reqwest = { version = "0.8", features = ["unstable"] }
+reqwest = { version = "=0.8.6", features = ["unstable"] }
 ring = "0.12.1"
 # Need https://github.com/tomaka/rouille/pull/185
 #rouille = "2.1"
