@@ -34,14 +34,22 @@ use errors::*;
 mod errors {
     #![allow(renamed_and_removed_lints)]
     use std::boxed::Box;
+    use std::convert;
     use std::io;
 
+    use dist;
     use lru_disk_cache;
 
     error_chain! {
         foreign_links {
             Io(io::Error);
             Lru(lru_disk_cache::Error);
+        }
+    }
+
+    impl convert::From<Error> for dist::errors::Error {
+        fn from(e: Error) -> Self {
+            dist::errors::Error::from_kind(dist::errors::ErrorKind::DistImplError(Box::new(e)))
         }
     }
 }
@@ -156,7 +164,7 @@ fn run(command: Command) -> Result<i32> {
             let builder: Box<dist::BuilderIncoming> = match builder {
                 BuilderType::Docker => Box::new(build::DockerBuilder::new()),
                 BuilderType::Overlay { ref bwrap_path, ref build_dir } =>
-                    Box::new(build::OverlayBuilder::new(bwrap_path, build_dir))
+                    Box::new(build::OverlayBuilder::new(bwrap_path, build_dir)?)
             };
             let server = Server::new(builder, &cache_dir, toolchain_cache_size);
             let http_server = dist::http::Server::new(scheduler_addr, server);
@@ -316,7 +324,7 @@ impl ServerIncoming for Server {
             Some(tc) => tc,
             None => return Ok(RunJobResult::JobNotFound),
         };
-        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache).unwrap();
+        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache)?;
         requester.do_update_job_status(job_id, JobStatus::Complete).unwrap();
         Ok(RunJobResult::Complete(JobComplete { output: res.output, outputs: res.outputs }))
     }

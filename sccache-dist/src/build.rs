@@ -31,7 +31,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex};
 use tar;
 
-//use errors::*;
+use errors::*;
 
 fn check_output(output: &Output) {
     if !output.status.success() {
@@ -63,12 +63,12 @@ pub struct OverlayBuilder {
 }
 
 impl OverlayBuilder {
-    pub fn new(bubblewrap: &Path, dir: &Path) -> Self {
+    pub fn new(bubblewrap: &Path, dir: &Path) -> Result<Self> {
         info!("Creating overlay builder");
 
         if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
             // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
-            panic!("Please run as root")
+            bail!("not running as root")
         }
 
         let bubblewrap = bubblewrap.to_owned();
@@ -84,7 +84,7 @@ impl OverlayBuilder {
         fs::create_dir(&ret.dir).unwrap();
         fs::create_dir(ret.dir.join("builds")).unwrap();
         fs::create_dir(ret.dir.join("toolchains")).unwrap();
-        ret
+        Ok(ret)
     }
 
     fn cleanup(&self) {
@@ -93,33 +93,32 @@ impl OverlayBuilder {
         }
     }
 
-    fn prepare_overlay_dirs(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> OverlaySpec {
+    fn prepare_overlay_dirs(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> Result<OverlaySpec> {
         let (toolchain_dir, id) = {
             let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
             // Create the toolchain dir (if necessary) while we have an exclusive lock
-            let entry = toolchain_dir_map.entry(tc.clone())
-                .or_insert_with(|| {
-                    trace!("Creating toolchain directory for {}", tc.archive_id);
-                    let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
-                    fs::create_dir(&toolchain_dir).unwrap();
+            if !toolchain_dir_map.contains_key(tc) {
+                trace!("Creating toolchain directory for {}", tc.archive_id);
+                let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+                fs::create_dir(&toolchain_dir).unwrap();
 
-                    let mut tccache = tccache.lock().unwrap();
-                    let toolchain_rdr = match tccache.get(&tc.archive_id) {
-                        Ok(rdr) => rdr,
-                        Err(LruError::FileNotInCache) => panic!("expected toolchain, but not available"),
-                        Err(e) => panic!("{}", e),
-                    };
-                    tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir).unwrap();
-
-                    (toolchain_dir, 0)
-                });
+                let mut tccache = tccache.lock().unwrap();
+                let toolchain_rdr = match tccache.get(&tc.archive_id) {
+                    Ok(rdr) => rdr,
+                    Err(LruError::FileNotInCache) => bail!("expected toolchain {}, but not available", tc.archive_id),
+                    Err(e) => return Err(Error::with_chain(e, "failed to get toolchain from cache")),
+                };
+                tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir).unwrap();
+                assert!(toolchain_dir_map.insert(tc.clone(), (toolchain_dir, 0)).is_none())
+            }
+            let entry = toolchain_dir_map.get_mut(tc).unwrap();
             entry.1 += 1;
             entry.clone()
         };
 
         let build_dir = self.dir.join("builds").join(format!("{}-{}", tc.archive_id, id));
         fs::create_dir(&build_dir).unwrap();
-        OverlaySpec { build_dir, toolchain_dir }
+        Ok(OverlaySpec { build_dir, toolchain_dir })
     }
 
     fn perform_build(bubblewrap: &Path, compile_command: CompileCommand, inputs_rdr: InputsReader, output_paths: Vec<String>, overlay: &OverlaySpec) -> BuildResult {
@@ -227,7 +226,7 @@ impl BuilderIncoming for OverlayBuilder {
     // From Server
     fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> DistResult<BuildResult> {
         debug!("Preparing overlay");
-        let overlay = self.prepare_overlay_dirs(&tc, tccache);
+        let overlay = self.prepare_overlay_dirs(&tc, tccache).chain_err(|| "failed to prepare overlay dirs")?;
         debug!("Performing build in {:?}", overlay);
         let res = Self::perform_build(&self.bubblewrap, command, inputs_rdr, outputs, &overlay);
         debug!("Finishing with overlay");

@@ -14,6 +14,7 @@
 #![allow(renamed_and_removed_lints)]
 
 use std::boxed::Box;
+use std::convert;
 use std::error;
 use std::io;
 
@@ -34,6 +35,8 @@ error_chain! {
     }
 
     errors {
+        //ProcessError(output: process::Output)
+        DistImplError(err: Box<error::Error + Send>)
     }
 }
 
@@ -55,6 +58,12 @@ impl<F> FutureChainErr<F::Item> for F
     {
         Box::new(self.then(|r| r.chain_err(callback)))
     }
+}
+
+pub fn f_res<T, E: convert::Into<Error>>(t: ::std::result::Result<T, E>) -> SDFuture<T>
+    where T: 'static,
+{
+    Box::new(future::result(t.map_err(Into::into)))
 }
 
 pub fn f_ok<T>(t: T) -> SDFuture<T>

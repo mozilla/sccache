@@ -133,6 +133,31 @@ pub fn bincode_response<T>(content: &T) -> rouille::Response where T: serde::Ser
     }
 }
 
+// Based on try_or_400 in rouille
+#[derive(Serialize)]
+pub struct ErrJson<'a> {
+    description: &'a str,
+    cause: Option<Box<ErrJson<'a>>>,
+}
+
+impl<'a> ErrJson<'a> {
+    pub fn from_err<E: ?Sized + std::error::Error>(err: &'a E) -> ErrJson<'a> {
+        let cause = err.cause().map(ErrJson::from_err).map(Box::new);
+        ErrJson { description: err.description(), cause }
+    }
+}
+macro_rules! try_or_500 {
+    ($result:expr) => (
+        match $result {
+            Ok(r) => r,
+            Err(err) => {
+                let json = ErrJson::from_err(&err);
+                return rouille::Response::json(&json).with_status_code(500)
+            },
+        }
+    );
+}
+
 // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
 trait ReqwestRequestBuilderExt {
     fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self>;
@@ -305,7 +330,7 @@ impl<S: ServerIncoming + 'static> Server<S> {
                     let mut body = request.data().unwrap();
                     let toolchain_rdr = ToolchainReader(Box::new(body));
 
-                    let res: SubmitToolchainResult = handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr).unwrap();
+                    let res: SubmitToolchainResult = try_or_500!(handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
                     bincode_response(&res)
                 },
                 (POST) (/api/v1/distserver/run_job) => {
@@ -320,7 +345,7 @@ impl<S: ServerIncoming + 'static> Server<S> {
                     let inputs_rdr = InputsReader(Box::new(body));
                     let outputs = outputs.into_iter().collect();
 
-                    let res: RunJobResult = handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr).unwrap();
+                    let res: RunJobResult = try_or_500!(handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
                     bincode_response(&res)
                 },
                 _ => {
@@ -365,35 +390,33 @@ impl Client {
     }
 }
 
+fn bincode_req<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SDFuture<T> {
+    Box::new(req.send().map_err(Into::into)
+        .and_then(|res| {
+            let status = res.status();
+            res.into_body().concat2()
+                .map(move |b| (status, b)).map_err(Into::into)
+        })
+        .and_then(|(status, body)| {
+            if !status.is_success() {
+                return f_err(format!("Error {}: {}", status.as_u16(), String::from_utf8_lossy(&body)))
+            }
+            match bincode::deserialize(&body) {
+                Ok(r) => f_ok(r),
+                Err(e) => f_err(e),
+            }
+        }))
+}
+
 impl super::Client for Client {
     fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult> {
         let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-        Box::new(self.client.post(&url).bincode(&tc).unwrap().send()
-            .and_then(|res| {
-                if !res.status().is_success() {
-                    panic!("{:?}", res)
-                }
-                res.into_body().concat2()
-            })
-            .and_then(|body| {
-                Ok(bincode::deserialize(&body).unwrap())
-            })
-            .map_err(Into::into))
+        Box::new(f_res(self.client.post(&url).bincode(&tc).map(bincode_req)).and_then(|r| r))
     }
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
         if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
-            Box::new(self.client.post(&url).bytes(toolchain_bytes).send()
-                .and_then(|res| {
-                    if !res.status().is_success() {
-                        panic!("{:?}", res)
-                    }
-                    res.into_body().concat2()
-                })
-                .and_then(|body| {
-                    Ok(bincode::deserialize(&body).unwrap())
-                })
-                .map_err(Into::into))
+            bincode_req(self.client.post(&url).bytes(toolchain_bytes))
         } else {
             f_err("couldn't find toolchain locally")
         }
@@ -411,17 +434,7 @@ impl super::Client for Client {
         body.write(&bincode).unwrap();
         body.write(&inputs).unwrap();
 
-        Box::new(self.client.post(&url).bytes(body).send()
-            .and_then(|res| {
-                if !res.status().is_success() {
-                    panic!("{:?}", res)
-                }
-                res.into_body().concat2()
-            })
-            .and_then(|body| {
-                Ok(bincode::deserialize(&body).unwrap())
-            })
-            .map_err(Into::into))
+        bincode_req(self.client.post(&url).bytes(body))
     }
 
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
