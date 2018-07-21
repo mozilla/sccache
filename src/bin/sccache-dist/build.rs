@@ -168,16 +168,27 @@ impl OverlayBuilder {
             // Bubblewrap notes:
             // - We're running as uid 0 (to do the mounts above), and so bubblewrap is run as uid 0
             // - There's special handling in bubblewrap to compare uid and euid - of interest to us,
-            //   if uid == euid == 0, bubblewrap preserves capabilities (not good!)
-            // - By entering a new user namespace, your set of capabilities do not apply to any
-            //   other user namespace, i.e. you lose privileges
-            // - --unshare-all attempts to drop everything, but we *must* make sure we've gone into
-            //   a new user namespace (because of capabilities) so we override the 'try' mode
+            //   if uid == euid == 0, bubblewrap preserves capabilities (not good!) so we explicitly
+            //   drop all capabilities
+            // - By entering a new user namespace means any set of capabilities do not apply to any
+            //   other user namespace, i.e. you lose privileges. This is not strictly necessary because
+            //   we're dropping caps anyway so it's irrelevant which namespace we're in, but it doesn't
+            //   hurt.
+            // - --unshare-all is not ideal as it happily continues if it fails to unshare either
+            //   the user or cgroups namespace, so we list everything explicitly
+            // - The order of bind vs proc + dev is important - the new root must be put in place
+            //   first, otherwise proc and dev get hidden
             let mut cmd = Command::new(bubblewrap);
             cmd
-                .args(&["--die-with-parent", "--unshare-all", "--unshare-user"])
-                .args(&["--proc", "/proc", "--dev", "/dev"])
+                .arg("--die-with-parent")
+                .args(&["--cap-drop", "ALL"])
+                .args(&[
+                    "--unshare-user", "--unshare-cgroup", "--unshare-ipc",
+                    "--unshare-pid", "--unshare-net", "--unshare-uts",
+                ])
                 .arg("--bind").arg(&target_dir).arg("/")
+                .args(&["--proc", "/proc"])
+                .args(&["--dev", "/dev"])
                 .arg("--chdir").arg(cwd);
 
             for (k, v) in env_vars {
