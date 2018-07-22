@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use ::compiler::{
+    clang,
+    gcc,
     Cacheable,
     CompilerArguments,
     CompileCommand,
@@ -50,15 +52,16 @@ use errors::*;
 pub struct MSVC {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
+    pub is_clang: bool,
 }
 
 impl CCompilerImpl for MSVC {
     fn kind(&self) -> CCompilerKind { CCompilerKind::MSVC }
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       _cwd: &Path) -> CompilerArguments<ParsedArguments>
+                       cwd: &Path) -> CompilerArguments<ParsedArguments>
     {
-        parse_arguments(arguments)
+        parse_arguments(arguments, cwd, self.is_clang)
     }
 
     fn preprocess<T>(&self,
@@ -202,11 +205,12 @@ enum MSVCArgAttribute {
     DepFile,
     ProgramDatabase,
     DebugInfo,
+    XClang,
 }
 
 use self::MSVCArgAttribute::*;
 
-static ARGS: [(ArgInfo, MSVCArgAttribute); 20] = [
+static ARGS: [(ArgInfo, MSVCArgAttribute); 22] = [
     take_arg!("-D", String, Concatenated, PreprocessorArgument),
     take_arg!("-FA", String, Concatenated, TooHard),
     take_arg!("-FI", Path, CanBeSeparated, PreprocessorArgument),
@@ -220,24 +224,28 @@ static ARGS: [(ArgInfo, MSVCArgAttribute); 20] = [
     take_arg!("-Fp", Path, Concatenated, TooHard),
     take_arg!("-Fr", Path, Concatenated, TooHard),
     flag!("-Fx", TooHard),
-    take_arg!("-I", Path, Concatenated, PreprocessorArgument),
+    take_arg!("-I", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-U", String, Concatenated, PreprocessorArgument),
+    take_arg!("-Xclang", String, Separated, XClang),
     flag!("-Zi", DebugInfo),
     flag!("-c", DoCompilation),
     take_arg!("-deps", Path, Concatenated, DepFile),
+    take_arg!("-o", Path, Separated, Output), // Deprecated but valid
     flag!("-showIncludes", ShowIncludes),
     take_arg!("@", Path, Concatenated, TooHard),
 ];
 
-pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
+pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec!();
+    let mut preprocessor_args = vec!();
     let mut compilation = false;
     let mut debug_info = false;
     let mut pdb = None;
     let mut depfile = None;
     let mut show_includes = false;
+    let mut xclangs: Vec<OsString> = vec![];
 
     // First convert all `/foo` arguments to `-foo` to accept both styles
     let it = arguments.iter().map(|i| {
@@ -273,6 +281,11 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
             Some(ProgramDatabase) => pdb = item.arg.get_value().map(|s| s.unwrap_path()),
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument) => {}
+            Some(XClang) => {
+                if let Some(arg) = item.arg.get_value() {
+                    xclangs.push(arg.into())
+                }
+            },
             None => {
                 match item.arg {
                     Argument::Raw(ref val) => {
@@ -288,12 +301,58 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
             }
         }
         match item.data {
-            Some(PreprocessorArgument) |
+            Some(PreprocessorArgument) => preprocessor_args.extend(item.arg.normalize(NormalizedDisposition::Concatenated)),
             Some(ProgramDatabase) |
             Some(DebugInfo) => common_args.extend(item.arg.normalize(NormalizedDisposition::Concatenated)),
             _ => {}
         }
     }
+
+    // TODO: doing this here reorders the arguments, hopefully that doesn't affect the meaning
+    let xclang_it = gcc::ExpandIncludeFile::new(cwd, &xclangs);
+    for item in ArgsIter::new(xclang_it, (&gcc::ARGS[..], &clang::ARGS[..])) {
+        // Eagerly bail if it looks like we need to do more complicated work
+        use compiler::gcc::GCCArgAttribute::*;
+        let args = match item.data {
+            Some(SplitDwarf) |
+            Some(ProfileGenerate) |
+            Some(TestCoverage) |
+            Some(Coverage) |
+            Some(DoCompilation) |
+            Some(Language) |
+            Some(Output) |
+            Some(TooHard) => {
+                return CompilerArguments::CannotCache(item.arg.to_str().unwrap_or(
+                    "Can't handle complex arguments through clang",
+                ))
+            }
+            None => {
+                match item.arg {
+                    Argument::Raw(_) |
+                    Argument::UnknownFlag(_) => Some(&mut common_args),
+                    _ => unreachable!(),
+                }
+            }
+            Some(PassThrough) => Some(&mut common_args),
+            Some(PreprocessorArgument) |
+            Some(DepTarget) |
+            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+        };
+        if let Some(args) = args {
+            // Normalize attributes such as "-I foo", "-D FOO=bar", as
+            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+            // "-include foo", "-idirafter bar", etc.
+            let norm = match item.arg.to_str() {
+                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+                _ => NormalizedDisposition::Separated,
+            };
+            for arg in item.arg.normalize(norm) {
+                args.push("-Xclang".into());
+                args.push(arg)
+            }
+        }
+    }
+
     // We only support compilation.
     if !compilation {
         return CompilerArguments::NotCompilation;
@@ -319,7 +378,8 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
         },
     }
     // -Fd is not taken into account unless -Zi is given
-    if debug_info {
+    // Clang is currently unable to generate PDB files
+    if debug_info && !is_clang {
         match pdb {
             Some(p) => outputs.insert("pdb", p),
             None => {
@@ -330,12 +390,13 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArgume
             }
         };
     }
+
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language: language,
         depfile: depfile.map(|d| d.into()),
         outputs: outputs,
-        preprocessor_args: vec!(),
+        preprocessor_args: preprocessor_args,
         common_args: common_args,
         msvc_show_includes: show_includes,
         profile_generate: false,
@@ -397,6 +458,7 @@ pub fn preprocess<T>(creator: &T,
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .arg("-nologo")
+        .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
@@ -495,6 +557,7 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
         parsed_args.input.clone().into(),
         fo,
     ];
+    arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
     let command = CompileCommand {
@@ -515,6 +578,10 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
             path_transformer.to_dist(&parsed_args.input)?,
             fo,
         ];
+        // It's important to avoid preprocessor_args because of things like /FI which
+        // forcibly includes another file. This does mean we're potentially vulnerable
+        // to misidentification of flags like -DYNAMICBASE (though in that specific
+        // case we're safe as it only applies to link time, which sccache avoids).
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
 
         Some(dist::CompileCommand {

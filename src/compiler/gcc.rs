@@ -91,7 +91,7 @@ pub enum GCCArgAttribute {
 use self::GCCArgAttribute::*;
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
-pub static ARGS: [(ArgInfo, GCCArgAttribute); 64] = [
+pub static ARGS: [(ArgInfo, GCCArgAttribute); 65] = [
     flag!("-", TooHard),
     flag!("--coverage", Coverage),
     take_arg!("--param", String, Separated, PassThrough),
@@ -124,6 +124,7 @@ pub static ARGS: [(ArgInfo, GCCArgAttribute); 64] = [
     take_arg!("-aux-info", String, Separated, PassThrough),
     take_arg!("-b", String, Separated, PassThrough),
     flag!("-c", DoCompilation),
+    take_arg!("-dependency-file", Path, Separated, PreprocessorArgument),
     flag!("-fno-working-directory", PreprocessorArgument),
     flag!("-fplugin=libcc1plugin", TooHard),
     flag!("-fprofile-arcs", ProfileGenerate),
@@ -190,10 +191,7 @@ where
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
-    let it = ExpandIncludeFile {
-        stack: arguments.iter().rev().map(|a| a.to_owned()).collect(),
-        cwd: cwd,
-    };
+    let it = ExpandIncludeFile::new(cwd, arguments);
 
     for item in ArgsIter::new(it, arg_info) {
         // Refuse to cache arguments such as "-include@foo" because they're a
@@ -424,7 +422,7 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
             path_transformer.to_dist(&parsed_args.input)?,
             "-o".into(), path_transformer.to_dist(out_file)?,
         ];
-        arguments.extend(dist::osstrings_to_strings(&parsed_args.preprocessor_args)?);
+        // We could do preprocessor_args here, but skip for consistency with msvc
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
@@ -437,9 +435,18 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
     Ok((command, dist_command, Cacheable::Yes))
 }
 
-struct ExpandIncludeFile<'a> {
+pub struct ExpandIncludeFile<'a> {
     cwd: &'a Path,
     stack: Vec<OsString>,
+}
+
+impl<'a> ExpandIncludeFile<'a> {
+    pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
+        ExpandIncludeFile {
+            stack: args.iter().rev().map(|a| a.to_owned()).collect(),
+            cwd: cwd,
+        }
+    }
 }
 
 impl<'a> Iterator for ExpandIncludeFile<'a> {

@@ -81,10 +81,12 @@ impl CCompilerImpl for Clang {
     }
 }
 
-static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 8] = [
+pub static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 8] = [
     take_arg!("--serialize-diagnostics", String, Separated, PassThrough),
     take_arg!("--target", String, Separated, PassThrough),
-    take_arg!("-Xclang", String, Separated, PassThrough),
+    // TODO: should be extracted and reprocessed, though bear in mind some
+    // flags are not valid under a -Xclang
+    take_arg!("-Xclang", String, Separated, TooHard),
     flag!("-fcxx-modules", TooHard),
     flag!("-fmodules", TooHard),
     take_arg!("-gcc-toolchain", String, Separated, PassThrough),
