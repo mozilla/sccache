@@ -671,7 +671,9 @@ fn detect_c_compiler<T>(creator: T,
 {
     trace!("detect_c_compiler");
 
-    let test = b"#if defined(_MSC_VER)
+    let test = b"#if defined(_MSC_VER) && defined(__clang__)
+msvc-clang
+#elif defined(_MSC_VER)
 msvc
 #elif defined(__clang__)
 clang
@@ -711,8 +713,9 @@ gcc
                 debug!("Found clang");
                 return Box::new(CCompiler::new(Clang, executable, &pool)
                                 .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
-            } else if line == "msvc" {
-                debug!("Found MSVC");
+            } else if line == "msvc" || line == "msvc-clang" {
+                let is_clang = line == "msvc-clang";
+                debug!("Found MSVC (is clang: {})", is_clang);
                 let prefix = msvc::detect_showincludes_prefix(&creator,
                                                               executable.as_ref(),
                                                               env,
@@ -721,6 +724,7 @@ gcc
                     trace!("showIncludes prefix: '{}'", prefix);
                     CCompiler::new(MSVC {
                         includes_prefix: prefix,
+                        is_clang,
                     }, executable, &pool)
                         .map(|c| Some(Box::new(c) as Box<Compiler<T>>))
                 }))
