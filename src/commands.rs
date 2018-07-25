@@ -519,6 +519,10 @@ fn handle_compile_response<T>(mut creator: T,
                 }),
             }
         }
+        CompileResponse::UnsupportedCompiler => {
+            debug!("Server sent UnsupportedCompiler");
+            bail!("Compiler not supported");
+        }
         CompileResponse::UnhandledCompile => {
             debug!("Server sent UnhandledCompile");
         }

@@ -500,6 +500,9 @@ impl<C> SccacheService<C>
             None => {
                 debug!("check_compiler: Unsupported compiler");
                 stats.requests_unsupported_compiler += 1;
+                return Message::WithoutBody(
+                    Response::Compile(CompileResponse::UnsupportedCompiler)
+                        );
             }
             Some(c) => {
                 debug!("check_compiler: Supported compiler");

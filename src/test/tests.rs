@@ -173,24 +173,21 @@ fn test_server_unsupported_compiler() {
     let exe = &f.bins[0];
     let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
     let cwd = f.tempdir.path();
+    // This creator shouldn't create any processes. It will assert if
+    // it tries to.
     let client_creator = new_creator();
-    const COMPILER_STDOUT: &'static [u8] = b"some stdout";
-    const COMPILER_STDERR: &'static [u8] = b"some stderr";
-    {
-        let mut c = client_creator.lock().unwrap();
-        // Actual client output.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR)));
-    }
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
     let mut core = Core::new().unwrap();
-    assert_eq!(0, do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, vec![], &mut stdout, &mut stderr).unwrap());
+    let res = do_compile(client_creator.clone(), &mut core, conn, exe, cmdline, cwd, path, vec![],
+                         &mut stdout, &mut stderr);
+    match res {
+        Ok(_) => panic!("do_compile should have failed!"),
+        Err(e) => assert_eq!("Compiler not supported", e.description()),
+    }
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
-    assert_eq!(0, client_creator.lock().unwrap().children.len());
-    assert_eq!(COMPILER_STDOUT, &stdout.into_inner()[..]);
-    assert_eq!(COMPILER_STDERR, &stderr.into_inner()[..]);
     // Shut down the server.
     sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.
