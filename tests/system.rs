@@ -164,6 +164,33 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     });
 }
 
+fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
+    let Compiler { name, exe, env_vars } = compiler;
+    trace!("test_noncacheable_stats: {}", name);
+    // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
+    let original_source_file = Path::new(file!()).parent().unwrap().join(INPUT);
+    let source_file = tempdir.join(INPUT);
+    trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
+    fs::copy(&original_source_file, &source_file).unwrap();
+
+    trace!("compile");
+    Command::main_binary().unwrap()
+        .arg(&exe)
+        .arg("-E")
+        .arg(INPUT)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(0, info.stats.requests_executed);
+        assert_eq!(1, info.stats.not_cached.len());
+        assert_eq!(Some(&1), info.stats.not_cached.get("-E"));
+    });
+}
+
 fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
     // Check that -deps works.

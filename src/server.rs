@@ -581,13 +581,13 @@ impl<C> SccacheService<C>
                         return Message::WithBody(Response::Compile(res), rx)
                     }
                     CompilerArguments::CannotCache(why, extra_info) => {
-                        //TODO: save counts of why
                         if let Some(extra_info) = extra_info {
                             debug!("parse_arguments: CannotCache({}, {}): {:?}", why, extra_info, cmd)
                         } else {
                             debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
                         }
                         stats.requests_not_cacheable += 1;
+                        *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
                     }
                     CompilerArguments::NotCompilation => {
                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
@@ -775,6 +775,8 @@ pub struct ServerStats {
     pub cache_read_miss_duration: Duration,
     /// The count of compilation failures.
     pub compile_fails: u64,
+    /// Counts of reasons why compiles were not cached.
+    pub not_cached: HashMap<String, usize>,
 }
 
 /// Info and stats about the server.
@@ -807,6 +809,7 @@ impl Default for ServerStats {
             cache_read_hit_duration: Duration::new(0, 0),
             cache_read_miss_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
+            not_cached: HashMap::new(),
         }
     }
 }
@@ -859,6 +862,14 @@ impl ServerStats {
         for (name, stat, suffix_len) in stats_vec {
             println!("{:<name_width$} {:>stat_width$}", name, stat, name_width=name_width, stat_width=stat_width + suffix_len);
         }
+        if !self.not_cached.is_empty() {
+            println!("\nNon-cacheable reasons:");
+            for (reason, count) in self.not_cached.iter() {
+                println!("{:<name_width$} {:>stat_width$}", reason, count, name_width=name_width,
+                         stat_width=stat_width);
+            }
+            println!("");
+        }
         (name_width, stat_width)
     }
 }
@@ -875,7 +886,8 @@ impl ServerInfo {
                     Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
                     Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
                 };
-                println!("{:<name_width$} {:>stat_width$} {}", name, val, suffix, name_width=name_width, stat_width=stat_width);
+                println!("{:<name_width$} {:>stat_width$} {}", name, val, suffix,
+                         name_width=name_width, stat_width=stat_width);
             }
         }
     }
