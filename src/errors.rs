@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(renamed_and_removed_lints)]
+
 use std::boxed::Box;
 use std::error;
 use std::io;

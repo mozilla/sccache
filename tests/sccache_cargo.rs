@@ -13,8 +13,6 @@ extern crate tempdir;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-
 use assert_cli::{Assert, Environment};
 use env_logger::LogBuilder;
 use chrono::Local;
@@ -34,15 +32,12 @@ fn find_sccache_binary() -> PathBuf {
         .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
 }
 
-fn stop(sccache: &Path) {
-    //TODO: should be able to use Assert::ignore_status when that is released.
-    let output = Command::new(&sccache)
-        .arg("--stop-server")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+fn stop() {
+    trace!("sccache --stop-server");
+    Assert::main_binary()
+        .with_args(&["--stop-server"])
+        .ignore_status()
         .unwrap();
-    trace!("stop-server returned {}", output.status);
 }
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
@@ -65,8 +60,7 @@ fn test_rust_cargo() {
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.
-    trace!("sccache --stop-server");
-    stop(&sccache);
+    stop();
     // Create a temp directory to use for the disk cache.
     let tempdir = TempDir::new("sccache_test_rust_cargo").unwrap();
     let cache_dir = tempdir.path().join("cache");
@@ -76,30 +70,44 @@ fn test_rust_cargo() {
     let env = Environment::inherit().insert("SCCACHE_DIR", &cache_dir);
     // Start a new sccache server.
     trace!("sccache --start-server");
-    Assert::command(&[&sccache.to_string_lossy()])
-        .with_args(&["--start-server"]).with_env(env).succeeds().unwrap();
+    Assert::main_binary()
+        .with_args(&["--start-server"])
+        .with_env(env)
+        .succeeds()
+        .unwrap();
     // `cargo clean` first, just to be sure there's no leftover build objects.
     let env = Environment::inherit()
         .insert("RUSTC_WRAPPER", &sccache)
         .insert("CARGO_TARGET_DIR", &cargo_dir);
     let a = Assert::command(&[&cargo])
-        .with_args(&["clean"]).with_env(&env).current_dir(&crate_dir).succeeds();
+        .with_args(&["clean"])
+        .with_env(&env)
+        .current_dir(&crate_dir)
+        .succeeds();
     trace!("cargo clean: {:?}", a);
     a.unwrap();
     // Now build the crate with cargo.
     let a = Assert::command(&[&cargo])
-        .with_args(&["build", "--color=never"]).with_env(&env).current_dir(&crate_dir)
-        .stderr().doesnt_contain("\x1b[").succeeds();
+        .with_args(&["build", "--color=never"])
+        .with_env(&env).current_dir(&crate_dir)
+        .stderr().doesnt_contain("\x1b[")
+        .succeeds();
     trace!("cargo build: {:?}", a);
     a.unwrap();
     // Clean it so we can build it again.
     let a = Assert::command(&[&cargo])
-        .with_args(&["clean"]).with_env(&env).current_dir(&crate_dir).succeeds();
+        .with_args(&["clean"])
+        .with_env(&env)
+        .current_dir(&crate_dir)
+        .succeeds();
     trace!("cargo clean: {:?}", a);
     a.unwrap();
     let a = Assert::command(&[&cargo])
-        .with_args(&["build", "--color=always"]).with_env(&env).current_dir(&crate_dir)
-        .stderr().contains("\x1b[").succeeds();
+        .with_args(&["build", "--color=always"])
+        .with_env(&env)
+        .current_dir(&crate_dir)
+        .stderr().contains("\x1b[")
+        .succeeds();
     trace!("cargo build: {:?}", a);
     a.unwrap();
     // Now get the stats and ensure that we had a cache hit for the second build.
@@ -107,10 +115,9 @@ fn test_rust_cargo() {
     // so there are two separate compilations, but cargo will build the test crate with
     // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
-    Assert::command(&[&sccache.to_string_lossy()])
+    Assert::main_binary()
         .with_args(&["--show-stats", "--stats-format=json"])
         .stdout().contains(r#""cache_hits":1"#).succeeds().execute()
         .expect("Should have had 1 cache hit");
-    trace!("sccache --stop-server");
-    stop(&sccache);
+    stop();
 }
