@@ -106,7 +106,7 @@ mod config;
 mod jobserver;
 mod mock_command;
 mod protocol;
-mod server;
+pub mod server;
 #[cfg(feature = "simple-s3")]
 mod simples3;
 mod util;

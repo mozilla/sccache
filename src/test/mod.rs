@@ -16,4 +16,3 @@ pub mod mock_storage;
 #[macro_use]
 pub mod utils;
 mod tests;
-mod system;
