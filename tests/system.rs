@@ -1,3 +1,5 @@
+// System tests for compiling C code.
+//
 // Copyright 2016 Mozilla Foundation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +17,16 @@
 #![allow(dead_code, unused_imports)]
 
 extern crate cc;
+extern crate env_logger;
+#[macro_use]
+extern crate log;
+extern crate sccache;
+extern crate serde_json;
+extern crate tempdir;
+extern crate which;
 
-use env_logger;
 use log::LogLevel::Trace;
-use serde_json;
-use server::ServerInfo;
+use sccache::server::ServerInfo;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};
@@ -33,7 +40,6 @@ use std::process::{
     Stdio,
 };
 use tempdir::TempDir;
-use test::utils::*;
 use which::which_in;
 
 
@@ -52,6 +58,20 @@ const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
 const COMPILERS: &'static [&'static str] = &["clang"];
 
 //TODO: could test gcc when targeting mingw.
+
+fn find_sccache_binary() -> PathBuf {
+    // Older versions of cargo put the test binary next to the sccache binary.
+    // Newer versions put it in the deps/ subdirectory.
+    let exe = env::current_exe().unwrap();
+    let this_dir = exe.parent().unwrap();
+    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
+    dirs
+        .iter()
+        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
+        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
+        .next()
+        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
+}
 
 fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> Output {
     let mut cmd = Command::new(exe);
