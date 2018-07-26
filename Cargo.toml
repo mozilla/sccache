@@ -66,10 +66,11 @@ atty = "0.2.6"
 directories = "0.8.4"
 
 [dev-dependencies]
-assert_cli = "0.6.3"
+assert_cmd = "0.6.0"
 cc = "1.0"
 chrono = "0.3"
 itertools = "0.7"
+predicates = "0.5.2"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"

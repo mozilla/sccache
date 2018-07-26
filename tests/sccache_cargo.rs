@@ -3,41 +3,31 @@
 //! Any copyright is dedicated to the Public Domain.
 //! http://creativecommons.org/publicdomain/zero/1.0/
 
-extern crate assert_cli;
+extern crate assert_cmd;
 extern crate chrono;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+extern crate predicates;
 extern crate tempdir;
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
-use assert_cli::{Assert, Environment};
+use std::path::Path;
+use assert_cmd::prelude::*;
 use env_logger::LogBuilder;
 use chrono::Local;
+use predicates::prelude::*;
+use std::process::{Command, Stdio};
 use tempdir::TempDir;
-
-fn find_sccache_binary() -> PathBuf {
-    // Older versions of cargo put the test binary next to the sccache binary.
-    // Newer versions put it in the deps/ subdirectory.
-    let exe = env::current_exe().unwrap();
-    let this_dir = exe.parent().unwrap();
-    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
-    dirs
-        .iter()
-        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
-        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
-        .next()
-        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
-}
 
 fn stop() {
     trace!("sccache --stop-server");
-    Assert::main_binary()
-        .with_args(&["--stop-server"])
-        .ignore_status()
-        .unwrap();
+    drop(Command::main_binary().unwrap()
+         .arg("--stop-server")
+         .stdout(Stdio::null())
+         .stderr(Stdio::null())
+         .status());
 }
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
@@ -56,7 +46,7 @@ fn test_rust_cargo() {
         .init());
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
-    let sccache = find_sccache_binary();
+    let sccache = assert_cmd::cargo::main_binary_path().unwrap();
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.
@@ -67,57 +57,53 @@ fn test_rust_cargo() {
     fs::create_dir(&cache_dir).unwrap();
     let cargo_dir = tempdir.path().join("cargo");
     fs::create_dir(&cargo_dir).unwrap();
-    let env = Environment::inherit().insert("SCCACHE_DIR", &cache_dir);
     // Start a new sccache server.
     trace!("sccache --start-server");
-    Assert::main_binary()
-        .with_args(&["--start-server"])
-        .with_env(env)
-        .succeeds()
-        .unwrap();
+    Command::main_binary().unwrap()
+        .arg("--start-server")
+        .env("SCCACHE_DIR", &cache_dir)
+        .assert()
+        .success();
     // `cargo clean` first, just to be sure there's no leftover build objects.
-    let env = Environment::inherit()
-        .insert("RUSTC_WRAPPER", &sccache)
-        .insert("CARGO_TARGET_DIR", &cargo_dir);
-    let a = Assert::command(&[&cargo])
-        .with_args(&["clean"])
-        .with_env(&env)
+    let envs = vec![("RUSTC_WRAPPER", &sccache),
+                    ("CARGO_TARGET_DIR", &cargo_dir)];
+    Command::new(&cargo)
+        .args(&["clean"])
+        .envs(envs.iter().map(|v| *v))
         .current_dir(&crate_dir)
-        .succeeds();
-    trace!("cargo clean: {:?}", a);
-    a.unwrap();
+        .assert()
+        .success();
     // Now build the crate with cargo.
-    let a = Assert::command(&[&cargo])
-        .with_args(&["build", "--color=never"])
-        .with_env(&env).current_dir(&crate_dir)
-        .stderr().doesnt_contain("\x1b[")
-        .succeeds();
-    trace!("cargo build: {:?}", a);
-    a.unwrap();
+    Command::new(&cargo)
+        .args(&["build", "--color=never"])
+        .envs(envs.iter().map(|v| *v))
+        .current_dir(&crate_dir)
+        .assert()
+        .stderr(predicates::str::contains("\x1b[").from_utf8().not())
+        .success();
     // Clean it so we can build it again.
-    let a = Assert::command(&[&cargo])
-        .with_args(&["clean"])
-        .with_env(&env)
+    Command::new(&cargo)
+        .args(&["clean"])
+        .envs(envs.iter().map(|v| *v))
         .current_dir(&crate_dir)
-        .succeeds();
-    trace!("cargo clean: {:?}", a);
-    a.unwrap();
-    let a = Assert::command(&[&cargo])
-        .with_args(&["build", "--color=always"])
-        .with_env(&env)
+        .assert()
+        .success();
+    Command::new(&cargo)
+        .args(&["build", "--color=always"])
+        .envs(envs.iter().map(|v| *v))
         .current_dir(&crate_dir)
-        .stderr().contains("\x1b[")
-        .succeeds();
-    trace!("cargo build: {:?}", a);
-    a.unwrap();
+        .assert()
+        .stderr(predicates::str::contains("\x1b[").from_utf8())
+        .success();
     // Now get the stats and ensure that we had a cache hit for the second build.
     // Ideally we'd check the stats more usefully here--the test crate has one dependency (itoa)
     // so there are two separate compilations, but cargo will build the test crate with
     // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
-    Assert::main_binary()
-        .with_args(&["--show-stats", "--stats-format=json"])
-        .stdout().contains(r#""cache_hits":1"#).succeeds().execute()
-        .expect("Should have had 1 cache hit");
+    Command::main_binary().unwrap()
+        .args(&["--show-stats", "--stats-format=json"])
+        .assert()
+        .stdout(predicates::str::contains(r#""cache_hits":1"#).from_utf8())
+        .success();
     stop();
 }
