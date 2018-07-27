@@ -262,7 +262,6 @@ fn test_server_port_in_use() {
         .unwrap();
     assert!(!output.status.success());
     let s = String::from_utf8_lossy(&output.stderr);
-    assert!(s.contains("Server startup failed:"),
-            "Output did not contain 'Failed to start server:':\n========\n{}\n========",
-            s);
+    const MSG: &str = "Server startup failed:";
+    assert!(s.contains(MSG), "Output did not contain '{}':\n========\n{}\n========", MSG, s);
 }
