@@ -16,16 +16,20 @@
 
 #![allow(dead_code, unused_imports)]
 
+extern crate assert_cmd;
 extern crate cc;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
+extern crate predicates;
 extern crate sccache;
 extern crate serde_json;
 extern crate tempdir;
 extern crate which;
 
+use assert_cmd::prelude::*;
 use log::LogLevel::Trace;
+use predicates::prelude::*;
 use sccache::server::ServerInfo;
 use std::collections::HashMap;
 use std::env;
@@ -39,9 +43,9 @@ use std::process::{
     Output,
     Stdio,
 };
+use std::str;
 use tempdir::TempDir;
 use which::which_in;
-
 
 struct Compiler {
     pub name: &'static str,
@@ -59,59 +63,22 @@ const COMPILERS: &'static [&'static str] = &["clang"];
 
 //TODO: could test gcc when targeting mingw.
 
-fn find_sccache_binary() -> PathBuf {
-    // Older versions of cargo put the test binary next to the sccache binary.
-    // Newer versions put it in the deps/ subdirectory.
-    let exe = env::current_exe().unwrap();
-    let this_dir = exe.parent().unwrap();
-    let dirs = &[&this_dir, &this_dir.parent().unwrap()];
-    dirs
-        .iter()
-        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
-        .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
-        .next()
-        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
+fn stop() {
+    trace!("sccache --stop-server");
+    drop(Command::main_binary().unwrap()
+         .arg("--stop-server")
+         .stdout(Stdio::null())
+         .stderr(Stdio::null())
+         .status());
 }
 
-fn do_run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> Output {
-    let mut cmd = Command::new(exe);
-    cmd.args(args)
-        .current_dir(cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for &(ref k, ref v) in env_vars.iter() {
-        cmd.env(k, v);
-    }
-    trace!("do_run: {:?}", cmd);
-    cmd.spawn()
-        .unwrap_or_else(|e| { panic!("failed to execute child: {}", e) })
-        .wait_with_output()
-        .unwrap()
-}
-
-fn run_stdout<T>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> String
-    where T: AsRef<OsStr> + fmt::Debug,
-{
-    let output = do_run(exe, args, cwd, env_vars);
-    assert!(output.status.success(), "Failed to run {:?} {:?}", exe, args);
-    String::from_utf8(output.stdout).expect("Couldn't convert stdout to String")
-}
-
-fn run<T: AsRef<OsStr>>(exe: &Path, args: &[T], cwd: &Path, env_vars: &[(OsString, OsString)]) -> bool {
-    let output = do_run(exe, args, cwd, env_vars);
-    if output.status.success() {
-        true
-    } else {
-        let va = args.iter().map(|a| a.as_ref().to_str().unwrap()).collect::<Vec<_>>();
-        println!("Process `{:?} {}` failed:", exe, va.join(" "));
-        print!("stdout: `");
-        io::stdout().write(&output.stdout).unwrap();
-        println!("`");
-        print!("stderr: `");
-        io::stdout().write(&output.stderr).unwrap();
-        println!("`");
-        false
-    }
+fn zero_stats() {
+    trace!("sccache --zero-stats");
+    drop(Command::main_binary().unwrap()
+         .arg("--zero-stats")
+         .stdout(Stdio::null())
+         .stderr(Stdio::null())
+         .status());
 }
 
 macro_rules! vec_from {
@@ -128,9 +95,16 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
     }
 }
 
-fn get_stats(sccache: &Path, cwd: &Path) -> ServerInfo {
-    let output = run_stdout(sccache, &["--show-stats", "--stats-format=json"], cwd, &[]);
-    serde_json::from_str(&output).expect("Failed to parse JSON stats")
+fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
+    Command::main_binary().unwrap()
+        .args(&["--show-stats", "--stats-format=json"])
+        .assert()
+        .success()
+        .stdout(predicate::function(move |output: &[u8]| {
+            let s = str::from_utf8(output).expect("Output not UTF-8");
+            f(serde_json::from_str(s).expect("Failed to parse JSON stats"));
+            true
+        }));
 }
 
 fn write_source(path: &Path, filename: &str, contents: &str) {
@@ -139,11 +113,10 @@ fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
-fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) {
+fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
     // Ensure there's no existing sccache server running.
-    trace!("stop server");
-    do_run(sccache, &["--stop-server"], tempdir, &[]);
+    stop();
     // Create a subdir for the cache.
     let cache = tempdir.join("cache");
     fs::create_dir_all(&cache).unwrap();
@@ -151,13 +124,12 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
     trace!("start server");
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    assert!(Command::new(sccache)
-            .arg("--start-server")
-            .current_dir(tempdir)
-            .env("SCCACHE_DIR", &cache)
-            .status()
-            .unwrap()
-            .success());
+    Command::main_binary().unwrap()
+        .arg("--start-server")
+        .env("SCCACHE_DIR", &cache)
+        .status()
+        .unwrap()
+        .success();
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
     const INPUT: &'static str = "test.c";
@@ -173,30 +145,47 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
 
     let out_file = tempdir.join("test.o");
     trace!("compile");
-    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, INPUT, OUTPUT), tempdir, &env_vars));
+    Command::main_binary().unwrap()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
-    let info = get_stats(sccache, tempdir);
-    assert_eq!(1, info.stats.compile_requests);
-    assert_eq!(1, info.stats.requests_executed);
-    assert_eq!(0, info.stats.cache_hits);
-    assert_eq!(1, info.stats.cache_misses);
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+    });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    assert_eq!(true, run(sccache, &compile_cmdline(name, &exe, INPUT, OUTPUT), tempdir, &env_vars));
+    Command::main_binary().unwrap()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .current_dir(tempdir)
+.envs(env_vars.clone())
+        .assert()
+        .success();
     assert_eq!(true, fs::metadata(&out_file).and_then(|m| Ok(m.len() > 0)).unwrap());
     trace!("request stats");
-    let info = get_stats(sccache, tempdir);
-    assert_eq!(2, info.stats.compile_requests);
-    assert_eq!(2, info.stats.requests_executed);
-    assert_eq!(1, info.stats.cache_hits);
-    assert_eq!(1, info.stats.cache_misses);
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+    });
     if name == "cl.exe" {
         // Check that -deps works.
         trace!("compile with -deps");
         let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
         args.push("-depstest.d".into());
-        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
+        Command::main_binary().unwrap()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
         // Check the contents
         let mut f = File::open(tempdir.join("test.d")).expect("Failed to open dep file");
         let mut buf = String::new();
@@ -212,14 +201,17 @@ fn run_sccache_command_test(sccache: &Path, compiler: Compiler, tempdir: &Path) 
         trace!("test -MP with -Werror");
         let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
         args.extend(vec_from!(OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"));
-        let output = do_run(sccache, &args, tempdir, &env_vars);
-        assert!(!output.status.success());
         // This should fail, but the error should be from the #error!
-        let stderr = String::from_utf8(output.stderr).expect("Couldn't convert stderr to String");
-        assert!(stderr.find("to generate dependencies you must specify either -M or -MM").is_none(), "Should not have complained about commandline arguments");
-
+        Command::main_binary().unwrap()
+            .args(&args)
+            .current_dir(tempdir)
+    .envs(env_vars.clone())
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(
+                "to generate dependencies you must specify either -M or -MM").from_utf8().not());
         trace!("test -fprofile-generate with different source inputs");
-        do_run(sccache, &["--zero-stats"], tempdir, &[]);
+        zero_stats();
         const SRC: &str = "source.c";
         write_source(&tempdir, SRC, "/*line 1*/
 #ifndef UNDEFINED
@@ -233,16 +225,28 @@ int main(int argc, char** argv) {
         let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
         args.extend(vec_from!(OsString, "-fprofile-generate"));
         trace!("compile source.c (1)");
-        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
-        let info = get_stats(sccache, tempdir);
-        assert_eq!(0, info.stats.cache_hits);
-        assert_eq!(1, info.stats.cache_misses);
+        Command::main_binary().unwrap()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
+        get_stats(|info| {
+            assert_eq!(0, info.stats.cache_hits);
+            assert_eq!(1, info.stats.cache_misses);
+        });
         // Compile the same source again to ensure we can get a cache hit.
         trace!("compile source.c (2)");
-        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
-        let info = get_stats(sccache, tempdir);
-        assert_eq!(1, info.stats.cache_hits);
-        assert_eq!(1, info.stats.cache_misses);
+        Command::main_binary().unwrap()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
+        get_stats(|info| {
+            assert_eq!(1, info.stats.cache_hits);
+            assert_eq!(1, info.stats.cache_misses);
+        });
         // Now write out a slightly different source file that will preprocess to the same thing,
         // modulo line numbers. This should not be a cache hit because line numbers are important
         // with -fprofile-generate.
@@ -257,13 +261,19 @@ int main(int argc, char** argv) {
 }
 ");
         trace!("compile source.c (3)");
-        assert_eq!(true, run(sccache, &args, tempdir, &env_vars));
-        let info = get_stats(sccache, tempdir);
-        assert_eq!(1, info.stats.cache_hits);
-        assert_eq!(2, info.stats.cache_misses);
+        Command::main_binary().unwrap()
+            .args(&args)
+            .current_dir(tempdir)
+            .envs(env_vars.clone())
+            .assert()
+            .success();
+        get_stats(|info| {
+            assert_eq!(1, info.stats.cache_hits);
+            assert_eq!(2, info.stats.cache_misses);
+        });
     }
     trace!("stop server");
-    assert_eq!(true, run(sccache, &["--stop-server"], tempdir, &[]));
+    stop();
 }
 
 #[cfg(unix)]
@@ -311,13 +321,12 @@ fn test_sccache_command() {
         Err(_) => {},
     }
     let tempdir = TempDir::new("sccache_system_test").unwrap();
-    let sccache = find_sccache_binary();
     let compilers = find_compilers();
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");
     } else {
         for compiler in compilers {
-            run_sccache_command_test(&sccache, compiler, tempdir.path())
+            run_sccache_command_test(compiler, tempdir.path())
         }
     }
 }

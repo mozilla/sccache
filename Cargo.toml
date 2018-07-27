@@ -96,3 +96,6 @@ unstable = []
 
 [workspace]
 exclude = ["tests/test-crate"]
+
+[patch.crates-io]
+predicates = { git = "https://github.com/luser/predicates-rs", branch = "function-unsized" }
