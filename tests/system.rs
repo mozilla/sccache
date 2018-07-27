@@ -115,21 +115,6 @@ fn write_source(path: &Path, filename: &str, contents: &str) {
 
 fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
-    // Ensure there's no existing sccache server running.
-    stop();
-    // Create a subdir for the cache.
-    let cache = tempdir.join("cache");
-    fs::create_dir_all(&cache).unwrap();
-    // Start a server.
-    trace!("start server");
-    // Don't run this with run() because on Windows `wait_with_output`
-    // will hang because the internal server process is not detached.
-    Command::main_binary().unwrap()
-        .arg("--start-server")
-        .env("SCCACHE_DIR", &cache)
-        .status()
-        .unwrap()
-        .success();
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
     const INPUT: &'static str = "test.c";
@@ -272,8 +257,6 @@ int main(int argc, char** argv) {
             assert_eq!(2, info.stats.cache_misses);
         });
     }
-    trace!("stop server");
-    stop();
 }
 
 #[cfg(unix)]
@@ -325,8 +308,25 @@ fn test_sccache_command() {
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");
     } else {
+        // Ensure there's no existing sccache server running.
+        stop();
+        // Create a subdir for the cache.
+        let cache = tempdir.path().join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        // Start a server.
+        trace!("start server");
+        // Don't run this with run() because on Windows `wait_with_output`
+        // will hang because the internal server process is not detached.
+        Command::main_binary().unwrap()
+            .arg("--start-server")
+            .env("SCCACHE_DIR", &cache)
+            .status()
+            .unwrap()
+            .success();
         for compiler in compilers {
-            run_sccache_command_test(compiler, tempdir.path())
+            run_sccache_command_test(compiler, tempdir.path());
+            zero_stats();
         }
+        stop();
     }
 }
