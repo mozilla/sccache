@@ -166,55 +166,50 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
 
 fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
-    if name == "cl.exe" {
-        // Check that -deps works.
-        trace!("compile with -deps");
-        let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
-        args.push("-depstest.d".into());
-        Command::main_binary().unwrap()
-            .args(&args)
-            .current_dir(tempdir)
-            .envs(env_vars.clone())
-            .assert()
-            .success();
-        // Check the contents
-        let mut f = File::open(tempdir.join("test.d")).expect("Failed to open dep file");
-        let mut buf = String::new();
-        // read_to_string should be safe because we're supplying all the filenames here,
-        // and there are no absolute paths.
-        f.read_to_string(&mut buf).expect("Failed to read dep file");
-        let lines: Vec<_> = buf.lines().map(|l| l.trim_right()).collect();
-        let expected = format!("{output}: {input}\n{input}:\n", output=OUTPUT, input=INPUT);
-        let expected_lines: Vec<_> = expected.lines().collect();
-        assert_eq!(lines, expected_lines);
-    }
+    // Check that -deps works.
+    trace!("compile with -deps");
+    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
+    args.push("-depstest.d".into());
+    Command::main_binary().unwrap()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    // Check the contents
+    let mut f = File::open(tempdir.join("test.d")).expect("Failed to open dep file");
+    let mut buf = String::new();
+    // read_to_string should be safe because we're supplying all the filenames here,
+    // and there are no absolute paths.
+    f.read_to_string(&mut buf).expect("Failed to read dep file");
+    let lines: Vec<_> = buf.lines().map(|l| l.trim_right()).collect();
+    let expected = format!("{output}: {input}\n{input}:\n", output=OUTPUT, input=INPUT);
+    let expected_lines: Vec<_> = expected.lines().collect();
+    assert_eq!(lines, expected_lines);
 }
 
 fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
-    if name == "gcc" {
-        trace!("test -MP with -Werror");
-        let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
-        args.extend(vec_from!(OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"));
-        // This should fail, but the error should be from the #error!
-        Command::main_binary().unwrap()
-            .args(&args)
-            .current_dir(tempdir)
-            .envs(env_vars.clone())
-            .assert()
-            .failure()
-            .stderr(predicates::str::contains(
-                "to generate dependencies you must specify either -M or -MM").from_utf8().not());
-    }
+    trace!("test -MP with -Werror");
+    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
+    args.extend(vec_from!(OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"));
+    // This should fail, but the error should be from the #error!
+    Command::main_binary().unwrap()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "to generate dependencies you must specify either -M or -MM").from_utf8().not());
 }
 
 fn test_gcc_fprofile_generate_source_changes(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
-    if name == "gcc" {
-        trace!("test -fprofile-generate with different source inputs");
-        zero_stats();
-        const SRC: &str = "source.c";
-        write_source(&tempdir, SRC, "/*line 1*/
+    trace!("test -fprofile-generate with different source inputs");
+    zero_stats();
+    const SRC: &str = "source.c";
+    write_source(&tempdir, SRC, "/*line 1*/
 #ifndef UNDEFINED
 /*unused line 1*/
 #endif
@@ -223,35 +218,35 @@ int main(int argc, char** argv) {
   return 0;
 }
 ");
-        let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
-        args.extend(vec_from!(OsString, "-fprofile-generate"));
-        trace!("compile source.c (1)");
-        Command::main_binary().unwrap()
-            .args(&args)
-            .current_dir(tempdir)
-            .envs(env_vars.clone())
-            .assert()
-            .success();
-        get_stats(|info| {
-            assert_eq!(0, info.stats.cache_hits);
-            assert_eq!(1, info.stats.cache_misses);
-        });
-        // Compile the same source again to ensure we can get a cache hit.
-        trace!("compile source.c (2)");
-        Command::main_binary().unwrap()
-            .args(&args)
-            .current_dir(tempdir)
-            .envs(env_vars.clone())
-            .assert()
-            .success();
-        get_stats(|info| {
-            assert_eq!(1, info.stats.cache_hits);
-            assert_eq!(1, info.stats.cache_misses);
-        });
-        // Now write out a slightly different source file that will preprocess to the same thing,
-        // modulo line numbers. This should not be a cache hit because line numbers are important
-        // with -fprofile-generate.
-        write_source(&tempdir, SRC, "/*line 1*/
+    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
+    args.extend(vec_from!(OsString, "-fprofile-generate"));
+    trace!("compile source.c (1)");
+    Command::main_binary().unwrap()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(0, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+    });
+    // Compile the same source again to ensure we can get a cache hit.
+    trace!("compile source.c (2)");
+    Command::main_binary().unwrap()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits);
+        assert_eq!(1, info.stats.cache_misses);
+    });
+    // Now write out a slightly different source file that will preprocess to the same thing,
+    // modulo line numbers. This should not be a cache hit because line numbers are important
+    // with -fprofile-generate.
+    write_source(&tempdir, SRC, "/*line 1*/
 #ifndef UNDEFINED
 /*unused line 1*/
 /*unused line 2*/
@@ -261,25 +256,28 @@ int main(int argc, char** argv) {
   return 0;
 }
 ");
-        trace!("compile source.c (3)");
-        Command::main_binary().unwrap()
-            .args(&args)
-            .current_dir(tempdir)
-            .envs(env_vars.clone())
-            .assert()
-            .success();
-        get_stats(|info| {
-            assert_eq!(1, info.stats.cache_hits);
-            assert_eq!(2, info.stats.cache_misses);
-        });
-    }
+    trace!("compile source.c (3)");
+    Command::main_binary().unwrap()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    get_stats(|info| {
+        assert_eq!(1, info.stats.cache_hits);
+        assert_eq!(2, info.stats.cache_misses);
+    });
 }
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     test_basic_compile(compiler.clone(), tempdir);
-    test_msvc_deps(compiler.clone(), tempdir);
-    test_gcc_mp_werror(compiler.clone(), tempdir);
-    test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
+    if name == "cl.exe" {
+        test_msvc_deps(compiler.clone(), tempdir);
+    }
+    if name == "gcc" {
+        test_gcc_mp_werror(compiler.clone(), tempdir);
+        test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
+    }
 }
 
 #[cfg(unix)]
