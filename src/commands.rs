@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use atty::{self, Stream};
+use bincode;
+use byteorder::{ByteOrder, BigEndian};
 use client::{
     connect_to_server,
     connect_with_retry,
@@ -20,6 +22,7 @@ use client::{
 };
 use cmdline::{Command, StatsFormat};
 use compiler::ColorMode;
+use futures::Future;
 use jobserver::Client;
 use log::LogLevel::Trace;
 use mock_command::{
@@ -29,7 +32,7 @@ use mock_command::{
 };
 use protocol::{Request, Response, CompileResponse, CompileFinished, Compile};
 use serde_json;
-use server::{self, ServerInfo};
+use server::{self, ServerInfo, ServerStartup};
 use std::env;
 use std::ffi::{OsStr,OsString};
 use std::fs::{File, OpenOptions};
@@ -45,6 +48,8 @@ use std::path::{
 use std::process;
 use strip_ansi_escapes::Writer;
 use tokio_core::reactor::Core;
+use tokio_io::AsyncRead;
+use tokio_io::io::read_exact;
 use util::run_input_output;
 use which::which_in;
 
@@ -56,17 +61,6 @@ pub const DEFAULT_PORT: u16 = 4226;
 /// The number of milliseconds to wait for server startup.
 const SERVER_STARTUP_TIMEOUT_MS: u32 = 5000;
 
-// Should this just be a Result?
-/// Result of background server startup.
-enum ServerStartup {
-    /// Server started successfully.
-    Ok,
-    /// Timed out waiting for server startup.
-    TimedOut,
-    /// Server encountered an error.
-    Err(Error),
-}
-
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
     env::var("SCCACHE_SERVER_PORT")
@@ -75,16 +69,26 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+fn read_server_startup_status<R: AsyncRead>(server: R) -> impl Future<Item=ServerStartup, Error=Error> {
+    // This is an async equivalent of ServerConnection::read_one_response
+    read_exact(server, [0u8; 4]).map_err(Error::from).and_then(|(server, bytes)| {
+        let len = BigEndian::read_u32(&bytes);
+        let data = vec![0; len as usize];
+        read_exact(server, data).map_err(Error::from).and_then(|(_server, data)| {
+            Ok(bincode::deserialize(&data)?)
+        })
+    })
+}
+
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
     extern crate tokio_uds;
 
-    use futures::{Future, Stream};
+    use futures::Stream;
     use std::time::Duration;
     use tempdir::TempDir;
-    use tokio_io::io::read_exact;
     use tokio_core::reactor::Timeout;
 
     trace!("run_server_process");
@@ -101,20 +105,14 @@ fn run_server_process() -> Result<ServerStartup> {
             .spawn()?;
 
     let startup = listener.incoming().into_future().map_err(|e| e.0);
-    let startup = startup.and_then(|(socket, _rest)| {
+    let startup = startup.map_err(Error::from).and_then(|(socket, _rest)| {
         let (socket, _addr) = socket.unwrap(); // incoming() never returns None
-        read_exact(socket, [0u8]).map(|(_socket, byte)| {
-            if byte[0] == 0 {
-                ServerStartup::Ok
-            } else {
-                let err = format!("Server startup failed: {}", byte[0]).into();
-                ServerStartup::Err(err)
-            }
-        })
+        read_server_startup_status(socket)
     });
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(timeout, &handle)?.map(|()| ServerStartup::TimedOut);
+    let timeout = Timeout::new(timeout, &handle)?.map_err(Error::from)
+        .map(|()| ServerStartup::TimedOut);
     match core.run(startup.select(timeout)) {
         Ok((e, _other)) => Ok(e),
         Err((e, _other)) => Err(e.into()),
@@ -241,14 +239,12 @@ fn redirect_error_log() -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::Future;
     use kernel32;
     use mio_named_pipes::NamedPipe;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use std::time::Duration;
-    use tokio_io::io::read_exact;
     use tokio_core::reactor::{Core, Timeout, PollEvented};
     use uuid::Uuid;
     use winapi::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
@@ -325,17 +321,11 @@ fn run_server_process() -> Result<ServerStartup> {
         return Err(io::Error::last_os_error().into())
     }
 
-    let result = read_exact(server, [0u8]).map(|(_socket, byte)| {
-        if byte[0] == 0 {
-            ServerStartup::Ok
-        } else {
-            let err = format!("Server startup failed: {}", byte[0]).into();
-            ServerStartup::Err(err)
-        }
-    });
+    let result = read_server_startup_status(server);
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(timeout, &handle)?.map(|()| ServerStartup::TimedOut);
+    let timeout = Timeout::new(timeout, &handle)?.map_err(Error::from)
+        .map(|()| ServerStartup::TimedOut);
     match core.run(result.select(timeout)) {
         Ok((e, _other)) => Ok(e),
         Err((e, _other)) => Err(e).chain_err(|| "failed waiting for server to start"),
@@ -606,12 +596,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 "failed to start server process"
             })?;
             match startup {
-                ServerStartup::Ok => {}
+                ServerStartup::Ok { port } => {
+                    if port != DEFAULT_PORT {
+                        println!("Listening on port {}", port);
+                    }
+                }
                 ServerStartup::TimedOut => {
                     bail!("Timed out waiting for server startup")
                 }
-                ServerStartup::Err(e) => {
-                    return Err(e).chain_err(|| "Server startup error")
+                ServerStartup::Err { reason } => {
+                    bail!("Server startup failed: {}", reason)
                 }
             }
         }

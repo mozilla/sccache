@@ -60,12 +60,23 @@ use tokio_proto::streaming::pipeline::{Frame, ServerProto, Transport};
 use tokio_proto::streaming::{Body, Message};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
-use util::fmt_duration_as_secs;
+use util; //::fmt_duration_as_secs;
 
 use errors::*;
 
 /// If the server is idle for this many seconds, shut down.
 const DEFAULT_IDLE_TIMEOUT: u64 = 600;
+
+/// Result of background server startup.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ServerStartup {
+    /// Server started successfully on `port`.
+    Ok { port: u16 },
+    /// Timed out waiting for server startup.
+    TimedOut,
+    /// Server encountered an error.
+    Err { reason: String },
+}
 
 /// Get the time the server should idle for before shutting down.
 fn get_idle_timeout() -> u64 {
@@ -76,26 +87,24 @@ fn get_idle_timeout() -> u64 {
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
 }
 
-fn notify_server_startup_internal<W: Write>(mut w: W, success: bool) -> io::Result<()> {
-    let data = [ if success { 0 } else { 1 }; 1];
-    w.write_all(&data)?;
-    Ok(())
+fn notify_server_startup_internal<W: Write>(mut w: W, status: ServerStartup) -> Result<()> {
+    util::write_length_prefixed_bincode(&mut w, status)
 }
 
 #[cfg(unix)]
-fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<()> {
+fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
     use std::os::unix::net::UnixStream;
     let name = match *name {
         Some(ref s) => s,
         None => return Ok(()),
     };
-    debug!("notify_server_startup(success: {})", success);
+    debug!("notify_server_startup({:?})", status);
     let stream = UnixStream::connect(name)?;
-    notify_server_startup_internal(stream, success)
+    notify_server_startup_internal(stream, status)
 }
 
 #[cfg(windows)]
-fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<()> {
+fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
     use std::fs::OpenOptions;
 
     let name = match *name {
@@ -103,7 +112,7 @@ fn notify_server_startup(name: &Option<OsString>, success: bool) -> io::Result<(
         None => return Ok(()),
     };
     let pipe = try!(OpenOptions::new().write(true).read(true).open(name));
-    notify_server_startup_internal(pipe, success)
+    notify_server_startup_internal(pipe, status)
 }
 
 #[cfg(unix)]
@@ -121,7 +130,7 @@ fn get_signal(_status: ExitStatus) -> i32 {
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(port: u16) -> Result<()> {
-    trace!("start_server");
+    info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
@@ -130,12 +139,16 @@ pub fn start_server(port: u16) -> Result<()> {
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
-            notify_server_startup(&notify, true)?;
+            let port = srv.port();
+            info!("server started, listening on port {}", port);
+            notify_server_startup(&notify, ServerStartup::Ok { port })?;
             srv.run(future::empty::<(), ()>())?;
             Ok(())
         }
         Err(e) => {
-            notify_server_startup(&notify, false)?;
+            error!("failed to start server: {}", e);
+            let reason = e.to_string();
+            notify_server_startup(&notify, ServerStartup::Err { reason })?;
             Err(e)
         }
     }
@@ -651,7 +664,7 @@ impl<C> SccacheService<C>
                     Ok(Some(info)) => {
                         debug!("[{}]: Cache write finished in {}",
                                info.object_file_pretty,
-                               fmt_duration_as_secs(&info.duration));
+                               util::fmt_duration_as_secs(&info.duration));
                         me.stats.borrow_mut().cache_writes += 1;
                         me.stats.borrow_mut().cache_write_duration += info.duration;
                     }
@@ -763,7 +776,7 @@ impl ServerStats {
                     Default::default()
                 };
                 // name, value, suffix length
-                $vec.push(($name, fmt_duration_as_secs(&s), 2));
+                $vec.push(($name, util::fmt_duration_as_secs(&s), 2));
             }};
         }
 

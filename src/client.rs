@@ -22,9 +22,9 @@ use std::io::{
     BufReader,
     BufWriter,
     Read,
-    Write,
 };
 use std::net::TcpStream;
+use util;
 
 /// A connection to an sccache server.
 pub struct ServerConnection {
@@ -47,12 +47,7 @@ impl ServerConnection {
     /// Send `request` to the server, read and return a `Response`.
     pub fn request(&mut self, request: Request) -> Result<Response> {
         trace!("ServerConnection::request");
-        let bytes = bincode::serialize(&request, bincode::Infinite)?;
-        let mut len = [0; 4];
-        BigEndian::write_u32(&mut len, bytes.len() as u32);
-        self.writer.write_all(&len)?;
-        self.writer.write_all(&bytes)?;
-        self.writer.flush()?;
+        util::write_length_prefixed_bincode(&mut self.writer, request)?;
         trace!("ServerConnection::request: sent request");
         self.read_one_response()
     }

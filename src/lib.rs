@@ -65,6 +65,7 @@ extern crate ring;
 extern crate redis;
 extern crate regex;
 extern crate retry;
+extern crate serde;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;

@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bincode;
+use byteorder::{ByteOrder, BigEndian};
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
 use ring::digest::{SHA512, Context};
+use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
@@ -152,6 +155,20 @@ pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
                      }
                  })
              }))
+}
+
+/// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
+pub fn write_length_prefixed_bincode<W, S>(mut writer: W, data: S) -> Result<()>
+    where W: Write,
+          S: Serialize,
+{
+    let bytes = bincode::serialize(&data, bincode::Infinite)?;
+    let mut len = [0; 4];
+    BigEndian::write_u32(&mut len, bytes.len() as u32);
+    writer.write_all(&len)?;
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
 }
 
 pub trait OsStrExt {
