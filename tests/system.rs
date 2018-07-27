@@ -47,6 +47,7 @@ use std::str;
 use tempdir::TempDir;
 use which::which_in;
 
+#[derive(Clone)]
 struct Compiler {
     pub name: &'static str,
     pub exe: OsString,
@@ -113,13 +114,14 @@ fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
-fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
+const INPUT: &'static str = "test.c";
+const INPUT_ERR: &'static str = "test_err.c";
+const OUTPUT: &'static str = "test.o";
+
+fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
-    const INPUT: &'static str = "test.c";
-    const INPUT_ERR: &'static str = "test_err.c";
-    const OUTPUT: &'static str = "test.o";
     // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
     for f in &[INPUT, INPUT_ERR] {
         let original_source_file = Path::new(file!()).parent().unwrap().join(f);
@@ -160,6 +162,10 @@ fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_hits);
         assert_eq!(1, info.stats.cache_misses);
     });
+}
+
+fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
+    let Compiler { name, exe, env_vars } = compiler;
     if name == "cl.exe" {
         // Check that -deps works.
         trace!("compile with -deps");
@@ -182,6 +188,10 @@ fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
         let expected_lines: Vec<_> = expected.lines().collect();
         assert_eq!(lines, expected_lines);
     }
+}
+
+fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
+    let Compiler { name, exe, env_vars } = compiler;
     if name == "gcc" {
         trace!("test -MP with -Werror");
         let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
@@ -190,11 +200,17 @@ fn run_sccache_command_test(compiler: Compiler, tempdir: &Path) {
         Command::main_binary().unwrap()
             .args(&args)
             .current_dir(tempdir)
-    .envs(env_vars.clone())
+            .envs(env_vars.clone())
             .assert()
             .failure()
             .stderr(predicates::str::contains(
                 "to generate dependencies you must specify either -M or -MM").from_utf8().not());
+    }
+}
+
+fn test_gcc_fprofile_generate_source_changes(compiler: Compiler, tempdir: &Path) {
+    let Compiler { name, exe, env_vars } = compiler;
+    if name == "gcc" {
         trace!("test -fprofile-generate with different source inputs");
         zero_stats();
         const SRC: &str = "source.c";
@@ -257,6 +273,13 @@ int main(int argc, char** argv) {
             assert_eq!(2, info.stats.cache_misses);
         });
     }
+}
+
+fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
+    test_basic_compile(compiler.clone(), tempdir);
+    test_msvc_deps(compiler.clone(), tempdir);
+    test_gcc_mp_werror(compiler.clone(), tempdir);
+    test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
 }
 
 #[cfg(unix)]
@@ -324,7 +347,7 @@ fn test_sccache_command() {
             .unwrap()
             .success();
         for compiler in compilers {
-            run_sccache_command_test(compiler, tempdir.path());
+            run_sccache_command_tests(compiler, tempdir.path());
             zero_stats();
         }
         stop();
