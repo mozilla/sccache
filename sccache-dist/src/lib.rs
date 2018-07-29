@@ -42,15 +42,13 @@ use std::process;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use errors::*;
+pub use errors::*;
 
 mod cache;
 pub mod errors;
 pub mod http;
 #[cfg(test)]
 mod test;
-
-pub type DistResult<T> = Result<T>;
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
@@ -217,6 +215,8 @@ impl<'a> Read for InputsReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
 
+type ExtResult<T, E> = ::std::result::Result<T, E>;
+
 pub trait SchedulerOutgoing {
     // To Server
     fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
@@ -228,27 +228,30 @@ pub trait ServerOutgoing {
 }
 
 pub trait SchedulerIncoming: Send + Sync {
+    type Error: ::std::error::Error;
     // From Client
-    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult>;
+    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
-    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> Result<HeartbeatServerResult>;
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> ExtResult<HeartbeatServerResult, Self::Error>;
     // From anyone
-    fn handle_status(&self) -> Result<StatusResult>;
+    fn handle_status(&self) -> ExtResult<StatusResult, Self::Error>;
 }
 
 pub trait ServerIncoming: Send + Sync {
+    type Error: ::std::error::Error;
     // From Scheduler
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
-    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult>;
+    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> ExtResult<SubmitToolchainResult, Self::Error>;
     // From Client
-    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult>;
+    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> ExtResult<RunJobResult, Self::Error>;
 }
 
 pub trait BuilderIncoming: Send + Sync {
+    type Error: ::std::error::Error;
     // From Server
     // TODO: outputs should be a vec of some pre-sanitised AbsPath type
-    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> Result<BuildResult>;
+    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
 }
 
 /////////

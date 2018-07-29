@@ -186,6 +186,36 @@ impl ReqwestRequestBuilderExt for reqwest::unstable::async::RequestBuilder {
     }
 }
 
+fn bincode_req<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::RequestBuilder) -> Result<T> {
+    let mut res = req.send()?;
+    let status = res.status();
+    let mut body = vec![];
+    res.copy_to(&mut body).unwrap();
+    if !status.is_success() {
+        Err(format!("Error {}: {}", status.as_u16(), String::from_utf8_lossy(&body)).into())
+    } else {
+        bincode::deserialize(&body).map_err(Into::into)
+    }
+}
+
+fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SDFuture<T> {
+    Box::new(req.send().map_err(Into::into)
+        .and_then(|res| {
+            let status = res.status();
+            res.into_body().concat2()
+                .map(move |b| (status, b)).map_err(Into::into)
+        })
+        .and_then(|(status, body)| {
+            if !status.is_success() {
+                return f_err(format!("Error {}: {}", status.as_u16(), String::from_utf8_lossy(&body)))
+            }
+            match bincode::deserialize(&body) {
+                Ok(r) => f_ok(r),
+                Err(e) => f_err(e),
+            }
+        }))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HeartbeatServerHttpRequest {
@@ -234,7 +264,7 @@ impl<S: SchedulerIncoming + 'static> Scheduler<S> {
                     let toolchain = try_or_400!(bincode_input(request));
                     trace!("Req {}: alloc_job: {:?}", request_id, toolchain);
 
-                    let res: AllocJobResult = handler.handle_alloc_job(&requester, toolchain).unwrap();
+                    let res: AllocJobResult = try_or_500!(handler.handle_alloc_job(&requester, toolchain));
                     bincode_response(&res)
                 },
                 (POST) (/api/v1/scheduler/heartbeat_server) => {
@@ -271,13 +301,7 @@ struct SchedulerRequester {
 impl SchedulerOutgoing for SchedulerRequester {
     fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let url = format!("http://{}/api/v1/distserver/assign_job/{}", server_id.addr(), job_id);
-        let mut res = self.client.post(&url).bincode(&tc).unwrap().send().unwrap();
-        if !res.status().is_success() {
-            panic!("{:?}", res)
-        }
-        let mut body = vec![];
-        res.copy_to(&mut body).unwrap();
-        Ok(bincode::deserialize(&body).unwrap())
+        bincode_req(self.client.post(&url).bincode(&tc)?)
     }
 }
 
@@ -323,7 +347,7 @@ impl<S: ServerIncoming + 'static> Server<S> {
                     let toolchain = try_or_400!(bincode_input(request));
                     trace!("Req {}: assign_job: {:?}", request_id, toolchain);
 
-                    let res: AssignJobResult = handler.handle_assign_job(job_id, toolchain).unwrap();
+                    let res: AssignJobResult = try_or_500!(handler.handle_assign_job(job_id, toolchain));
                     bincode_response(&res)
                 },
                 (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
@@ -390,33 +414,15 @@ impl Client {
     }
 }
 
-fn bincode_req<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SDFuture<T> {
-    Box::new(req.send().map_err(Into::into)
-        .and_then(|res| {
-            let status = res.status();
-            res.into_body().concat2()
-                .map(move |b| (status, b)).map_err(Into::into)
-        })
-        .and_then(|(status, body)| {
-            if !status.is_success() {
-                return f_err(format!("Error {}: {}", status.as_u16(), String::from_utf8_lossy(&body)))
-            }
-            match bincode::deserialize(&body) {
-                Ok(r) => f_ok(r),
-                Err(e) => f_err(e),
-            }
-        }))
-}
-
 impl super::Client for Client {
     fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult> {
         let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-        Box::new(f_res(self.client.post(&url).bincode(&tc).map(bincode_req)).and_then(|r| r))
+        Box::new(f_res(self.client.post(&url).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
     }
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
         if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
-            bincode_req(self.client.post(&url).bytes(toolchain_bytes))
+            bincode_req_fut(self.client.post(&url).bytes(toolchain_bytes))
         } else {
             f_err("couldn't find toolchain locally")
         }
@@ -434,7 +440,7 @@ impl super::Client for Client {
         body.write(&bincode).unwrap();
         body.write(&inputs).unwrap();
 
-        bincode_req(self.client.post(&url).bytes(body))
+        bincode_req_fut(self.client.post(&url).bytes(body))
     }
 
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {

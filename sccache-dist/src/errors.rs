@@ -35,8 +35,6 @@ error_chain! {
     }
 
     errors {
-        //ProcessError(output: process::Output)
-        DistImplError(err: Box<error::Error + Send>)
     }
 }
 
