@@ -15,7 +15,6 @@ extern crate tar;
 
 use clap::{App, Arg, SubCommand};
 use dist::{
-    DistResult,
     CompileCommand, InputsReader, JobId, JobAlloc, JobStatus, JobComplete, ServerId, Toolchain, ToolchainReader,
     AllocJobResult, AssignJobResult, HeartbeatServerResult, RunJobResult, StatusResult, SubmitToolchainResult,
     BuilderIncoming, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
@@ -34,7 +33,6 @@ use errors::*;
 mod errors {
     #![allow(renamed_and_removed_lints)]
     use std::boxed::Box;
-    use std::convert;
     use std::io;
 
     use dist;
@@ -45,11 +43,9 @@ mod errors {
             Io(io::Error);
             Lru(lru_disk_cache::Error);
         }
-    }
 
-    impl convert::From<Error> for dist::errors::Error {
-        fn from(e: Error) -> Self {
-            dist::errors::Error::from_kind(dist::errors::ErrorKind::DistImplError(Box::new(e)))
+        links {
+            Dist(dist::Error, dist::ErrorKind);
         }
     }
 }
@@ -161,7 +157,7 @@ fn run(command: Command) -> Result<i32> {
             let _: Void = http_scheduler.start();
         },
         Command::Server { builder, cache_dir, toolchain_cache_size, scheduler_addr } => {
-            let builder: Box<dist::BuilderIncoming> = match builder {
+            let builder: Box<dist::BuilderIncoming<Error=Error>> = match builder {
                 BuilderType::Docker => Box::new(build::DockerBuilder::new()),
                 BuilderType::Overlay { ref bwrap_path, ref build_dir } =>
                     Box::new(build::OverlayBuilder::new(bwrap_path, build_dir)?)
@@ -223,7 +219,8 @@ impl Scheduler {
 }
 
 impl SchedulerIncoming for Scheduler {
-    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> DistResult<AllocJobResult> {
+    type Error = Error;
+    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult> {
         // TODO: prune old servers
         let server_id = {
             let servers = self.servers.lock().unwrap();
@@ -252,18 +249,18 @@ impl SchedulerIncoming for Scheduler {
             *job_count += 1;
             job_id
         };
-        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc).unwrap();
+        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc).chain_err(|| "assign job failed")?;
         let job_alloc = JobAlloc { job_id, server_id };
         Ok(AllocJobResult::Success { job_alloc, need_toolchain })
     }
 
-    fn handle_status(&self) -> DistResult<StatusResult> {
+    fn handle_status(&self) -> Result<StatusResult> {
         Ok(StatusResult {
             num_servers: self.servers.lock().unwrap().len(),
         })
     }
 
-    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> DistResult<HeartbeatServerResult> {
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> Result<HeartbeatServerResult> {
         if num_cpus == 0 {
             return Err("invalid heartbeat num_cpus".into())
         }
@@ -278,13 +275,13 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<BuilderIncoming>,
+    builder: Box<BuilderIncoming<Error=Error>>,
     cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
-    pub fn new(builder: Box<BuilderIncoming>, cache_dir: &Path, toolchain_cache_size: u64) -> Server {
+    pub fn new(builder: Box<BuilderIncoming<Error=Error>>, cache_dir: &Path, toolchain_cache_size: u64) -> Server {
         Server {
             builder,
             cache: Mutex::new(TcCache::new(&cache_dir.join("tc"), toolchain_cache_size).unwrap()),
@@ -294,7 +291,8 @@ impl Server {
 }
 
 impl ServerIncoming for Server {
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> DistResult<AssignJobResult> {
+    type Error = Error;
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_key(&tc.archive_id);
         assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
         if !need_toolchain {
@@ -302,8 +300,8 @@ impl ServerIncoming for Server {
         }
         Ok(AssignJobResult { need_toolchain })
     }
-    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> DistResult<SubmitToolchainResult> {
-        requester.do_update_job_status(job_id, JobStatus::Started).unwrap();
+    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
+        requester.do_update_job_status(job_id, JobStatus::Started).chain_err(|| "update job status failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
         let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
@@ -319,13 +317,13 @@ impl ServerIncoming for Server {
             .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
-    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> DistResult<RunJobResult> {
+    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult> {
         let tc = match self.job_toolchains.lock().unwrap().remove(&job_id) {
             Some(tc) => tc,
             None => return Ok(RunJobResult::JobNotFound),
         };
-        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache)?;
-        requester.do_update_job_status(job_id, JobStatus::Complete).unwrap();
+        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache).chain_err(|| "run build failed")?;
+        requester.do_update_job_status(job_id, JobStatus::Complete).chain_err(|| "update job status failed")?;
         Ok(RunJobResult::Complete(JobComplete { output: res.output, outputs: res.outputs }))
     }
 }

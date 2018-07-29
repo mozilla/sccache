@@ -18,7 +18,6 @@ use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
 use nix;
 use dist::{
-    DistResult,
     BuildResult, CompileCommand, InputsReader, TcCache, Toolchain,
     BuilderIncoming,
 };
@@ -100,7 +99,7 @@ impl OverlayBuilder {
             if !toolchain_dir_map.contains_key(tc) {
                 trace!("Creating toolchain directory for {}", tc.archive_id);
                 let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
-                fs::create_dir(&toolchain_dir).unwrap();
+                fs::create_dir(&toolchain_dir)?;
 
                 let mut tccache = tccache.lock().unwrap();
                 let toolchain_rdr = match tccache.get(&tc.archive_id) {
@@ -108,7 +107,7 @@ impl OverlayBuilder {
                     Err(LruError::FileNotInCache) => bail!("expected toolchain {}, but not available", tc.archive_id),
                     Err(e) => return Err(Error::with_chain(e, "failed to get toolchain from cache")),
                 };
-                tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir).unwrap();
+                tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir)?;
                 assert!(toolchain_dir_map.insert(tc.clone(), (toolchain_dir, 0)).is_none())
             }
             let entry = toolchain_dir_map.get_mut(tc).unwrap();
@@ -117,7 +116,7 @@ impl OverlayBuilder {
         };
 
         let build_dir = self.dir.join("builds").join(format!("{}-{}", tc.archive_id, id));
-        fs::create_dir(&build_dir).unwrap();
+        fs::create_dir(&build_dir)?;
         Ok(OverlaySpec { build_dir, toolchain_dir })
     }
 
@@ -223,8 +222,8 @@ impl OverlayBuilder {
 }
 
 impl BuilderIncoming for OverlayBuilder {
-    // From Server
-    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> DistResult<BuildResult> {
+    type Error = Error;
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
         debug!("Preparing overlay");
         let overlay = self.prepare_overlay_dirs(&tc, tccache).chain_err(|| "failed to prepare overlay dirs")?;
         debug!("Performing build in {:?}", overlay);
@@ -503,8 +502,9 @@ impl DockerBuilder {
 }
 
 impl BuilderIncoming for DockerBuilder {
+    type Error = Error;
     // From Server
-    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> DistResult<BuildResult> {
+    fn run_build(&self, tc: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, tccache: &Mutex<TcCache>) -> Result<BuildResult> {
         debug!("Finding container");
         let cid = self.get_container(&tc, tccache);
         debug!("Performing build with container {}", cid);
