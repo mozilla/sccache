@@ -213,7 +213,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
                          _pool: &CpuPool)
-                         -> SFuture<HashResult<T>>
+                         -> SFuture<HashResult>
     {
         let me = *self;
         let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
@@ -306,7 +306,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
     }
 }
 
-impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I> {
+impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     fn generate_compile_commands(&self)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {

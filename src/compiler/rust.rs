@@ -595,7 +595,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
                          pool: &CpuPool)
-                         -> SFuture<HashResult<T>>
+                         -> SFuture<HashResult>
     {
         let me = *self;
         let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
@@ -741,9 +741,7 @@ impl<T> CompilerHasher<T> for RustHasher
     }
 }
 
-impl<T> Compilation<T> for RustCompilation
-    where T: CommandCreatorSync,
-{
+impl Compilation for RustCompilation {
     fn generate_compile_commands(&self)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
