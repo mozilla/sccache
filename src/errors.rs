@@ -32,11 +32,10 @@ use memcached;
 use native_tls;
 #[cfg(feature = "openssl")]
 use openssl;
+use sccache_dist;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
-use reqwest;
-use sccache_dist;
 use tempfile;
 
 error_chain! {
@@ -54,7 +53,6 @@ error_chain! {
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
-        Reqwest(reqwest::Error);
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         Tls(native_tls::Error);

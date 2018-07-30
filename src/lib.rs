@@ -65,7 +65,6 @@ extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
-extern crate reqwest;
 extern crate retry;
 extern crate sccache_dist;
 extern crate serde;
