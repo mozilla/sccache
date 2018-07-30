@@ -24,7 +24,7 @@ use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
 use compiler::rust::Rust;
 use dist;
-use futures::{Future, IntoFuture, future};
+use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use mock_command::{
     CommandChild,
@@ -308,6 +308,23 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     fn box_clone(&self) -> Box<CompilerHasher<T>>;
 }
 
+#[cfg(not(feature = "dist"))]
+fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
+                            creator: T,
+                            _cwd: PathBuf,
+                            compilation: Box<Compilation>,
+                            _weak_toolchain_key: String,
+                            _toolchain_creator: Box<FnMut(File)>,
+                            out_pretty: String)
+                            -> SFuture<(Cacheable, process::Output)>
+        where T: CommandCreatorSync {
+    debug!("[{}]: Compiling locally", out_pretty);
+    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+    Box::new(compile_cmd.execute(&creator)
+        .map(move |o| (cacheable, o)))
+}
+
+#[cfg(feature = "dist")]
 fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             creator: T,
                             cwd: PathBuf,
@@ -317,6 +334,8 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
+    use futures::future;
+
     debug!("[{}]: Attempting distributed compilation", out_pretty);
     let compile_out_pretty = out_pretty.clone();
     let compile_out_pretty2 = out_pretty.clone();
@@ -388,7 +407,7 @@ pub trait Compilation {
     fn generate_compile_commands(&self)
                                  -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 
-    /// Generate the requests that will be used to perform a distributed compilation
+    /// Create a function that will create the inputs used to perform a distributed compilation
     fn into_inputs_creator(self: Box<Self>) -> Result<Box<FnMut(&mut Write)>> {
 
         bail!("distributed compilation not implemented")

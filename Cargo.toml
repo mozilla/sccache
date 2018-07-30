@@ -40,7 +40,6 @@ number_prefix = "0.2.5"
 openssl = { version = "0.9", optional = true }
 redis = { version = "0.8.0", optional = true }
 regex = "0.2"
-reqwest = { version = "0.8", features = ["unstable"] }
 retry = "0.4.0"
 ring = "0.12.1"
 rust-crypto = { version = "0.2.36", optional = true }
@@ -98,6 +97,8 @@ gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
+# Enables distributed support in the sccache client
+dist = []
 
 [workspace]
 members = [
