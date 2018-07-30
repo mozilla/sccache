@@ -115,7 +115,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
                          pool: &CpuPool)
-                         -> SFuture<HashResult<T>>;
+                         -> SFuture<HashResult>;
 
     /// Return the state of any `--color` option passed to the compiler.
     fn color_mode(&self) -> ColorMode;
@@ -311,7 +311,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             creator: T,
                             cwd: PathBuf,
-                            compilation: Box<Compilation<T>>,
+                            compilation: Box<Compilation>,
                             weak_toolchain_key: String,
                             toolchain_creator: Box<FnMut(File)>,
                             out_pretty: String)
@@ -382,9 +382,7 @@ impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
 }
 
 /// An interface to a compiler for actually invoking compilation.
-pub trait Compilation<T>
-    where T: CommandCreatorSync,
-{
+pub trait Compilation {
     /// Given information about a compiler command, generate a command that can
     /// execute the compiler.
     fn generate_compile_commands(&self)
@@ -404,11 +402,11 @@ pub trait Compilation<T>
 }
 
 /// Result of generating a hash from a compiler command.
-pub struct HashResult<T: CommandCreatorSync> {
+pub struct HashResult {
     /// The hash key of the inputs.
     pub key: String,
     /// An object to use for the actual compilation, if necessary.
-    pub compilation: Box<Compilation<T> + 'static>,
+    pub compilation: Box<Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
     /// A function that may be called to save the toolchain to a file
