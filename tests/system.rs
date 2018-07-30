@@ -271,10 +271,10 @@ int main(int argc, char** argv) {
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     test_basic_compile(compiler.clone(), tempdir);
-    if name == "cl.exe" {
+    if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
     }
-    if name == "gcc" {
+    if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
     }
