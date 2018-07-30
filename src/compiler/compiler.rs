@@ -236,66 +236,9 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                debug!("[{}]: Attempting distributed compilation", out_pretty);
-                let compile_out_pretty = out_pretty.clone();
-                let compile_out_pretty2 = out_pretty.clone();
-                let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
-                // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait
-                let compile =
-                    future::result(
-                        dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into())
-                    )
-                    .and_then(move |dist_compile_cmd| {
-                        let output_paths = compilation.outputs().map(|(_key, path)| cwd.join(path)).collect();
-                        // TODO: does this need to be in future::result?
-                        compilation.into_inputs_creator()
-                            .map(|inputs_creator| (dist_compile_cmd, inputs_creator, output_paths))
-                    })
-                    .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
-                        debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
-                        // TODO: put on a thread
-                        let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}));
-                        let dist_toolchain = dist::Toolchain { archive_id };
-                        Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
-                            .and_then(move |jares| {
-                                debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
-                                let alloc = match jares {
-                                    dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
-                                        Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
-                                            .map(move |res| {
-                                                match res {
-                                                    dist::SubmitToolchainResult::Success => job_alloc,
-                                                    dist::SubmitToolchainResult::JobNotFound |
-                                                    dist::SubmitToolchainResult::CannotCache => panic!(),
-                                                }
-                                            }).map_err(Into::into)),
-                                    dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
-                                    dist::AllocJobResult::Fail { msg: _ } => panic!(),
-                                };
-                                alloc
-                                    .and_then(move |job_alloc| {
-                                        dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
-                                            .map_err(Into::into)
-                                    })
-                            }).map(move |jres| {
-                                let jc = match jres {
-                                    dist::RunJobResult::Complete(jc) => jc,
-                                    dist::RunJobResult::JobNotFound => panic!(),
-                                };
-                                info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.len())).collect::<Vec<_>>());
-                                for (path, bytes) in jc.outputs {
-                                    File::create(path).unwrap().write_all(&bytes).unwrap();
-                                }
-                                jc.output.into()
-                            })
-                        )
-                    })
-                    .or_else(move |e| {
-                        info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty2, e);
-                        compile_cmd.execute(&creator)
-                    });
+                let compile = dist_or_local_compile(dist_client, creator, cwd, compilation, weak_toolchain_key, toolchain_creator, out_pretty.clone());
 
-                Box::new(compile.and_then(move |compiler_result: process::Output| {
+                Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -364,6 +307,75 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
     fn box_clone(&self) -> Box<CompilerHasher<T>>;
 }
+
+fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
+                            creator: T,
+                            cwd: PathBuf,
+                            compilation: Box<Compilation<T>>,
+                            weak_toolchain_key: String,
+                            toolchain_creator: Box<FnMut(File)>,
+                            out_pretty: String)
+                            -> SFuture<(Cacheable, process::Output)>
+        where T: CommandCreatorSync {
+    debug!("[{}]: Attempting distributed compilation", out_pretty);
+    let compile_out_pretty = out_pretty.clone();
+    let compile_out_pretty2 = out_pretty.clone();
+    let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands().unwrap();
+    // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
+    Box::new(future::result(dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into()))
+        .and_then(move |dist_compile_cmd| {
+            let output_paths = compilation.outputs().map(|(_key, path)| cwd.join(path)).collect();
+            // TODO: does this need to be in future::result?
+            compilation.into_inputs_creator()
+                .map(|inputs_creator| (dist_compile_cmd, inputs_creator, output_paths))
+        })
+        .and_then(move |(dist_compile_cmd, inputs_creator, output_paths)| {
+            debug!("[{}]: Distributed compile request created, requesting allocation", compile_out_pretty);
+            // TODO: put on a thread
+            let archive_id = ftry!(dist_client.put_toolchain_cache(&weak_toolchain_key, &mut *{toolchain_creator}));
+            let dist_toolchain = dist::Toolchain { archive_id };
+            Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
+                .and_then(move |jares| {
+                    debug!("[{}]: Allocation successful, sending compile", compile_out_pretty);
+                    let alloc = match jares {
+                        dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
+                            Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
+                                .map(move |res| {
+                                    match res {
+                                        dist::SubmitToolchainResult::Success => job_alloc,
+                                        dist::SubmitToolchainResult::JobNotFound |
+                                        dist::SubmitToolchainResult::CannotCache => panic!(),
+                                    }
+                                }).map_err(Into::into)),
+                        dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
+                        dist::AllocJobResult::Fail { msg: _ } => panic!(),
+                    };
+                    alloc
+                        .and_then(move |job_alloc| {
+                            dist_client.do_run_job(job_alloc, dist_compile_cmd, output_paths, inputs_creator)
+                                .map_err(Into::into)
+                        })
+                }).map(move |jres| {
+                    let jc = match jres {
+                        dist::RunJobResult::Complete(jc) => jc,
+                        dist::RunJobResult::JobNotFound => panic!(),
+                    };
+                    info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.len())).collect::<Vec<_>>());
+                    for (path, bytes) in jc.outputs {
+                        File::create(path).unwrap().write_all(&bytes).unwrap();
+                    }
+                    jc.output.into()
+                })
+            )
+        })
+        .or_else(move |e| {
+            info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty2, e);
+            compile_cmd.execute(&creator)
+        })
+        .map(move |o| (cacheable, o))
+    )
+}
+
 
 impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
     fn clone(&self) -> Box<CompilerHasher<T>> { self.box_clone() }
