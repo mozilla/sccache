@@ -39,6 +39,7 @@ use std::fmt;
 #[cfg(unix)]
 use std::fs;
 use std::fs::File;
+use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
@@ -314,7 +315,7 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
                             _cwd: PathBuf,
                             compilation: Box<Compilation>,
                             _weak_toolchain_key: String,
-                            _toolchain_creator: Box<FnMut(File)>,
+                            _toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
@@ -330,7 +331,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             cwd: PathBuf,
                             compilation: Box<Compilation>,
                             weak_toolchain_key: String,
-                            toolchain_creator: Box<FnMut(File)>,
+                            toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
@@ -430,7 +431,7 @@ pub struct HashResult {
     pub weak_toolchain_key: String,
     /// A function that may be called to save the toolchain to a file
     // TODO: more correct to be a Box<FnOnce> or FnBox
-    pub toolchain_creator: Box<FnMut(File)>,
+    pub toolchain_creator: Box<FnMut(File) -> io::Result<()>>,
 }
 
 /// Possible results of parsing compiler arguments.

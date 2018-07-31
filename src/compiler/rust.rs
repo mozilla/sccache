@@ -708,7 +708,8 @@ impl<T> CompilerHasher<T> for RustHasher
                     info!("Packaging Rust compiler");
                     let mut builder = tar::Builder::new(f);
                     builder.append_dir_all(&toolchain_sysroot.strip_prefix("/").unwrap(), &toolchain_sysroot).unwrap();
-                    builder.finish().unwrap()
+                    builder.finish().unwrap();
+                    Ok(())
                 });
                 HashResult {
                     key: m.finish(),

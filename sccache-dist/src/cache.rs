@@ -56,7 +56,7 @@ impl ClientToolchainCache {
     }
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     // If the toolchain doesn't already exist, create it and insert into the cache
-    pub fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
+    pub fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
         if let Some(strong_key) = self.weak_to_strong(weak_key) {
             debug!("Using cached toolchain {} -> {}", weak_key, strong_key);
             return Ok(strong_key)
@@ -69,7 +69,7 @@ impl ClientToolchainCache {
             .write(true)
             .truncate(true)
             .open("/tmp/toolchain_cache.tar")?;
-        create(file);
+        create(file)?;
         // TODO: after, if still exists, remove it
         let strong_key = cache.insert_file("/tmp/toolchain_cache.tar")?;
         self.record_weak(weak_key.to_owned(), strong_key.clone());

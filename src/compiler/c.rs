@@ -26,7 +26,6 @@ use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use tar;
@@ -257,7 +256,12 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             // executable path to try and prevent this
             let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
             let env_executable = executable.clone();
+            #[cfg(windows)]
+            let toolchain_creator = Box::new(|_| Err(io::Error::new(io::ErrorKind::Other, "packaging not supported on Windows")));
+            // TODO: detect OSX
+            #[cfg(unix)]
             let toolchain_creator = Box::new(move |f| {
+                use std::os::unix::ffi::OsStrExt;
                 info!("Packaging C compiler");
                 // TODO: write our own, since this is GPL
                 let curdir = env::current_dir().unwrap();
@@ -272,7 +276,8 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 let filename = OsStr::from_bytes(filename);
                 io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
                 fs::remove_file(filename).unwrap();
-                env::set_current_dir(curdir).unwrap()
+                env::set_current_dir(curdir).unwrap();
+                Ok(())
             });
             Ok(HashResult {
                 key: key,
