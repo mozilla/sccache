@@ -36,7 +36,6 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process;
 use std::str::FromStr;
@@ -107,10 +106,23 @@ impl From<process::Output> for ProcessOutput {
         ProcessOutput { code: o.status.code(), stdout: o.stdout, stderr: o.stderr }
     }
 }
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
+#[cfg(unix)]
+fn exit_status(code: i32) -> process::ExitStatus {
+    process::ExitStatus::from_raw(code)
+}
+#[cfg(windows)]
+fn exit_status(code: i32) -> process::ExitStatus {
+    // TODO: this is probably a subideal conversion
+    process::ExitStatus::from_raw(code as u32)
+}
 impl From<ProcessOutput> for process::Output {
     fn from(o: ProcessOutput) -> Self {
         // TODO: handle signals, i.e. None code
-        process::Output { status: process::ExitStatus::from_raw(o.code.unwrap()), stdout: o.stdout, stderr: o.stderr }
+        process::Output { status: exit_status(o.code.unwrap()), stdout: o.stdout, stderr: o.stderr }
     }
 }
 
@@ -265,7 +277,7 @@ pub trait Client {
     // TODO: ideally Box<FnOnce or FnBox
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult>;
 
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String>;
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String>;
 }
 
 /////////
@@ -283,7 +295,7 @@ impl Client for NoopClient {
         panic!("NoopClient");
     }
 
-    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File)) -> Result<String> {
+    fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
         bail!("NoopClient");
     }
 }

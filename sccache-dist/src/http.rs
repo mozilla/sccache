@@ -21,7 +21,7 @@ use rouille;
 use serde;
 use std;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -443,7 +443,7 @@ impl super::Client for Client {
         bincode_req_fut(self.client.post(&url).bytes(body))
     }
 
-    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File)) -> Result<String> {
+    fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
         self.tc_cache.put_toolchain_cache(weak_key, create)
     }
 }
