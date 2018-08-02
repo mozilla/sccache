@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tempfile;
 
 use errors::*;
 
@@ -17,6 +18,13 @@ pub struct ClientToolchainCache {
     cache_dir: PathBuf,
     cache: Mutex<TcCache>,
     // Local machine mapping from 'weak' hashes to strong toolchain hashes
+    // - Weak hashes are what sccache uses to determine if a compiler has changed
+    //   on the local machine - they're fast and 'good enough' (assuming we trust
+    //   the local machine), but not safe if other users can update the cache.
+    // - Strong hashes are the hash of the complete compiler contents that will
+    //   be sent over the wire for use in distributed compilation - it is assumed
+    //   that if two of them match, the contents of a compiler archive cannot
+    //   have been tampered with
     weak_map: Mutex<HashMap<String, String>>,
 }
 
@@ -24,6 +32,12 @@ impl ClientToolchainCache {
     pub fn new(cache_dir: &Path, cache_size: u64) -> Self {
         let cache_dir = cache_dir.to_owned();
         fs::create_dir_all(&cache_dir).unwrap();
+
+        let toolchain_creation_dir = cache_dir.join("toolchain_tmp");
+        if toolchain_creation_dir.exists() {
+            fs::remove_dir_all(&toolchain_creation_dir).unwrap()
+        }
+        fs::create_dir(&toolchain_creation_dir).unwrap();
 
         let weak_map_path = cache_dir.join("weak_map.json");
         if !weak_map_path.exists() {
@@ -62,16 +76,12 @@ impl ClientToolchainCache {
             return Ok(strong_key)
         }
         debug!("Weak key {} appears to be new", weak_key);
-        // TODO: don't use this as a poor exclusive lock on this global file
+        // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
+        // to create the same toolchain, just a waste of time
         let mut cache = self.cache.lock().unwrap();
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("/tmp/toolchain_cache.tar")?;
-        create(file)?;
-        // TODO: after, if still exists, remove it
-        let strong_key = cache.insert_file("/tmp/toolchain_cache.tar")?;
+        let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
+        create(tmpfile.reopen()?)?;
+        let strong_key = cache.insert_file(tmpfile.path())?;
         self.record_weak(weak_key.to_owned(), strong_key.clone());
         Ok(strong_key)
     }
