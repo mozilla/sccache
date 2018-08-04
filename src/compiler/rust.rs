@@ -594,6 +594,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
+                         _may_dist: bool,
                          pool: &CpuPool)
                          -> SFuture<HashResult>
     {
@@ -1066,6 +1067,7 @@ c:/foo/bar.rs:
                                            [(OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
                                             (OsString::from("FOO"), OsString::from("bar")),
                                             (OsString::from("CARGO_BLAH"), OsString::from("abc"))].to_vec(),
+                                           false,
                                            &pool).wait().unwrap();
         let m = Digest::new();
         let empty_digest = m.finish();
@@ -1130,7 +1132,7 @@ c:/foo/bar.rs:
         let pool = CpuPool::new(1);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        hasher.generate_hash_key(&creator, f.tempdir.path().to_owned(), env_vars.to_owned(), &pool)
+        hasher.generate_hash_key(&creator, f.tempdir.path().to_owned(), env_vars.to_owned(), false, &pool)
             .wait().unwrap().key
     }
 

@@ -277,6 +277,7 @@ pub trait Client {
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
 
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String>;
+    fn may_dist(&self) -> bool;
 }
 
 /////////
@@ -296,5 +297,8 @@ impl Client for NoopClient {
 
     fn put_toolchain_cache(&self, _weak_key: &str, _create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
         bail!("NoopClient");
+    }
+    fn may_dist(&self) -> bool {
+        false
     }
 }

@@ -66,10 +66,11 @@ impl CCompilerImpl for MSVC {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)])
+                     env_vars: &[(OsString, OsString)],
+                     may_dist: bool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, &self.includes_prefix)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist, &self.includes_prefix)
     }
 
     fn generate_compile_commands(&self,
@@ -386,6 +387,7 @@ pub fn preprocess<T>(creator: &T,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
                      env_vars: &[(OsString, OsString)],
+                     _may_dist: bool,
                      includes_prefix: &str)
                      -> SFuture<process::Output>
     where T: CommandCreatorSync

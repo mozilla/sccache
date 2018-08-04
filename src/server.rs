@@ -137,7 +137,13 @@ pub fn start_server(port: u16) -> Result<()> {
     let core = Core::new()?;
     let pool = CpuPool::new(20);
     let dist_client: Arc<dist::Client> = match CONFIG.dist.scheduler_addr {
+        #[cfg(feature = "dist")]
         Some(addr) => Arc::new(dist::http::Client::new(&core.handle(), addr, &CONFIG.dist.cache_dir.join("client"), CONFIG.dist.toolchain_cache_size)),
+        #[cfg(not(feature = "dist"))]
+        Some(_) => {
+            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache");
+            Arc::new(dist::NoopClient)
+        },
         None => {
             info!("No scheduler address configured, disabling distributed sccache");
             Arc::new(dist::NoopClient)

@@ -62,10 +62,11 @@ impl CCompilerImpl for Clang {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)])
+                     env_vars: &[(OsString, OsString)],
+                     may_dist: bool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        gcc::preprocess(creator, executable, parsed_args, cwd, env_vars)
+        gcc::preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
     }
 
     fn generate_compile_commands(&self,

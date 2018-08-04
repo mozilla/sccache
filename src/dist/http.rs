@@ -446,4 +446,7 @@ impl super::Client for Client {
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String> {
         self.tc_cache.put_toolchain_cache(weak_key, create)
     }
+    fn may_dist(&self) -> bool {
+        true
+    }
 }
