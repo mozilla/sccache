@@ -53,10 +53,11 @@ impl CCompilerImpl for GCC {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)])
+                     env_vars: &[(OsString, OsString)],
+                     may_dist: bool)
                      -> SFuture<process::Output> where T: CommandCreatorSync
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
     }
 
     fn generate_compile_commands(&self,
@@ -334,7 +335,8 @@ pub fn preprocess<T>(creator: &T,
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)])
+                     env_vars: &[(OsString, OsString)],
+                     may_dist: bool)
                      -> SFuture<process::Output>
     where T: CommandCreatorSync
 {
@@ -348,6 +350,13 @@ pub fn preprocess<T>(creator: &T,
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language)
         .arg("-E");
+    // When performing distributed compilation, line number info is important for error
+    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
+    // fails due to exceptions transitively included in the stdlib).
+    // With -fprofile-generate line number information is important, so don't use -P.
+    if !may_dist && !parsed_args.profile_generate {
+        cmd.arg("-P");
+    }
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)

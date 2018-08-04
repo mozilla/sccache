@@ -152,7 +152,8 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
                      executable: &Path,
                      parsed_args: &ParsedArguments,
                      cwd: &Path,
-                     env_vars: &[(OsString, OsString)])
+                     env_vars: &[(OsString, OsString)],
+                     may_dist: bool)
                      -> SFuture<process::Output> where T: CommandCreatorSync;
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
@@ -211,12 +212,13 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
+                         may_dist: bool,
                          _pool: &CpuPool)
                          -> SFuture<HashResult>
     {
         let me = *self;
         let CCompilerHasher { parsed_args, executable, executable_digest, compiler } = me;
-        let result = compiler.preprocess(creator, &executable, &parsed_args, &cwd, &env_vars);
+        let result = compiler.preprocess(creator, &executable, &parsed_args, &cwd, &env_vars, may_dist);
         let out_pretty = parsed_args.output_pretty().into_owned();
         let env_vars = env_vars.to_vec();
         let result = result.map_err(move |e| {

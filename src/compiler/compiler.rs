@@ -115,6 +115,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                          creator: &T,
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
+                         may_dist: bool,
                          pool: &CpuPool)
                          -> SFuture<HashResult>;
 
@@ -138,7 +139,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, &pool);
+        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, dist_client.may_dist(), &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
             let (key, compilation, weak_toolchain_key, toolchain_creator) = match res {
