@@ -10,11 +10,12 @@ extern crate libmount;
 extern crate log;
 extern crate lru_disk_cache;
 extern crate nix;
-extern crate sccache_dist as dist;
+extern crate sccache;
 extern crate tar;
 
 use clap::{App, Arg, SubCommand};
-use dist::{
+use sccache::dist::{
+    self,
     CompileCommand, InputsReader, JobId, JobAlloc, JobStatus, JobComplete, ServerId, Toolchain, ToolchainReader,
     AllocJobResult, AssignJobResult, HeartbeatServerResult, RunJobResult, StatusResult, SubmitToolchainResult,
     BuilderIncoming, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
@@ -35,7 +36,7 @@ mod errors {
     use std::boxed::Box;
     use std::io;
 
-    use dist;
+    use sccache;
     use lru_disk_cache;
 
     error_chain! {
@@ -45,7 +46,7 @@ mod errors {
         }
 
         links {
-            Dist(dist::Error, dist::ErrorKind);
+            Sccache(sccache::errors::Error, sccache::errors::ErrorKind);
         }
     }
 }

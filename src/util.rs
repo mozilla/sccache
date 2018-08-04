@@ -75,7 +75,7 @@ impl Digest {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
         s.push(hex(byte & 0xf));

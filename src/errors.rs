@@ -15,6 +15,7 @@
 #![allow(renamed_and_removed_lints)]
 
 use std::boxed::Box;
+use std::convert;
 use std::error;
 use std::io;
 use std::process;
@@ -32,17 +33,13 @@ use memcached;
 use native_tls;
 #[cfg(feature = "openssl")]
 use openssl;
-use sccache_dist;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
+use reqwest;
 use tempfile;
 
 error_chain! {
-    links {
-        Dist(sccache_dist::errors::Error, sccache_dist::errors::ErrorKind);
-    }
-
     foreign_links {
         Hyper(hyper::Error) #[cfg(feature = "hyper")];
         Io(io::Error);
@@ -53,6 +50,7 @@ error_chain! {
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
+        Reqwest(reqwest::Error);
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         Tls(native_tls::Error);
@@ -96,6 +94,12 @@ macro_rules! ftry {
             Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
         }
     }
+}
+
+pub fn f_res<T, E: convert::Into<Error>>(t: ::std::result::Result<T, E>) -> SFuture<T>
+    where T: 'static,
+{
+    Box::new(future::result(t.map_err(Into::into)))
 }
 
 pub fn f_ok<T>(t: T) -> SFuture<T>

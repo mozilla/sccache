@@ -10,6 +10,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile;
+use util;
 
 use errors::*;
 
@@ -109,23 +110,7 @@ fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
         }
         m.update(&buffer[..count]);
     }
-    Ok(hex(m.finish().as_ref()))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        s.push(hex(byte & 0xf));
-        s.push(hex((byte >> 4)& 0xf));
-    }
-    return s;
-
-    fn hex(byte: u8) -> char {
-        match byte {
-            0...9 => (b'0' + byte) as char,
-            _ => (b'a' + byte - 10) as char,
-        }
-    }
+    Ok(util::hex(m.finish().as_ref()))
 }
 
 pub struct TcCache {

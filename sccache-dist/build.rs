@@ -17,7 +17,7 @@ use flate2::read::GzDecoder;
 use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
 use nix;
-use dist::{
+use sccache::dist::{
     BuildResult, CompileCommand, InputsReader, TcCache, Toolchain,
     BuilderIncoming,
 };

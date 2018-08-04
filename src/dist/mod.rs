@@ -12,27 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate bincode;
-extern crate byteorder;
-#[macro_use]
-extern crate error_chain;
-extern crate futures;
-#[macro_use]
-extern crate log;
-extern crate lru_disk_cache;
-extern crate num_cpus;
-extern crate reqwest;
-extern crate ring;
-#[macro_use]
-extern crate rouille;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate tempfile;
-extern crate tokio_core;
-
-pub use cache::TcCache;
+use compiler;
+pub use dist::cache::TcCache;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -42,13 +23,30 @@ use std::process;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-pub use errors::*;
+use errors::*;
 
 mod cache;
-pub mod errors;
 pub mod http;
 #[cfg(test)]
 mod test;
+
+// TODO: TryFrom
+pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<CompileCommand> {
+    let compiler::CompileCommand {
+        executable,
+        arguments,
+        env_vars,
+        cwd,
+    } = command;
+    Some(CompileCommand {
+        executable: executable.into_os_string().into_string().ok()?,
+        arguments: arguments.into_iter().map(|arg| arg.into_string().ok()).collect::<Option<_>>()?,
+        env_vars: env_vars.into_iter()
+            .map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect::<Option<_>>()?,
+        cwd: cwd.into_os_string().into_string().ok()?,
+    })
+}
 
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
@@ -271,12 +269,12 @@ pub trait BuilderIncoming: Send + Sync {
 
 pub trait Client {
     // To Scheduler
-    fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult>;
+    fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult>;
     // To Server
-    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult>;
+    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
     // TODO: ideally Box<FnOnce or FnBox
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
 
     fn put_toolchain_cache(&self, weak_key: &str, create: &mut FnMut(fs::File) -> io::Result<()>) -> Result<String>;
 }
@@ -286,13 +284,13 @@ pub trait Client {
 pub struct NoopClient;
 
 impl Client for NoopClient {
-    fn do_alloc_job(&self, _tc: Toolchain) -> SDFuture<AllocJobResult> {
+    fn do_alloc_job(&self, _tc: Toolchain) -> SFuture<AllocJobResult> {
         f_ok(AllocJobResult::Fail { msg: "Using NoopClient".to_string() })
     }
-    fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
+    fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<PathBuf>, _write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<PathBuf>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
         panic!("NoopClient");
     }
 
