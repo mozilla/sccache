@@ -198,7 +198,7 @@ fn bincode_req<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::Requ
     }
 }
 
-fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SDFuture<T> {
+fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SFuture<T> {
     Box::new(req.send().map_err(Into::into)
         .and_then(|res| {
             let status = res.status();
@@ -415,11 +415,11 @@ impl Client {
 }
 
 impl super::Client for Client {
-    fn do_alloc_job(&self, tc: Toolchain) -> SDFuture<AllocJobResult> {
+    fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
         let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
         Box::new(f_res(self.client.post(&url).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
     }
-    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SDFuture<SubmitToolchainResult> {
+    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
         if let Some(toolchain_bytes) = self.tc_cache.get_toolchain_cache(&tc.archive_id) {
             bincode_req_fut(self.client.post(&url).bytes(toolchain_bytes))
@@ -427,7 +427,7 @@ impl super::Client for Client {
             f_err("couldn't find toolchain locally")
         }
     }
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SDFuture<RunJobResult> {
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<PathBuf>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
         let url = format!("http://{}/api/v1/distserver/run_job", job_alloc.server_id.addr());
         let outputs = outputs.into_iter().map(|output| output.into_os_string().into_string().unwrap()).collect();
         let bincode = bincode::serialize(&RunJobHttpRequest { job_id: job_alloc.job_id, command, outputs }, bincode::Infinite).unwrap();

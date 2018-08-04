@@ -65,8 +65,10 @@ extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
+extern crate reqwest;
 extern crate retry;
-extern crate sccache_dist;
+#[macro_use]
+extern crate rouille;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
@@ -97,7 +99,7 @@ extern crate zip;
 mod test;
 
 #[macro_use]
-mod errors;
+pub mod errors;
 
 #[cfg(feature = "azure")]
 mod azure;
@@ -107,7 +109,7 @@ mod cmdline;
 mod commands;
 mod compiler;
 mod config;
-mod dist;
+pub mod dist;
 mod jobserver;
 mod mock_command;
 mod protocol;
