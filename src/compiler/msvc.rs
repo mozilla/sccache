@@ -599,12 +599,17 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 #[cfg(test)]
 mod test {
     use ::compiler::*;
+    use env;
     use env_logger;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use mock_command::*;
     use super::*;
     use test::utils::*;
+
+    fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
+        super::parse_arguments(arguments, &env::current_dir().unwrap(), false)
+    }
 
     #[test]
     fn test_detect_showincludes_prefix() {
@@ -753,8 +758,8 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert!(preprocessor_args.is_empty());
-        assert_eq!(common_args, ovec!["-FIfile"]);
+        assert_eq!(preprocessor_args, ovec!["-FIfile"]);
+        assert!(common_args.is_empty());
         assert!(msvc_show_includes);
     }
 

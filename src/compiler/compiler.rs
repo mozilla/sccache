@@ -322,8 +322,8 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
         where T: CommandCreatorSync {
     debug!("[{}]: Compiling locally", out_pretty);
 
-    let path_transformer = dist::PathTransformer::new();
-    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&path_transformer).unwrap();
+    let mut path_transformer = dist::PathTransformer::new();
+    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&mut path_transformer).unwrap();
     Box::new(compile_cmd.execute(&creator)
         .map(move |o| (cacheable, o)))
 }
