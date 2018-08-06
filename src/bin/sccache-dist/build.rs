@@ -62,16 +62,13 @@ pub struct OverlayBuilder {
 }
 
 impl OverlayBuilder {
-    pub fn new(bubblewrap: &Path, dir: &Path) -> Result<Self> {
+    pub fn new(bubblewrap: PathBuf, dir: PathBuf) -> Result<Self> {
         info!("Creating overlay builder");
 
         if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
             // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
             bail!("not running as root")
         }
-
-        let bubblewrap = bubblewrap.to_owned();
-        let dir = dir.to_owned();
 
         // TODO: pidfile
         let ret = Self {

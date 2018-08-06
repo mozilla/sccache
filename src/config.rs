@@ -14,6 +14,7 @@
 
 use directories::ProjectDirs;
 use regex::Regex;
+use serde::de::DeserializeOwned;
 use serde_json;
 use std::env;
 use std::io::Read;
@@ -29,10 +30,12 @@ lazy_static! {
 
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
-const DIST_APP_NAME: &str = "sccache-dist";
+const DIST_APP_NAME: &str = "sccache-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const HIDDEN_FILE_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CONFIG";
+
+pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
 // Unfortunately this means that nothing else can use the sccache cache dir as
 // this top level directory is used directly to store sccache cached objects...
@@ -182,7 +185,7 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
-pub struct CustomToolchain {
+pub struct DistCustomToolchain {
     pub compiler_executable: PathBuf,
     pub archive: PathBuf,
     pub archive_compiler_executable: String,
@@ -190,18 +193,34 @@ pub struct CustomToolchain {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DistAuth {
+    #[serde(rename = "token")]
+    Token { token: String },
+}
+
+impl Default for DistAuth {
+    fn default() -> Self {
+        DistAuth::Token { token: INSECURE_DIST_CLIENT_TOKEN.to_owned() }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
+    pub auth: DistAuth,
     pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
-    pub custom_toolchains: Vec<CustomToolchain>,
+    pub custom_toolchains: Vec<DistCustomToolchain>,
     pub toolchain_cache_size: u64,
 }
 
 impl Default for DistConfig {
     fn default() -> Self {
         Self {
+            auth: Default::default(),
             scheduler_addr: Default::default(),
             cache_dir: default_dist_cache_dir(),
             custom_toolchains: Default::default(),
@@ -220,7 +239,7 @@ pub struct FileConfig {
     pub dist: DistConfig,
 }
 
-fn try_read_config_file(path: &Path) -> Option<FileConfig> {
+pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
     debug!("Attempting to read config file at {:?}", path);
     let mut file = File::open(path)
         .map_err(|e| debug!("Couldn't open config file: {}", e))

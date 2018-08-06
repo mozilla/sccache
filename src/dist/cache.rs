@@ -43,7 +43,7 @@ pub struct ClientToolchains {
 }
 
 impl ClientToolchains {
-    pub fn new(cache_dir: &Path, cache_size: u64, config_custom_toolchains: &[config::CustomToolchain]) -> Self {
+    pub fn new(cache_dir: &Path, cache_size: u64, config_custom_toolchains: &[config::DistCustomToolchain]) -> Self {
         let cache_dir = cache_dir.to_owned();
         fs::create_dir_all(&cache_dir).unwrap();
 
@@ -67,7 +67,7 @@ impl ClientToolchains {
             if custom_toolchain_paths.contains_key(&ct.compiler_executable) {
                 panic!("Multiple toolchains for {:?}", ct.compiler_executable)
             }
-            let config::CustomToolchain { compiler_executable, archive, archive_compiler_executable } = ct;
+            let config::DistCustomToolchain { compiler_executable, archive, archive_compiler_executable } = ct;
 
             debug!("Registering custom toolchain for {:?}", compiler_executable);
             let custom_tc = CustomToolchain {

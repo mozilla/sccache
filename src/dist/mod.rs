@@ -179,7 +179,7 @@ pub struct Toolchain {
 }
 
 #[derive(Hash, Eq, PartialEq)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobId(pub u64);
 impl fmt::Display for JobId {
@@ -198,8 +198,29 @@ impl FromStr for JobId {
 #[serde(deny_unknown_fields)]
 pub struct ServerId(pub SocketAddr);
 impl ServerId {
-    fn addr(&self) -> SocketAddr {
+    pub fn addr(&self) -> SocketAddr {
         self.0
+    }
+}
+
+#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum JobState {
+    Pending,
+    Ready,
+    Started,
+    Complete,
+}
+impl fmt::Display for JobState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::JobState::*;
+        match *self {
+            Pending => "pending",
+            Ready => "ready",
+            Started => "started",
+            Complete => "complete",
+        }.fmt(f)
     }
 }
 
@@ -251,9 +272,10 @@ impl From<ProcessOutput> for process::Output {
 
 // AllocJob
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobAlloc {
+    pub auth: String,
     pub job_id: JobId,
     pub server_id: ServerId,
 }
@@ -272,20 +294,22 @@ pub struct AssignJobResult {
     pub need_toolchain: bool,
 }
 
-// JobStatus
+// JobState
 
-pub enum JobStatus {
-    Pending,
-    Started,
-    Complete,
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum UpdateJobStateResult {
+    Success,
+    Fail { msg: String },
 }
-#[derive(Clone)]
-pub struct UpdateJobStatusResult;
 
 // HeartbeatServer
 
-#[derive(Clone)]
-pub struct HeartbeatServerResult;
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatServerResult {
+    pub is_new: bool,
+}
 
 // RunJob
 
@@ -350,12 +374,12 @@ type ExtResult<T, E> = ::std::result::Result<T, E>;
 
 pub trait SchedulerOutgoing {
     // To Server
-    fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult>;
+    fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain, auth: String) -> Result<AssignJobResult>;
 }
 
 pub trait ServerOutgoing {
     // To Scheduler
-    fn do_update_job_status(&self, job_id: JobId, status: JobStatus) -> Result<UpdateJobStatusResult>;
+    fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
 }
 
 pub trait SchedulerIncoming: Send + Sync {
@@ -363,7 +387,9 @@ pub trait SchedulerIncoming: Send + Sync {
     // From Client
     fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
-    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize, generate_job_auth: Box<Fn(JobId) -> String + Send>) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    // From Server
+    fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> ExtResult<UpdateJobStateResult, Self::Error>;
     // From anyone
     fn handle_status(&self) -> ExtResult<StatusResult, Self::Error>;
 }

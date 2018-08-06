@@ -25,7 +25,6 @@ use futures::Future;
 use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
-#[cfg(feature = "jsonwebtoken")]
 use jwt;
 use lru_disk_cache;
 #[cfg(feature = "memcached")]
@@ -45,7 +44,7 @@ error_chain! {
         Io(io::Error);
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
-        Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
+        Jwt(jwt::errors::Error);
         Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];

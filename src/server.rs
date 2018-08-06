@@ -146,6 +146,7 @@ pub fn start_server(port: u16) -> Result<()> {
                 &CONFIG.dist.cache_dir.join("client"),
                 CONFIG.dist.toolchain_cache_size,
                 &CONFIG.dist.custom_toolchains,
+                &CONFIG.dist.auth,
             ))
         },
         #[cfg(not(feature = "dist"))]
