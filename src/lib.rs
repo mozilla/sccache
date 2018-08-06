@@ -42,7 +42,6 @@ extern crate hyper;
 extern crate hyper_tls;
 #[cfg(test)]
 extern crate itertools;
-#[cfg(feature = "jsonwebtoken")]
 extern crate jsonwebtoken as jwt;
 #[cfg(windows)]
 extern crate kernel32;
@@ -62,6 +61,7 @@ extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]
 extern crate openssl;
+extern crate rand;
 extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
@@ -109,7 +109,7 @@ mod client;
 mod cmdline;
 mod commands;
 mod compiler;
-mod config;
+pub mod config;
 pub mod dist;
 mod jobserver;
 mod mock_command;

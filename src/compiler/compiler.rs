@@ -372,22 +372,26 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
             debug!("[{}]: Requesting allocation", compile_out_pretty2);
             Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
                 .and_then(move |jares| {
-                    debug!("[{}]: Sending compile", compile_out_pretty2);
                     let alloc = match jares {
-                        dist::AllocJobResult::Success { job_alloc, need_toolchain: true } =>
-                            Box::new(dist_client.do_submit_toolchain(job_alloc, dist_toolchain)
+                        dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
+                            debug!("[{}]: Sending toolchain", compile_out_pretty2);
+                            Box::new(dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain)
                                 .map(move |res| {
                                     match res {
                                         dist::SubmitToolchainResult::Success => job_alloc,
                                         dist::SubmitToolchainResult::JobNotFound |
                                         dist::SubmitToolchainResult::CannotCache => panic!(),
                                     }
-                                }).map_err(Into::into)),
-                        dist::AllocJobResult::Success { job_alloc, need_toolchain: false } => f_ok(job_alloc),
-                        dist::AllocJobResult::Fail { msg: _ } => panic!("failed to allocate"),
+                                }).map_err(Into::into))
+                        },
+                        dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
+                            f_ok(job_alloc),
+                        dist::AllocJobResult::Fail { msg } =>
+                            f_err(Error::with_chain(Error::from("Failed to allocate job"), msg)),
                     };
                     alloc
                         .and_then(move |job_alloc| {
+                            debug!("[{}]: Running job", compile_out_pretty2);
                             dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, dist_inputs_creator)
                                 .map_err(Into::into)
                         })
