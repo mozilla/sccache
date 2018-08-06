@@ -147,7 +147,6 @@ mod test {
 
     #[test]
     fn test_parse_arguments_others() {
-        parses!("-c", "foo.c", "-Xclang", "-load", "-Xclang", "moz-check", "-o", "foo.o");
         parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
         parses!("-c", "foo.c", "-target", "x86_64-apple-darwin11", "-o", "foo.o");
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
