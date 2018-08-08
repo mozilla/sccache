@@ -30,12 +30,12 @@ use walkdir::WalkDir;
 struct FileSize;
 
 /// Given a tuple of (path, filesize), use the filesize for measurement.
-impl<K> Meter<K, (PathBuf, u64)> for FileSize {
+impl<K> Meter<K, u64> for FileSize {
     type Measure = usize;
-    fn measure<Q: ?Sized>(&self, _: &Q, v: &(PathBuf, u64)) -> usize
+    fn measure<Q: ?Sized>(&self, _: &Q, v: &u64) -> usize
         where K: Borrow<Q>
     {
-        v.1 as usize
+        *v as usize
     }
 }
 
@@ -62,7 +62,7 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<Iterator<Item=(PathBuf, u64)>> 
 
 /// An LRU cache of files on disk.
 pub struct LruDiskCache<S: BuildHasher = RandomState> {
-    lru: LruCache<OsString, (PathBuf, u64), S, FileSize>,
+    lru: LruCache<OsString, u64, S, FileSize>,
     root: PathBuf,
 }
 
@@ -119,6 +119,11 @@ fn filetime_now() -> FileTime {
     FileTime::from_seconds_since_1970(d.as_secs(), d.subsec_nanos())
 }
 
+enum AddFile<'a> {
+    AbsPath(PathBuf),
+    RelPath(&'a OsStr),
+}
+
 impl LruDiskCache {
     /// Create an `LruDiskCache` that stores files in `path`, limited to `size` bytes.
     ///
@@ -146,6 +151,9 @@ impl LruDiskCache {
     /// Return the path in which the cache is stored.
     pub fn path(&self) -> &Path { self.root.as_path() }
 
+    /// Return the path that `key` would be stored at.
+    pub fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf { self.root.join(rel_path) }
+
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
         fs::create_dir_all(&self.root)?;
@@ -153,7 +161,7 @@ impl LruDiskCache {
             if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| error!("Error removing file `{}` which is too large for the cache ({} bytes)", e, size));
             } else {
-                self.add_file(file, None, size)
+                self.add_file(AddFile::AbsPath(file), size)
                     .unwrap_or_else(|e| error!("Error adding file: {}", e));
             }
         }
@@ -166,62 +174,56 @@ impl LruDiskCache {
     }
 
     /// Add the file at `path` of size `size` to the cache.
-    fn add_file(&mut self, path: PathBuf, rel_path: Option<&OsStr>, size: u64) -> Result<()> {
+    fn add_file(&mut self, addfile_path: AddFile, size: u64) -> Result<()> {
         if !self.can_store(size) {
             return Err(Error::FileTooLarge);
         }
-        let rel_path = OsString::from(if let Some(p) = rel_path {
-            p
-        } else {
-            path.strip_prefix(&self.root).expect("Bad path?").as_os_str()
-        });
+        let rel_path = match addfile_path {
+            AddFile::AbsPath(ref p) => p.strip_prefix(&self.root).expect("Bad path?").as_os_str(),
+            AddFile::RelPath(p) => p,
+        };
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.lru.size() as u64 + size > self.lru.capacity() as u64 {
-            let (_, (remove_path, _)) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            let (rel_path,  _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
             fs::remove_file(&remove_path).unwrap_or_else(|e| panic!("Error removing file from cache: `{:?}`: {}", remove_path, e));
         }
-        self.lru.insert(rel_path, (path, size));
+        self.lru.insert(rel_path.to_owned(), size);
         Ok(())
     }
 
-    fn insert_by<K: AsRef<OsStr>, F: Fn(&Path) -> io::Result<()>>(&mut self, key: K, size: u64, by: F) -> Result<()> {
-        if !self.can_store(size) {
-            return Err(Error::FileTooLarge);
+    fn insert_by<K: AsRef<OsStr>, F: FnOnce(&Path) -> io::Result<()>>(&mut self, key: K, size: Option<u64>, by: F) -> Result<()> {
+        if let Some(size) = size {
+            if !self.can_store(size) {
+                return Err(Error::FileTooLarge);
+            }
         }
         let rel_path = key.as_ref();
-        let path = self.root.join(rel_path);
+        let path = self.rel_to_abs_path(rel_path);
         fs::create_dir_all(path.parent().expect("Bad path?"))?;
-        by(path.as_path())?;
-        self.add_file(path, Some(rel_path), size)
+        by(&path)?;
+        let size = match size {
+            Some(size) => size,
+            None => fs::metadata(path)?.len(),
+        };
+        self.add_file(AddFile::RelPath(rel_path), size)
             .or_else(|e| {
                 error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
-                fs::remove_file(&self.root.join(rel_path)).expect("Failed to remove file we just created!");
+                fs::remove_file(&self.rel_to_abs_path(rel_path)).expect("Failed to remove file we just created!");
                 Err(e)
             })
     }
 
     /// Add a file by calling `with` with the open `File` corresponding to the cache at path `key`.
     pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(&mut self, key: K, with: F) -> Result<()> {
-        let rel_path = key.as_ref();
-        let path = self.root.join(rel_path);
-        try!(fs::create_dir_all(path.parent().expect("Bad path?")));
-        with(try!(File::create(&path)))
-            .and_then(|()| fs::metadata(&path))
-            .map(|f| f.len())
-            .map_err(|e| e.into())
-            .and_then(|size| self.add_file(path, Some(rel_path), size))
-            .or_else(|e| {
-                error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
-                fs::remove_file(&self.root.join(rel_path)).expect("Failed to remove file we just created!");
-                Err(e)
-            })
+        self.insert_by(key, None, |path| with(File::create(&path)?))
     }
 
     /// Add a file with `bytes` as its contents to the cache at path `key`.
     pub fn insert_bytes<K: AsRef<OsStr>>(&mut self, key: K, bytes: &[u8]) -> Result<()> {
-        self.insert_by(key, bytes.len() as u64, |path| {
+        self.insert_by(key, Some(bytes.len() as u64), |path| {
             let mut f = File::create(&path)?;
             f.write_all(bytes)?;
             Ok(())
@@ -231,7 +233,7 @@ impl LruDiskCache {
     /// Add an existing file at `path` to the cache at path `key`.
     pub fn insert_file<K: AsRef<OsStr>, P: AsRef<OsStr>>(&mut self, key: K, path: P) -> Result<()> {
         let size = fs::metadata(path.as_ref())?.len();
-        self.insert_by(key, size, |new_path| {
+        self.insert_by(key, Some(size), |new_path| {
             fs::rename(path.as_ref(), new_path)
                 .or_else(|_| {
                     warn!("fs::rename failed, falling back to copy!");
@@ -251,11 +253,13 @@ impl LruDiskCache {
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
     pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<ReadSeek>> {
-        self.lru.get(key.as_ref())
+        let rel_path = key.as_ref();
+        let path = self.rel_to_abs_path(rel_path);
+        self.lru.get(rel_path)
             .ok_or(Error::FileNotInCache)
-            .and_then(|&(ref path, _)| {
+            .and_then(|_| {
                 let t = filetime_now();
-                set_file_times(path, t, t)?;
+                set_file_times(&path, t, t)?;
                 Ok(Box::new(File::open(path)?) as Box<ReadSeek>)
             })
     }
