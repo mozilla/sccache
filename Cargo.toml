@@ -15,12 +15,10 @@ appveyor = { repository = "mozilla/sccache" }
 
 [[bin]]
 name = "sccache"
-path = "src/main.rs"
 
 [[bin]]
 name = "sccache-dist"
 required-features = ["dist-server"]
-path = "sccache-dist/main.rs"
 
 [dependencies]
 base64 = "0.9.0"
