@@ -113,6 +113,11 @@ fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
     Ok(util::hex(m.finish().as_ref()))
 }
 
+/// Make a path to the cache entry with key `key`.
+fn make_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1]).join(&key[1..2]).join(key)
+}
+
 pub struct TcCache {
     inner: LruDiskCache,
 }
@@ -124,7 +129,7 @@ impl TcCache {
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.inner.contains_key(key)
+        self.inner.contains_key(make_key_path(key))
     }
 
     fn file_key<RS: ReadSeek + 'static>(&self, rs: RS) -> Result<String> {
@@ -133,7 +138,7 @@ impl TcCache {
     }
 
     pub fn insert_with<F: FnOnce(File) -> io::Result<()>>(&mut self, key: &str, with: F) -> Result<()> {
-        self.inner.insert_with(key, with).map_err(|e| -> Error { e.into() })?;
+        self.inner.insert_with(make_key_path(key), with).map_err(|e| -> Error { e.into() })?;
         let verified_key = self.get(key).map_err(Into::into)
             .and_then(|rs| self.file_key(rs))?;
         // TODO: remove created toolchain?
@@ -143,11 +148,11 @@ impl TcCache {
     pub fn insert_file<P: AsRef<OsStr>>(&mut self, path: P) -> Result<String> {
         let file = File::open(path.as_ref())?;
         let key = self.file_key(file)?;
-        self.inner.insert_file(&key, path).map_err(|e| -> Error { e.into() })?;
+        self.inner.insert_file(make_key_path(&key), path).map_err(|e| -> Error { e.into() })?;
         Ok(key)
     }
 
     pub fn get(&mut self, key: &str) -> LruResult<Box<ReadSeek>> {
-        self.inner.get(key)
+        self.inner.get(make_key_path(key))
     }
 }
