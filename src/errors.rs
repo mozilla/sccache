@@ -30,8 +30,7 @@ use lru_disk_cache;
 #[cfg(feature = "memcached")]
 use memcached;
 use native_tls;
-#[cfg(feature = "openssl")]
-use openssl;
+use pem;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
@@ -44,7 +43,7 @@ error_chain! {
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
         Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
-        Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
+        Pem(pem::Error);
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];

@@ -58,8 +58,7 @@ extern crate mio_named_pipes;
 extern crate native_tls;
 extern crate num_cpus;
 extern crate number_prefix;
-#[cfg(feature = "openssl")]
-extern crate openssl;
+extern crate pem;
 extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
