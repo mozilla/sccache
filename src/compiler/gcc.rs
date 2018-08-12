@@ -194,13 +194,26 @@ where
     let it = ExpandIncludeFile::new(cwd, arguments);
 
     for item in ArgsIter::new(it, arg_info) {
-        // Refuse to cache arguments such as "-include@foo" because they're a
+        // Check if the value part of this argument begins with '@'. If so, we either
+        // failed to expand it, or it was a concatenated argument - either way, bail.
+        // We refuse to cache concatenated arguments (like "-include@foo") because they're a
         // mess. See https://github.com/mozilla/sccache/issues/150#issuecomment-318586953
-        if let Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) = item.arg {
-            if OsString::from(v.clone()).starts_with("@") {
-                return CompilerArguments::CannotCache("@");
-            }
+        match item.arg {
+            Argument::WithValue(_, ref v, ArgDisposition::Separated) |
+            Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_)) |
+            Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
+                if OsString::from(v.clone()).starts_with("@") {
+                    return CompilerArguments::CannotCache("@");
+                }
+            },
+            // Empirically, concatenated arguments appear not to interpret '@' as
+            // an include directive, so just continue.
+            Argument::WithValue(_, _, ArgDisposition::Concatenated(_)) |
+            Argument::Raw(_) |
+            Argument::UnknownFlag(_) |
+            Argument::Flag(_) => {},
         }
+
         match item.data {
             Some(TooHard) => {
                 return CompilerArguments::CannotCache(item.arg.to_str().expect(
@@ -891,6 +904,8 @@ mod test {
     fn test_parse_arguments_response_file() {
         assert_eq!(CompilerArguments::CannotCache("@"),
                    _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
+        assert_eq!(CompilerArguments::CannotCache("@"),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "@foo"]));
     }
 
     #[test]
