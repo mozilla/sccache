@@ -35,7 +35,7 @@ pub struct ClientToolchains {
     // - Weak hashes are what sccache uses to determine if a compiler has changed
     //   on the local machine - they're fast and 'good enough' (assuming we trust
     //   the local machine), but not safe if other users can update the cache.
-    // - Strong hashes (or archive ids) are the hash of the complete compiler contents that
+    // - Strong hashes (or 'archive ids') are the hash of the complete compiler contents that
     //   will be sent over the wire for use in distributed compilation - it is assumed
     //   that if two of them match, the contents of a compiler archive cannot
     //   have been tampered with

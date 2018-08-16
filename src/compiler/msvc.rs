@@ -569,7 +569,7 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 
     let dist_command = (|| {
         // http://releases.llvm.org/6.0.0/tools/clang/docs/UsersManual.html#clang-cl
-        // Use /T... for language?
+        // TODO: Use /T... for language?
         let mut fo = String::from("-Fo");
         fo.push_str(&path_transformer.to_dist(out_file)?);
 
