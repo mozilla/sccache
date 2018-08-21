@@ -80,12 +80,15 @@ impl CCompilerImpl for Clang {
     }
 }
 
-static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 8] = [
+static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 10] = [
     take_arg!("--serialize-diagnostics", String, Separated, PassThrough),
     take_arg!("--target", String, Separated, PassThrough),
     take_arg!("-Xclang", String, Separated, PassThrough),
     flag!("-fcxx-modules", TooHard),
     flag!("-fmodules", TooHard),
+    flag!("-fprofile-instr-generate", ProfileGenerate),
+    // Can be either -fprofile-instr-use or -fprofile-instr-use=path
+    take_arg!("-fprofile-instr-use", String, Concatenated, TooHard),
     take_arg!("-gcc-toolchain", String, Separated, PassThrough),
     take_arg!("-include-pch", Path, CanBeSeparated, PreprocessorArgument),
     take_arg!("-target", String, Separated, PassThrough),
