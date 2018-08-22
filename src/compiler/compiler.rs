@@ -467,6 +467,17 @@ pub enum CompilerArguments<T>
     NotCompilation,
 }
 
+macro_rules! try_arg {
+    ($arg:expr) => {{
+        match $arg {
+            Ok(arg) => arg,
+            Err(e) => {
+                return CompilerArguments::CannotCache(e)
+            },
+        }
+    }};
+}
+
 /// Specifics about cache misses.
 #[derive(Debug, PartialEq)]
 pub enum MissType {

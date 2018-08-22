@@ -72,91 +72,94 @@ impl CCompilerImpl for GCC {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum GCCArgAttribute {
-    TooHard,
-    PassThrough,
-    PreprocessorArgument,
-    DoCompilation,
-    Output,
-    NeedDepTarget,
-    DepTarget,
-    Language,
-    SplitDwarf,
-    ProfileGenerate,
-    TestCoverage,
-    Coverage,
+ArgData!{ pub
+    TooHardFlag(()),
+    TooHard(OsString),
+    PassThrough(OsString),
+    PassThroughPath(PathBuf),
+    PreprocessorArgumentFlag(()),
+    PreprocessorArgument(OsString),
+    PreprocessorArgumentPath(PathBuf),
+    DoCompilation(()),
+    Output(PathBuf),
+    NeedDepTarget(()),
+    DepTarget(OsString),
+    Language(OsString),
+    SplitDwarf(()),
+    ProfileGenerate(()),
+    TestCoverage(()),
+    Coverage(()),
 }
 
-use self::GCCArgAttribute::*;
+use self::ArgData::*;
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
-pub static ARGS: [(ArgInfo, GCCArgAttribute); 65] = [
-    flag!("-", TooHard),
+pub static ARGS: [ArgInfo<ArgData>; 65] = [
+    flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),
-    take_arg!("--param", String, Separated, PassThrough),
-    flag!("--save-temps", TooHard),
-    take_arg!("--serialize-diagnostics", Path, Separated, PassThrough),
-    take_arg!("--sysroot", Path, Separated, PassThrough),
-    take_arg!("-A", String, Separated, PassThrough),
-    take_arg!("-B", Path, CanBeSeparated, PassThrough),
-    take_arg!("-D", String, CanBeSeparated, PreprocessorArgument),
-    flag!("-E", TooHard),
-    take_arg!("-F", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-G", String, Separated, PassThrough),
-    take_arg!("-I", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-L", String, Separated, PassThrough),
-    flag!("-M", TooHard),
+    take_arg!("--param", OsString, Separated, PassThrough),
+    flag!("--save-temps", TooHardFlag),
+    take_arg!("--serialize-diagnostics", PathBuf, Separated, PassThroughPath),
+    take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
+    take_arg!("-A", OsString, Separated, PassThrough),
+    take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
+    take_arg!("-D", OsString, CanBeSeparated, PreprocessorArgument),
+    flag!("-E", TooHardFlag),
+    take_arg!("-F", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-G", OsString, Separated, PassThrough),
+    take_arg!("-I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-L", OsString, Separated, PassThrough),
+    flag!("-M", TooHardFlag),
     flag!("-MD", NeedDepTarget),
-    take_arg!("-MF", Path, Separated, PreprocessorArgument),
-    flag!("-MM", TooHard),
+    take_arg!("-MF", PathBuf, Separated, PreprocessorArgumentPath),
+    flag!("-MM", TooHardFlag),
     flag!("-MMD", NeedDepTarget),
     flag!("-MP", NeedDepTarget),
-    take_arg!("-MQ", String, Separated, PreprocessorArgument),
-    take_arg!("-MT", String, Separated, DepTarget),
-    flag!("-P", TooHard),
-    take_arg!("-U", String, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-V", String, Separated, PassThrough),
-    take_arg!("-Xassembler", String, Separated, PassThrough),
-    take_arg!("-Xlinker", String, Separated, PassThrough),
-    take_arg!("-Xpreprocessor", String, Separated, PreprocessorArgument),
-    take_arg!("-arch", String, Separated, PassThrough),
-    take_arg!("-aux-info", String, Separated, PassThrough),
-    take_arg!("-b", String, Separated, PassThrough),
+    take_arg!("-MQ", OsString, Separated, PreprocessorArgument),
+    take_arg!("-MT", OsString, Separated, DepTarget),
+    flag!("-P", TooHardFlag),
+    take_arg!("-U", OsString, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-V", OsString, Separated, PassThrough),
+    take_arg!("-Xassembler", OsString, Separated, PassThrough),
+    take_arg!("-Xlinker", OsString, Separated, PassThrough),
+    take_arg!("-Xpreprocessor", OsString, Separated, PreprocessorArgument),
+    take_arg!("-arch", OsString, Separated, PassThrough),
+    take_arg!("-aux-info", OsString, Separated, PassThrough),
+    take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
-    take_arg!("-dependency-file", Path, Separated, PreprocessorArgument),
-    flag!("-fno-working-directory", PreprocessorArgument),
-    flag!("-fplugin=libcc1plugin", TooHard),
+    take_arg!("-dependency-file", PathBuf, Separated, PreprocessorArgumentPath),
+    flag!("-fno-working-directory", PreprocessorArgumentFlag),
+    flag!("-fplugin=libcc1plugin", TooHardFlag),
     flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
-    flag!("-fprofile-use", TooHard),
-    flag!("-frepo", TooHard),
-    flag!("-fsyntax-only", TooHard),
+    flag!("-fprofile-use", TooHardFlag),
+    flag!("-frepo", TooHardFlag),
+    flag!("-fsyntax-only", TooHardFlag),
     flag!("-ftest-coverage", TestCoverage),
-    flag!("-fworking-directory", PreprocessorArgument),
+    flag!("-fworking-directory", PreprocessorArgumentFlag),
     flag!("-gsplit-dwarf", SplitDwarf),
-    take_arg!("-idirafter", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-iframework", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-imacros", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-imultilib", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-include", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-install_name", String, Separated, PassThrough),
-    take_arg!("-iprefix", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-iquote", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-isysroot", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-isystem", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-iwithprefix", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-iwithprefixbefore", Path, CanBeSeparated, PreprocessorArgument),
-    flag!("-nostdinc", PreprocessorArgument),
-    flag!("-nostdinc++", PreprocessorArgument),
-    take_arg!("-o", Path, Separated, Output),
-    flag!("-remap", PreprocessorArgument),
-    flag!("-save-temps", TooHard),
-    take_arg!("-stdlib", String, Concatenated('='), PreprocessorArgument),
-    flag!("-trigraphs", PreprocessorArgument),
-    take_arg!("-u", String, CanBeSeparated, PassThrough),
-    take_arg!("-x", String, CanBeSeparated, Language),
-    take_arg!("@", String, Concatenated, TooHard),
+    take_arg!("-idirafter", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-iframework", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-imacros", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-imultilib", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-include", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-install_name", OsString, Separated, PassThrough),
+    take_arg!("-iprefix", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-iquote", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-isysroot", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-isystem", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-iwithprefix", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-iwithprefixbefore", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    flag!("-nostdinc", PreprocessorArgumentFlag),
+    flag!("-nostdinc++", PreprocessorArgumentFlag),
+    take_arg!("-o", PathBuf, Separated, Output),
+    flag!("-remap", PreprocessorArgumentFlag),
+    flag!("-save-temps", TooHardFlag),
+    take_arg!("-stdlib", OsString, Concatenated('='), PreprocessorArgument),
+    flag!("-trigraphs", PreprocessorArgumentFlag),
+    take_arg!("-u", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-x", OsString, CanBeSeparated, Language),
+    take_arg!("@", OsString, Concatenated, TooHard),
 ];
 
 /// Parse `arguments`, determining whether it is supported.
@@ -174,7 +177,7 @@ pub fn parse_arguments<S>(
     arg_info: S,
 ) -> CompilerArguments<ParsedArguments>
 where
-    S: SearchableArgInfo<Info = (ArgInfo, GCCArgAttribute)>,
+    S: SearchableArgInfo<ArgData>,
 {
     let mut output_arg = None;
     let mut input_arg = None;
@@ -193,16 +196,17 @@ where
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
 
-    for item in ArgsIter::new(it, arg_info) {
+    for arg in ArgsIter::new(it, arg_info) {
+        let arg = try_arg!(arg.map_err(|e| e.static_description()));
         // Check if the value part of this argument begins with '@'. If so, we either
         // failed to expand it, or it was a concatenated argument - either way, bail.
         // We refuse to cache concatenated arguments (like "-include@foo") because they're a
         // mess. See https://github.com/mozilla/sccache/issues/150#issuecomment-318586953
-        match item.arg {
+        match arg {
             Argument::WithValue(_, ref v, ArgDisposition::Separated) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_)) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
-                if OsString::from(v.clone()).starts_with("@") {
+                if v.clone().into_arg().starts_with("@") {
                     return CompilerArguments::CannotCache("@");
                 }
             },
@@ -211,41 +215,43 @@ where
             Argument::WithValue(_, _, ArgDisposition::Concatenated(_)) |
             Argument::Raw(_) |
             Argument::UnknownFlag(_) |
-            Argument::Flag(_) => {},
+            Argument::Flag(_, _) => {},
         }
 
-        match item.data {
-            Some(TooHard) => {
-                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+        match arg.get_data() {
+            Some(TooHardFlag(())) |
+            Some(TooHard(_)) => {
+                return CompilerArguments::CannotCache(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(SplitDwarf) => split_dwarf = true,
-            Some(DoCompilation) => compilation = true,
-            Some(ProfileGenerate) => profile_generate = true,
-            Some(TestCoverage) => outputs_gcno = true,
-            Some(Coverage) => {
+            Some(SplitDwarf(())) => split_dwarf = true,
+            Some(DoCompilation(())) => compilation = true,
+            Some(ProfileGenerate(())) => profile_generate = true,
+            Some(TestCoverage(())) => outputs_gcno = true,
+            Some(Coverage(())) => {
                 outputs_gcno = true;
                 profile_generate = true;
             }
-            Some(Output) => output_arg = item.arg.get_value().map(|s| s.unwrap_path()),
-            Some(NeedDepTarget) => need_explicit_dep_target = true,
-            Some(DepTarget) => dep_target = item.arg.get_value().map(OsString::from),
-            Some(PreprocessorArgument) |
-            Some(PassThrough) => {}
-            Some(Language) => {
-                let lang = item.arg.get_value().map(OsString::from);
-                let lang = lang.as_ref().map(|a| a.to_string_lossy());
-                language = match lang.as_ref().map(|a| a.as_ref()) {
-                    Some("c") => Some(Language::C),
-                    Some("c++") => Some(Language::Cxx),
-                    Some("objective-c") => Some(Language::ObjectiveC),
-                    Some("objective-c++") => Some(Language::ObjectiveCxx),
+            Some(Output(p)) => output_arg = Some(p.clone()),
+            Some(NeedDepTarget(())) => need_explicit_dep_target = true,
+            Some(DepTarget(s)) => dep_target = Some(s.clone()),
+            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) |
+            Some(PassThrough(_)) |
+            Some(PassThroughPath(_)) => {}
+            Some(Language(lang)) => {
+                language = match lang.to_string_lossy().as_ref() {
+                    "c" => Some(Language::C),
+                    "c++" => Some(Language::Cxx),
+                    "objective-c" => Some(Language::ObjectiveC),
+                    "objective-c++" => Some(Language::ObjectiveCxx),
                     _ => return CompilerArguments::CannotCache("-x"),
                 };
             }
             None => {
-                match item.arg {
+                match arg {
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             multiple_input = true;
@@ -257,21 +263,25 @@ where
                 }
             }
         }
-        let args = match item.data {
-            Some(SplitDwarf) |
-            Some(ProfileGenerate) |
-            Some(TestCoverage) |
-            Some(Coverage) |
-            Some(PassThrough) => Some(&mut common_args),
-            Some(PreprocessorArgument) |
-            Some(NeedDepTarget) => Some(&mut preprocessor_args),
-            Some(DoCompilation) |
-            Some(Language) |
-            Some(Output) |
-            Some(DepTarget) => None,
-            Some(TooHard) => unreachable!(),
+        let args = match arg.get_data() {
+            Some(SplitDwarf(())) |
+            Some(ProfileGenerate(())) |
+            Some(TestCoverage(())) |
+            Some(Coverage(())) |
+            Some(PassThrough(_)) |
+            Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) |
+            Some(NeedDepTarget(())) => Some(&mut preprocessor_args),
+            Some(DoCompilation(())) |
+            Some(Language(_)) |
+            Some(Output(_)) |
+            Some(DepTarget(_)) => None,
+            Some(TooHardFlag(())) |
+            Some(TooHard(_)) => unreachable!(),
             None => {
-                match item.arg {
+                match arg {
                     Argument::Raw(_) => None,
                     Argument::UnknownFlag(_) => Some(&mut common_args),
                     _ => unreachable!(),
@@ -282,11 +292,11 @@ where
             // Normalize attributes such as "-I foo", "-D FOO=bar", as
             // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
             // "-include foo", "-idirafter bar", etc.
-            let norm = match item.arg.to_str() {
+            let norm = match arg.to_str() {
                 Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
                 _ => NormalizedDisposition::Separated,
             };
-            args.extend(item.arg.normalize(norm));
+            args.extend(arg.normalize(norm));
         };
     }
 
@@ -327,7 +337,7 @@ where
     }
     if need_explicit_dep_target {
         preprocessor_args.push("-MT".into());
-        preprocessor_args.push(dep_target.unwrap_or(output.clone().into_os_string()));
+        preprocessor_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
     }
     outputs.insert("obj", output);
 

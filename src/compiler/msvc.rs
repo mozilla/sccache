@@ -202,44 +202,46 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
     dst.write_all(&bytes)
 }
 
-#[derive(Clone, Debug)]
-enum MSVCArgAttribute {
-    TooHard,
-    PreprocessorArgument,
-    DoCompilation,
-    ShowIncludes,
-    Output,
-    DepFile,
-    ProgramDatabase,
-    DebugInfo,
-    XClang,
+ArgData!{
+    TooHardFlag(()),
+    TooHard(OsString),
+    TooHardPath(PathBuf),
+    PreprocessorArgument(OsString),
+    PreprocessorArgumentPath(PathBuf),
+    DoCompilation(()),
+    ShowIncludes(()),
+    Output(PathBuf),
+    DepFile(PathBuf),
+    ProgramDatabase(PathBuf),
+    DebugInfo(()),
+    XClang(OsString),
 }
 
-use self::MSVCArgAttribute::*;
+use self::ArgData::*;
 
-static ARGS: [(ArgInfo, MSVCArgAttribute); 22] = [
-    take_arg!("-D", String, Concatenated, PreprocessorArgument),
-    take_arg!("-FA", String, Concatenated, TooHard),
-    take_arg!("-FI", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-FR", Path, Concatenated, TooHard),
-    take_arg!("-Fa", Path, Concatenated, TooHard),
-    take_arg!("-Fd", Path, Concatenated, ProgramDatabase),
-    take_arg!("-Fe", Path, Concatenated, TooHard),
-    take_arg!("-Fi", Path, Concatenated, TooHard),
-    take_arg!("-Fm", Path, Concatenated, TooHard),
-    take_arg!("-Fo", Path, Concatenated, Output),
-    take_arg!("-Fp", Path, Concatenated, TooHard),
-    take_arg!("-Fr", Path, Concatenated, TooHard),
-    flag!("-Fx", TooHard),
-    take_arg!("-I", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-U", String, Concatenated, PreprocessorArgument),
-    take_arg!("-Xclang", String, Separated, XClang),
+static ARGS: [ArgInfo<ArgData>; 22] = [
+    take_arg!("-D", OsString, Concatenated, PreprocessorArgument),
+    take_arg!("-FA", OsString, Concatenated, TooHard),
+    take_arg!("-FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-FR", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fa", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fd", PathBuf, Concatenated, ProgramDatabase),
+    take_arg!("-Fe", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fi", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fm", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fo", PathBuf, Concatenated, Output),
+    take_arg!("-Fp", PathBuf, Concatenated, TooHardPath),
+    take_arg!("-Fr", PathBuf, Concatenated, TooHardPath),
+    flag!("-Fx", TooHardFlag),
+    take_arg!("-I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-U", OsString, Concatenated, PreprocessorArgument),
+    take_arg!("-Xclang", OsString, Separated, XClang),
     flag!("-Zi", DebugInfo),
     flag!("-c", DoCompilation),
-    take_arg!("-deps", Path, Concatenated, DepFile),
-    take_arg!("-o", Path, Separated, Output), // Deprecated but valid
+    take_arg!("-deps", PathBuf, Concatenated, DepFile),
+    take_arg!("-o", PathBuf, Separated, Output), // Deprecated but valid
     flag!("-showIncludes", ShowIncludes),
-    take_arg!("@", Path, Concatenated, TooHard),
+    take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ];
 
 pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> CompilerArguments<ParsedArguments> {
@@ -265,36 +267,34 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
         }
     });
 
-    for item in ArgsIter::new(it, &ARGS[..]) {
-        match item.data {
-            Some(TooHard) => {
-                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+    for arg in ArgsIter::new(it, &ARGS[..]) {
+        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        match arg.get_data() {
+            Some(TooHardFlag(())) |
+            Some(TooHard(_)) |
+            Some(TooHardPath(_)) => {
+                return CompilerArguments::CannotCache(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(DoCompilation) => compilation = true,
-            Some(ShowIncludes) => show_includes = true,
-            Some(Output) => {
-                output_arg = item.arg.get_value().map(OsString::from);
+            Some(DoCompilation(())) => compilation = true,
+            Some(ShowIncludes(())) => show_includes = true,
+            Some(Output(out)) => {
+                output_arg = Some(out.clone());
                 // Can't usefully cache output that goes to nul anyway,
                 // and it breaks reading entries from cache.
-                if let Some(ref out) = output_arg {
-                    if out == "nul" {
-                        return CompilerArguments::CannotCache("output to nul")
-                    }
+                if out.as_os_str() == "nul" {
+                    return CompilerArguments::CannotCache("output to nul")
                 }
             }
-            Some(DepFile) => depfile = item.arg.get_value().map(|s| s.unwrap_path()),
-            Some(ProgramDatabase) => pdb = item.arg.get_value().map(|s| s.unwrap_path()),
-            Some(DebugInfo) => debug_info = true,
-            Some(PreprocessorArgument) => {}
-            Some(XClang) => {
-                if let Some(arg) = item.arg.get_value() {
-                    xclangs.push(arg.into())
-                }
-            },
+            Some(DepFile(p)) => depfile = Some(p.clone()),
+            Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
+            Some(DebugInfo(())) => debug_info = true,
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) => {}
+            Some(XClang(s)) => xclangs.push(s.clone()),
             None => {
-                match item.arg {
+                match arg {
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
@@ -307,53 +307,59 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                 }
             }
         }
-        match item.data {
-            Some(PreprocessorArgument) => preprocessor_args.extend(item.arg.normalize(NormalizedDisposition::Concatenated)),
-            Some(ProgramDatabase) |
-            Some(DebugInfo) => common_args.extend(item.arg.normalize(NormalizedDisposition::Concatenated)),
+        match arg.get_data() {
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) => preprocessor_args.extend(arg.normalize(NormalizedDisposition::Concatenated)),
+            Some(ProgramDatabase(_)) |
+            Some(DebugInfo(())) => common_args.extend(arg.normalize(NormalizedDisposition::Concatenated)),
             _ => {}
         }
     }
 
     // TODO: doing this here reorders the arguments, hopefully that doesn't affect the meaning
     let xclang_it = gcc::ExpandIncludeFile::new(cwd, &xclangs);
-    for item in ArgsIter::new(xclang_it, (&gcc::ARGS[..], &clang::ARGS[..])) {
+    for arg in ArgsIter::new(xclang_it, (&gcc::ARGS[..], &clang::ARGS[..])) {
+        let arg = try_arg!(arg.map_err(|e| e.static_description()));
         // Eagerly bail if it looks like we need to do more complicated work
-        use compiler::gcc::GCCArgAttribute::*;
-        let args = match item.data {
-            Some(SplitDwarf) |
-            Some(ProfileGenerate) |
-            Some(TestCoverage) |
-            Some(Coverage) |
-            Some(DoCompilation) |
-            Some(Language) |
-            Some(Output) |
-            Some(TooHard) => {
-                return CompilerArguments::CannotCache(item.arg.to_str().unwrap_or(
+        use compiler::gcc::ArgData::*;
+        let args = match arg.get_data() {
+            Some(SplitDwarf(())) |
+            Some(ProfileGenerate(())) |
+            Some(TestCoverage(())) |
+            Some(Coverage(())) |
+            Some(DoCompilation(())) |
+            Some(Language(_)) |
+            Some(Output(_)) |
+            Some(TooHardFlag(())) |
+            Some(TooHard(_)) => {
+                return CompilerArguments::CannotCache(arg.to_str().unwrap_or(
                     "Can't handle complex arguments through clang",
                 ))
             }
             None => {
-                match item.arg {
+                match arg {
                     Argument::Raw(_) |
                     Argument::UnknownFlag(_) => Some(&mut common_args),
                     _ => unreachable!(),
                 }
             }
-            Some(PassThrough) => Some(&mut common_args),
-            Some(PreprocessorArgument) |
-            Some(DepTarget) |
-            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+            Some(PassThrough(_)) |
+            Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) |
+            Some(DepTarget(_)) |
+            Some(NeedDepTarget(())) => Some(&mut preprocessor_args),
         };
         if let Some(args) = args {
             // Normalize attributes such as "-I foo", "-D FOO=bar", as
             // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
             // "-include foo", "-idirafter bar", etc.
-            let norm = match item.arg.to_str() {
+            let norm = match arg.to_str() {
                 Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
                 _ => NormalizedDisposition::Separated,
             };
-            for arg in item.arg.normalize(norm) {
+            for arg in arg.normalize(norm) {
                 args.push("-Xclang".into());
                 args.push(arg)
             }
@@ -401,7 +407,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language: language,
-        depfile: depfile.map(|d| d.into()),
+        depfile: depfile,
         outputs: outputs,
         preprocessor_args: preprocessor_args,
         common_args: common_args,

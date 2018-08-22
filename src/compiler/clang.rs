@@ -24,7 +24,7 @@ use ::compiler::{
 use dist;
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use compiler::gcc::GCCArgAttribute::*;
+use compiler::gcc::ArgData::*;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -38,7 +38,7 @@ use std::io::{
     self,
     Write,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use util::{run_input_output, OsStrExt};
 
@@ -81,17 +81,17 @@ impl CCompilerImpl for Clang {
     }
 }
 
-pub static ARGS: [(ArgInfo, gcc::GCCArgAttribute); 8] = [
-    take_arg!("--serialize-diagnostics", String, Separated, PassThrough),
-    take_arg!("--target", String, Separated, PassThrough),
+pub static ARGS: [ArgInfo<gcc::ArgData>; 8] = [
+    take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
+    take_arg!("--target", OsString, Separated, PassThrough),
     // TODO: should be extracted and reprocessed, though bear in mind some
     // flags are not valid under a -Xclang
-    take_arg!("-Xclang", String, Separated, TooHard),
-    flag!("-fcxx-modules", TooHard),
-    flag!("-fmodules", TooHard),
-    take_arg!("-gcc-toolchain", String, Separated, PassThrough),
-    take_arg!("-include-pch", Path, CanBeSeparated, PreprocessorArgument),
-    take_arg!("-target", String, Separated, PassThrough),
+    take_arg!("-Xclang", OsString, Separated, TooHard),
+    flag!("-fcxx-modules", TooHardFlag),
+    flag!("-fmodules", TooHardFlag),
+    take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
+    take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-target", OsString, Separated, PassThrough),
 ];
 
 #[cfg(test)]
