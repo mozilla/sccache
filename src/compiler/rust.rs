@@ -394,7 +394,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         let arg_str = arg.to_os_string();
         let value_str = match arg.get_data() {
             Some(v) => {
-                if let Ok(v) = v.clone().into_arg().into_string() {
+                if let Ok(v) = v.clone().into_os_string().into_string() {
                     Some(v)
                 } else {
                     cannot_cache!("not utf-8");
@@ -406,12 +406,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         // strip colors if necessary.
         match arg.get_data() {
             Some(Color(_)) => {}
-            _ => args.push((arg_str, arg.get_data().map(|s| s.clone().into_arg()))),
+            _ => args.push((arg_str, arg.get_data().map(|s| s.clone().into_os_string()))),
         }
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHardPath(_)) => {
-                cannot_cache!(arg.to_str().expect(
+                cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }

@@ -273,7 +273,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             Some(TooHardFlag(())) |
             Some(TooHard(_)) |
             Some(TooHardPath(_)) => {
-                cannot_cache!(arg.to_str().expect(
+                cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
@@ -309,9 +309,13 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
         }
         match arg.get_data() {
             Some(PreprocessorArgument(_)) |
-            Some(PreprocessorArgumentPath(_)) => preprocessor_args.extend(arg.normalize(NormalizedDisposition::Concatenated)),
+            Some(PreprocessorArgumentPath(_)) => {
+                preprocessor_args.extend(arg.normalize(NormalizedDisposition::Concatenated).iter_os_strings())
+            },
             Some(ProgramDatabase(_)) |
-            Some(DebugInfo(())) => common_args.extend(arg.normalize(NormalizedDisposition::Concatenated)),
+            Some(DebugInfo(())) => {
+                common_args.extend(arg.normalize(NormalizedDisposition::Concatenated).iter_os_strings())
+            },
             _ => {}
         }
     }
@@ -332,7 +336,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             Some(Output(_)) |
             Some(TooHardFlag(())) |
             Some(TooHard(_)) => {
-                cannot_cache!(arg.to_str().unwrap_or(
+                cannot_cache!(arg.flag_str().unwrap_or(
                     "Can't handle complex arguments through clang",
                 ))
             }
@@ -355,11 +359,11 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             // Normalize attributes such as "-I foo", "-D FOO=bar", as
             // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
             // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.to_str() {
+            let norm = match arg.flag_str() {
                 Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
                 _ => NormalizedDisposition::Separated,
             };
-            for arg in arg.normalize(norm) {
+            for arg in arg.normalize(norm).iter_os_strings() {
                 args.push("-Xclang".into());
                 args.push(arg)
             }
