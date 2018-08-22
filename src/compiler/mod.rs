@@ -16,6 +16,7 @@
 mod args;
 mod c;
 mod clang;
+#[macro_use]
 mod compiler;
 mod gcc;
 mod msvc;

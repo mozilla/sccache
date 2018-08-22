@@ -317,59 +317,62 @@ impl<T> Compiler<T> for Rust
     }
 }
 
-#[derive(Clone, Debug)]
-enum RustArgAttribute {
-    TooHard,
-    NotCompilation,
-    LinkLibrary,
-    LinkPath,
-    Emit,
-    Extern,
-    Color,
-    CrateName,
-    CrateType,
-    OutDir,
-    CodeGen,
-    PassThrough,
+ArgData!{
+    TooHardFlag(()),
+    TooHardPath(PathBuf),
+    NotCompilationFlag(()),
+    NotCompilation(OsString),
+    LinkLibrary(PathBuf),
+    LinkPath(PathBuf),
+    Emit(OsString),
+    Extern(OsString),
+    Color(OsString),
+    CrateName(OsString),
+    CrateType(OsString),
+    OutDir(OsString),
+    CodeGen(OsString),
+    CodeGenPath(PathBuf),
+    PassThrough(OsString),
+    PassThroughPath(PathBuf),
 }
 
-use self::RustArgAttribute::*;
+use self::ArgData::*;
 
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
-static ARGS: [(ArgInfo, RustArgAttribute); 33] = [
-    flag!("-", TooHard),
-    take_arg!("--allow", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("--cap-lints", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("--cfg", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("--codegen", Path, CanBeSeparated('='), CodeGen),
-    take_arg!("--color", String, CanBeSeparated('='), Color),
-    take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
-    take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
-    take_arg!("--deny", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("--emit", String, CanBeSeparated('='), Emit),
-    take_arg!("--error-format", String, CanBeSeparated('='), PassThrough),
-    take_arg!("--explain", String, CanBeSeparated('='), NotCompilation),
-    take_arg!("--extern", String, CanBeSeparated('='), Extern),
-    take_arg!("--forbid", Path, CanBeSeparated('='), PassThrough),
-    flag!("--help", NotCompilation),
-    take_arg!("--out-dir", String, CanBeSeparated('='), OutDir),
-    take_arg!("--pretty", String, CanBeSeparated('='), NotCompilation),
-    take_arg!("--print", String, CanBeSeparated('='), NotCompilation),
-    take_arg!("--sysroot", String, CanBeSeparated('='), NotCompilation),
-    take_arg!("--target", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("--unpretty", String, CanBeSeparated('='), NotCompilation),
-    flag!("--version", NotCompilation),
-    take_arg!("--warn", Path, CanBeSeparated('='), PassThrough),
-    take_arg!("-A", String, CanBeSeparated, PassThrough),
-    take_arg!("-C", String, CanBeSeparated, CodeGen),
-    take_arg!("-D", String, CanBeSeparated, PassThrough),
-    take_arg!("-F", String, CanBeSeparated, PassThrough),
-    take_arg!("-L", Path, CanBeSeparated, LinkPath),
-    flag!("-V", NotCompilation),
-    take_arg!("-W", String, CanBeSeparated, PassThrough),
-    take_arg!("-Z", String, CanBeSeparated, PassThrough),
-    take_arg!("-l", Path, CanBeSeparated, LinkLibrary),
-    take_arg!("-o", Path, CanBeSeparated, TooHard),
+static ARGS: [ArgInfo<ArgData>; 33] = [
+    flag!("-", TooHardFlag),
+    take_arg!("--allow", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--cap-lints", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--cfg", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--codegen", PathBuf, CanBeSeparated('='), CodeGenPath),
+    take_arg!("--color", OsString, CanBeSeparated('='), Color),
+    take_arg!("--crate-name", OsString, CanBeSeparated('='), CrateName),
+    take_arg!("--crate-type", OsString, CanBeSeparated('='), CrateType),
+    take_arg!("--deny", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--emit", OsString, CanBeSeparated('='), Emit),
+    take_arg!("--error-format", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--explain", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--extern", OsString, CanBeSeparated('='), Extern),
+    take_arg!("--forbid", PathBuf, CanBeSeparated('='), PassThroughPath),
+    flag!("--help", NotCompilationFlag),
+    take_arg!("--out-dir", OsString, CanBeSeparated('='), OutDir),
+    take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--sysroot", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--target", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--unpretty", OsString, CanBeSeparated('='), NotCompilation),
+    flag!("--version", NotCompilationFlag),
+    take_arg!("--warn", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("-A", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-C", OsString, CanBeSeparated, CodeGen),
+    take_arg!("-D", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-F", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-L", PathBuf, CanBeSeparated, LinkPath),
+    flag!("-V", NotCompilationFlag),
+    take_arg!("-W", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-Z", OsString, CanBeSeparated, PassThrough),
+    take_arg!("-l", PathBuf, CanBeSeparated, LinkLibrary),
+    take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ];
 
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments>
@@ -386,11 +389,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
 
-    for item in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
-        let arg = item.arg.to_os_string();
-        let value = match item.arg.get_value() {
+    for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
+        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        let arg_str = arg.to_os_string();
+        let value_str = match arg.get_data() {
             Some(v) => {
-                if let Ok(v) = OsString::from(v).into_string() {
+                if let Ok(v) = v.clone().into_arg().into_string() {
                     Some(v)
                 } else {
                     return CompilerArguments::CannotCache("not utf-8");
@@ -400,23 +404,25 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         };
         // We'll drop --color arguments, we're going to pass --color=always and the client will
         // strip colors if necessary.
-        match item.data {
-            Some(Color) => {}
-            _ => args.push((arg, item.arg.get_value().map(|s| s.into()))),
+        match arg.get_data() {
+            Some(Color(_)) => {}
+            _ => args.push((arg_str, arg.get_data().map(|s| s.clone().into_arg()))),
         }
-        match item.data {
-            Some(TooHard) => {
-                return CompilerArguments::CannotCache(item.arg.to_str().expect(
+        match arg.get_data() {
+            Some(TooHardFlag(())) |
+            Some(TooHardPath(_)) => {
+                return CompilerArguments::CannotCache(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(NotCompilation) => return CompilerArguments::NotCompilation,
-            Some(LinkLibrary) |
-            Some(LinkPath) => {
-                if let Some(v) = value {
+            Some(NotCompilationFlag(())) |
+            Some(NotCompilation(_)) => return CompilerArguments::NotCompilation,
+            Some(LinkLibrary(_)) |
+            Some(LinkPath(_)) => {
+                if let Some(v) = value_str {
                     let mut split_it = v.splitn(2, "=");
-                    match item.data {
-                        Some(LinkLibrary) => {
+                    match arg.get_data() {
+                        Some(LinkLibrary(_)) => {
                             let (libtype, lib) = match (split_it.next(), split_it.next()) {
                                 (Some(libtype), Some(lib)) => (libtype, lib),
                                 // If no kind is specified, the default is dylib.
@@ -428,7 +434,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                                 static_lib_names.push(lib.to_string());
                             }
                         }
-                        Some(LinkPath) => {
+                        Some(LinkPath(_)) => {
                             match (split_it.next(), split_it.next()) {
                                 // For locating static libraries, we only care about `-L native=path`
                                 // and `-L path`.
@@ -444,34 +450,35 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     }
                 }
             }
-            Some(Emit) => {
+            Some(Emit(_)) => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
                     return CompilerArguments::CannotCache("more than one --emit");
                 }
-                emit = value.map(|a| a.split(",").map(&str::to_owned).collect());
+                emit = value_str.map(|a| a.split(",").map(&str::to_owned).collect());
             }
-            Some(CrateType) => {
+            Some(CrateType(_)) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
-                if let Some(v) = value {
+                if let Some(v) = value_str {
                     if v.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
                         return CompilerArguments::CannotCache("crate-type");
                     }
                 }
             }
-            Some(CrateName) => crate_name = value,
-            Some(OutDir) => output_dir = value,
-            Some(Extern) => {
-                if let Some(val) = value {
+            Some(CrateName(_)) => crate_name = value_str,
+            Some(OutDir(_)) => output_dir = value_str,
+            Some(Extern(_)) => {
+                if let Some(val) = value_str {
                     if let Some(crate_file) = val.splitn(2, "=").nth(1) {
                         externs.push(PathBuf::from(crate_file));
                     }
                 }
             }
-            Some(CodeGen) => {
+            Some(CodeGen(_)) |
+            Some(CodeGenPath(_)) => {
                 // We want to capture some info from codegen options.
-                if let Some(codegen_arg) = value {
+                if let Some(codegen_arg) = value_str {
                     let mut split_it = codegen_arg.splitn(2, "=");
                     let name = split_it.next();
                     let val = split_it.next();
@@ -492,17 +499,18 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     }
                 }
             }
-            Some(Color) => {
+            Some(Color(_)) => {
                 // We'll just assume the last specified value wins.
-                color_mode = match value.as_ref().map(|s| s.as_ref()) {
+                color_mode = match value_str.as_ref().map(|s| s.as_ref()) {
                     Some("always") => ColorMode::On,
                     Some("never") => ColorMode::Off,
                     _ => ColorMode::Auto,
                 };
             }
-            Some(PassThrough) => {}
+            Some(PassThrough(_)) |
+            Some(PassThroughPath(_)) => {}
             None => {
-                match item.arg {
+                match arg {
                     Argument::Raw(ref val) => {
                         if input.is_some() {
                             // Can't cache compilations with multiple inputs.
