@@ -72,7 +72,7 @@ pub struct RustHasher {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
     /// The full commandline, with arguments and their values as pairs.
-    arguments: Vec<(OsString, Option<OsString>)>,
+    arguments: Vec<Argument<ArgData>>,
     /// The location of compiler outputs.
     output_dir: PathBuf,
     /// Paths to extern crates used in the compile.
@@ -95,7 +95,7 @@ pub struct RustCompilation {
     /// The sysroot for this rustc
     sysroot: PathBuf,
     /// All arguments passed to rustc
-    arguments: Vec<OsString>,
+    arguments: Vec<Argument<ArgData>>,
     /// The compiler outputs.
     outputs: HashMap<String, PathBuf>,
     /// The crate name being compiled.
@@ -391,7 +391,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
 
     for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
-        let arg_str = arg.to_os_string();
         let value_str = match arg.get_data() {
             Some(v) => {
                 if let Ok(v) = v.clone().into_os_string().into_string() {
@@ -402,12 +401,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             None => None,
         };
-        // We'll drop --color arguments, we're going to pass --color=always and the client will
-        // strip colors if necessary.
-        match arg.get_data() {
-            Some(Color(_)) => {}
-            _ => args.push((arg_str, arg.get_data().map(|s| s.clone().into_os_string()))),
-        }
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHardPath(_)) => {
@@ -523,6 +516,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
             }
         }
+        // We'll drop --color arguments, we're going to pass --color=always and the client will
+        // strip colors if necessary.
+        match arg.get_data() {
+            Some(Color(_)) => {}
+            _ => args.push(arg.normalize(NormalizedDisposition::Separated)),
+        }
     }
 
     // Unwrap required values.
@@ -608,10 +607,13 @@ impl<T> CompilerHasher<T> for RustHasher
         let me = *self;
         let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
+        // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
+        let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
+            .map(|arg| (arg.to_os_string(), arg.get_data().cloned().map(IntoArg::into_os_string))).collect();
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
         // source files for this crate.
-        let filtered_arguments = arguments.iter()
+        let filtered_arguments = os_string_arguments.iter()
             .filter_map(|&(ref arg, ref val)| {
                 if arg == "--emit" || arg == "--out-dir" {
                     None
@@ -656,7 +658,7 @@ impl<T> CompilerHasher<T> for RustHasher
             // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
             // and append them to the rest of the arguments.
             let args = {
-                let (mut sortables, rest): (Vec<_>, Vec<_>) = arguments.iter()
+                let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments.iter()
                     .partition(|&&(ref arg, _)| arg == "--extern" || arg == "-L" || arg == "--cfg");
                 sortables.sort();
                 rest.into_iter()
@@ -692,13 +694,11 @@ impl<T> CompilerHasher<T> for RustHasher
                     val.hash(&mut HashToDigest { digest: &mut m });
                 }
             }
-            // Turn arguments into a simple Vec<OsString> for compilation.
-            let arguments: Vec<OsString> = arguments.into_iter()
-                .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
-                // Always request color output, the client will strip colors if needed.
-                .chain(iter::once("--color=always".into()))
+            // Turn arguments into a simple Vec<OsString> to calculate outputs.
+            let flat_os_string_arguments: Vec<OsString> = os_string_arguments.into_iter()
+                .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
                 .collect();
-            Box::new(get_compiler_outputs(&creator, &executable, &arguments, &cwd, &env_vars).map(move |outputs| {
+            Box::new(get_compiler_outputs(&creator, &executable, &flat_os_string_arguments, &cwd, &env_vars).map(move |outputs| {
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.
                 let mut outputs = outputs.into_iter()
@@ -712,6 +712,9 @@ impl<T> CompilerHasher<T> for RustHasher
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
                 let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot.clone() });
+                let mut arguments = arguments;
+                // Always request color output, the client will strip colors if needed.
+                arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
@@ -751,7 +754,7 @@ impl Compilation for RustCompilation {
         trace!("[{}]: compile", crate_name);
         Ok((CompileCommand {
             executable: executable.to_owned(),
-            arguments: arguments.to_owned(),
+            arguments: arguments.iter().flat_map(|arg| arg.iter_os_strings()).collect(),
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
         }, None, Cacheable::Yes))
@@ -1067,11 +1070,12 @@ c:/foo/bar.rs:
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
             parsed_args: ParsedArguments {
-                arguments: vec![("a".into(), None),
-                                ("--extern".into(), Some("xyz".into())),
-                                ("b".into(), None),
-                                ("--extern".into(), Some("abc".into())),
-                                ],
+                arguments: vec![
+                    Argument::Raw("a".into()),
+                    Argument::WithValue("--extern".into(), ArgData::Extern("xyz".into()), ArgDisposition::Separated),
+                    Argument::Raw("b".into()),
+                    Argument::WithValue("--extern".into(), ArgData::Extern("abc".into()), ArgDisposition::Separated),
+                ],
                 output_dir: "foo/".into(),
                 externs: vec!["bar.rlib".into()],
                 staticlibs: vec![f.tempdir.path().join("libbaz.a")],
