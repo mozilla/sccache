@@ -95,7 +95,7 @@ impl<T: ArgumentValue> Argument<T> {
         }
     }
 
-    pub fn to_str(&self) -> Option<&'static str> {
+    pub fn flag_str(&self) -> Option<&'static str> {
         match *self {
             Argument::Flag(s, _) |
             Argument::WithValue(s, _, _) => Some(s),
@@ -110,27 +110,22 @@ impl<T: ArgumentValue> Argument<T> {
             _ => None,
         }
     }
-}
 
-pub struct IntoIter<T: ArgumentValue> {
-    arg: Argument<T>,
-    emitted: usize,
-}
-
-/// Transforms a parsed argument into an iterator.
-impl<T: ArgumentValue> IntoIterator for Argument<T> {
-    type Item = OsString;
-    type IntoIter = IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
+    /// Transforms a parsed argument into an iterator.
+    pub fn iter_os_strings(&self) -> Iter<T> {
+        Iter {
             arg: self,
             emitted: 0,
         }
     }
 }
 
-impl<T: ArgumentValue> Iterator for IntoIter<T> {
+pub struct Iter<'a, T: ArgumentValue + 'a> {
+    arg: &'a Argument<T>,
+    emitted: usize,
+}
+
+impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -158,13 +153,13 @@ impl<T: ArgumentValue> Iterator for IntoIter<T> {
                                 "delimiter should be ascii",
                             )));
                         }
-                        s.push(v.clone().into_arg());
+                        s.push(v.clone().into_os_string());
                         Some(s)
                     }
                     (0, &ArgDisposition::Separated) |
                     (0, &ArgDisposition::CanBeConcatenated(_)) => Some(s.into()),
                     (1, &ArgDisposition::Separated) |
-                    (1, &ArgDisposition::CanBeConcatenated(_)) => Some(v.clone().into_arg()),
+                    (1, &ArgDisposition::CanBeConcatenated(_)) => Some(v.clone().into_os_string()),
                     _ => None,
                 }
             }
@@ -179,10 +174,10 @@ impl<T: ArgumentValue> Iterator for IntoIter<T> {
 macro_rules! ArgData {
     { __impl $( $x:ident($y:ty), )+ } => {
         impl IntoArg for ArgData {
-            fn into_arg(self) -> OsString {
+            fn into_os_string(self) -> OsString {
                 match self {
                     $(
-                        ArgData::$x(inner) => inner.into_arg(),
+                        ArgData::$x(inner) => inner.into_os_string(),
                     )*
                 }
             }
@@ -219,15 +214,15 @@ pub trait FromArg: Sized {
 }
 
 pub trait IntoArg {
-    fn into_arg(self) -> OsString;
+    fn into_os_string(self) -> OsString;
 }
 
 impl FromArg for OsString { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg) } }
 impl FromArg for PathBuf { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg.into()) } }
 
-impl IntoArg for () { fn into_arg(self) -> OsString { OsString::new() } }
-impl IntoArg for OsString { fn into_arg(self) -> OsString { self } }
-impl IntoArg for PathBuf { fn into_arg(self) -> OsString { self.into() } }
+impl IntoArg for () { fn into_os_string(self) -> OsString { OsString::new() } }
+impl IntoArg for OsString { fn into_os_string(self) -> OsString { self } }
+impl IntoArg for PathBuf { fn into_os_string(self) -> OsString { self.into() } }
 
 /// The description of how an argument may be parsed
 #[derive(PartialEq, Clone, Debug)]
@@ -801,30 +796,30 @@ mod tests {
         // Needs type annotation or ascription
         let raw: Argument<ArgData> = arg!(Raw("value"));
         let unknown: Argument<ArgData> = arg!(UnknownFlag("-foo"));
-        assert_eq!(Vec::from_iter(raw), ovec!["value"]);
-        assert_eq!(Vec::from_iter(unknown), ovec!["-foo"]);
-        assert_eq!(Vec::from_iter(arg!(Flag("-foo", FooFlag(())))), ovec!["-foo"]);
+        assert_eq!(Vec::from_iter(raw.iter_os_strings()), ovec!["value"]);
+        assert_eq!(Vec::from_iter(unknown.iter_os_strings()), ovec!["-foo"]);
+        assert_eq!(Vec::from_iter(arg!(Flag("-foo", FooFlag(()))).iter_os_strings()), ovec!["-foo"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foobar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated('=')));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foo=bar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foobar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeSeparated('=')));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foo=bar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo=bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foo", "bar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated('=')));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foo", "bar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Separated));
-        assert_eq!(Vec::from_iter(arg), ovec!["-foo", "bar"]);
+        assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
     }
 
     #[cfg(debug_assertions)]

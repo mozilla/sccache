@@ -209,7 +209,7 @@ where
             Argument::WithValue(_, ref v, ArgDisposition::Separated) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_)) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
-                if v.clone().into_arg().starts_with("@") {
+                if v.clone().into_os_string().starts_with("@") {
                     cannot_cache!("@");
                 }
             },
@@ -224,7 +224,7 @@ where
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHard(_)) => {
-                cannot_cache!(arg.to_str().expect(
+                cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
@@ -295,11 +295,11 @@ where
             // Normalize attributes such as "-I foo", "-D FOO=bar", as
             // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
             // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.to_str() {
+            let norm = match arg.flag_str() {
                 Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
                 _ => NormalizedDisposition::Separated,
             };
-            args.extend(arg.normalize(norm));
+            args.extend(arg.normalize(norm).iter_os_strings());
         };
     }
 
