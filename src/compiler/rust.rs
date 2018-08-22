@@ -307,7 +307,7 @@ impl<T> Compiler<T> for Rust
                 }))
             }
             CompilerArguments::NotCompilation => CompilerArguments::NotCompilation,
-            CompilerArguments::CannotCache(why) => CompilerArguments::CannotCache(why),
+            CompilerArguments::CannotCache(why, extra_info) => CompilerArguments::CannotCache(why, extra_info),
         }
     }
 
@@ -390,14 +390,14 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut color_mode = ColorMode::Auto;
 
     for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
-        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        let arg = try_or_cannot_cache!(arg, "argument parse");
         let arg_str = arg.to_os_string();
         let value_str = match arg.get_data() {
             Some(v) => {
                 if let Ok(v) = v.clone().into_arg().into_string() {
                     Some(v)
                 } else {
-                    return CompilerArguments::CannotCache("not utf-8");
+                    cannot_cache!("not utf-8");
                 }
             }
             None => None,
@@ -411,7 +411,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHardPath(_)) => {
-                return CompilerArguments::CannotCache(arg.to_str().expect(
+                cannot_cache!(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
@@ -428,7 +428,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                                 // If no kind is specified, the default is dylib.
                                 (Some(lib), None) => ("dylib", lib),
                                 // Anything else shouldn't happen.
-                                _ => return CompilerArguments::CannotCache("-l"),
+                                _ => cannot_cache!("-l"),
                             };
                             if libtype == "static" {
                                 static_lib_names.push(lib.to_string());
@@ -453,7 +453,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             Some(Emit(_)) => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
-                    return CompilerArguments::CannotCache("more than one --emit");
+                    cannot_cache!("more than one --emit");
                 }
                 emit = value_str.map(|a| a.split(",").map(&str::to_owned).collect());
             }
@@ -462,7 +462,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 // system linker to link them, and we don't know about all the linker inputs.
                 if let Some(v) = value_str {
                     if v.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
-                        return CompilerArguments::CannotCache("crate-type");
+                        cannot_cache!("crate-type");
                     }
                 }
             }
@@ -493,7 +493,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                             // Longer-term we would like to figure out better integration between
                             // sccache and rustc in the incremental scenario:
                             // https://github.com/mozilla/sccache/issues/236
-                            "incremental" => return CompilerArguments::CannotCache("incremental"),
+                            "incremental" => cannot_cache!("incremental"),
                             _ => {},
                         }
                     }
@@ -514,7 +514,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     Argument::Raw(ref val) => {
                         if input.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            return CompilerArguments::CannotCache("multiple input files");
+                            cannot_cache!("multiple input files");
                         }
                         input = Some(val.clone());
                     }
@@ -532,7 +532,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 $x
             } else {
                 debug!("Can't cache compilation, missing `{}`", stringify!($x));
-                return CompilerArguments::CannotCache(concat!("missing ", stringify!($x)));
+                cannot_cache!(concat!("missing ", stringify!($x)));
             };
         }
     };
@@ -550,7 +550,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
     if emit.iter().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
-        return CompilerArguments::CannotCache("unsupported --emit");
+        cannot_cache!("unsupported --emit");
     }
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
@@ -869,7 +869,7 @@ mod test {
         parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
         let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
                        "-C", "incremental=/foo");
-        assert_eq!(r, CompilerArguments::CannotCache("incremental"))
+        assert_eq!(r, CompilerArguments::CannotCache("incremental", None))
     }
 
     #[test]

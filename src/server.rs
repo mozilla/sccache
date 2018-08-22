@@ -562,9 +562,13 @@ impl<C> SccacheService<C>
                         let res = CompileResponse::CompileStarted;
                         return Message::WithBody(Response::Compile(res), rx)
                     }
-                    CompilerArguments::CannotCache(why) => {
+                    CompilerArguments::CannotCache(why, extra_info) => {
                         //TODO: save counts of why
-                        debug!("parse_arguments: CannotCache({}): {:?}", why, cmd);
+                        if let Some(extra_info) = extra_info {
+                            debug!("parse_arguments: CannotCache({}, {}): {:?}", why, extra_info, cmd)
+                        } else {
+                            debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
+                        }
                         stats.requests_not_cacheable += 1;
                     }
                     CompilerArguments::NotCompilation => {

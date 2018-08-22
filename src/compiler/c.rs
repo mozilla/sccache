@@ -194,7 +194,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                     compiler: self.compiler.clone(),
                 }))
             }
-            CompilerArguments::CannotCache(why) => CompilerArguments::CannotCache(why),
+            CompilerArguments::CannotCache(why, extra_info) => CompilerArguments::CannotCache(why, extra_info),
             CompilerArguments::NotCompilation => CompilerArguments::NotCompilation,
         }
     }

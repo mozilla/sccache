@@ -214,16 +214,16 @@ pub trait ArgumentValue: IntoArg + Clone + Debug {}
 
 impl<T: IntoArg + Clone + Debug> ArgumentValue for T {}
 
-pub trait FromArg {
-    fn process(arg: OsString) -> Self;
+pub trait FromArg: Sized {
+    fn process(arg: OsString) -> ArgResult<Self>;
 }
 
 pub trait IntoArg {
     fn into_arg(self) -> OsString;
 }
 
-impl FromArg for OsString { fn process(arg: OsString) -> Self { arg } }
-impl FromArg for PathBuf { fn process(arg: OsString) -> Self { arg.into() } }
+impl FromArg for OsString { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg) } }
+impl FromArg for PathBuf { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg.into()) } }
 
 impl IntoArg for () { fn into_arg(self) -> OsString { OsString::new() } }
 impl IntoArg for OsString { fn into_arg(self) -> OsString { self } }
@@ -236,7 +236,7 @@ pub enum ArgInfo<T> {
     Flag(&'static str, T),
     /// An argument with a value ; e.g. "-qux bar", where the way the
     /// value is passed is described by the ArgDisposition type.
-    TakeArg(&'static str, fn(OsString) -> T, ArgDisposition),
+    TakeArg(&'static str, fn(OsString) -> ArgResult<T>, ArgDisposition),
 }
 
 impl<T: ArgumentValue> ArgInfo<T> {
@@ -256,7 +256,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
             ArgInfo::TakeArg(s, create, ArgDisposition::Separated) => {
                 debug_assert_eq!(s, arg);
                 if let Some(a) = get_next_arg() {
-                    Argument::WithValue(s, create(a), ArgDisposition::Separated)
+                    Argument::WithValue(s, create(a)?, ArgDisposition::Separated)
                 } else {
                     return Err(ArgError::UnexpectedEndOfArgs)
                 }
@@ -270,7 +270,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
                 }
                 Argument::WithValue(
                     s,
-                    create(arg[len..].into()),
+                    create(arg[len..].into())?,
                     ArgDisposition::Concatenated(d),
                 )
             }
@@ -285,7 +285,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
                     Err(ArgError::UnexpectedEndOfArgs) if d.is_none() => {
                         Argument::WithValue(
                             s,
-                            create("".into()),
+                            create("".into())?,
                             ArgDisposition::Concatenated(d),
                         )
                     }
@@ -480,13 +480,13 @@ macro_rules! flag {
 ///     take_arg!("-foo", OsString, Concatenated('='), Variant)
 macro_rules! take_arg {
     ($s:expr, $vtype:ident, Separated, $variant:expr) => {
-        ArgInfo::TakeArg($s, |arg: OsString| $variant($vtype::process(arg)), ArgDisposition::Separated)
+        ArgInfo::TakeArg($s, |arg: OsString| $vtype::process(arg).map($variant), ArgDisposition::Separated)
     };
     ($s:expr, $vtype:ident, $d:ident, $variant:expr) => {
-        ArgInfo::TakeArg($s, |arg: OsString| $variant($vtype::process(arg)), ArgDisposition::$d(None))
+        ArgInfo::TakeArg($s, |arg: OsString| $vtype::process(arg).map($variant), ArgDisposition::$d(None))
     };
     ($s:expr, $vtype:ident, $d:ident($x:expr), $variant:expr) => {
-        ArgInfo::TakeArg($s, |arg: OsString| $variant($vtype::process(arg)), ArgDisposition::$d(Some($x as u8)))
+        ArgInfo::TakeArg($s, |arg: OsString| $vtype::process(arg).map($variant), ArgDisposition::$d(Some($x as u8)))
     };
 }
 

@@ -462,17 +462,26 @@ pub enum CompilerArguments<T>
     /// Commandline can be handled.
     Ok(T),
     /// Cannot cache this compilation.
-    CannotCache(&'static str),
+    CannotCache(&'static str, Option<String>),
     /// This commandline is not a compile.
     NotCompilation,
 }
 
-macro_rules! try_arg {
-    ($arg:expr) => {{
+macro_rules! cannot_cache {
+    ($why:expr) => {
+        return CompilerArguments::CannotCache($why, None)
+    };
+    ($why:expr, $extra_info:expr) => {
+        return CompilerArguments::CannotCache($why, Some($extra_info))
+    };
+}
+
+macro_rules! try_or_cannot_cache {
+    ($arg:expr, $why:expr) => {{
         match $arg {
             Ok(arg) => arg,
             Err(e) => {
-                return CompilerArguments::CannotCache(e)
+                cannot_cache!($why, e.to_string())
             },
         }
     }};

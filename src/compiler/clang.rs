@@ -154,9 +154,9 @@ mod test {
 
     #[test]
     fn test_parse_arguments_clangmodules() {
-        assert_eq!(CompilerArguments::CannotCache("-fcxx-modules"),
+        assert_eq!(CompilerArguments::CannotCache("-fcxx-modules", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
-        assert_eq!(CompilerArguments::CannotCache("-fmodules"),
+        assert_eq!(CompilerArguments::CannotCache("-fmodules", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
     }
 }

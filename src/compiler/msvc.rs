@@ -268,12 +268,12 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     });
 
     for arg in ArgsIter::new(it, &ARGS[..]) {
-        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHard(_)) |
             Some(TooHardPath(_)) => {
-                return CompilerArguments::CannotCache(arg.to_str().expect(
+                cannot_cache!(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
@@ -284,7 +284,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                 // Can't usefully cache output that goes to nul anyway,
                 // and it breaks reading entries from cache.
                 if out.as_os_str() == "nul" {
-                    return CompilerArguments::CannotCache("output to nul")
+                    cannot_cache!("output to nul")
                 }
             }
             Some(DepFile(p)) => depfile = Some(p.clone()),
@@ -298,7 +298,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            return CompilerArguments::CannotCache("multiple input files");
+                            cannot_cache!("multiple input files");
                         }
                         input_arg = Some(val.clone());
                     }
@@ -319,7 +319,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     // TODO: doing this here reorders the arguments, hopefully that doesn't affect the meaning
     let xclang_it = gcc::ExpandIncludeFile::new(cwd, &xclangs);
     for arg in ArgsIter::new(xclang_it, (&gcc::ARGS[..], &clang::ARGS[..])) {
-        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        let arg = try_or_cannot_cache!(arg, "argument parse");
         // Eagerly bail if it looks like we need to do more complicated work
         use compiler::gcc::ArgData::*;
         let args = match arg.get_data() {
@@ -332,7 +332,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             Some(Output(_)) |
             Some(TooHardFlag(())) |
             Some(TooHard(_)) => {
-                return CompilerArguments::CannotCache(arg.to_str().unwrap_or(
+                cannot_cache!(arg.to_str().unwrap_or(
                     "Can't handle complex arguments through clang",
                 ))
             }
@@ -374,11 +374,11 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
         Some(i) => {
             match Language::from_file_name(Path::new(&i)) {
                 Some(l) => (i.to_owned(), l),
-                None => return CompilerArguments::CannotCache("unknown source language"),
+                None => cannot_cache!("unknown source language"),
             }
         }
         // We can't cache compilation without an input.
-        None => return CompilerArguments::CannotCache("no input file"),
+        None => cannot_cache!("no input file"),
     };
     let mut outputs = HashMap::new();
     match output_arg {
@@ -399,7 +399,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                 // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
                 // working directory. We can't cache such a pdb.
-                return CompilerArguments::CannotCache("shared pdb");
+                cannot_cache!("shared pdb");
             }
         };
     }
@@ -820,31 +820,31 @@ mod test {
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
-        assert_eq!(CompilerArguments::CannotCache("multiple input files"),
+        assert_eq!(CompilerArguments::CannotCache("multiple input files", None),
                    parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"]));
     }
 
     #[test]
     fn test_parse_arguments_unsupported() {
-        assert_eq!(CompilerArguments::CannotCache("-FA"),
+        assert_eq!(CompilerArguments::CannotCache("-FA", None),
                    parse_arguments(&ovec!["-c", "foo.c", "-Fofoo.obj", "-FA"]));
 
-        assert_eq!(CompilerArguments::CannotCache("-Fa"),
+        assert_eq!(CompilerArguments::CannotCache("-Fa", None),
                    parse_arguments(&ovec!["-Fa", "-c", "foo.c", "-Fofoo.obj"]));
 
-        assert_eq!(CompilerArguments::CannotCache("-FR"),
+        assert_eq!(CompilerArguments::CannotCache("-FR", None),
                    parse_arguments(&ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache("@"),
+        assert_eq!(CompilerArguments::CannotCache("@", None),
                    parse_arguments(&ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"]));
     }
 
     #[test]
     fn test_parse_arguments_missing_pdb() {
-        assert_eq!(CompilerArguments::CannotCache("shared pdb"),
+        assert_eq!(CompilerArguments::CannotCache("shared pdb", None),
                    parse_arguments(&ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"]));
     }
 
