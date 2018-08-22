@@ -83,6 +83,9 @@ ArgData!{ pub
     DoCompilation(()),
     Output(PathBuf),
     NeedDepTarget(()),
+    // Though you might think this should be a path as it's a Makefile target,
+    // it's not treated as a path by the compiler - it's just written wholesale
+    // (including any funny make syntax) into the dep file.
     DepTarget(OsString),
     Language(OsString),
     SplitDwarf(()),
@@ -197,7 +200,7 @@ where
     let it = ExpandIncludeFile::new(cwd, arguments);
 
     for arg in ArgsIter::new(it, arg_info) {
-        let arg = try_arg!(arg.map_err(|e| e.static_description()));
+        let arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
         // failed to expand it, or it was a concatenated argument - either way, bail.
         // We refuse to cache concatenated arguments (like "-include@foo") because they're a
@@ -207,7 +210,7 @@ where
             Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_)) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
                 if v.clone().into_arg().starts_with("@") {
-                    return CompilerArguments::CannotCache("@");
+                    cannot_cache!("@");
                 }
             },
             // Empirically, concatenated arguments appear not to interpret '@' as
@@ -221,7 +224,7 @@ where
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHard(_)) => {
-                return CompilerArguments::CannotCache(arg.to_str().expect(
+                cannot_cache!(arg.to_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
@@ -247,7 +250,7 @@ where
                     "c++" => Some(Language::Cxx),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
-                    _ => return CompilerArguments::CannotCache("-x"),
+                    _ => cannot_cache!("-x"),
                 };
             }
             None => {
@@ -306,19 +309,19 @@ where
     }
     // Can't cache compilations with multiple inputs.
     if multiple_input {
-        return CompilerArguments::CannotCache("multiple input files");
+        cannot_cache!("multiple input files");
     }
     let input = match input_arg {
         Some(i) => i.to_owned(),
         // We can't cache compilation without an input.
-        None => return CompilerArguments::CannotCache("no input file"),
+        None => cannot_cache!("no input file"),
     };
     if language == None {
         language = Language::from_file_name(Path::new(&input));
     }
     let language = match language {
         Some(l) => l,
-        None => return CompilerArguments::CannotCache("unknown source language"),
+        None => cannot_cache!("unknown source language"),
     };
     let mut outputs = HashMap::new();
     let output = match output_arg {
@@ -894,7 +897,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_too_many_inputs() {
-        assert_eq!(CompilerArguments::CannotCache("multiple input files"),
+        assert_eq!(CompilerArguments::CannotCache("multiple input files", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"]));
     }
 
@@ -906,15 +909,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_pgo() {
-        assert_eq!(CompilerArguments::CannotCache("-fprofile-use"),
+        assert_eq!(CompilerArguments::CannotCache("-fprofile-use", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
     }
 
     #[test]
     fn test_parse_arguments_response_file() {
-        assert_eq!(CompilerArguments::CannotCache("@"),
+        assert_eq!(CompilerArguments::CannotCache("@", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"]));
-        assert_eq!(CompilerArguments::CannotCache("@"),
+        assert_eq!(CompilerArguments::CannotCache("@", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-o", "@foo"]));
     }
 
