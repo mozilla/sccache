@@ -5,30 +5,29 @@ use std::fmt::{self, Debug, Display};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::result::Result as StdResult;
+use std::str;
 
-type ArgResult<T> = StdResult<T, ArgError>;
+pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
 
 #[derive(Debug, PartialEq)]
-pub enum ArgError {
+pub enum ArgParseError {
     UnexpectedEndOfArgs,
+    InvalidUnicode(OsString),
+    Other(&'static str),
 }
 
-impl ArgError {
-    pub fn static_description(&self) -> &'static str {
-        match self {
-            ArgError::UnexpectedEndOfArgs => "Unexpected end of args",
-        }
-    }
-}
-
-impl Display for ArgError {
+impl Display for ArgParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = self.static_description();
+        let s = match self {
+            ArgParseError::UnexpectedEndOfArgs => "Unexpected end of args".into(),
+            ArgParseError::InvalidUnicode(s) => format!("String {:?} contained invalid unicode", s),
+            ArgParseError::Other(s) => format!("Arg-specific parsing failed: {}", s),
+        };
         write!(f, "{}", s)
     }
 }
 
-impl Error for ArgError {
+impl Error for ArgParseError {
     fn cause(&self) -> Option<&Error> { None }
 }
 
@@ -120,7 +119,7 @@ impl<T: ArgumentValue> Argument<T> {
     }
 }
 
-pub struct Iter<'a, T: ArgumentValue + 'a> {
+pub struct Iter<'a, T: 'a> {
     arg: &'a Argument<T>,
     emitted: usize,
 }
@@ -129,7 +128,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
     type Item = OsString;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let result = match self.arg {
+        let result = match *self.arg {
             Argument::Raw(ref s) |
             Argument::UnknownFlag(ref s) => {
                 match self.emitted {
@@ -149,7 +148,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
                     (0, &ArgDisposition::Concatenated(d)) => {
                         let mut s = OsString::from(s);
                         if let Some(d) = d {
-                            s.push(OsString::from(String::from_utf8(vec![d]).expect(
+                            s.push(OsString::from(str::from_utf8(&[d]).expect(
                                 "delimiter should be ascii",
                             )));
                         }
@@ -210,19 +209,34 @@ pub trait ArgumentValue: IntoArg + Clone + Debug {}
 impl<T: IntoArg + Clone + Debug> ArgumentValue for T {}
 
 pub trait FromArg: Sized {
-    fn process(arg: OsString) -> ArgResult<Self>;
+    fn process(arg: OsString) -> ArgParseResult<Self>;
 }
 
 pub trait IntoArg {
     fn into_os_string(self) -> OsString;
 }
 
-impl FromArg for OsString { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg) } }
-impl FromArg for PathBuf { fn process(arg: OsString) -> ArgResult<Self> { Ok(arg.into()) } }
+impl FromArg for OsString { fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg) } }
+impl FromArg for PathBuf { fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg.into()) } }
+impl FromArg for String { fn process(arg: OsString) -> ArgParseResult<Self> { os_string_to_string_arg(arg) } }
 
 impl IntoArg for () { fn into_os_string(self) -> OsString { OsString::new() } }
 impl IntoArg for OsString { fn into_os_string(self) -> OsString { self } }
 impl IntoArg for PathBuf { fn into_os_string(self) -> OsString { self.into() } }
+impl IntoArg for String { fn into_os_string(self) -> OsString { self.into() } }
+
+pub fn os_string_to_string_arg(val: OsString) -> ArgParseResult<String> {
+    val.into_string().map_err(ArgParseError::InvalidUnicode)
+}
+
+pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String, Option<String>)> {
+    let val = os_string_to_string_arg(val)?;
+    let mut split_it = val.splitn(2, split);
+    let s1 = split_it.next().expect("splitn with no values");
+    let maybe_s2 = split_it.next();
+    Ok((s1.to_owned(), maybe_s2.map(|s| s.to_owned())))
+}
+
 
 /// The description of how an argument may be parsed
 #[derive(PartialEq, Clone, Debug)]
@@ -231,7 +245,7 @@ pub enum ArgInfo<T> {
     Flag(&'static str, T),
     /// An argument with a value ; e.g. "-qux bar", where the way the
     /// value is passed is described by the ArgDisposition type.
-    TakeArg(&'static str, fn(OsString) -> ArgResult<T>, ArgDisposition),
+    TakeArg(&'static str, fn(OsString) -> ArgParseResult<T>, ArgDisposition),
 }
 
 impl<T: ArgumentValue> ArgInfo<T> {
@@ -239,7 +253,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
     /// string. For arguments with a value, where the value is separate, the
     /// `get_next_arg` function returns the next argument, in raw `OsString`
     /// form.
-    fn process<F>(self, arg: &str, get_next_arg: F) -> ArgResult<Argument<T>>
+    fn process<F>(self, arg: &str, get_next_arg: F) -> ArgParseResult<Argument<T>>
     where
         F: FnOnce() -> Option<OsString>,
     {
@@ -253,7 +267,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
                 if let Some(a) = get_next_arg() {
                     Argument::WithValue(s, create(a)?, ArgDisposition::Separated)
                 } else {
-                    return Err(ArgError::UnexpectedEndOfArgs)
+                    return Err(ArgParseError::UnexpectedEndOfArgs)
                 }
             }
             ArgInfo::TakeArg(s, create, ArgDisposition::Concatenated(d)) => {
@@ -277,7 +291,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
                     ArgInfo::TakeArg(s, create, ArgDisposition::Concatenated(d))
                 };
                 match derived.process(arg, get_next_arg) {
-                    Err(ArgError::UnexpectedEndOfArgs) if d.is_none() => {
+                    Err(ArgParseError::UnexpectedEndOfArgs) if d.is_none() => {
                         Argument::WithValue(
                             s,
                             create("".into())?,
@@ -436,7 +450,7 @@ where
     T: ArgumentValue,
     S: SearchableArgInfo<T>,
 {
-    type Item = ArgResult<Argument<T>>;
+    type Item = ArgParseResult<Argument<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(arg) = self.arguments.next() {
@@ -594,7 +608,7 @@ mod tests {
         assert_eq!(info.process("-foo", || None).unwrap(), arg!(Flag("-foo", FooFlag(()))));
 
         let info = take_arg!("-foo", OsString, Separated, Foo);
-        assert_eq!(info.clone().process("-foo", || None).unwrap_err(), ArgError::UnexpectedEndOfArgs);
+        assert_eq!(info.clone().process("-foo", || None).unwrap_err(), ArgParseError::UnexpectedEndOfArgs);
         assert_eq!(
             info.clone().process("-foo", || Some("bar".into())).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), Separated))
@@ -635,7 +649,7 @@ mod tests {
         );
 
         let info = take_arg!("-foo", OsString, CanBeSeparated('='), Foo);
-        assert_eq!(info.clone().process("-foo", || None).unwrap_err(), ArgError::UnexpectedEndOfArgs);
+        assert_eq!(info.clone().process("-foo", || None).unwrap_err(), ArgParseError::UnexpectedEndOfArgs);
         assert_eq!(
             info.clone().process("-foo=", || None).unwrap(),
             arg!(WithValue("-foo", Foo(""), CanBeSeparated('=')))

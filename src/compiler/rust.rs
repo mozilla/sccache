@@ -317,23 +317,155 @@ impl<T> Compiler<T> for Rust
     }
 }
 
+macro_rules! make_os_string {
+    ($( $v:expr ),*) => {{
+        let mut s = OsString::new();
+        $(
+            s.push($v);
+        )*
+        s
+    }};
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ArgLinkLibrary {
+    kind: String,
+    name: String,
+}
+impl FromArg for ArgLinkLibrary {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let (kind, name) = match split_os_string_arg(arg, "=")? {
+            (kind, Some(name)) => (kind, name),
+            // If no kind is specified, the default is dylib.
+            (name, None) => ("dylib".to_owned(), name),
+        };
+        Ok(ArgLinkLibrary { kind: kind, name: name })
+    }
+}
+impl IntoArg for ArgLinkLibrary {
+    fn into_os_string(self) -> OsString {
+        let ArgLinkLibrary { kind, name } = self;
+        make_os_string!(kind, "=", name)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ArgLinkPath {
+    kind: String,
+    path: PathBuf,
+}
+impl FromArg for ArgLinkPath {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let (kind, path) = match split_os_string_arg(arg, "=")? {
+            (kind, Some(path)) => (kind, path),
+            // If no kind is specified, the path is used to search for all kinds
+            (path, None) => ("all".to_owned(), path),
+        };
+        Ok(ArgLinkPath { kind: kind, path: path.into() })
+    }
+}
+impl IntoArg for ArgLinkPath {
+    fn into_os_string(self) -> OsString {
+        let ArgLinkPath { kind, path } = self;
+        make_os_string!(kind, "=", path)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ArgCodegen {
+    opt: String,
+    value: Option<String>,
+}
+impl FromArg for ArgCodegen {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let (opt, value) = split_os_string_arg(arg, "=")?;
+        Ok(ArgCodegen { opt, value })
+    }
+}
+impl IntoArg for ArgCodegen {
+    fn into_os_string(self) -> OsString {
+        let ArgCodegen { opt, value } = self;
+        if let Some(value) = value {
+            make_os_string!(opt, "=", value)
+        } else {
+            make_os_string!(opt)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ArgExtern {
+    name: String,
+    path: PathBuf,
+}
+impl FromArg for ArgExtern {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        if let (name, Some(path)) = split_os_string_arg(arg, "=")? {
+            Ok(ArgExtern { name, path: path.into() })
+        } else {
+            Err(ArgParseError::Other("no path for extern"))
+        }
+    }
+}
+impl IntoArg for ArgExtern {
+    fn into_os_string(self) -> OsString {
+        let ArgExtern { name, path } = self;
+        make_os_string!(name, "=", path)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ArgTarget {
+    Name(String),
+    Path(PathBuf),
+    Unsure(OsString),
+}
+impl FromArg for ArgTarget {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        // Is it obviously a json file path?
+        if Path::new(&arg).extension().map(|ext| ext == "json").unwrap_or(false) {
+            return Ok(ArgTarget::Path(arg.into()))
+        }
+        // Time for clever detection - if we append .json (even if it's clearly
+        // a directory, i.e. resulting in /my/dir/.json), does the path exist?
+        let mut path = arg.clone();
+        path.push(".json");
+        if Path::new(&path).is_file() {
+            // Unfortunately, we're now not sure what will happen without having
+            // a list of all the built-in targets handy, as they don't get .json
+            // auto-added for target json discovery
+            return Ok(ArgTarget::Unsure(arg))
+        }
+        // The file doesn't exist so it can't be a path, safe to assume it's a name
+        Ok(ArgTarget::Name(os_string_to_string_arg(arg)?))
+    }
+}
+impl IntoArg for ArgTarget {
+    fn into_os_string(self) -> OsString {
+        match self {
+            ArgTarget::Name(s) => s.into(),
+            ArgTarget::Path(p) => p.into(),
+            ArgTarget::Unsure(s) => s.into(),
+        }
+    }
+}
+
 ArgData!{
     TooHardFlag(()),
     TooHardPath(PathBuf),
     NotCompilationFlag(()),
     NotCompilation(OsString),
-    LinkLibrary(PathBuf),
-    LinkPath(PathBuf),
-    Emit(OsString),
-    Extern(OsString),
-    Color(OsString),
-    CrateName(OsString),
-    CrateType(OsString),
-    OutDir(OsString),
-    CodeGen(OsString),
-    CodeGenPath(PathBuf),
+    LinkLibrary(ArgLinkLibrary),
+    LinkPath(ArgLinkPath),
+    Emit(String),
+    Extern(ArgExtern),
+    Color(String),
+    CrateName(String),
+    CrateType(String),
+    OutDir(PathBuf),
+    CodeGen(ArgCodegen),
     PassThrough(OsString),
-    PassThroughPath(PathBuf),
+    Target(ArgTarget),
 }
 
 use self::ArgData::*;
@@ -341,37 +473,37 @@ use self::ArgData::*;
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
 static ARGS: [ArgInfo<ArgData>; 33] = [
     flag!("-", TooHardFlag),
-    take_arg!("--allow", PathBuf, CanBeSeparated('='), PassThroughPath),
-    take_arg!("--cap-lints", PathBuf, CanBeSeparated('='), PassThroughPath),
-    take_arg!("--cfg", PathBuf, CanBeSeparated('='), PassThroughPath),
-    take_arg!("--codegen", PathBuf, CanBeSeparated('='), CodeGenPath),
-    take_arg!("--color", OsString, CanBeSeparated('='), Color),
-    take_arg!("--crate-name", OsString, CanBeSeparated('='), CrateName),
-    take_arg!("--crate-type", OsString, CanBeSeparated('='), CrateType),
-    take_arg!("--deny", PathBuf, CanBeSeparated('='), PassThroughPath),
-    take_arg!("--emit", OsString, CanBeSeparated('='), Emit),
+    take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--cfg", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
+    take_arg!("--color", String, CanBeSeparated('='), Color),
+    take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
+    take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
+    take_arg!("--deny", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--emit", String, CanBeSeparated('='), Emit),
     take_arg!("--error-format", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--explain", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--extern", OsString, CanBeSeparated('='), Extern),
-    take_arg!("--forbid", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--extern", ArgExtern, CanBeSeparated('='), Extern),
+    take_arg!("--forbid", OsString, CanBeSeparated('='), PassThrough),
     flag!("--help", NotCompilationFlag),
-    take_arg!("--out-dir", OsString, CanBeSeparated('='), OutDir),
+    take_arg!("--out-dir", PathBuf, CanBeSeparated('='), OutDir),
     take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
     take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--sysroot", OsString, CanBeSeparated('='), NotCompilation),
-    take_arg!("--target", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--sysroot", PathBuf, CanBeSeparated('='), TooHardPath),
+    take_arg!("--target", ArgTarget, CanBeSeparated('='), Target),
     take_arg!("--unpretty", OsString, CanBeSeparated('='), NotCompilation),
     flag!("--version", NotCompilationFlag),
-    take_arg!("--warn", PathBuf, CanBeSeparated('='), PassThroughPath),
+    take_arg!("--warn", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-A", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-C", OsString, CanBeSeparated, CodeGen),
+    take_arg!("-C", ArgCodegen, CanBeSeparated, CodeGen),
     take_arg!("-D", OsString, CanBeSeparated, PassThrough),
     take_arg!("-F", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-L", PathBuf, CanBeSeparated, LinkPath),
+    take_arg!("-L", ArgLinkPath, CanBeSeparated, LinkPath),
     flag!("-V", NotCompilationFlag),
     take_arg!("-W", OsString, CanBeSeparated, PassThrough),
     take_arg!("-Z", OsString, CanBeSeparated, PassThrough),
-    take_arg!("-l", PathBuf, CanBeSeparated, LinkLibrary),
+    take_arg!("-l", ArgLinkLibrary, CanBeSeparated, LinkLibrary),
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
 ];
 
@@ -391,16 +523,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
 
     for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
-        let value_str = match arg.get_data() {
-            Some(v) => {
-                if let Ok(v) = v.clone().into_os_string().into_string() {
-                    Some(v)
-                } else {
-                    cannot_cache!("not utf-8");
-                }
-            }
-            None => None,
-        };
         match arg.get_data() {
             Some(TooHardFlag(())) |
             Some(TooHardPath(_)) => {
@@ -410,98 +532,65 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(NotCompilationFlag(())) |
             Some(NotCompilation(_)) => return CompilerArguments::NotCompilation,
-            Some(LinkLibrary(_)) |
-            Some(LinkPath(_)) => {
-                if let Some(v) = value_str {
-                    let mut split_it = v.splitn(2, "=");
-                    match arg.get_data() {
-                        Some(LinkLibrary(_)) => {
-                            let (libtype, lib) = match (split_it.next(), split_it.next()) {
-                                (Some(libtype), Some(lib)) => (libtype, lib),
-                                // If no kind is specified, the default is dylib.
-                                (Some(lib), None) => ("dylib", lib),
-                                // Anything else shouldn't happen.
-                                _ => cannot_cache!("-l"),
-                            };
-                            if libtype == "static" {
-                                static_lib_names.push(lib.to_string());
-                            }
-                        }
-                        Some(LinkPath(_)) => {
-                            match (split_it.next(), split_it.next()) {
-                                // For locating static libraries, we only care about `-L native=path`
-                                // and `-L path`.
-                                (Some("native"), Some(path)) |
-                                (Some(path), None) => {
-                                    static_link_paths.push(cwd.join(path));
-                                }
-                                // Just ignore anything else.
-                                _ => {}
-                            }
-                        }
-                        _ => unreachable!(),
-                    }
+            Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
+                if kind == "static" {
+                    static_lib_names.push(name.to_owned())
                 }
-            }
-            Some(Emit(_)) => {
+            },
+            Some(LinkPath(ArgLinkPath { kind, path })) => {
+                if kind == "native" || kind == "all" {
+                    static_link_paths.push(cwd.join(path))
+                }
+            },
+            Some(Emit(value)) => {
                 if emit.is_some() {
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = value_str.map(|a| a.split(",").map(&str::to_owned).collect());
+                emit = Some(value.split(",").map(str::to_owned).collect())
             }
-            Some(CrateType(_)) => {
+            Some(CrateType(value)) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
-                if let Some(v) = value_str {
-                    if v.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
-                        cannot_cache!("crate-type");
-                    }
+                if value.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
+                    cannot_cache!("crate-type")
                 }
             }
-            Some(CrateName(_)) => crate_name = value_str,
-            Some(OutDir(_)) => output_dir = value_str,
-            Some(Extern(_)) => {
-                if let Some(val) = value_str {
-                    if let Some(crate_file) = val.splitn(2, "=").nth(1) {
-                        externs.push(PathBuf::from(crate_file));
-                    }
+            Some(CrateName(value)) => crate_name = Some(value.clone()),
+            Some(OutDir(value)) => output_dir = Some(value.clone()),
+            Some(Extern(ArgExtern { name: _, path })) => externs.push(path.clone()),
+            Some(CodeGen(ArgCodegen { opt, value })) => {
+                match (opt.as_ref(), value) {
+                    ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
+                    ("extra-filename", None) => cannot_cache!("extra-filename"),
+                    // Incremental compilation makes a mess of sccache's entire world
+                    // view. It produces additional compiler outputs that we don't cache,
+                    // and just letting rustc do its work in incremental mode is likely
+                    // to be faster than trying to fetch a result from cache anyway, so
+                    // don't bother caching compiles where it's enabled currently.
+                    // Longer-term we would like to figure out better integration between
+                    // sccache and rustc in the incremental scenario:
+                    // https://github.com/mozilla/sccache/issues/236
+                    ("incremental", _) => cannot_cache!("incremental"),
+                    (_, _) => (),
                 }
             }
-            Some(CodeGen(_)) |
-            Some(CodeGenPath(_)) => {
-                // We want to capture some info from codegen options.
-                if let Some(codegen_arg) = value_str {
-                    let mut split_it = codegen_arg.splitn(2, "=");
-                    let name = split_it.next();
-                    let val = split_it.next();
-                    if let (Some(name), Some(val)) = (name, val) {
-                        match name {
-                            "extra-filename" => extra_filename = Some(val.to_owned()),
-                            // Incremental compilation makes a mess of sccache's entire world
-                            // view. It produces additional compiler outputs that we don't cache,
-                            // and just letting rustc do its work in incremental mode is likely
-                            // to be faster than trying to fetch a result from cache anyway, so
-                            // don't bother caching compiles where it's enabled currently.
-                            // Longer-term we would like to figure out better integration between
-                            // sccache and rustc in the incremental scenario:
-                            // https://github.com/mozilla/sccache/issues/236
-                            "incremental" => cannot_cache!("incremental"),
-                            _ => {},
-                        }
-                    }
-                }
-            }
-            Some(Color(_)) => {
+            Some(Color(value)) => {
                 // We'll just assume the last specified value wins.
-                color_mode = match value_str.as_ref().map(|s| s.as_ref()) {
-                    Some("always") => ColorMode::On,
-                    Some("never") => ColorMode::Off,
+                color_mode = match value.as_ref() {
+                    "always" => ColorMode::On,
+                    "never" => ColorMode::Off,
                     _ => ColorMode::Auto,
                 };
             }
-            Some(PassThrough(_)) |
-            Some(PassThroughPath(_)) => {}
+            Some(PassThrough(_)) => (),
+            Some(Target(target)) => {
+                match target {
+                    ArgTarget::Path(_) |
+                    ArgTarget::Unsure(_) => cannot_cache!("target"),
+                    ArgTarget::Name(_) => (),
+                }
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
@@ -1072,9 +1161,13 @@ c:/foo/bar.rs:
             parsed_args: ParsedArguments {
                 arguments: vec![
                     Argument::Raw("a".into()),
-                    Argument::WithValue("--extern".into(), ArgData::Extern("xyz".into()), ArgDisposition::Separated),
+                    Argument::WithValue("--extern".into(),
+                                        ArgData::Extern(ArgExtern::process("xyz=/xyz".into()).unwrap()),
+                                        ArgDisposition::Separated),
                     Argument::Raw("b".into()),
-                    Argument::WithValue("--extern".into(), ArgData::Extern("abc".into()), ArgDisposition::Separated),
+                    Argument::WithValue("--extern".into(),
+                                        ArgData::Extern(ArgExtern::process("abc=/abc".into()).unwrap()),
+                                        ArgDisposition::Separated),
                 ],
                 output_dir: "foo/".into(),
                 externs: vec!["bar.rlib".into()],
@@ -1104,7 +1197,7 @@ c:/foo/bar.rs:
         // sysroot shlibs digests.
         m.update(FAKE_DIGEST.as_bytes());
         // Arguments, with externs sorted at the end.
-        OsStr::new("ab--externabc--externxyz").hash(&mut HashToDigest { digest: &mut m });
+        OsStr::new("ab--externabc=/abc--externxyz=/xyz").hash(&mut HashToDigest { digest: &mut m });
         // bar.rs (source file, from dep-info)
         m.update(empty_digest.as_bytes());
         // foo.rs (source file, from dep-info)
