@@ -238,7 +238,7 @@ pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
             CacheType::Redis(config::RedisCacheConfig { ref url }) => {
                 debug!("Trying Redis({})", url);
                 #[cfg(feature = "redis")]
-                match RedisCache::new(&url, pool) {
+                match RedisCache::new(&url) {
                     Ok(s) => {
                         trace!("Using Redis: {}", url);
                         return Arc::new(s);
