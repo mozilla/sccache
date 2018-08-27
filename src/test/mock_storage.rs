@@ -14,6 +14,7 @@
 
 use cache::{Cache, CacheWrite, Storage};
 use errors::*;
+use futures::future;
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -46,6 +47,6 @@ impl Storage for MockStorage {
         f_ok(Duration::from_secs(0))
     }
     fn location(&self) -> String { "Mock Storage".to_string() }
-    fn current_size(&self) -> Option<u64> { None }
-    fn max_size(&self) -> Option<u64> { None }
+    fn current_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
+    fn max_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
 }
