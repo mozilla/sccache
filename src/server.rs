@@ -407,7 +407,7 @@ impl<C> Service for SccacheService<C>
         // that every message is received.
         drop(self.tx.clone().start_send(ServerMessage::Request));
 
-        let res = match req.into_inner() {
+        let res: SFuture<Response> = match req.into_inner() {
             Request::Compile(compile) => {
                 debug!("handle_client: compile");
                 self.stats.borrow_mut().compile_requests += 1;
@@ -415,24 +415,26 @@ impl<C> Service for SccacheService<C>
             }
             Request::GetStats => {
                 debug!("handle_client: get_stats");
-                Response::Stats(self.get_info())
+                Box::new(self.get_info().map(Response::Stats))
             }
             Request::ZeroStats => {
                 debug!("handle_client: zero_stats");
                 self.zero_stats();
-                Response::Stats(self.get_info())
+                Box::new(self.get_info().map(Response::Stats))
             }
             Request::Shutdown => {
                 debug!("handle_client: shutdown");
-                let future = self.tx.clone().send(ServerMessage::Shutdown);
-                let info = self.get_info();
-                return Box::new(future.then(move |_| {
-                    Ok(Message::WithoutBody(Response::ShuttingDown(info)))
-                }))
+                let future = self.tx.clone().send(ServerMessage::Shutdown).then(|_| Ok(()));
+                let info_future = self.get_info();
+                return Box::new(future.join(info_future)
+                    .map(move |(_, info)| {
+                        Message::WithoutBody(Response::ShuttingDown(info))
+                    })
+                )
             }
         };
 
-        f_ok(Message::WithoutBody(res))
+        Box::new(res.map(Message::WithoutBody))
     }
 }
 
@@ -460,13 +462,19 @@ impl<C> SccacheService<C>
     }
 
     /// Get info and stats about the cache.
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            stats: self.stats.borrow().clone(),
-            cache_location: self.storage.location(),
-            cache_size: self.storage.current_size(),
-            max_cache_size: self.storage.max_size(),
-        }
+    fn get_info(&self) -> SFuture<ServerInfo> {
+        let stats = self.stats.borrow().clone();
+        let cache_location = self.storage.location();
+        Box::new(self.storage.current_size().join(self.storage.max_size())
+            .map(move |(cache_size, max_cache_size)| {
+                ServerInfo {
+                    stats,
+                    cache_location,
+                    cache_size,
+                    max_cache_size,
+                }
+            })
+        )
     }
 
     /// Zero stats about the cache.

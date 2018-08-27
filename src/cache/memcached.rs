@@ -93,6 +93,6 @@ impl Storage for MemcachedCache {
         format!("Memcached: {}", self.url)
     }
 
-    fn current_size(&self) -> Option<u64> { None }
-    fn max_size(&self) -> Option<u64> { None }
+    fn current_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
+    fn max_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
 }
