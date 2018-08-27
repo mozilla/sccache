@@ -81,10 +81,34 @@ impl Bucket {
         })
     }
 
-    pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {
+    pub fn get(&self, key: &str, creds: Option<&AwsCredentials>) -> SFuture<Vec<u8>> {
         let url = format!("{}{}", self.base_url, key);
         debug!("GET {}", url);
         let url2 = url.clone();
+        let mut request = Request::new(Method::GET, url.parse().unwrap());
+        match creds {
+            Some(creds) => {
+                let mut canonical_headers = String::new();
+
+                if let Some(token) = creds.token().as_ref().map(|s| s.as_str()) {
+                    request
+                        .headers_mut()
+                        .insert("x-amz-security-token", HeaderValue::from_str(token).expect("Invalid `x-amz-security-token` header"));
+                    canonical_headers
+                        .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
+                }
+                let date = time::now_utc().rfc822().to_string();
+                let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
+                request
+                    .headers_mut()
+                    .insert("Date", HeaderValue::from_str(&date).expect("Invalid date header"));
+                request
+                    .headers_mut()
+                    .insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid authentication"));
+            }
+            // request is fine as-is
+            None => {}
+        }
         Box::new(
             self.client
                 .get(&url[..])
