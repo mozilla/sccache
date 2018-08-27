@@ -21,7 +21,6 @@ use cache::{
 };
 use errors::*;
 use futures::{future, Future};
-use futures_cpupool::CpuPool;
 use redis::{
     cmd,
     Client,
@@ -40,16 +39,14 @@ use std::time::{
 pub struct RedisCache {
     url: String,
     client: Client,
-    pool: CpuPool,
 }
 
 impl RedisCache {
     /// Create a new `RedisCache`.
-    pub fn new(url: &str, pool: &CpuPool) -> Result<RedisCache> {
+    pub fn new(url: &str) -> Result<RedisCache> {
         Ok(RedisCache {
             url: url.to_owned(),
             client: Client::open(url)?,
-            pool: pool.clone(),
         })
     }
 
@@ -65,7 +62,7 @@ impl Storage for RedisCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = key.to_owned();
         let me = self.clone();
-        Box::new(self.pool.spawn_fn(move || {
+        Box::new(
             me.connect()
                 .and_then(|c| {
                     cmd("GET").arg(key).query_async(c).from_err()
@@ -78,15 +75,15 @@ impl Storage for RedisCache {
                             .map(Cache::Hit)
                     }
                 })
-        }))
+        )
     }
 
     /// Open a connection and store a object in the cache.
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
         let key = key.to_owned();
         let me = self.clone();
-        Box::new(self.pool.spawn_fn(move || {
-            let start = Instant::now();
+        let start = Instant::now();
+        Box::new(
             me.connect()
                 .and_then(move |c| {
                     future::result(entry.finish()).and_then(|d| {
@@ -94,7 +91,7 @@ impl Storage for RedisCache {
                     })
                 })
                 .map(move |(_, ())| start.elapsed())
-        }))
+        )
     }
 
     /// Returns the cache location.
