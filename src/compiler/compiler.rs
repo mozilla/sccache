@@ -718,6 +718,7 @@ gcc
                 debug!("Found MSVC (is clang: {})", is_clang);
                 let prefix = msvc::detect_showincludes_prefix(&creator,
                                                               executable.as_ref(),
+                                                              is_clang,
                                                               env,
                                                               &pool);
                 return Box::new(prefix.and_then(move |prefix| {

@@ -95,6 +95,7 @@ fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
 pub fn detect_showincludes_prefix<T>(creator: &T,
                                      exe: &OsStr,
+                                     is_clang: bool,
                                      env: Vec<(OsString, OsString)>,
                                      pool: &CpuPool)
                                      -> SFuture<String>
@@ -119,6 +120,12 @@ pub fn detect_showincludes_prefix<T>(creator: &T,
     });
     let output = write2.and_then(move |(tempdir, input)| {
         let mut cmd = creator.new_command_sync(&exe);
+        // clang.exe on Windows reports the same set of built-in preprocessor defines as clang-cl,
+        // but it doesn't accept MSVC commandline arguments unless you pass --driver-mode=cl.
+        // clang-cl.exe will accept this argument as well, so always add it in this case.
+        if is_clang {
+            cmd.arg("--driver-mode=cl");
+        }
         cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
             .arg(&input)
             .current_dir(&tempdir.path())
@@ -625,7 +632,8 @@ mod test {
         let stdout = format!("blah: {}\r\n", s);
         let stderr = String::from("some\r\nstderr\r\n");
         next_command(&creator, Ok(MockChild::new(exit_status(0), &stdout, &stderr)));
-        assert_eq!("blah: ", detect_showincludes_prefix(&creator, "cl.exe".as_ref(), Vec::new(), &pool).wait().unwrap());
+        assert_eq!("blah: ", detect_showincludes_prefix(&creator, "cl.exe".as_ref(), false,
+                                                        Vec::new(), &pool).wait().unwrap());
     }
 
     #[test]
