@@ -24,7 +24,7 @@ use cmdline::{Command, StatsFormat};
 use compiler::ColorMode;
 use futures::Future;
 use jobserver::Client;
-use log::LogLevel::Trace;
+use log::Level::Trace;
 use mock_command::{
     CommandCreatorSync,
     ProcessCommandCreator,

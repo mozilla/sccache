@@ -28,7 +28,7 @@ extern crate tempdir;
 extern crate which;
 
 use assert_cmd::prelude::*;
-use log::LogLevel::Trace;
+use log::Level::Trace;
 use predicates::prelude::*;
 use sccache::server::ServerInfo;
 use std::collections::HashMap;
@@ -320,7 +320,7 @@ fn find_compilers() -> Vec<Compiler> {
 #[test]
 #[cfg(any(unix, target_env="msvc"))]
 fn test_sccache_command() {
-    match env_logger::init() {
+    match env_logger::try_init() {
         Ok(_) => {},
         Err(_) => {},
     }

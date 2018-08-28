@@ -18,7 +18,7 @@ use compiler::args::*;
 use dist;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
-use log::LogLevel::Trace;
+use log::Level::Trace;
 use mock_command::{CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -1158,7 +1158,7 @@ c:/foo/bar.rs:
     #[test]
     fn test_generate_hash_key() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let f = TestFixture::new();
         const FAKE_DIGEST: &'static str = "abcd1234";
         // We'll just use empty files for each of these.

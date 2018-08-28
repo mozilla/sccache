@@ -12,10 +12,10 @@ extern crate predicates;
 extern crate tempdir;
 
 use std::env;
+use std::io::Write;
 use std::fs;
 use std::path::Path;
 use assert_cmd::prelude::*;
-use env_logger::LogBuilder;
 use chrono::Local;
 use predicates::prelude::*;
 use std::process::{Command, Stdio};
@@ -35,12 +35,15 @@ fn stop() {
 #[test]
 #[cfg(not(target_os="macos"))] // test currently fails on macos
 fn test_rust_cargo() {
-    drop(LogBuilder::new()
-         .format(|record| {
-             format!("{} [{}] - {}",
-                     Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                     record.level(),
-                     record.args())
+    drop(env_logger::Builder::new()
+         .format(|f, record| {
+             write!(
+                 f,
+                 "{} [{}] - {}",
+                 Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                 record.level(),
+                 record.args()
+             )
          })
         .parse(&env::var("RUST_LOG").unwrap_or_default())
         .init());
