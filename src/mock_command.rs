@@ -532,7 +532,6 @@ impl<T: CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::error::Error;
     use std::ffi::OsStr;
     use std::io;
     use jobserver::Client;
