@@ -269,7 +269,7 @@ impl RunCommand for AsyncCommand {
         self.jobserver.configure(&mut inner);
         let handle = self.handle.clone();
         Box::new(self.jobserver.acquire().and_then(move |token| {
-            let child = inner.spawn_async(&handle).chain_err(|| {
+            let child = inner.spawn_async_with_handle(handle.new_tokio_handle()).chain_err(|| {
                 format!("failed to spawn {:?}", inner)
             })?;
             Ok(Child { inner: child, token: token })
