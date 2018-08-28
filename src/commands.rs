@@ -218,8 +218,8 @@ fn redirect_stderr(f: File) -> Result<()> {
 
 #[cfg(windows)]
 fn redirect_stderr(f: File) -> Result<()> {
-    use kernel32::SetStdHandle;
-    use winapi::winbase::STD_ERROR_HANDLE;
+    use winapi::um::winbase::STD_ERROR_HANDLE;
+    use winapi::um::processenv::SetStdHandle;
     use std::os::windows::io::IntoRawHandle;
     // Ignore errors here.
     unsafe { SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle()); }
@@ -247,9 +247,9 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::time::Duration;
     use tokio_core::reactor::{Core, Timeout, PollEvented};
     use uuid::Uuid;
-    use winapi::{CREATE_UNICODE_ENVIRONMENT,DETACHED_PROCESS,CREATE_NEW_PROCESS_GROUP};
-    use winapi::{PROCESS_INFORMATION,STARTUPINFOW};
-    use winapi::{TRUE,FALSE,LPVOID,DWORD};
+    use winapi::um::winbase::{CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP};
+    use winapi::um::processthreadsapi::{PROCESS_INFORMATION, STARTUPINFOW, CreateProcessW};
+    use winapi::shared::minwindef::{TRUE, FALSE, LPVOID, DWORD};
 
     trace!("run_server_process");
 
@@ -301,18 +301,18 @@ fn run_server_process() -> Result<ServerStartup> {
     };
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
-    if unsafe { kernel32::CreateProcessW(exe.as_mut_ptr(),
-                                         ptr::null_mut(),
-                                         ptr::null_mut(),
-                                         ptr::null_mut(),
-                                         FALSE,
-                                         CREATE_UNICODE_ENVIRONMENT |
-                                            DETACHED_PROCESS |
-                                            CREATE_NEW_PROCESS_GROUP,
-                                         envp.as_mut_ptr() as LPVOID,
-                                         ptr::null(),
-                                         &mut si,
-                                         &mut pi) == TRUE } {
+    if unsafe { CreateProcessW(exe.as_mut_ptr(),
+                               ptr::null_mut(),
+                               ptr::null_mut(),
+                               ptr::null_mut(),
+                               FALSE,
+                               CREATE_UNICODE_ENVIRONMENT |
+                                  DETACHED_PROCESS |
+                                  CREATE_NEW_PROCESS_GROUP,
+                               envp.as_mut_ptr() as LPVOID,
+                               ptr::null(),
+                               &mut si,
+                               &mut pi) == TRUE } {
         unsafe {
             kernel32::CloseHandle(pi.hProcess);
             kernel32::CloseHandle(pi.hThread);

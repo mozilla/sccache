@@ -191,7 +191,7 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
 fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
     use std::os::windows::prelude::*;
     use local_encoding::windows::wide_char_to_multi_byte;
-    use winapi::CP_OEMCP;
+    use winapi::um::winnls::CP_OEMCP;
 
     let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
     let (bytes, _) = wide_char_to_multi_byte(CP_OEMCP,
