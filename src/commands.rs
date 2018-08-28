@@ -96,7 +96,7 @@ fn run_server_process() -> Result<ServerStartup> {
     let socket_path = tempdir.path().join("sock");
     let mut core = Core::new()?;
     let handle = core.handle();
-    let listener = tokio_uds::UnixListener::bind(&socket_path, &handle)?;
+    let listener = tokio_uds::UnixListener::bind(&socket_path)?;
     let exe_path = env::current_exe()?;
     let _child = process::Command::new(exe_path)
             .env("SCCACHE_START_SERVER", "1")
@@ -106,7 +106,7 @@ fn run_server_process() -> Result<ServerStartup> {
 
     let startup = listener.incoming().into_future().map_err(|e| e.0);
     let startup = startup.map_err(Error::from).and_then(|(socket, _rest)| {
-        let (socket, _addr) = socket.unwrap(); // incoming() never returns None
+        let socket = socket.unwrap(); // incoming() never returns None
         read_server_startup_status(socket)
     });
 

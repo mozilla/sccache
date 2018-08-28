@@ -95,7 +95,7 @@ predicates = "0.9.0"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"
-tokio-uds = "0.1"
+tokio-uds = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 kernel32-sys = "0.2.2"
