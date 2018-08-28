@@ -73,7 +73,7 @@ tokio-service = "0.1"
 toml = "0.4"
 uuid = { version = "0.6", features = ["v4"] }
 url = { version = "1.0", optional = true }
-which = "1.0"
+which = "2"
 zip = { version = "0.4", default-features = false, features = ["deflate"] }
 lazy_static = "1.0.0"
 atty = "0.2.6"

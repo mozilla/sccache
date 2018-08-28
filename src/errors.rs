@@ -38,6 +38,7 @@ use redis;
 #[cfg(feature = "reqwest")]
 use reqwest;
 use tempfile;
+use which;
 
 error_chain! {
     foreign_links {
@@ -62,6 +63,15 @@ error_chain! {
             display("didn't get a successful HTTP status, got `{}`", status)
         }
         ProcessError(output: process::Output)
+        Which(err: which::Error) {
+            display("{}", err)
+        }
+    }
+}
+
+impl From<which::Error> for Error {
+    fn from(err: which::Error) -> Self {
+        Error::from(ErrorKind::Which(err))
     }
 }
 
