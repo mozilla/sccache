@@ -88,11 +88,11 @@ libmount = { version = "0.1.10", optional = true }
 nix = { version = "0.11.0", optional = true }
 
 [dev-dependencies]
-assert_cmd = "0.6.0"
+assert_cmd = "0.9"
 cc = "1.0"
 chrono = "0.3"
 itertools = "0.7"
-predicates = "0.5.2"
+predicates = "0.9.0"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.2.3"
@@ -123,5 +123,3 @@ dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmo
 [workspace]
 exclude = ["tests/test-crate"]
 
-[patch.crates-io]
-predicates = { git = "https://github.com/luser/predicates-rs", branch = "function-unsized" }

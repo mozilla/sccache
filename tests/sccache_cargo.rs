@@ -46,6 +46,7 @@ fn test_rust_cargo() {
         .init());
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
+    #[allow(deprecated)]
     let sccache = assert_cmd::cargo::main_binary_path().unwrap();
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
