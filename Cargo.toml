@@ -80,7 +80,7 @@ which = "1.0"
 zip = { version = "0.4", default-features = false, features = ["deflate"] }
 lazy_static = "1.0.0"
 atty = "0.2.6"
-directories = "0.8.4"
+directories = "1"
 
 crossbeam-utils = { version = "0.4", optional = true }
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
