@@ -24,7 +24,7 @@ use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use dist;
 use local_encoding::{Encoding, Encoder};
-use log::LogLevel::Debug;
+use log::Level::Debug;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -630,7 +630,7 @@ mod test {
 
     #[test]
     fn test_detect_showincludes_prefix() {
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let pool = CpuPool::new(1);
         let f = TestFixture::new();

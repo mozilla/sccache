@@ -392,7 +392,7 @@ fn run(command: Command) -> Result<i32> {
 
 fn init_logging() {
     if env::var("RUST_LOG").is_ok() {
-        match env_logger::init() {
+        match env_logger::try_init() {
             Ok(_) => (),
             Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
         }

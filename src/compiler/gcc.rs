@@ -19,7 +19,7 @@ use ::compiler::{
 };
 use compiler::args::*;
 use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use log::LogLevel::Trace;
+use log::Level::Trace;
 use mock_command::{
     CommandCreatorSync,
     RunCommand,

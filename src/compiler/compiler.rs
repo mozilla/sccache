@@ -824,7 +824,7 @@ mod test {
     #[test]
     fn test_detect_compiler_kind_msvc() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let pool = CpuPool::new(1);
         let f = TestFixture::new();
@@ -895,7 +895,7 @@ mod test {
     #[test]
     fn test_compiler_get_cached_or_compile_uncached() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
@@ -978,7 +978,7 @@ mod test {
     #[test]
     fn test_compiler_get_cached_or_compile_cached() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
@@ -1064,7 +1064,7 @@ mod test {
     /// miss.
     fn test_compiler_get_cached_or_compile_cache_error() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
@@ -1127,7 +1127,7 @@ mod test {
     #[test]
     fn test_compiler_get_cached_or_compile_force_recache() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
@@ -1217,7 +1217,7 @@ mod test {
     #[test]
     fn test_compiler_get_cached_or_compile_preprocessor_error() {
         use env_logger;
-        drop(env_logger::init());
+        drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = CpuPool::new(1);

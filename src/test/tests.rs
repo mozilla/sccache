@@ -198,7 +198,7 @@ fn test_server_unsupported_compiler() {
 
 #[test]
 fn test_server_compile() {
-    match env_logger::init() {
+    match env_logger::try_init() {
         Ok(_) => {},
         Err(_) => {},
     }
