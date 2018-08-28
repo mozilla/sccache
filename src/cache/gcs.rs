@@ -203,7 +203,7 @@ pub enum RWMode {
 #[derive(Clone)]
 pub struct GCSCredential {
     token: String,
-    expiration_time: chrono::DateTime<chrono::UTC>,
+    expiration_time: chrono::DateTime<chrono::offset::Utc>,
 }
 
 impl GCSCredentialProvider {
@@ -215,7 +215,7 @@ impl GCSCredentialProvider {
         }
     }
 
-    fn auth_request_jwt(&self, expire_at: &chrono::DateTime<chrono::UTC>) -> Result<String> {
+    fn auth_request_jwt(&self, expire_at: &chrono::DateTime<chrono::offset::Utc>) -> Result<String> {
         let scope = (match self.rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
@@ -226,7 +226,7 @@ impl GCSCredentialProvider {
             scope: scope,
             audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
             expiration: expire_at.timestamp(),
-            issued_at: chrono::UTC::now().timestamp(),
+            issued_at: chrono::offset::Utc::now().timestamp(),
         };
 
         let binary_key = openssl::rsa::Rsa::private_key_from_pem(
@@ -244,7 +244,7 @@ impl GCSCredentialProvider {
 
     fn request_new_token(&self, client: &HyperClient) -> SFuture<GCSCredential> {
         let client = client.clone();
-        let expires_at = chrono::UTC::now() + chrono::Duration::minutes(59);
+        let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
         let auth_jwt = self.auth_request_jwt(&expires_at);
 
         // Request credentials
@@ -294,7 +294,7 @@ impl GCSCredentialProvider {
 
         let needs_refresh = match Option::as_mut(&mut future_opt).map(|f| f.poll()) {
             None => true,
-            Some(Ok(Async::Ready(ref creds))) => creds.expiration_time < chrono::UTC::now(),
+            Some(Ok(Async::Ready(ref creds))) => creds.expiration_time < chrono::offset::Utc::now(),
             _ => false
         };
 
