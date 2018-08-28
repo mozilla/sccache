@@ -2,7 +2,7 @@
 //! Types for loading and managing AWS access credentials for API requests.
 #![allow(dead_code)]
 
-use chrono::{Duration, UTC, DateTime};
+use chrono::{Duration, offset, DateTime};
 use futures::{Future, Async, IntoFuture, Stream};
 use futures::future::{self, Shared};
 use hyper::{self, Client, Method};
@@ -33,13 +33,13 @@ pub struct AwsCredentials {
     key: String,
     secret: String,
     token: Option<String>,
-    expires_at: DateTime<UTC>
+    expires_at: DateTime<offset::Utc>
 }
 
 impl AwsCredentials {
     /// Create a new `AwsCredentials` from a key ID, secret key, optional access token, and expiry
     /// time.
-    pub fn new<K, S>(key:K, secret:S, token:Option<String>, expires_at:DateTime<UTC>)
+    pub fn new<K, S>(key:K, secret:S, token:Option<String>, expires_at:DateTime<offset::Utc>)
     -> AwsCredentials where K:Into<String>, S:Into<String> {
         AwsCredentials {
             key: key.into(),
@@ -60,7 +60,7 @@ impl AwsCredentials {
     }
 
     /// Get a reference to the expiry time.
-    pub fn expires_at(&self) -> &DateTime<UTC> {
+    pub fn expires_at(&self) -> &DateTime<offset::Utc> {
         &self.expires_at
     }
 
@@ -73,7 +73,7 @@ impl AwsCredentials {
     fn credentials_are_expired(&self) -> bool {
         // This is a rough hack to hopefully avoid someone requesting creds then sitting on them
         // before issuing the request:
-        self.expires_at < UTC::now() + Duration::seconds(20)
+        self.expires_at < offset::Utc::now() + Duration::seconds(20)
     }
 }
 
@@ -499,6 +499,6 @@ impl ChainProvider {
     }
 }
 
-fn in_ten_minutes() -> DateTime<UTC> {
-    UTC::now() + Duration::seconds(600)
+fn in_ten_minutes() -> DateTime<offset::Utc> {
+    offset::Utc::now() + Duration::seconds(600)
 }
