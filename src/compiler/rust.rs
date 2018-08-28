@@ -239,15 +239,21 @@ fn get_compiler_outputs<T>(creator: &T,
 impl Rust {
     /// Create a new Rust compiler instance, calculating the hashes of
     /// all the shared libraries in its sysroot.
-    pub fn new<T>(mut creator: T, executable: PathBuf, pool: CpuPool) -> SFuture<Rust>
+    pub fn new<T>(mut creator: T,
+                  executable: PathBuf,
+                  env_vars: &[(OsString, OsString)],
+                  pool: CpuPool) -> SFuture<Rust>
         where T: CommandCreatorSync,
     {
         let mut cmd = creator.new_command_sync(&executable);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .arg("--print=sysroot");
+            .arg("--print=sysroot")
+            .env_clear()
+            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)));
         let output = run_input_output(cmd, None);
         let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
+            //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing sysroot")?;
             let sysroot = PathBuf::from(outstr.trim_right());
             let libs_path = sysroot.join(LIBS_DIR);
@@ -674,7 +680,12 @@ impl<T> CompilerHasher<T> for RustHasher
             // we'll just hash the CARGO_ env vars and hope that's sufficient.
             // Upstream Rust issue tracking getting information about env! usage:
             // https://github.com/rust-lang/rust/issues/40364
-            let mut env_vars = env_vars.clone();
+            let mut env_vars: Vec<_> = env_vars.iter()
+                // Filter out RUSTC_COLOR since we control color usage with command line flags.
+                // rustc reports an error when both are present.
+                .filter(|(ref k, _)| k != "RUSTC_COLOR")
+                .cloned()
+                .collect();
             env_vars.sort();
             for &(ref var, ref val) in env_vars.iter() {
                 // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
