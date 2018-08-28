@@ -41,7 +41,7 @@ libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.2.0" }
-memcached-rs = { version = "0.1" , optional = true }
+memcached-rs = { version = "0.3" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
