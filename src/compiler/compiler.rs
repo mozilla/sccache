@@ -652,6 +652,8 @@ fn detect_compiler<T>(creator: &T,
         let child = creator.clone().new_command_sync(&executable)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .env_clear()
+            .envs(env.iter().map(|&(ref k, ref v)| (k, v)))
             .args(&["--version"])
             .spawn();
         let output = child.and_then(move |child| {
@@ -679,7 +681,8 @@ fn detect_compiler<T>(creator: &T,
     Box::new(is_rustc.and_then(move |is_rustc| {
         if is_rustc {
             debug!("Found rustc");
-            Box::new(Rust::new(creator, executable, pool).map(|c| Some(Box::new(c) as Box<Compiler<T>>)))
+            Box::new(Rust::new(creator, executable, &env, pool)
+                .map(|c| Some(Box::new(c) as Box<Compiler<T>>)))
         } else {
             detect_c_compiler(creator, executable, env, pool)
         }
