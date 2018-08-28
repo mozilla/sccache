@@ -55,7 +55,6 @@ extern crate lru_disk_cache;
 extern crate memcached;
 #[cfg(windows)]
 extern crate mio_named_pipes;
-extern crate native_tls;
 extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]

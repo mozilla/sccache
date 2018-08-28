@@ -30,7 +30,6 @@ use jwt;
 use lru_disk_cache;
 #[cfg(feature = "memcached")]
 use memcached;
-use native_tls;
 #[cfg(feature = "openssl")]
 use openssl;
 use serde_json;
@@ -54,7 +53,6 @@ error_chain! {
         Reqwest(reqwest::Error) #[cfg(feature = "reqwest")];
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
-        Tls(native_tls::Error);
     }
 
     errors {
