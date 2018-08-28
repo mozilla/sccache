@@ -21,9 +21,10 @@ use crypto::mac::Mac;
 use crypto::md5::Md5;
 use crypto::sha2::Sha256;
 use futures::{Future, Stream};
-use hyper::{self, header, Method, Uri};
-use hyper::client::{Client, Request, HttpConnector};
-use hyper_tls::HttpsConnector;
+use hyper::{header, Method};
+use url::Url;
+use reqwest;
+use reqwest::unstable::async::{Request, Client};
 use std::fmt;
 use std::str::FromStr;
 use time;
@@ -56,7 +57,7 @@ fn md5(data: &[u8]) -> String {
 
 pub struct BlobContainer {
     url: String,
-    client: Client<HttpsConnector<HttpConnector>>,
+    client: Client,
 }
 
 impl fmt::Display for BlobContainer {
@@ -74,15 +75,13 @@ impl BlobContainer {
 
         Ok(BlobContainer {
             url: container_url,
-            client: Client::configure()
-                        .connector(HttpsConnector::new(1, handle)?)
-                        .build(handle),
+            client: Client::new(handle),
         })
     }
 
     pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
-        let uri = Uri::from_str(&url_string).unwrap();
+        let uri = Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
 
         let canonical_headers = format!("x-ms-date:{}\nx-ms-version:{}\n", date, BLOB_API_VERSION);
@@ -104,20 +103,20 @@ impl BlobContainer {
         request.headers_mut().set_raw("x-ms-version", BLOB_API_VERSION);
         request.headers_mut().set_raw("Authorization", auth);
 
-        Box::new(self.client.request(request).chain_err(move || {
+        Box::new(self.client.execute(request).chain_err(move || {
             format!("failed GET: {}", uri_copy)
         }).and_then(|res| {
             if res.status().is_success() {
                 let content_length = res.headers().get::<header::ContentLength>()
                     .map(|&header::ContentLength(len)| len);
-                Ok((res.body(), content_length))
+                Ok((res.into_body(), content_length))
             } else {
                 Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
             }
         }).and_then(|(body, content_length)| {
             body.fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
-                Ok::<_, hyper::Error>(body)
+                Ok::<_, reqwest::Error>(body)
             }).chain_err(|| {
                 "failed to read HTTP body"
             }).and_then(move |bytes| {
@@ -135,7 +134,7 @@ impl BlobContainer {
 
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
         let url_string = format!("{}{}", self.url, key);
-        let uri = Uri::from_str(&url_string).unwrap();
+        let uri = Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
         let content_type = "application/octet-stream";
         let content_md5 = md5(&content);
@@ -166,9 +165,9 @@ impl BlobContainer {
         request.headers_mut().set_raw("Authorization", auth);
         request.headers_mut().set_raw("Content-MD5", content_md5);
 
-        request.set_body(content);
+        *request.body_mut() = Some(content.into());
 
-        Box::new(self.client.request(request).then(|result| {
+        Box::new(self.client.execute(request).then(|result| {
             match result {
                 Ok(res) => {
                     if res.status().is_success() {
@@ -190,7 +189,7 @@ impl BlobContainer {
 
 fn compute_auth_header(verb: &str, content_length: &str, md5: &str,
                        content_type: &str, canonical_headers: &str,
-                       uri: &Uri, creds: &AzureCredentials) -> String {
+                       uri: &Url, creds: &AzureCredentials) -> String {
     /*
     Signature format taken from MSDN docs:
     https://docs.microsoft.com/en-us/azure/storage/common/storage-rest-api-auth
@@ -225,7 +224,7 @@ fn compute_auth_header(verb: &str, content_length: &str, md5: &str,
     format!("SharedKey {}:{}", creds.azure_account_name(), signature(&string_to_sign, creds.azure_account_key()))
 }
 
-fn canonicalize_resource(uri: &Uri, account_name: &str) -> String {
+fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
     let mut canonical_resource = String::new();
     canonical_resource.push_str("/");
     canonical_resource.push_str(account_name);
@@ -257,7 +256,7 @@ mod test {
 
     #[test]
     fn test_canonicalize_resource() {
-        let url = Uri::from_str("https://testaccount.blob.core.windows.net/container/key").unwrap();
+        let url = Url::from_str("https://testaccount.blob.core.windows.net/container/key").unwrap();
         let canon = canonicalize_resource(&url, "testaccount");
 
         assert_eq!("/testaccount/container/key", &canon);

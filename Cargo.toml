@@ -35,7 +35,6 @@ filetime = "0.2"
 futures = "0.1.11"
 futures-cpupool = "0.1"
 hyper = { version = "0.11", optional = true }
-hyper-tls = { version = "0.1", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "5.0", optional = true }
 libc = "0.2.10"
@@ -108,10 +107,10 @@ default = ["s3"]
 all = ["redis", "s3", "memcached", "gcs", "azure"]
 # gcs requires openssl, which is a pain on Windows.
 all-windows = ["redis", "s3", "memcached", "azure"]
-azure = ["chrono", "hyper", "hyper-tls", "rust-crypto"]
+azure = ["chrono", "hyper", "rust-crypto", "url"]
 s3 = ["chrono", "hyper", "hyper-tls", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "hyper-tls", "jsonwebtoken", "openssl", "url"]
+gcs = ["chrono", "hyper", "jsonwebtoken", "openssl", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
