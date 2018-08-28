@@ -292,6 +292,11 @@ impl<'a> Hasher for HashToDigest<'a> {
     }
 }
 
+/// Turns a slice of environment var tuples into the type expected by Command::envs.
+pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString, &OsString)> {
+    env.iter().map(|&(ref k, ref v)| (k, v))
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::{OsStr, OsString};

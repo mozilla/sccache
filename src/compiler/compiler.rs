@@ -51,7 +51,7 @@ use std::time::{
 };
 use tempdir::TempDir;
 use tempfile::NamedTempFile;
-use util::{fmt_duration_as_secs, run_input_output};
+use util::{fmt_duration_as_secs, ref_env, run_input_output};
 use tokio_core::reactor::{Handle, Timeout};
 
 use errors::*;
@@ -653,7 +653,7 @@ fn detect_compiler<T>(creator: &T,
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env_clear()
-            .envs(env.iter().map(|&(ref k, ref v)| (k, v)))
+            .envs(ref_env(env))
             .args(&["--version"])
             .spawn();
         let output = child.and_then(move |child| {

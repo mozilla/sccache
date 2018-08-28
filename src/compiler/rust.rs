@@ -34,7 +34,7 @@ use std::process::Stdio;
 use std::time::Instant;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
-use util::{HashToDigest, OsStrExt};
+use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
 
@@ -152,7 +152,7 @@ fn hash_source_files<T>(creator: &T,
         .arg("-o")
         .arg(&dep_file)
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(ref_env(env_vars))
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     let dep_info = run_input_output(cmd, None);
@@ -224,7 +224,7 @@ fn get_compiler_outputs<T>(creator: &T,
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(ref_env(env_vars))
         .current_dir(cwd);
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", cmd);
@@ -250,7 +250,7 @@ impl Rust {
             .stderr(Stdio::null())
             .arg("--print=sysroot")
             .env_clear()
-            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)));
+            .envs(ref_env(env_vars));
         let output = run_input_output(cmd, None);
         let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
             //debug!("output.and_then: {}", output);
