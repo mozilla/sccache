@@ -41,11 +41,13 @@ pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 // this top level directory is used directly to store sccache cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
+        .expect("Unable to retrieve disk cache directory")
         .cache_dir().to_owned()
 }
 // ...whereas subdirectories are used of this one
 pub fn default_dist_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
+        .expect("Unable to retrieve dist cache directory")
         .cache_dir().to_owned()
 }
 
@@ -354,7 +356,8 @@ impl Config {
                 let file_conf_path = env::var_os("SCCACHE_CONF")
                     .map(|p| PathBuf::from(p))
                     .unwrap_or_else(|| {
-                        let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME);
+                        let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
+                            .expect("Unable to get config directory");
                         dirs.config_dir().join("config")
                     });
                 try_read_config_file(&file_conf_path)
