@@ -28,11 +28,10 @@ use cache::{
 use chrono;
 use futures::future::Shared;
 use futures::{future, Async, Future, Stream};
-use hyper;
 use hyper::header::{Authorization, Bearer, ContentType, ContentLength};
 use hyper::Method;
-use hyper::client::{Client, HttpConnector, Request};
-use hyper_tls::HttpsConnector;
+use reqwest;
+use reqwest::unstable::async::{Request, Client};
 use jwt;
 use openssl;
 use serde_json;
@@ -42,12 +41,10 @@ use url::percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCOD
 
 use errors::*;
 
-type HyperClient = Client<HttpsConnector<HttpConnector>>;
-
 /// GCS bucket
 struct Bucket {
     name: String,
-    client: HyperClient,
+    client: Client,
 }
 
 impl fmt::Display for Bucket {
@@ -58,9 +55,7 @@ impl fmt::Display for Bucket {
 
 impl Bucket {
     pub fn new(name: String, handle: &Handle) -> Result<Bucket> {
-        let client = Client::configure()
-                        .connector(HttpsConnector::new(1, handle)?)
-                        .build(handle);
+        let client = Client::new(handle);
 
         Ok(Bucket { name, client })
     }
@@ -84,18 +79,18 @@ impl Bucket {
                 request.headers_mut()
                     .set(Authorization(Bearer { token: creds.token }));
             }
-            client.request(request).chain_err(move || {
+            client.execute(request).chain_err(move || {
                 format!("failed GET: {}", url)
             }).and_then(|res| {
                 if res.status().is_success() {
-                    Ok(res.body())
+                    Ok(res.into_body())
                 } else {
                     Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
                 }
             }).and_then(|body| {
                 body.fold(Vec::new(), |mut body, chunk| {
                     body.extend_from_slice(&chunk);
-                    Ok::<_, hyper::Error>(body)
+                    Ok::<_, reqwest::Error>(body)
                 }).chain_err(|| {
                     "failed to read HTTP body"
                 })
@@ -126,9 +121,9 @@ impl Bucket {
                 headers.set(ContentType::octet_stream());
                 headers.set(ContentLength(content.len() as u64));
             }
-            request.set_body(content);
+            *request.body_mut() = Some(content.into());
 
-            client.request(request).then(|result| {
+            client.execute(request).then(|result| {
                 match result {
                     Ok(res) => {
                         if res.status().is_success() {
@@ -242,7 +237,7 @@ impl GCSCredentialProvider {
         Ok(auth_request_jwt)
     }
 
-    fn request_new_token(&self, client: &HyperClient) -> SFuture<GCSCredential> {
+    fn request_new_token(&self, client: &Client) -> SFuture<GCSCredential> {
         let client = client.clone();
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
         let auth_jwt = self.auth_request_jwt(&expires_at);
@@ -261,12 +256,12 @@ impl GCSCredentialProvider {
                 headers.set(ContentType::form_url_encoded());
                 headers.set(ContentLength(params.len() as u64));
             }
-            request.set_body(params);
+            *request.body_mut() = Some(params.into());
 
-            client.request(request).map_err(Into::into)
+            client.execute(request).map_err(Into::into)
         }).and_then(move |res| {
             if res.status().is_success() {
-                Ok(res.body())
+                Ok(res.into_body())
             } else {
                 Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
             }
@@ -274,7 +269,7 @@ impl GCSCredentialProvider {
             // Concatenate body chunks into a single Vec<u8>
             body.fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
-                Ok::<_, hyper::Error>(body)
+                Ok::<_, reqwest::Error>(body)
             }).chain_err(|| {
                 "failed to read HTTP body"
             })
@@ -289,7 +284,7 @@ impl GCSCredentialProvider {
         }))
     }
 
-    pub fn credentials(&self, client: &HyperClient) -> SFuture<GCSCredential> {
+    pub fn credentials(&self, client: &Client) -> SFuture<GCSCredential> {
         let mut future_opt = self.cached_credentials.borrow_mut();
 
         let needs_refresh = match Option::as_mut(&mut future_opt).map(|f| f.poll()) {

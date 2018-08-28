@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![recursion_limit="128"]
+#![recursion_limit = "128"]
 
 extern crate atty;
 extern crate base64;
@@ -38,8 +38,6 @@ extern crate futures;
 extern crate futures_cpupool;
 #[cfg(feature = "hyper")]
 extern crate hyper;
-#[cfg(feature = "hyper-tls")]
-extern crate hyper_tls;
 #[cfg(test)]
 extern crate itertools;
 #[cfg(feature = "jsonwebtoken")]
@@ -86,15 +84,15 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_process;
 extern crate tokio_proto;
-extern crate tokio_service;
 extern crate tokio_serde_bincode;
+extern crate tokio_service;
 extern crate toml;
-#[cfg(feature = "gcs")]
+#[cfg(any(feature = "gcs", feature = "azure"))]
 extern crate url;
 extern crate uuid;
+extern crate which;
 #[cfg(windows)]
 extern crate winapi;
-extern crate which;
 extern crate zip;
 
 // To get macros in scope, this has to be first.
@@ -130,20 +128,18 @@ pub fn main() {
     // Initialise config
     let _ = config::CONFIG.caches.len();
     std::process::exit(match cmdline::parse() {
-        Ok(cmd) => {
-            match commands::run_command(cmd) {
-                Ok(s) => s,
-                Err(e) =>  {
-                    let stderr = &mut std::io::stderr();
-                    writeln!(stderr, "error: {}", e).unwrap();
+        Ok(cmd) => match commands::run_command(cmd) {
+            Ok(s) => s,
+            Err(e) => {
+                let stderr = &mut std::io::stderr();
+                writeln!(stderr, "error: {}", e).unwrap();
 
-                    for e in e.iter().skip(1) {
-                        writeln!(stderr, "caused by: {}", e).unwrap();
-                    }
-                    2
+                for e in e.iter().skip(1) {
+                    writeln!(stderr, "caused by: {}", e).unwrap();
                 }
+                2
             }
-        }
+        },
         Err(e) => {
             println!("sccache: {}", e);
             cmdline::get_app().print_help().unwrap();
