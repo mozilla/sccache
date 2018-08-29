@@ -18,6 +18,7 @@ use cache::{
     CacheWrite,
     Storage,
 };
+use futures::future;
 use futures::future::Future;
 use simples3::{
     AutoRefreshingProvider,
@@ -110,6 +111,6 @@ impl Storage for S3Cache {
         format!("S3, bucket: {}", self.bucket)
     }
 
-    fn current_size(&self) -> Option<u64> { None }
-    fn max_size(&self) -> Option<u64> { None }
+    fn current_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
+    fn max_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
 }

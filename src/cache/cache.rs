@@ -158,10 +158,10 @@ pub trait Storage {
     fn location(&self) -> String;
 
     /// Get the current storage usage, if applicable.
-    fn current_size(&self) -> Option<u64>;
+    fn current_size(&self) -> SFuture<Option<u64>>;
 
     /// Get the maximum storage size, if applicable.
-    fn max_size(&self) -> Option<u64>;
+    fn max_size(&self) -> SFuture<Option<u64>>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.
@@ -238,7 +238,7 @@ pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
             CacheType::Redis(config::RedisCacheConfig { ref url }) => {
                 debug!("Trying Redis({})", url);
                 #[cfg(feature = "redis")]
-                match RedisCache::new(&url, pool) {
+                match RedisCache::new(&url) {
                     Ok(s) => {
                         trace!("Using Redis: {}", url);
                         return Arc::new(s);

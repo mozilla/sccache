@@ -98,6 +98,10 @@ impl Storage for DiskCache {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
 
-    fn current_size(&self) -> Option<u64> { Some(self.lru.lock().unwrap().size()) }
-    fn max_size(&self) -> Option<u64> { Some(self.lru.lock().unwrap().capacity()) }
+    fn current_size(&self) -> SFuture<Option<u64>> {
+        f_ok(Some(self.lru.lock().unwrap().size()))
+    }
+    fn max_size(&self) -> SFuture<Option<u64>> {
+        f_ok(Some(self.lru.lock().unwrap().capacity()))
+    }
 }
