@@ -10,10 +10,10 @@ use crypto::digest::Digest;
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use crypto::sha1::Sha1;
-use futures::{Future, Stream};
-use hyperx::header;
+use futures::{future, Future, Stream};
 use hyper::header::HeaderValue;
 use hyper::Method;
+use hyperx::header;
 use reqwest;
 use reqwest::async::{Client, Request};
 use simples3::credential::*;
@@ -115,14 +115,25 @@ impl Bucket {
                 .send()
                 .chain_err(move || format!("failed GET: {}", url))
                 .and_then(|res| {
-                    if res.status().is_success() {
+                    let status = res.status();
+                    if status.is_success() {
                         let content_length = res
                             .headers()
                             .get_hyperx::<header::ContentLength>()
                             .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
+                        future::Either::A(future::ok((res.into_body(), content_length)))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        future::Either::B(
+                            res.into_body()
+                                .fold(Vec::new(), |mut body, chunk| {
+                                    body.extend_from_slice(&chunk);
+                                    Ok::<_, reqwest::Error>(body)
+                                }).chain_err(move || format!("failed to get body for error"))
+                                .and_then(move |vec| {
+                                    warn!("{}", ::std::str::from_utf8(&vec).unwrap());
+                                    Err(ErrorKind::BadHTTPStatus(status.clone()).into())
+                                }),
+                        )
                     }
                 }).and_then(|(body, content_length)| {
                     body.fold(Vec::new(), |mut body, chunk| {
@@ -159,13 +170,11 @@ impl Bucket {
         // Keep the list of header values sorted!
         for (header, maybe_value) in vec![("x-amz-security-token", token)] {
             if let Some(ref value) = maybe_value {
-                request
-                    .headers_mut()
-                    .insert(
-                        header,
-                        HeaderValue::from_str(value)
-                            .unwrap_or_else(|_| panic!("Invalid `{}` header", header))
-                    );
+                request.headers_mut().insert(
+                    header,
+                    HeaderValue::from_str(value)
+                        .unwrap_or_else(|_| panic!("Invalid `{}` header", header)),
+                );
                 canonical_headers
                     .push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
             }
@@ -179,7 +188,10 @@ impl Bucket {
             content_type,
             creds,
         );
-        request.headers_mut().insert("Date", HeaderValue::from_str(&date).expect("Invalid date header"));
+        request.headers_mut().insert(
+            "Date",
+            HeaderValue::from_str(&date).expect("Invalid date header"),
+        );
         request
             .headers_mut()
             .set(header::ContentType(content_type.parse().unwrap()));
@@ -190,24 +202,36 @@ impl Bucket {
             // Two weeks
             header::CacheDirective::MaxAge(1296000),
         ]));
-        request
-            .headers_mut()
-            .insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid authentication"));
+        request.headers_mut().insert(
+            "Authorization",
+            HeaderValue::from_str(&auth).expect("Invalid authentication"),
+        );
         *request.body_mut() = Some(content.into());
 
         Box::new(self.client.execute(request).then(|result| match result {
             Ok(res) => {
+                let status = res.status();
                 if res.status().is_success() {
                     trace!("PUT succeeded");
-                    Ok(())
+                    future::Either::A(future::ok(()))
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    future::Either::B(
+                        res.into_body()
+                            .fold(Vec::new(), |mut body, chunk| {
+                                body.extend_from_slice(&chunk);
+                                Ok::<_, reqwest::Error>(body)
+                            }).chain_err(move || format!("failed to get body for error"))
+                            .and_then(move |vec| {
+                                warn!("{}", ::std::str::from_utf8(&vec).unwrap());
+                                Err(ErrorKind::BadHTTPStatus(status.clone()).into())
+                            }),
+                    )
                 }
             }
             Err(e) => {
                 trace!("PUT failed with error: {:?}", e);
-                Err(e.into())
+                future::Either::A(future::err(e.into()))
             }
         }))
     }
