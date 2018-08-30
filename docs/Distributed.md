@@ -1,4 +1,4 @@
-= Distributed sccache
+# Distributed sccache
 
 Background:
 
@@ -15,7 +15,7 @@ Background:
    tokens), be aware that a lack of entropy is possible in cloud or
    virtualized environments in some scenarios.
 
-== Overview
+## Overview
 
 Distributed sccache consists of three parts:
 
@@ -31,7 +31,7 @@ compilation from Linux, Windows or OSX. Linux compilations will attempt to
 automatically package the compiler in use, while Windows and OSX users will
 need to specify a toolchain for cross-compilation ahead of time.
 
-== Communication
+## Communication
 
 The HTTP implementation of sccache has the following API:
 
@@ -60,7 +60,7 @@ There are two axes of security in this setup:
 1. Can the scheduler trust the servers?
 2. Is the client permitted to submit and run jobs?
 
-=== Server Trust
+### Server Trust
 
 If a server is malicious, they can return malicious compilation output to a user.
 To protect against this, servers must be authenticated. You have three means for
@@ -69,7 +69,7 @@ doing this, and the scheduler and all servers must use the same mechanism.
 Once a server has registered itself using the selected authentication, the scheduler
 will trust the registered server address and use it for builds.
 
-==== JWT HS256 (preferred)
+#### JWT HS256 (preferred)
 
 This method uses secret key to create a per-IP-and-port token for each server.
 Acquiring a token will only allow participation as a server if the attacker can
@@ -105,7 +105,7 @@ scheduler_auth = { type = "jwt_token", token = "YOUR_TOKEN_HERE" }
 
 Done!
 
-==== Token
+#### Token
 
 This method simply shares a token between the scheduler and all servers. A token
 leak from anywhere allows any attacker to participate as a server.
@@ -128,7 +128,7 @@ scheduler_auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 
 Done!
 
-==== Insecure (bad idea)
+#### Insecure (bad idea)
 
 *This route is not recommended*
 
@@ -151,7 +151,7 @@ scheduler_auth = { type = "DANGEROUSLY_INSECURE" }
 
 Done!
 
-=== Client Trust
+### Client Trust
 
 If a client is malicious, they can cause a DoS of distributed sccache servers or
 explore ways to escape the build sandbox. To protect against this, clients must
@@ -168,7 +168,7 @@ the scheduler during registration. This means that the server can verify users
 without either a) adding client authentication to every server or b) needing
 secret transfer between scheduler and server on every job allocation.
 
-==== Token
+#### Token
 
 This method simply shares a token between the scheduler and all clients. A token
 leak from anywhere allows any attacker to participate as a client.
@@ -191,7 +191,7 @@ auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 
 Done!
 
-==== Insecure (bad idea)
+#### Insecure (bad idea)
 
 *This route is not recommended*
 

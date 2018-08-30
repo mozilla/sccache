@@ -42,6 +42,7 @@ extern crate hyper;
 extern crate hyper_tls;
 #[cfg(test)]
 extern crate itertools;
+#[cfg(feature = "jsonwebtoken")]
 extern crate jsonwebtoken as jwt;
 #[cfg(windows)]
 extern crate kernel32;
@@ -66,8 +67,10 @@ extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
+#[cfg(feature = "reqwest")]
 extern crate reqwest;
 extern crate retry;
+#[cfg(feature = "rouille")]
 #[macro_use]
 extern crate rouille;
 extern crate serde;

@@ -336,6 +336,7 @@ fn run(command: Command) -> Result<i32> {
 
             let check_server_auth: Box<Fn(&str) -> Option<ServerId> + Send + Sync> = match server_auth {
                 scheduler_config::ServerAuth::Insecure => {
+                    warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
                     Box::new(move |server_token| check_server_token(server_token, &token))
                 },
@@ -367,6 +368,7 @@ fn run(command: Command) -> Result<i32> {
             let server_id = ServerId(public_addr);
             let scheduler_auth = match scheduler_auth {
                 server_config::SchedulerAuth::Insecure => {
+                    warn!("Server starting with DANGEROUSLY_INSECURE scheduler authentication");
                     create_server_token(server_id, &INSECURE_DIST_SERVER_TOKEN)
                 },
                 server_config::SchedulerAuth::Token { token } => {
