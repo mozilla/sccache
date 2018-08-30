@@ -71,7 +71,7 @@ pub struct RustHasher {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
-    /// The full commandline, with arguments and their values as pairs.
+    /// The full commandline, with all parsed aguments
     arguments: Vec<Argument<ArgData>>,
     /// The location of compiler outputs.
     output_dir: PathBuf,
@@ -339,7 +339,7 @@ impl FromArg for ArgLinkLibrary {
             // If no kind is specified, the default is dylib.
             (name, None) => ("dylib".to_owned(), name),
         };
-        Ok(ArgLinkLibrary { kind: kind, name: name })
+        Ok(ArgLinkLibrary { kind, name })
     }
 }
 impl IntoArg for ArgLinkLibrary {
@@ -361,7 +361,7 @@ impl FromArg for ArgLinkPath {
             // If no kind is specified, the path is used to search for all kinds
             (path, None) => ("all".to_owned(), path),
         };
-        Ok(ArgLinkPath { kind: kind, path: path.into() })
+        Ok(ArgLinkPath { kind, path: path.into() })
     }
 }
 impl IntoArg for ArgLinkPath {
@@ -451,9 +451,9 @@ impl IntoArg for ArgTarget {
 }
 
 ArgData!{
-    TooHardFlag(()),
+    TooHardFlag,
     TooHardPath(PathBuf),
-    NotCompilationFlag(()),
+    NotCompilationFlag,
     NotCompilation(OsString),
     LinkLibrary(ArgLinkLibrary),
     LinkPath(ArgLinkPath),
@@ -524,13 +524,13 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(TooHardFlag(())) |
+            Some(TooHardFlag) |
             Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(NotCompilationFlag(())) |
+            Some(NotCompilationFlag) |
             Some(NotCompilation(_)) => return CompilerArguments::NotCompilation,
             Some(LinkLibrary(ArgLinkLibrary { kind, name })) => {
                 if kind == "static" {

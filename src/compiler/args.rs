@@ -34,6 +34,11 @@ impl Error for ArgParseError {
 pub type Delimiter = Option<u8>;
 
 /// Representation of a parsed argument
+/// The type parameter T contains the parsed information for this argument,
+/// for use during argument handling (typically an enum to allow switching
+/// on the different kinds of argument). `Flag`s may contain a simple
+/// variant which influences how to do caching, whereas `WithValue`s could
+/// be a struct variant with parsed data from the value.
 #[derive(PartialEq, Clone, Debug)]
 pub enum Argument<T> {
     /// Unknown non-flag argument ; e.g. "foo"
@@ -171,35 +176,51 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
 }
 
 macro_rules! ArgData {
-    { __impl $( $x:ident($y:ty), )+ } => {
+    // Collected all the arms, time to create the match
+    { __matchify $var:ident ($( $arms:tt )*) } => {
+        match $var {
+            $( $arms )*
+        }
+    };
+    // Unit variant
+    { __matchify $var:ident ($( $arms:tt )*) $x:ident, $( $rest:tt )* } => {
+        ArgData!{
+            __matchify $var
+            ($($arms)* ArgData::$x => OsString::new(),)
+            $($rest)*
+        }
+    };
+    // Tuple variant
+    { __matchify $var:ident ($( $arms:tt )*) $x:ident($y:ty), $( $rest:tt )* } => {
+        ArgData!{
+            __matchify $var
+            ($($arms)* ArgData::$x(inner) => inner.into_os_string(),)
+            $($rest)*
+        }
+    };
+
+    { __impl $( $tok:tt )+ } => {
         impl IntoArg for ArgData {
             fn into_os_string(self) -> OsString {
-                match self {
-                    $(
-                        ArgData::$x(inner) => inner.into_os_string(),
-                    )*
-                }
+                ArgData!{ __matchify self () $($tok)+ }
             }
         }
     };
+
     // PartialEq necessary for tests
-    { pub $( $x:ident($y:ty), )+ } => {
+    { pub $( $tok:tt )+ } => {
         #[derive(Clone, Debug, PartialEq)]
         pub enum ArgData {
-            $(
-                $x($y),
-            )*
+            $($tok)+
         }
-        ArgData!{ __impl $( $x($y), )+ }
+        ArgData!{ __impl $( $tok )+ }
     };
-    { $( $x:ident($y:ty), )+ } => {
+    { $( $tok:tt )+ } => {
         #[derive(Clone, Debug, PartialEq)]
         enum ArgData {
-            $(
-                $x($y),
-            )*
+            $($tok)+
         }
-        ArgData!{ __impl $( $x($y), )+ }
+        ArgData!{ __impl $( $tok )+ }
     };
 }
 
@@ -220,7 +241,6 @@ impl FromArg for OsString { fn process(arg: OsString) -> ArgParseResult<Self> { 
 impl FromArg for PathBuf { fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg.into()) } }
 impl FromArg for String { fn process(arg: OsString) -> ArgParseResult<Self> { os_string_to_string_arg(arg) } }
 
-impl IntoArg for () { fn into_os_string(self) -> OsString { OsString::new() } }
 impl IntoArg for OsString { fn into_os_string(self) -> OsString { self } }
 impl IntoArg for PathBuf { fn into_os_string(self) -> OsString { self.into() } }
 impl IntoArg for String { fn into_os_string(self) -> OsString { self.into() } }
@@ -475,11 +495,10 @@ where
 }
 
 /// Helper macro used to define ArgInfo::Flag's.
-/// Variant is an enum variant, e.g. enum ArgType { Variant(()) }
-///     flag!("-foo")
+/// Variant is an enum variant, e.g. enum ArgType { Variant }
 ///     flag!("-foo", Variant)
 macro_rules! flag {
-    ($s:expr, $variant:expr) => { ArgInfo::Flag($s, $variant(())) };
+    ($s:expr, $variant:expr) => { ArgInfo::Flag($s, $variant) };
 }
 
 /// Helper macro used to define ArgInfo::TakeArg's.
@@ -510,6 +529,9 @@ mod tests {
             Argument::$name($x.into())
         };
 
+        ($name:ident($x:expr, $v:ident)) => {
+            Argument::$name($x.into(), $v)
+        };
         ($name:ident($x:expr, $v:ident($y:expr))) => {
             Argument::$name($x.into(), $v($y.into()))
         };
@@ -523,6 +545,9 @@ mod tests {
             Argument::$name($x, $v($y.into()), ArgDisposition::$d(Some($z as u8)))
         };
 
+        ($name:ident($x:expr, $v:ident::$w:ident)) => {
+            Argument::$name($x.into(), $v::$w)
+        };
         ($name:ident($x:expr, $v:ident::$w:ident($y:expr))) => {
             Argument::$name($x.into(), $v::$w($y.into()))
         };
@@ -538,7 +563,7 @@ mod tests {
     }
 
     ArgData!{
-        FooFlag(()),
+        FooFlag,
         Foo(OsString),
         FooPath(PathBuf),
     }
@@ -605,7 +630,7 @@ mod tests {
     #[test]
     fn test_arginfo_process() {
         let info = flag!("-foo", FooFlag);
-        assert_eq!(info.process("-foo", || None).unwrap(), arg!(Flag("-foo", FooFlag(()))));
+        assert_eq!(info.process("-foo", || None).unwrap(), arg!(Flag("-foo", FooFlag)));
 
         let info = take_arg!("-foo", OsString, Separated, Foo);
         assert_eq!(info.clone().process("-foo", || None).unwrap_err(), ArgParseError::UnexpectedEndOfArgs);
@@ -742,13 +767,13 @@ mod tests {
     #[test]
     fn test_argsiter() {
         ArgData!{
-            Bar(()),
+            Bar,
             Foo(OsString),
-            Fuga(()),
+            Fuga,
             Hoge(PathBuf),
-            Plop(()),
+            Plop,
             Qux(OsString),
-            Zorglub(()),
+            Zorglub,
         }
 
         // Need to explicitly refer to enum because `use` doesn't work if it's in a module
@@ -786,9 +811,9 @@ mod tests {
             arg!(Raw("value")),
             arg!(WithValue("-hoge", ArgData::Hoge("=value"), Concatenated)),
             arg!(WithValue("-hoge", ArgData::Hoge("value"), Concatenated)),
-            arg!(Flag("-zorglub", ArgData::Zorglub(()))),
+            arg!(Flag("-zorglub", ArgData::Zorglub)),
             arg!(WithValue("-qux", ArgData::Qux("value"), CanBeConcatenated('='))),
-            arg!(Flag("-plop", ArgData::Plop(()))),
+            arg!(Flag("-plop", ArgData::Plop)),
             arg!(UnknownFlag("-quxbar")),
             arg!(WithValue("-qux", ArgData::Qux("value"), CanBeSeparated('='))),
         ];
@@ -812,7 +837,7 @@ mod tests {
         let unknown: Argument<ArgData> = arg!(UnknownFlag("-foo"));
         assert_eq!(Vec::from_iter(raw.iter_os_strings()), ovec!["value"]);
         assert_eq!(Vec::from_iter(unknown.iter_os_strings()), ovec!["-foo"]);
-        assert_eq!(Vec::from_iter(arg!(Flag("-foo", FooFlag(()))).iter_os_strings()), ovec!["-foo"]);
+        assert_eq!(Vec::from_iter(arg!(Flag("-foo", FooFlag)).iter_os_strings()), ovec!["-foo"]);
 
         let arg = arg!(WithValue("-foo", Foo("bar"), Concatenated));
         assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foobar"]);
