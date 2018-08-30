@@ -73,25 +73,25 @@ impl CCompilerImpl for GCC {
 }
 
 ArgData!{ pub
-    TooHardFlag(()),
+    TooHardFlag,
     TooHard(OsString),
     PassThrough(OsString),
     PassThroughPath(PathBuf),
-    PreprocessorArgumentFlag(()),
+    PreprocessorArgumentFlag,
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
-    DoCompilation(()),
+    DoCompilation,
     Output(PathBuf),
-    NeedDepTarget(()),
+    NeedDepTarget,
     // Though you might think this should be a path as it's a Makefile target,
     // it's not treated as a path by the compiler - it's just written wholesale
     // (including any funny make syntax) into the dep file.
     DepTarget(OsString),
     Language(OsString),
-    SplitDwarf(()),
-    ProfileGenerate(()),
-    TestCoverage(()),
-    Coverage(()),
+    SplitDwarf,
+    ProfileGenerate,
+    TestCoverage,
+    Coverage,
 }
 
 use self::ArgData::*;
@@ -222,24 +222,24 @@ where
         }
 
         match arg.get_data() {
-            Some(TooHardFlag(())) |
+            Some(TooHardFlag) |
             Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(SplitDwarf(())) => split_dwarf = true,
-            Some(DoCompilation(())) => compilation = true,
-            Some(ProfileGenerate(())) => profile_generate = true,
-            Some(TestCoverage(())) => outputs_gcno = true,
-            Some(Coverage(())) => {
+            Some(SplitDwarf) => split_dwarf = true,
+            Some(DoCompilation) => compilation = true,
+            Some(ProfileGenerate) => profile_generate = true,
+            Some(TestCoverage) => outputs_gcno = true,
+            Some(Coverage) => {
                 outputs_gcno = true;
                 profile_generate = true;
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
-            Some(NeedDepTarget(())) => need_explicit_dep_target = true,
+            Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget(s)) => dep_target = Some(s.clone()),
-            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
             Some(PassThrough(_)) |
@@ -267,21 +267,21 @@ where
             }
         }
         let args = match arg.get_data() {
-            Some(SplitDwarf(())) |
-            Some(ProfileGenerate(())) |
-            Some(TestCoverage(())) |
-            Some(Coverage(())) |
+            Some(SplitDwarf) |
+            Some(ProfileGenerate) |
+            Some(TestCoverage) |
+            Some(Coverage) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
-            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
-            Some(NeedDepTarget(())) => Some(&mut preprocessor_args),
-            Some(DoCompilation(())) |
+            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+            Some(DoCompilation) |
             Some(Language(_)) |
             Some(Output(_)) |
             Some(DepTarget(_)) => None,
-            Some(TooHardFlag(())) |
+            Some(TooHardFlag) |
             Some(TooHard(_)) => unreachable!(),
             None => {
                 match arg {

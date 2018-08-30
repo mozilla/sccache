@@ -203,17 +203,17 @@ fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
 }
 
 ArgData!{
-    TooHardFlag(()),
+    TooHardFlag,
     TooHard(OsString),
     TooHardPath(PathBuf),
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
-    DoCompilation(()),
-    ShowIncludes(()),
+    DoCompilation,
+    ShowIncludes,
     Output(PathBuf),
     DepFile(PathBuf),
     ProgramDatabase(PathBuf),
-    DebugInfo(()),
+    DebugInfo,
     XClang(OsString),
 }
 
@@ -270,15 +270,15 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     for arg in ArgsIter::new(it, &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(TooHardFlag(())) |
+            Some(TooHardFlag) |
             Some(TooHard(_)) |
             Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
                 ))
             }
-            Some(DoCompilation(())) => compilation = true,
-            Some(ShowIncludes(())) => show_includes = true,
+            Some(DoCompilation) => compilation = true,
+            Some(ShowIncludes) => show_includes = true,
             Some(Output(out)) => {
                 output_arg = Some(out.clone());
                 // Can't usefully cache output that goes to nul anyway,
@@ -289,7 +289,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             }
             Some(DepFile(p)) => depfile = Some(p.clone()),
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
-            Some(DebugInfo(())) => debug_info = true,
+            Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) => {}
             Some(XClang(s)) => xclangs.push(s.clone()),
@@ -313,7 +313,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                 preprocessor_args.extend(arg.normalize(NormalizedDisposition::Concatenated).iter_os_strings())
             },
             Some(ProgramDatabase(_)) |
-            Some(DebugInfo(())) => {
+            Some(DebugInfo) => {
                 common_args.extend(arg.normalize(NormalizedDisposition::Concatenated).iter_os_strings())
             },
             _ => {}
@@ -327,14 +327,14 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
         // Eagerly bail if it looks like we need to do more complicated work
         use compiler::gcc::ArgData::*;
         let args = match arg.get_data() {
-            Some(SplitDwarf(())) |
-            Some(ProfileGenerate(())) |
-            Some(TestCoverage(())) |
-            Some(Coverage(())) |
-            Some(DoCompilation(())) |
+            Some(SplitDwarf) |
+            Some(ProfileGenerate) |
+            Some(TestCoverage) |
+            Some(Coverage) |
+            Some(DoCompilation) |
             Some(Language(_)) |
             Some(Output(_)) |
-            Some(TooHardFlag(())) |
+            Some(TooHardFlag) |
             Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().unwrap_or(
                     "Can't handle complex arguments through clang",
@@ -349,11 +349,11 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             }
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
-            Some(PreprocessorArgumentFlag(())) |
+            Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
             Some(DepTarget(_)) |
-            Some(NeedDepTarget(())) => Some(&mut preprocessor_args),
+            Some(NeedDepTarget) => Some(&mut preprocessor_args),
         };
         if let Some(args) = args {
             // Normalize attributes such as "-I foo", "-D FOO=bar", as
