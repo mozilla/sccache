@@ -167,7 +167,7 @@ pub fn write_length_prefixed_bincode<W, S>(mut writer: W, data: S) -> Result<()>
     where W: Write,
           S: Serialize,
 {
-    let bytes = bincode::serialize(&data, bincode::Infinite)?;
+    let bytes = bincode::serialize(&data)?;
     let mut len = [0; 4];
     BigEndian::write_u32(&mut len, bytes.len() as u32);
     writer.write_all(&len)?;
