@@ -25,6 +25,7 @@ use futures::Future;
 use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
+#[cfg(feature = "jsonwebtoken")]
 use jwt;
 use lru_disk_cache;
 #[cfg(feature = "memcached")]
@@ -35,6 +36,7 @@ use openssl;
 use serde_json;
 #[cfg(feature = "redis")]
 use redis;
+#[cfg(feature = "reqwest")]
 use reqwest;
 use tempfile;
 
@@ -44,12 +46,12 @@ error_chain! {
         Io(io::Error);
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
-        Jwt(jwt::errors::Error);
+        Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
         Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
-        Reqwest(reqwest::Error);
+        Reqwest(reqwest::Error) #[cfg(feature = "reqwest")];
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         Tls(native_tls::Error);

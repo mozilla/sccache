@@ -310,7 +310,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     fn box_clone(&self) -> Box<CompilerHasher<T>>;
 }
 
-#[cfg(not(feature = "dist"))]
+#[cfg(not(feature = "dist-client"))]
 fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
                             creator: T,
                             _cwd: PathBuf,
@@ -328,7 +328,7 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
         .map(move |o| (cacheable, o)))
 }
 
-#[cfg(feature = "dist")]
+#[cfg(feature = "dist-client")]
 fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             creator: T,
                             cwd: PathBuf,

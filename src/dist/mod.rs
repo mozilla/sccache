@@ -14,7 +14,6 @@
 
 use boxfnonce::BoxFnOnce;
 use compiler;
-pub use dist::cache::TcCache;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -23,14 +22,20 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process;
 use std::str::FromStr;
+#[cfg(feature = "dist-server")]
 use std::sync::Mutex;
 
 use errors::*;
 
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
 mod cache;
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub mod http;
 #[cfg(test)]
 mod test;
+
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+pub use dist::cache::TcCache;
 
 // TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
 // should be some pre-sanitised AbsPath type
@@ -370,18 +375,22 @@ impl<'a> Read for InputsReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
 
+#[cfg(feature = "dist-server")]
 type ExtResult<T, E> = ::std::result::Result<T, E>;
 
+#[cfg(feature = "dist-server")]
 pub trait SchedulerOutgoing {
     // To Server
     fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain, auth: String) -> Result<AssignJobResult>;
 }
 
+#[cfg(feature = "dist-server")]
 pub trait ServerOutgoing {
     // To Scheduler
     fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
 }
 
+#[cfg(feature = "dist-server")]
 pub trait SchedulerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Client
@@ -394,6 +403,7 @@ pub trait SchedulerIncoming: Send + Sync {
     fn handle_status(&self) -> ExtResult<StatusResult, Self::Error>;
 }
 
+#[cfg(feature = "dist-server")]
 pub trait ServerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Scheduler
@@ -404,6 +414,7 @@ pub trait ServerIncoming: Send + Sync {
     fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> ExtResult<RunJobResult, Self::Error>;
 }
 
+#[cfg(feature = "dist-server")]
 pub trait BuilderIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Server
