@@ -219,7 +219,7 @@ ArgData!{
 
 use self::ArgData::*;
 
-static ARGS: [ArgInfo<ArgData>; 22] = [
+static ARGS: [ArgInfo<ArgData>; 23] = [
     take_arg!("-D", OsString, Concatenated, PreprocessorArgument),
     take_arg!("-FA", OsString, Concatenated, TooHard),
     take_arg!("-FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
@@ -239,6 +239,7 @@ static ARGS: [ArgInfo<ArgData>; 22] = [
     flag!("-Zi", DebugInfo),
     flag!("-c", DoCompilation),
     take_arg!("-deps", PathBuf, Concatenated, DepFile),
+    flag!("-fsyntax-only", TooHardFlag),
     take_arg!("-o", PathBuf, Separated, Output), // Deprecated but valid
     flag!("-showIncludes", ShowIncludes),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
