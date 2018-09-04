@@ -14,8 +14,9 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
-use compiler::pkg;
 use dist;
+#[cfg(feature = "dist-client")]
+use dist::pkg;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::CommandCreatorSync;
@@ -23,12 +24,14 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::File;
+#[cfg(feature = "dist-client")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use std::fs;
 use std::hash::Hash;
+#[cfg(feature = "dist-client")]
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
-use tar;
 use util::{HashToDigest, Digest};
 
 use errors::*;
@@ -120,6 +123,7 @@ impl Language {
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
+    #[cfg(feature = "dist-client")]
     preprocessed_input: Vec<u8>,
     executable: PathBuf,
     compiler: I,
@@ -262,6 +266,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 key: key,
                 compilation: Box::new(CCompilation {
                     parsed_args: parsed_args,
+                    #[cfg(feature = "dist-client")]
                     preprocessed_input: preprocessor_result.stdout,
                     executable: executable,
                     compiler: compiler,
@@ -293,34 +298,22 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        let CCompilation { ref parsed_args, ref executable, ref compiler, preprocessed_input: _, ref cwd, ref env_vars } = *self;
+        let CCompilation { ref parsed_args, ref executable, ref compiler, ref cwd, ref env_vars, .. } = *self;
         compiler.generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write) + Send>, Box<pkg::CompilerPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
         let CCompilation { parsed_args, cwd, preprocessed_input, executable, .. } = *{self};
         trace!("Dist inputs: {:?}", parsed_args.input);
 
         let input_path = cwd.join(&parsed_args.input);
         let input_path = pkg::simplify_path(&input_path)?;
         let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
-        let preprocessed_input = preprocessed_input;
 
-        let toolchain_creator = Box::new(CCompilerPackager { executable });
-        let inputs_creator = Box::new(move |wtr: &mut io::Write| {
-            let mut builder = tar::Builder::new(wtr);
-
-            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path).unwrap();
-            file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
-            file_header.set_cksum();
-            builder.append(&file_header, preprocessed_input.as_slice()).unwrap();
-
-            // Finish archive
-            let _ = builder.into_inner().unwrap();
-        });
-
-        Ok((inputs_creator, toolchain_creator))
+        let inputs_packager = Box::new(CInputsPackager { input_path, dist_input_path, preprocessed_input });
+        let toolchain_packager = Box::new(CToolchainPackager { executable });
+        Ok((inputs_packager, toolchain_packager))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
@@ -329,16 +322,44 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 }
 
-struct CCompilerPackager {
+#[cfg(feature = "dist-client")]
+struct CInputsPackager {
+    input_path: PathBuf,
+    dist_input_path: String,
+    preprocessed_input: Vec<u8>,
+}
+
+#[cfg(feature = "dist-client")]
+impl pkg::InputsPackager for CInputsPackager {
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()> {
+        use tar;
+
+        let CInputsPackager { input_path, dist_input_path, preprocessed_input } = *{self};
+
+        let mut builder = tar::Builder::new(wtr);
+
+        let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+        file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
+        file_header.set_cksum();
+        builder.append(&file_header, preprocessed_input.as_slice())?;
+
+        // Finish archive
+        let _ = builder.into_inner();
+        Ok(())
+    }
+}
+
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+struct CToolchainPackager {
     executable: PathBuf,
 }
 
 #[cfg(feature = "dist-client")]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl pkg::CompilerPackager for CCompilerPackager {
-    fn write_pkg(self: Box<Self>, f: File) -> Result<()> {
+impl pkg::ToolchainPackager for CToolchainPackager {
+    fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::env;
-        use std::fs;
         use std::os::unix::ffi::OsStrExt;
 
         info!("Packaging C compiler");
@@ -353,7 +374,7 @@ impl pkg::CompilerPackager for CCompilerPackager {
         let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
         let filename = &file_line[b"creating ".len()..];
         let filename = OsStr::from_bytes(filename);
-        io::copy(&mut File::open(filename).unwrap(), &mut {f}).unwrap();
+        io::copy(&mut fs::File::open(filename).unwrap(), &mut {f}).unwrap();
         fs::remove_file(filename).unwrap();
         env::set_current_dir(curdir).unwrap();
         Ok(())

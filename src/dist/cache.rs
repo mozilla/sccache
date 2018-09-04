@@ -14,9 +14,9 @@ pub use self::client::ClientToolchains;
 
 #[cfg(feature = "dist-client")]
 mod client {
-    use boxfnonce::BoxFnOnce;
     use config;
     use dist::Toolchain;
+    use dist::pkg::ToolchainPackager;
     use lru_disk_cache::Error as LruError;
     use serde_json;
     use std::collections::HashMap;
@@ -120,7 +120,7 @@ mod client {
         }
         // TODO: It's more correct to have a FnBox or Box<FnOnce> here
         // If the toolchain doesn't already exist, create it and insert into the cache
-        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
+        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
             if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
                 debug!("Using custom toolchain for {:?}", compiler_path);
                 let (tc, compiler_path) = tc_and_compiler_path.unwrap();
@@ -135,7 +135,7 @@ mod client {
             // to create the same toolchain, just a waste of time
             let mut cache = self.cache.lock().unwrap();
             let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
-            create.call(tmpfile.reopen()?)?;
+            toolchain_packager.write_pkg(tmpfile.reopen()?).chain_err(|| "Could not package toolchain")?;
             let tc = cache.insert_file(tmpfile.path())?;
             self.record_weak(weak_key.to_owned(), tc.archive_id.clone());
             Ok((tc, None))

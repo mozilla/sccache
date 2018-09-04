@@ -564,9 +564,9 @@ mod server {
 #[cfg(feature = "dist-client")]
 mod client {
     use bincode;
-    use boxfnonce::BoxFnOnce;
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
+    use dist::pkg::{InputsPackager, ToolchainPackager};
     use flate2::Compression;
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use futures::{Future, Stream};
@@ -645,7 +645,7 @@ mod client {
                 f_err("couldn't find toolchain locally")
             }
         }
-        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, mut write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult> {
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<InputsPackager>) -> SFuture<RunJobResult> {
             let url = format!("http://{}/api/v1/distserver/run_job/{}", job_alloc.server_id.addr(), job_alloc.job_id);
             let mut req = self.client.post(&url);
 
@@ -658,7 +658,7 @@ mod client {
                 body.write(&bincode).unwrap();
                 {
                     let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
-                    write_inputs(&mut compressor);
+                    inputs_packager.write_inputs(&mut compressor).chain_err(|| "Could not write inputs for compilation")?;
                     compressor.flush().unwrap();
                     trace!("Compressed inputs from {} -> {}", compressor.total_in(), compressor.total_out());
                     compressor.finish().unwrap();
@@ -669,8 +669,8 @@ mod client {
             }))
         }
 
-        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
-            self.tc_cache.put_toolchain(compiler_path, weak_key, create)
+        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
+            self.tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager)
         }
         fn may_dist(&self) -> bool {
             true

@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ar;
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
-use compiler::pkg;
 use dist;
+#[cfg(feature = "dist-client")]
+use dist::pkg;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
@@ -27,18 +27,18 @@ use std::collections::{HashMap, HashSet};
 use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::hash::Hash;
-use std::io::{self, Read};
+#[cfg(feature = "dist-client")]
+use std::io;
+use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
-use tar;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
-use walkdir::WalkDir;
 
 use errors::*;
 
@@ -207,7 +207,7 @@ fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<PathBuf>>
     where T: AsRef<Path>,
           U: AsRef<Path>,
 {
-    let mut f = File::open(file)?;
+    let mut f = fs::File::open(file)?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
     Ok(parse_dep_info(&deps, cwd))
@@ -1023,7 +1023,8 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write) + Send>, Box<pkg::CompilerPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
@@ -1056,53 +1057,10 @@ impl Compilation for RustCompilation {
             }
         }
 
-        let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot });
-        let inputs_creator = Box::new(move |wtr: &mut io::Write| {
-            let mut builder = tar::Builder::new(wtr);
+        let inputs_packager = Box::new(RustInputsPackager { crate_types, tar_inputs, tar_crate_libs });
+        let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
 
-            let mut all_tar_inputs: Vec<_> = tar_inputs.drain(..).chain(tar_crate_libs.drain(..)).collect();
-            all_tar_inputs.sort();
-            // There are almost certainly duplicates from explicit externs also within the lib search paths
-            all_tar_inputs.dedup();
-
-            // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
-            // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
-            let can_trim_rlibs = if let CrateTypes { rlib: true, staticlib: false } = crate_types { true } else { false };
-
-            for (input_path, dist_input_path) in all_tar_inputs.iter() {
-                let mut file_header = pkg::make_tar_header(input_path, dist_input_path).unwrap();
-                let file = fs::File::open(input_path).unwrap();
-                if can_trim_rlibs && input_path.extension().unwrap() == "rlib" {
-                    let mut archive = ar::Archive::new(file);
-
-                    while let Some(entry_result) = archive.next_entry() {
-                        let mut entry = entry_result.unwrap();
-                        if entry.header().identifier() != b"rust.metadata.bin" {
-                            continue
-                        }
-                        let mut metadata = vec![];
-                        io::copy(&mut entry, &mut metadata).unwrap();
-                        let mut metadata_ar = vec![];
-                        {
-                            let mut ar_builder = ar::Builder::new(&mut metadata_ar);
-                            ar_builder.append(entry.header(), metadata.as_slice()).unwrap()
-                        }
-                        file_header.set_size(metadata_ar.len() as u64);
-                        file_header.set_cksum();
-                        builder.append(&file_header, metadata_ar.as_slice()).unwrap();
-                        break
-                    }
-                } else {
-                    file_header.set_cksum();
-                    builder.append(&file_header, file).unwrap()
-                }
-            }
-
-            // Finish archive
-            let _ = builder.into_inner().unwrap();
-        });
-
-        Ok((inputs_creator, toolchain_creator))
+        Ok((inputs_packager, toolchain_packager))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
@@ -1110,18 +1068,83 @@ impl Compilation for RustCompilation {
     }
 }
 
-struct RustCompilerPackager {
+#[cfg(feature = "dist-client")]
+struct RustInputsPackager {
+    crate_types: CrateTypes,
+    tar_inputs: Vec<(PathBuf, String)>,
+    tar_crate_libs: Vec<(PathBuf, String)>,
+}
+
+#[cfg(feature = "dist-client")]
+impl pkg::InputsPackager for RustInputsPackager {
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()> {
+        use ar;
+        use tar;
+
+        let RustInputsPackager { crate_types, tar_inputs, tar_crate_libs } = *{self};
+
+        let mut builder = tar::Builder::new(wtr);
+
+        let mut all_tar_inputs: Vec<_> = tar_inputs.into_iter().chain(tar_crate_libs).collect();
+        all_tar_inputs.sort();
+        // There are almost certainly duplicates from explicit externs also within the lib search paths
+        all_tar_inputs.dedup();
+
+        // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
+        // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
+        let can_trim_rlibs = if let CrateTypes { rlib: true, staticlib: false } = crate_types { true } else { false };
+
+        for (input_path, dist_input_path) in all_tar_inputs.iter() {
+            let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
+            let file = fs::File::open(input_path)?;
+            if can_trim_rlibs && input_path.extension().map(|e| e == "rlib").unwrap_or(false) {
+                let mut archive = ar::Archive::new(file);
+
+                while let Some(entry_result) = archive.next_entry() {
+                    let mut entry = entry_result?;
+                    if entry.header().identifier() != b"rust.metadata.bin" {
+                        continue
+                    }
+                    let mut metadata = vec![];
+                    io::copy(&mut entry, &mut metadata)?;
+                    let mut metadata_ar = vec![];
+                    {
+                        let mut ar_builder = ar::Builder::new(&mut metadata_ar);
+                        ar_builder.append(entry.header(), metadata.as_slice())?
+                    }
+                    file_header.set_size(metadata_ar.len() as u64);
+                    file_header.set_cksum();
+                    builder.append(&file_header, metadata_ar.as_slice())?;
+                    break
+                }
+            } else {
+                file_header.set_cksum();
+                builder.append(&file_header, file)?
+            }
+        }
+
+        // Finish archive
+        let _ = builder.into_inner()?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+struct RustToolchainPackager {
     sysroot: PathBuf,
 }
 
 #[cfg(feature = "dist-client")]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl pkg::CompilerPackager for RustCompilerPackager {
-    fn write_pkg(self: Box<Self>, f: File) -> Result<()> {
-        info!("Packaging Rust compiler");
-        let RustCompilerPackager { sysroot } = *self;
+impl pkg::ToolchainPackager for RustToolchainPackager {
+    fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
+        use walkdir::WalkDir;
 
-        let mut package_builder = pkg::CompilerPackageBuilder::new();
+        info!("Packaging Rust compiler");
+        let RustToolchainPackager { sysroot } = *self;
+
+        let mut package_builder = pkg::ToolchainPackageBuilder::new();
         package_builder.add_common()?;
 
         let bins_path = sysroot.join(BINS_DIR);
@@ -1130,7 +1153,7 @@ impl pkg::CompilerPackager for RustCompilerPackager {
 
         // Although by not following symlinks we could break a custom constructed toolchain with
         // links everywhere, this is just a best-effort auto packaging
-        fn walk_and_add(path: &Path, package_builder: &mut pkg::CompilerPackageBuilder) -> Result<()> {
+        fn walk_and_add(path: &Path, package_builder: &mut pkg::ToolchainPackageBuilder) -> Result<()> {
             for entry in WalkDir::new(path).follow_links(false) {
                 let entry = entry?;
                 let file_type = entry.file_type();

@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use boxfnonce::BoxFnOnce;
 use compiler;
 use std::fmt;
-use std::fs;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::ffi::OsString;
 use std::path::Path;
@@ -41,6 +39,14 @@ pub use dist::cache::TcCache;
 // should be some pre-sanitised AbsPath type
 
 pub use self::path_transform::PathTransformer;
+
+#[cfg(feature = "dist-client")]
+pub mod pkg;
+#[cfg(not(feature = "dist-client"))]
+mod pkg {
+    pub trait ToolchainPackager {}
+    pub trait InputsPackager {}
+}
 
 #[cfg(target_os = "windows")]
 mod path_transform {
@@ -290,7 +296,7 @@ impl OutputData {
     #[cfg(feature = "dist-client")]
     pub fn into_reader(self) -> impl Read {
         use flate2::read::ZlibDecoder as ZlibReadDecoder;
-        let decompressor = ZlibReadDecoder::new(Cursor::new(self.0));
+        let decompressor = ZlibReadDecoder::new(io::Cursor::new(self.0));
         decompressor
     }
 }
@@ -462,10 +468,8 @@ pub trait Client {
     // To Server
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
-    // TODO: ideally Box<FnOnce or FnBox
-    // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult>;
-    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult>;
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)>;
     fn may_dist(&self) -> bool;
 }
 
@@ -480,11 +484,11 @@ impl Client for NoopClient {
     fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult> {
         panic!("NoopClient");
     }
 
-    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
+    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
         bail!("NoopClient");
     }
     fn may_dist(&self) -> bool {

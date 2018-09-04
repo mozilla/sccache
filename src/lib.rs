@@ -14,11 +14,11 @@
 
 #![recursion_limit = "128"]
 
+#[cfg(feature = "ar")]
 extern crate ar;
 extern crate atty;
 extern crate base64;
 extern crate bincode;
-extern crate boxfnonce;
 extern crate byteorder;
 extern crate bytes;
 #[cfg(feature = "chrono")]
