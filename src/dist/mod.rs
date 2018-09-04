@@ -16,7 +16,7 @@ use boxfnonce::BoxFnOnce;
 use compiler;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::net::SocketAddr;
 use std::ffi::OsString;
 use std::path::Path;
@@ -271,6 +271,39 @@ impl From<ProcessOutput> for process::Output {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputData(Vec<u8>, u64);
+impl OutputData {
+    #[cfg(feature = "dist-server")]
+    pub fn from_reader<R: Read>(r: R) -> Self {
+        use flate2::Compression;
+        use flate2::read::ZlibEncoder as ZlibReadEncoder;
+        let mut compressor = ZlibReadEncoder::new(r, Compression::fast());
+        let mut res = vec![];
+        io::copy(&mut compressor, &mut res).unwrap();
+        OutputData(res, compressor.total_in())
+    }
+    pub fn lens(&self) -> OutputDataLens {
+        OutputDataLens { actual: self.1, compressed: self.0.len() as u64 }
+    }
+    #[cfg(feature = "dist-client")]
+    pub fn into_reader(self) -> impl Read {
+        use flate2::read::ZlibDecoder as ZlibReadDecoder;
+        let decompressor = ZlibReadDecoder::new(Cursor::new(self.0));
+        decompressor
+    }
+}
+pub struct OutputDataLens {
+    pub actual: u64,
+    pub compressed: u64,
+}
+impl fmt::Display for OutputDataLens {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Size: {}->{}", self.actual, self.compressed)
+    }
+}
+
 // TODO: standardise on compressed or not for inputs and toolchain
 
 // TODO: make fields not public
@@ -328,7 +361,7 @@ pub enum RunJobResult {
 #[serde(deny_unknown_fields)]
 pub struct JobComplete {
     pub output: ProcessOutput,
-    pub outputs: Vec<(String, Vec<u8>)>,
+    pub outputs: Vec<(String, OutputData)>,
 }
 
 // Status
@@ -355,7 +388,7 @@ pub enum SubmitToolchainResult {
 
 pub struct BuildResult {
     pub output: ProcessOutput,
-    pub outputs: Vec<(String, Vec<u8>)>,
+    pub outputs: Vec<(String, OutputData)>,
 }
 
 ///////////////////
@@ -431,7 +464,7 @@ pub trait Client {
     // To Server
     // TODO: ideally Box<FnOnce or FnBox
     // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult>;
     fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)>;
     fn may_dist(&self) -> bool;
 }
@@ -447,7 +480,7 @@ impl Client for NoopClient {
     fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult> {
         panic!("NoopClient");
     }
 

@@ -141,6 +141,7 @@ mod common {
 mod server {
     use bincode;
     use byteorder::{BigEndian, ReadBytesExt};
+    use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use jwt;
     use num_cpus;
     use rand::{self, RngCore};
@@ -526,7 +527,7 @@ mod server {
                         trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
                         let RunJobHttpRequest { command, outputs } = runjob;
                         let body = bincode_reader.into_inner();
-                        let inputs_rdr = InputsReader(Box::new(body));
+                        let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));
                         let outputs = outputs.into_iter().collect();
 
                         let res: RunJobResult = try_or_500_log!(req_id, handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
@@ -566,7 +567,9 @@ mod client {
     use boxfnonce::BoxFnOnce;
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
-    use futures::Future;
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder as ZlibWriteEncoder;
+    use futures::{Future, Stream};
     use futures_cpupool::CpuPool;
     use reqwest;
     use std::fs;
@@ -633,29 +636,37 @@ mod client {
             if let Some(toolchain_file) = self.tc_cache.get_toolchain(&tc) {
                 let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
                 let mut req = self.client.post(&url);
-                req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
 
-                Box::new(self.pool.spawn_fn(move || bincode_req(&mut req)))
+                Box::new(self.pool.spawn_fn(move || {
+                    req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
+                    bincode_req(&mut req)
+                }))
             } else {
                 f_err("couldn't find toolchain locally")
             }
         }
-        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, mut write_inputs: Box<FnMut(&mut Write) + Send>) -> SFuture<RunJobResult> {
             let url = format!("http://{}/api/v1/distserver/run_job/{}", job_alloc.server_id.addr(), job_alloc.job_id);
-            let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs }).unwrap();
-            let bincode_length = bincode.len();
-            let mut inputs = vec![];
-            write_inputs(&mut inputs);
-
-            let mut body = vec![];
-            body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
-            body.write(&bincode).unwrap();
-            body.write(&inputs).unwrap();
-
             let mut req = self.client.post(&url);
-            req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-            trace!("Writing {} bytes of input archive", inputs.len());
-            Box::new(self.pool.spawn_fn(move || bincode_req(&mut req)))
+
+            Box::new(self.pool.spawn_fn(move || {
+                let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs }).unwrap();
+                let bincode_length = bincode.len();
+
+                let mut body = vec![];
+                body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
+                body.write(&bincode).unwrap();
+                {
+                    let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
+                    write_inputs(&mut compressor);
+                    compressor.flush().unwrap();
+                    trace!("Compressed inputs from {} -> {}", compressor.total_in(), compressor.total_out());
+                    compressor.finish().unwrap();
+                }
+
+                req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                bincode_req(&mut req)
+            }))
         }
 
         fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
