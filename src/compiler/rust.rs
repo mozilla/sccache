@@ -118,6 +118,13 @@ pub struct RustCompilation {
     env_vars: Vec<(OsString, OsString)>,
 }
 
+// The selection of crate types for this compilation
+#[derive(Debug, Clone)]
+pub struct CrateTypes {
+    rlib: bool,
+    staticlib: bool,
+}
+
 lazy_static! {
     /// Emit types that we will cache.
     static ref ALLOWED_EMIT: HashSet<&'static str> = [
@@ -346,6 +353,54 @@ macro_rules! make_os_string {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct ArgCrateTypes {
+    rlib: bool,
+    staticlib: bool,
+    others: HashSet<String>,
+}
+impl FromArg for ArgCrateTypes {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let arg = String::process(arg)?;
+        let mut crate_types = ArgCrateTypes {
+            rlib: false,
+            staticlib: false,
+            others: HashSet::new(),
+        };
+        for ty in arg.split(",") {
+            match ty {
+                // It is assumed that "lib" always refers to "rlib", which
+                // is true right now but may not be in the future
+                "lib" |
+                "rlib" => crate_types.rlib = true,
+                "staticlib" => crate_types.staticlib = true,
+                other => { crate_types.others.insert(other.to_owned()); },
+            }
+        }
+        Ok(crate_types)
+    }
+}
+impl IntoArg for ArgCrateTypes {
+    fn into_arg_os_string(self) -> OsString {
+        let ArgCrateTypes { rlib, staticlib, others } = self;
+        let mut types: Vec<_> = others.iter().map(String::as_str)
+            .chain(if rlib { Some("rlib") } else { None })
+            .chain(if staticlib { Some("staticlib") } else { None }).collect();
+        types.sort();
+        let types_string = types.join(",");
+        types_string.into()
+    }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+        let ArgCrateTypes { rlib, staticlib, others } = self;
+        let mut types: Vec<_> = others.iter().map(String::as_str)
+            .chain(if rlib { Some("rlib") } else { None })
+            .chain(if staticlib { Some("staticlib") } else { None }).collect();
+        types.sort();
+        let types_string = types.join(",");
+        Ok(types_string)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
     kind: String,
     name: String,
@@ -506,7 +561,7 @@ ArgData!{
     Extern(ArgExtern),
     Color(String),
     CrateName(String),
-    CrateType(String),
+    CrateType(ArgCrateTypes),
     OutDir(PathBuf),
     CodeGen(ArgCodegen),
     PassThrough(OsString),
@@ -524,7 +579,7 @@ static ARGS: [ArgInfo<ArgData>; 33] = [
     take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
     take_arg!("--color", String, CanBeSeparated('='), Color),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
-    take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
+    take_arg!("--crate-type", ArgCrateTypes, CanBeSeparated('='), CrateType),
     take_arg!("--deny", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--emit", String, CanBeSeparated('='), Emit),
     take_arg!("--error-format", OsString, CanBeSeparated('='), PassThrough),
@@ -560,6 +615,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut input = None;
     let mut output_dir = None;
     let mut crate_name = None;
+    let mut crate_types = CrateTypes { rlib: false, staticlib: false };
     let mut extra_filename = None;
     let mut externs = vec![];
     let mut crate_link_paths = vec![];
@@ -600,12 +656,16 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
                 emit = Some(value.split(",").map(str::to_owned).collect())
             }
-            Some(CrateType(value)) => {
+            Some(CrateType(ArgCrateTypes { rlib, staticlib, others })) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
-                if value.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
-                    cannot_cache!("crate-type")
+                if !others.is_empty() {
+                    let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    let others_string = others.join(",");
+                    cannot_cache!("crate-type", others_string)
                 }
+                crate_types.rlib |= rlib;
+                crate_types.staticlib |= staticlib;
             }
             Some(CrateName(value)) => crate_name = Some(value.clone()),
             Some(OutDir(value)) => output_dir = Some(value.clone()),
@@ -685,6 +745,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     // binary output.
     if !emit.is_empty() && !emit.contains("link") {
         return CompilerArguments::NotCompilation;
+    }
+    // If it's not an rlib and not a staticlib then crate-type wasn't passed,
+    // so it will usually be inferred as a binary, though the `#![crate_type`
+    // annotation may dictate otherwise - either way, we don't know what to do.
+    if let CrateTypes { rlib: false, staticlib: false } = crate_types {
+        cannot_cache!("crate-type", "No crate-type passed".to_owned())
     }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
@@ -1089,30 +1155,31 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple() {
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert!(h.dep_info.is_none());
         assert!(h.externs.is_empty());
-        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert!(h.dep_info.is_none());
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo", "--crate-type=lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert_eq!(parses!("--emit", "link", "-C", "opt-level=1", "foo.rs",
-                           "--out-dir", "out", "--crate-name", "foo"),
+                           "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib"),
                    parses!("--emit=link", "-Copt-level=1", "foo.rs",
-                           "--out-dir=out", "--crate-name=foo"));
+                           "--out-dir=out", "--crate-name=foo", "--crate-type=lib"));
         let h = parses!("--emit", "link,dep-info", "foo.rs", "--out-dir", "out",
-                        "--crate-name", "my_crate",
+                        "--crate-name", "my_crate", "--crate-type", "lib",
                         "-C", "extra-filename=-abcxyz");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert_eq!(h.dep_info.unwrap().to_str().unwrap(), "my_crate-abcxyz.d");
-        fails!("--emit", "link", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "link", "foo.rs", "--crate-name=foo");
-        fails!("--emit", "asm", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "link", "foo.rs", "--out-dir", "out");
+        fails!("--emit", "link", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "link", "foo.rs", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-type=lib");
         // From an actual cargo compilation, with some args shortened:
         let h = parses!("--crate-name", "foo", "src/lib.rs",
                         "--crate-type", "lib", "--emit=dep-info,link",
@@ -1131,15 +1198,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_incremental() {
-        parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
-        let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
+        let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                        "-C", "incremental=/foo");
         assert_eq!(r, CompilerArguments::CannotCache("incremental", None))
     }
 
     #[test]
     fn test_parse_arguments_dep_info_no_extra_filename() {
-        let h = parses!("--crate-name", "foo", "src/lib.rs",
+        let h = parses!("--crate-name", "foo", "--crate-type", "lib", "src/lib.rs",
                         "--emit=dep-info,link",
                         "--out-dir", "/out");
         assert_eq!(h.dep_info, Some("foo.d".into()));
@@ -1147,11 +1214,12 @@ mod test {
 
     #[test]
     fn test_parse_arguments_native_libs() {
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "bar", "foo.rs", "--out-dir", "out");
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "static=bar", "foo.rs", "--out-dir",
-                "out");
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "dylib=bar", "foo.rs", "--out-dir",
-                "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "bar", "foo.rs",
+                "--out-dir", "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "static=bar", "foo.rs",
+                "--out-dir", "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "dylib=bar", "foo.rs",
+                "--out-dir", "out");
     }
 
     #[test]
@@ -1172,15 +1240,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_color() {
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
         assert_eq!(h.color_mode, ColorMode::Auto);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=always");
         assert_eq!(h.color_mode, ColorMode::On);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=never");
         assert_eq!(h.color_mode, ColorMode::Off);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=auto");
         assert_eq!(h.color_mode, ColorMode::Auto);
     }
@@ -1441,28 +1509,34 @@ c:/foo/bar.rs:
             Ok(())
         }
         assert_eq!(hash_key(&ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
-                                   "out", "--crate-name", "foo", "--extern", "b=b.rlib"], &vec![],
+                                   "out", "--crate-name", "foo", "--crate-type", "lib",
+                                   "--extern", "b=b.rlib"], &vec![],
                             &mk_files),
                    hash_key(&ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
-                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![],
                             &mk_files));
     }
 
     #[test]
     fn test_equal_hashes_link_paths() {
         assert_eq!(hash_key(&ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
-                                   "--crate-name", "foo", "-L", "y=y"], &vec![], nothing),
+                                   "--crate-name", "foo", "--crate-type", "lib",
+                                   "-L", "y=y"], &vec![], nothing),
                    hash_key(&ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
-                                   "--out-dir", "out", "--crate-name", "foo"], &vec![], nothing));
+                                   "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![], nothing));
     }
 
     #[test]
     fn test_equal_hashes_cfg_features() {
         assert_eq!(hash_key(&ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
-                                   "out", "--crate-name", "foo", "--cfg", "feature=b"], &vec![],
+                                   "out", "--crate-name", "foo", "--crate-type", "lib",
+                                   "--cfg", "feature=b"], &vec![],
                             nothing),
                    hash_key(&ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
-                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![],
                             nothing));
     }
 }
