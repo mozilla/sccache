@@ -982,18 +982,30 @@ impl Compilation for RustCompilation {
             cwd: cwd.to_owned(),
         };
 
+        macro_rules! try_string_arg {
+            ($e:expr) => {
+                match $e {
+                    Ok(s) => s,
+                    Err(e) => {
+                        debug!("Conversion failed for distributed compile argument: {}", e);
+                        return None
+                    },
+                }
+            };
+        }
         let dist_command = (|| {
             let mut dist_arguments = vec![];
             // flat_map would be nice but the lifetimes don't work out
             for argument in arguments.iter() {
-                for string_arg in argument.iter_strings(|p| path_transformer.to_dist(p)) {
-                    dist_arguments.push(match string_arg {
-                        Ok(s) => s,
-                        Err(e) => {
-                            debug!("Conversion failed for distributed compile argument: {}", e);
-                            return None
-                        },
-                    })
+                let path_transformer_fn = &mut |p: &Path| path_transformer.to_dist(p);
+                if let Argument::Raw(input_path) = argument {
+                    // Need to explicitly handle the input argument as it's not parsed as a path
+                    let input_path = Path::new(input_path).to_owned();
+                    dist_arguments.push(try_string_arg!(input_path.into_arg_string(path_transformer_fn)))
+                } else {
+                    for string_arg in argument.iter_strings(path_transformer_fn) {
+                        dist_arguments.push(try_string_arg!(string_arg))
+                    }
                 }
             }
 
