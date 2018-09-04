@@ -567,9 +567,10 @@ mod client {
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
     use futures::Future;
+    use futures_cpupool::CpuPool;
     use reqwest;
     use std::fs;
-    use std::io::{self, Write};
+    use std::io::Write;
     use std::net::{IpAddr, SocketAddr};
     use std::path::Path;
     use std::time::Duration;
@@ -584,6 +585,7 @@ mod client {
     use super::common::{
         Cfg,
         ReqwestRequestBuilderExt,
+        bincode_req,
         bincode_req_fut,
 
         RunJobHttpRequest,
@@ -595,12 +597,16 @@ mod client {
     pub struct Client {
         auth: &'static config::DistAuth,
         scheduler_addr: SocketAddr,
-        client: reqwest::unstable::async::Client,
+        // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
+        // and only support owned bytes, which means the whole toolchain would end up in memory
+        client: reqwest::Client,
+        client_async: reqwest::unstable::async::Client,
+        pool: CpuPool,
         tc_cache: cache::ClientToolchains,
     }
 
     impl Client {
-        pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::DistCustomToolchain], auth: &'static config::DistAuth) -> Self {
+        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::DistCustomToolchain], auth: &'static config::DistAuth) -> Self {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new().timeout(timeout).build().unwrap();
             let client_async = reqwest::unstable::async::ClientBuilder::new().timeout(timeout).build(handle).unwrap();
@@ -609,6 +615,7 @@ mod client {
                 scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
                 client,
                 client_async,
+                pool: pool.clone(),
                 tc_cache: cache::ClientToolchains::new(cache_dir, cache_size, custom_toolchains),
             }
         }
@@ -620,12 +627,15 @@ mod client {
                 config::DistAuth::Token { token } => token,
             };
             let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-            Box::new(f_res(self.client.post(&url).bearer_auth(token.to_owned()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
+            Box::new(f_res(self.client_async.post(&url).bearer_auth(token.to_owned()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
         }
         fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
-            let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
-            if let Some(toolchain_bytes) = self.tc_cache.get_toolchain(&tc) {
-                bincode_req_fut(self.client.post(&url).bearer_auth(job_alloc.auth.clone()).bytes(toolchain_bytes))
+            if let Some(toolchain_file) = self.tc_cache.get_toolchain(&tc) {
+                let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
+                let mut req = self.client.post(&url);
+                req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
+
+                Box::new(self.pool.spawn_fn(move || bincode_req(&mut req)))
             } else {
                 f_err("couldn't find toolchain locally")
             }
@@ -642,10 +652,13 @@ mod client {
             body.write(&bincode).unwrap();
             body.write(&inputs).unwrap();
 
-            bincode_req_fut(self.client.post(&url).bearer_auth(job_alloc.auth.clone()).bytes(body))
+            let mut req = self.client.post(&url);
+            req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+            trace!("Writing {} bytes of input archive", inputs.len());
+            Box::new(self.pool.spawn_fn(move || bincode_req(&mut req)))
         }
 
-        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
+        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
             self.tc_cache.put_toolchain(compiler_path, weak_key, create)
         }
         fn may_dist(&self) -> bool {

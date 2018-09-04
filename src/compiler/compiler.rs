@@ -431,6 +431,7 @@ pub trait Compilation {
                                  -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 
     /// Create a function that will create the inputs used to perform a distributed compilation
+    // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
 
         bail!("distributed compilation not implemented")

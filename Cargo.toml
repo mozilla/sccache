@@ -33,6 +33,7 @@ directories = "1"
 env_logger = "0.5"
 error-chain = { version = "0.12", default-features = false }
 filetime = "0.2"
+flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures-cpupool = "0.1"
 hyper = { version = "0.11", optional = true }
@@ -72,13 +73,13 @@ tokio-service = "0.1"
 toml = "0.4"
 uuid = { version = "0.6", features = ["v4"] }
 url = { version = "1.0", optional = true }
+walkdir = "1.0.7"
 which = "2"
 zip = { version = "0.4", default-features = false, features = ["deflate"] }
 
 # dist-server only
 arraydeque = { version = "0.4", optional = true }
 crossbeam-utils = { version = "0.5", optional = true }
-flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 libmount = { version = "0.1.10", optional = true }
 nix = { version = "0.11.0", optional = true }
 rouille = { version = "2.2", optional = true, default-features = false }
@@ -112,7 +113,7 @@ memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["reqwest"]
+dist-client = ["flate2", "reqwest"]
 # Enables the sccache-dist binary
 dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "reqwest", "rouille"]
 
