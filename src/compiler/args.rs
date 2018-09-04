@@ -3,11 +3,13 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::{self, Debug, Display};
 use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str;
 
 pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
+pub type ArgToStringResult = StdResult<String, ArgToStringError>;
+pub type PathTransformer<'a> = &'a mut FnMut(&Path) -> Option<String>;
 
 #[derive(Debug, PartialEq)]
 pub enum ArgParseError {
@@ -28,6 +30,26 @@ impl Display for ArgParseError {
 }
 
 impl Error for ArgParseError {
+    fn cause(&self) -> Option<&Error> { None }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ArgToStringError {
+    FailedPathTransform(PathBuf),
+    InvalidUnicode(OsString),
+}
+
+impl Display for ArgToStringError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            ArgToStringError::FailedPathTransform(p) => format!("Path {:?} could not be transformed", p),
+            ArgToStringError::InvalidUnicode(s) => format!("String {:?} contained invalid unicode", s),
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl Error for ArgToStringError {
     fn cause(&self) -> Option<&Error> { None }
 }
 
@@ -122,6 +144,15 @@ impl<T: ArgumentValue> Argument<T> {
             emitted: 0,
         }
     }
+
+    /// Transforms a parsed argument into an iterator over strings, with transformed paths.
+    pub fn iter_strings<F: FnMut(&Path) -> Option<String>>(&self, path_transformer: F) -> IterStrings<T, F> {
+        IterStrings {
+            arg: self,
+            emitted: 0,
+            path_transformer,
+        }
+    }
 }
 
 pub struct Iter<'a, T: 'a> {
@@ -157,13 +188,68 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
                                 "delimiter should be ascii",
                             )));
                         }
-                        s.push(v.clone().into_os_string());
+                        s.push(v.clone().into_arg_os_string());
                         Some(s)
                     }
                     (0, &ArgDisposition::Separated) |
                     (0, &ArgDisposition::CanBeConcatenated(_)) => Some(s.into()),
                     (1, &ArgDisposition::Separated) |
-                    (1, &ArgDisposition::CanBeConcatenated(_)) => Some(v.clone().into_os_string()),
+                    (1, &ArgDisposition::CanBeConcatenated(_)) => Some(v.clone().into_arg_os_string()),
+                    _ => None,
+                }
+            }
+        };
+        if let Some(_) = result {
+            self.emitted += 1;
+        }
+        result
+    }
+}
+
+pub struct IterStrings<'a, T: 'a, F> {
+    arg: &'a Argument<T>,
+    emitted: usize,
+    path_transformer: F,
+}
+
+impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrings<'a, T, F> {
+    type Item = ArgToStringResult;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result: Option<Self::Item> = match *self.arg {
+            Argument::Raw(ref s) |
+            Argument::UnknownFlag(ref s) => {
+                match self.emitted {
+                    0 => Some(s.clone().into_arg_string(&mut self.path_transformer)),
+                    _ => None,
+                }
+            }
+            Argument::Flag(s, _) => {
+                match self.emitted {
+                    0 => Some(Ok(s.to_owned())),
+                    _ => None,
+                }
+            }
+            Argument::WithValue(s, ref v, ref d) => {
+                match (self.emitted, d) {
+                    (0, &ArgDisposition::CanBeSeparated(d)) |
+                    (0, &ArgDisposition::Concatenated(d)) => {
+                        let mut s = s.to_owned();
+                        if let Some(d) = d {
+                            s.push_str(str::from_utf8(&[d]).expect(
+                                "delimiter should be ascii",
+                            ));
+                        }
+                        s.push_str(&match v.clone().into_arg_string(&mut self.path_transformer) {
+                            Ok(s) => s,
+                            Err(e) => return Some(Err(e)),
+                        });
+                        Some(Ok(s))
+                    }
+                    (0, &ArgDisposition::Separated) |
+                    (0, &ArgDisposition::CanBeConcatenated(_)) => Some(Ok(s.to_owned())),
+                    (1, &ArgDisposition::Separated) |
+                    (1, &ArgDisposition::CanBeConcatenated(_)) => Some(v.clone().into_arg_string(&mut self.path_transformer)),
                     _ => None,
                 }
             }
@@ -177,32 +263,35 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
 
 macro_rules! ArgData {
     // Collected all the arms, time to create the match
-    { __matchify $var:ident ($( $arms:tt )*) } => {
+    { __matchify $var:ident $fn:ident ($( $fnarg:ident )*) ($( $arms:tt )*) } => {
         match $var {
             $( $arms )*
         }
     };
     // Unit variant
-    { __matchify $var:ident ($( $arms:tt )*) $x:ident, $( $rest:tt )* } => {
+    { __matchify $var:ident $fn:ident ($( $fnarg:ident )*) ($( $arms:tt )*) $x:ident, $( $rest:tt )* } => {
         ArgData!{
-            __matchify $var
-            ($($arms)* ArgData::$x => OsString::new(),)
+            __matchify $var $fn ($($fnarg)*)
+            ($($arms)* ArgData::$x => ().$fn($( $fnarg )*),)
             $($rest)*
         }
     };
     // Tuple variant
-    { __matchify $var:ident ($( $arms:tt )*) $x:ident($y:ty), $( $rest:tt )* } => {
+    { __matchify $var:ident $fn:ident ($( $fnarg:ident )*) ($( $arms:tt )*) $x:ident($y:ty), $( $rest:tt )* } => {
         ArgData!{
-            __matchify $var
-            ($($arms)* ArgData::$x(inner) => inner.into_os_string(),)
+            __matchify $var $fn ($($fnarg)*)
+            ($($arms)* ArgData::$x(inner) => inner.$fn($( $fnarg )*),)
             $($rest)*
         }
     };
 
     { __impl $( $tok:tt )+ } => {
         impl IntoArg for ArgData {
-            fn into_os_string(self) -> OsString {
-                ArgData!{ __matchify self () $($tok)+ }
+            fn into_arg_os_string(self) -> OsString {
+                ArgData!{ __matchify self into_arg_os_string () () $($tok)+ }
+            }
+            fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+                ArgData!{ __matchify self into_arg_string (transformer) () $($tok)+ }
             }
         }
     };
@@ -233,24 +322,44 @@ pub trait FromArg: Sized {
     fn process(arg: OsString) -> ArgParseResult<Self>;
 }
 
-pub trait IntoArg {
-    fn into_os_string(self) -> OsString;
+pub trait IntoArg: Sized {
+    fn into_arg_os_string(self) -> OsString;
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult;
 }
 
-impl FromArg for OsString { fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg) } }
-impl FromArg for PathBuf { fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg.into()) } }
-impl FromArg for String { fn process(arg: OsString) -> ArgParseResult<Self> { os_string_to_string_arg(arg) } }
+impl FromArg for OsString {
+    fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg) }
+}
+impl FromArg for PathBuf {
+    fn process(arg: OsString) -> ArgParseResult<Self> { Ok(arg.into()) }
+}
+impl FromArg for String {
+    fn process(arg: OsString) -> ArgParseResult<Self>  { arg.into_string().map_err(ArgParseError::InvalidUnicode) }
+}
 
-impl IntoArg for OsString { fn into_os_string(self) -> OsString { self } }
-impl IntoArg for PathBuf { fn into_os_string(self) -> OsString { self.into() } }
-impl IntoArg for String { fn into_os_string(self) -> OsString { self.into() } }
-
-pub fn os_string_to_string_arg(val: OsString) -> ArgParseResult<String> {
-    val.into_string().map_err(ArgParseError::InvalidUnicode)
+impl IntoArg for OsString {
+    fn into_arg_os_string(self) -> OsString { self }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+        self.into_string().map_err(ArgToStringError::InvalidUnicode)
+    }
+}
+impl IntoArg for PathBuf {
+    fn into_arg_os_string(self) -> OsString { self.into() }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        transformer(&self).ok_or_else(|| ArgToStringError::FailedPathTransform(self))
+    }
+}
+impl IntoArg for String {
+    fn into_arg_os_string(self) -> OsString { self.into() }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult { Ok(self) }
+}
+impl IntoArg for () {
+    fn into_arg_os_string(self) -> OsString { OsString::new() }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult { Ok(String::new()) }
 }
 
 pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String, Option<String>)> {
-    let val = os_string_to_string_arg(val)?;
+    let val = val.into_string().map_err(ArgParseError::InvalidUnicode)?;
     let mut split_it = val.splitn(2, split);
     let s1 = split_it.next().expect("splitn with no values");
     let maybe_s2 = split_it.next();

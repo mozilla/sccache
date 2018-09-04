@@ -353,7 +353,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
         .and_then(move |dist_compile_cmd| {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
-                .map(|(_key, path)| path_transformer.to_dist_abs(&cwd.join(path)))
+                .map(|(_key, path)| path_transformer.to_dist_assert_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .unwrap();
             compilation.into_dist_inputs_creator(&mut path_transformer)

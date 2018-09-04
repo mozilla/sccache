@@ -58,7 +58,7 @@ mod path_transform {
                 dist_to_local_path: HashMap::new(),
             }
         }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() { panic!("non absolute path {:?}", p) }
             self.to_dist(p)
         }
@@ -133,7 +133,7 @@ mod path_transform {
 
     impl PathTransformer {
         pub fn new() -> Self { PathTransformer }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() { panic!("non absolute path {:?}", p) }
             self.to_dist(p)
         }

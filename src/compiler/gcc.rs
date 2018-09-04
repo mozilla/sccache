@@ -209,7 +209,7 @@ where
             Argument::WithValue(_, ref v, ArgDisposition::Separated) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_)) |
             Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
-                if v.clone().into_os_string().starts_with("@") {
+                if v.clone().into_arg_os_string().starts_with("@") {
                     cannot_cache!("@");
                 }
             },
@@ -454,7 +454,7 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
             executable: path_transformer.to_dist(&executable)?,
             arguments: arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
-            cwd: path_transformer.to_dist(cwd)?,
+            cwd: path_transformer.to_dist_assert_abs(cwd)?,
         })
     })();
 
