@@ -21,7 +21,7 @@ extern crate tar;
 
 use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
-use rand::Rng;
+use rand::RngCore;
 use sccache::config::INSECURE_DIST_CLIENT_TOKEN;
 use sccache::dist::{
     self,

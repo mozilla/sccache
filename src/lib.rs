@@ -68,7 +68,7 @@ extern crate regex;
 extern crate reqwest;
 extern crate retry;
 #[cfg(feature = "rouille")]
-#[macro_use]
+#[macro_use(router)]
 extern crate rouille;
 extern crate serde;
 extern crate serde_json;

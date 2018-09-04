@@ -121,7 +121,7 @@ impl OverlayBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
-        crossbeam_utils::scoped::scope(|scope| { scope.spawn(|| {
+        crossbeam_utils::thread::scope(|scope| { scope.spawn(|| {
 
             // Now mounted filesystems will be automatically unmounted when this thread dies
             // (and tmpfs filesystems will be completely destroyed)
