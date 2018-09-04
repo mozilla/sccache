@@ -28,7 +28,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -859,7 +859,6 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info);
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
-                let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot.clone() });
                 let mut arguments = arguments;
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
@@ -878,7 +877,6 @@ impl<T> CompilerHasher<T> for RustHasher
                         env_vars,
                     }),
                     weak_toolchain_key,
-                    toolchain_creator,
                 }
             }))
         }))
@@ -939,8 +937,9 @@ impl Compilation for RustCompilation {
         Ok((command, dist_command, Cacheable::Yes))
     }
 
-    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
-        let RustCompilation { inputs, crate_link_paths, .. } = *{self};
+    #[cfg(feature = "dist-client")]
+    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write)>, Box<pkg::CompilerPackager>)> {
+        let RustCompilation { inputs, crate_link_paths, sysroot, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
         let mut tar_inputs = vec![];
@@ -972,12 +971,13 @@ impl Compilation for RustCompilation {
             }
         }
 
-        Ok(Box::new(move |wtr| {
+        let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot });
+        let inputs_creator = Box::new(move |wtr: &mut io::Write| {
             let mut builder = tar::Builder::new(wtr);
 
             let mut all_tar_inputs: Vec<_> = tar_inputs.drain(..).chain(tar_crate_libs.drain(..)).collect();
             all_tar_inputs.sort();
-            // There are almost certainly duplicates from explicit externs also within the search paths
+            // There are almost certainly duplicates from explicit externs also within the lib search paths
             all_tar_inputs.dedup();
 
             for (input_path, dist_input_path) in all_tar_inputs.iter() {
@@ -988,7 +988,9 @@ impl Compilation for RustCompilation {
 
             // Finish archive
             let _ = builder.into_inner().unwrap();
-        }))
+        });
+
+        Ok((inputs_creator, toolchain_creator))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
