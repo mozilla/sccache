@@ -142,13 +142,13 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, dist_client.may_dist(), &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
-            let (key, compilation, weak_toolchain_key, toolchain_creator) = match res {
+            let (key, compilation, weak_toolchain_key) = match res {
                 Err(Error(ErrorKind::ProcessError(output), _)) => {
                     return f_ok((CompileResult::Error, output));
                 }
                 Err(e) => return f_err(e),
-                Ok(HashResult { key, compilation, weak_toolchain_key, toolchain_creator }) =>
-                    (key, compilation, weak_toolchain_key, toolchain_creator),
+                Ok(HashResult { key, compilation, weak_toolchain_key }) =>
+                    (key, compilation, weak_toolchain_key),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
             // If `ForceRecache` is enabled, we won't check the cache.
@@ -238,7 +238,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = dist_or_local_compile(dist_client, creator, cwd, compilation, weak_toolchain_key, toolchain_creator, out_pretty.clone());
+                let compile = dist_or_local_compile(dist_client, creator, cwd, compilation, weak_toolchain_key, out_pretty.clone());
 
                 Box::new(compile.and_then(move |(cacheable, compiler_result)| {
                     let duration = start.elapsed();
@@ -316,7 +316,6 @@ fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
                             _cwd: PathBuf,
                             compilation: Box<Compilation>,
                             _weak_toolchain_key: String,
-                            _toolchain_creator: Box<CompilerPackager>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
@@ -334,7 +333,6 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             cwd: PathBuf,
                             compilation: Box<Compilation>,
                             weak_toolchain_key: String,
-                            toolchain_creator: Box<CompilerPackager>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
@@ -357,10 +355,10 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                 .collect::<Option<_>>()
                 .unwrap();
             compilation.into_dist_inputs_creator(&mut path_transformer)
-                .map(|dist_inputs_creator| (path_transformer, dist_compile_cmd, dist_inputs_creator, dist_output_paths))
+                .map(|(inputs_creator, toolchain_creator)| (path_transformer, dist_compile_cmd, inputs_creator, toolchain_creator, dist_output_paths))
         })
-        .and_then(move |(path_transformer, mut dist_compile_cmd, dist_inputs_creator, dist_output_paths)| {
-            debug!("[{}]: Identifying toolchain", compile_out_pretty2);
+        .and_then(move |(path_transformer, mut dist_compile_cmd, inputs_creator, toolchain_creator, dist_output_paths)| {
+            debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
             let toolchain_creator_cb = BoxFnOnce::from(move |f| toolchain_creator.write_pkg(f));
             // TODO: put on a thread
             let (dist_toolchain, maybe_dist_compile_executable) =
@@ -392,7 +390,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                     alloc
                         .and_then(move |job_alloc| {
                             debug!("[{}]: Running job", compile_out_pretty2);
-                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, dist_inputs_creator)
+                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_creator)
                                 .map_err(Into::into)
                         })
                 })
@@ -432,7 +430,9 @@ pub trait Compilation {
 
     /// Create a function that will create the inputs used to perform a distributed compilation
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
-    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
+    #[cfg(feature = "dist-client")]
+    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer)
+                                -> Result<(Box<FnMut(&mut Write)>, Box<CompilerPackager>)> {
 
         bail!("distributed compilation not implemented")
     }
@@ -452,8 +452,6 @@ pub struct HashResult {
     pub compilation: Box<Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
-    /// A object that may be used to package the toolchain into a file
-    pub toolchain_creator: Box<CompilerPackager>,
 }
 
 /// Possible results of parsing compiler arguments.

@@ -258,7 +258,6 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
             // executable path to try and prevent this
             let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
-            let toolchain_creator = Box::new(CCompilerPackager { executable: executable.clone() });
             Ok(HashResult {
                 key: key,
                 compilation: Box::new(CCompilation {
@@ -270,7 +269,6 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                     env_vars,
                 }),
                 weak_toolchain_key,
-                toolchain_creator,
             })
         }))
     }
@@ -299,24 +297,30 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
         compiler.generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 
-    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut io::Write)>> {
-        trace!("Dist inputs: {:?}", self.parsed_args.input);
+    #[cfg(feature = "dist-client")]
+    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write)>, Box<pkg::CompilerPackager>)> {
+        let CCompilation { parsed_args, cwd, preprocessed_input, executable, .. } = *{self};
+        trace!("Dist inputs: {:?}", parsed_args.input);
 
-        let input_path = self.cwd.join(&self.parsed_args.input);
+        let input_path = cwd.join(&parsed_args.input);
         let input_path = pkg::simplify_path(&input_path)?;
         let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+        let preprocessed_input = preprocessed_input;
 
-        Ok(Box::new(move |wtr| {
+        let toolchain_creator = Box::new(CCompilerPackager { executable });
+        let inputs_creator = Box::new(move |wtr: &mut io::Write| {
             let mut builder = tar::Builder::new(wtr);
 
             let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path).unwrap();
-            file_header.set_size(self.preprocessed_input.len() as u64); // The metadata is from non-preprocessed
+            file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
             file_header.set_cksum();
-            builder.append(&file_header, self.preprocessed_input.as_slice()).unwrap();
+            builder.append(&file_header, preprocessed_input.as_slice()).unwrap();
 
             // Finish archive
             let _ = builder.into_inner().unwrap();
-        }))
+        });
+
+        Ok((inputs_creator, toolchain_creator))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
