@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ar;
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 use compiler::args::*;
@@ -89,6 +90,8 @@ pub struct ParsedArguments {
     staticlibs: Vec<PathBuf>,
     /// The crate name passed to --crate-name.
     crate_name: String,
+    /// The crate types that will be generated
+    crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
     /// The value of any `--color` option passed on the commandline.
@@ -112,6 +115,8 @@ pub struct RustCompilation {
     crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
+    /// The crate types that will be generated
+    crate_types: CrateTypes,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
@@ -119,7 +124,7 @@ pub struct RustCompilation {
 }
 
 // The selection of crate types for this compilation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CrateTypes {
     rlib: bool,
     staticlib: bool,
@@ -791,6 +796,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     CompilerArguments::Ok(ParsedArguments {
         arguments: args,
         output_dir: output_dir.into(),
+        crate_types,
         externs: externs,
         crate_link_paths,
         staticlibs: staticlibs,
@@ -812,7 +818,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
-        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
+        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
@@ -938,7 +944,8 @@ impl<T> CompilerHasher<T> for RustHasher
                         inputs: inputs,
                         outputs: outputs,
                         crate_link_paths,
-                        crate_name: crate_name,
+                        crate_name,
+                        crate_types,
                         cwd,
                         env_vars,
                     }),
@@ -1005,7 +1012,7 @@ impl Compilation for RustCompilation {
 
     #[cfg(feature = "dist-client")]
     fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write)>, Box<pkg::CompilerPackager>)> {
-        let RustCompilation { inputs, crate_link_paths, sysroot, .. } = *{self};
+        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
         let mut tar_inputs = vec![];
@@ -1046,10 +1053,37 @@ impl Compilation for RustCompilation {
             // There are almost certainly duplicates from explicit externs also within the lib search paths
             all_tar_inputs.dedup();
 
+            // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
+            // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
+            let can_trim_rlibs = if let CrateTypes { rlib: true, staticlib: false } = crate_types { true } else { false };
+
             for (input_path, dist_input_path) in all_tar_inputs.iter() {
                 let mut file_header = pkg::make_tar_header(input_path, dist_input_path).unwrap();
-                file_header.set_cksum();
-                builder.append(&file_header, fs::File::open(input_path).unwrap()).unwrap();
+                let file = fs::File::open(input_path).unwrap();
+                if can_trim_rlibs && input_path.extension().unwrap() == "rlib" {
+                    let mut archive = ar::Archive::new(file);
+
+                    while let Some(entry_result) = archive.next_entry() {
+                        let mut entry = entry_result.unwrap();
+                        if entry.header().identifier() != b"rust.metadata.bin" {
+                            continue
+                        }
+                        let mut metadata = vec![];
+                        io::copy(&mut entry, &mut metadata).unwrap();
+                        let mut metadata_ar = vec![];
+                        {
+                            let mut ar_builder = ar::Builder::new(&mut metadata_ar);
+                            ar_builder.append(entry.header(), metadata.as_slice()).unwrap()
+                        }
+                        file_header.set_size(metadata_ar.len() as u64);
+                        file_header.set_cksum();
+                        builder.append(&file_header, metadata_ar.as_slice()).unwrap();
+                        break
+                    }
+                } else {
+                    file_header.set_cksum();
+                    builder.append(&file_header, file).unwrap()
+                }
             }
 
             // Finish archive
@@ -1416,6 +1450,7 @@ c:/foo/bar.rs:
                 crate_link_paths: vec![],
                 staticlibs: vec![f.tempdir.path().join("libbaz.a")],
                 crate_name: "foo".into(),
+                crate_types: CrateTypes { rlib: true, staticlib: false },
                 dep_info: None,
                 color_mode: ColorMode::Auto,
             }
