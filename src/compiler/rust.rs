@@ -96,6 +96,8 @@ pub struct RustCompilation {
     sysroot: PathBuf,
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
+    /// The compiler inputs.
+    inputs: Vec<PathBuf>,
     /// The compiler outputs.
     outputs: HashMap<String, PathBuf>,
     /// The crate name being compiled.
@@ -119,27 +121,27 @@ const CACHE_VERSION: &[u8] = b"2";
 
 /// Calculate the SHA-1 digest of each file in `files` on background threads
 /// in `pool`.
-fn hash_all(files: Vec<String>, pool: &CpuPool) -> SFuture<Vec<String>>
+fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
 {
     let start = Instant::now();
     let count = files.len();
     let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)))
+    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
              .map(move |hashes| {
                  trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
                  hashes
              }))
 }
 
-/// Calculate SHA-1 digests for all source files listed in rustc's dep-info output.
-fn hash_source_files<T>(creator: &T,
+/// Get absolute paths for all source files listed in rustc's dep-info output.
+fn get_source_files<T>(creator: &T,
                         crate_name: &str,
                         executable: &Path,
                         arguments: &[OsString],
                         cwd: &Path,
                         env_vars: &[(OsString, OsString)],
                         pool: &CpuPool)
-                        -> SFuture<Vec<String>>
+                        -> SFuture<Vec<PathBuf>>
     where T: CommandCreatorSync,
 {
     let start = Instant::now();
@@ -167,19 +169,19 @@ fn hash_source_files<T>(creator: &T,
                 format!("Failed to parse dep info for {}", name2)
             })
         });
-        Box::new(parsed.and_then(move |files| {
+        Box::new(parsed.map(move |files| {
             trace!("[{}]: got {} source files from dep-info in {}", crate_name,
                    files.len(), fmt_duration_as_secs(&start.elapsed()));
             // Just to make sure we capture temp_dir.
             drop(temp_dir);
-            hash_all(files, &pool)
+            files
         }))
     }))
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
 /// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<String>>
+fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<PathBuf>>
     where T: AsRef<Path>,
           U: AsRef<Path>,
 {
@@ -189,7 +191,7 @@ fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<String>>
     Ok(parse_dep_info(&deps, cwd))
 }
 
-fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
+fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
     where T: AsRef<Path>
 {
     let cwd = cwd.as_ref();
@@ -206,7 +208,7 @@ fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
     let mut deps = line[pos + 2..]
         .split(' ')
         .map(|s| s.trim()).filter(|s| !s.is_empty())
-        .map(|s| cwd.join(s).to_string_lossy().into_owned())
+        .map(|s| cwd.join(s))
         .collect::<Vec<_>>();
     deps.sort();
     deps
@@ -262,7 +264,7 @@ impl Rust {
                     e.file_type().ok().and_then(|t| {
                         let p = e.path();
                         if t.is_file() && p.extension().map(|e| e == DLL_EXTENSION).unwrap_or(false) {
-                            p.into_os_string().into_string().ok()
+                            Some(PathBuf::from(p.into_os_string()))
                         } else {
                             None
                         }
@@ -273,7 +275,7 @@ impl Rust {
             Ok((sysroot, libs))
         });
         Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
-            hash_all(libs, &pool).map(move |digests| {
+            hash_all(&libs, &pool).map(move |digests| {
                 Rust {
                     executable: executable,
                     sysroot,
@@ -719,22 +721,24 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
-        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, &cwd, &env_vars, pool);
+        // Find all the source files and hash them
+        let source_hashes_pool = pool.clone();
+        let source_files = get_source_files(creator, &crate_name, &executable, &filtered_arguments, &cwd, &env_vars, pool);
+        let source_files_and_hashes = source_files
+            .and_then(move |source_files| {
+                hash_all(&source_files, &source_hashes_pool).map(|source_hashes| (source_files, source_hashes))
+            });
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
-        let extern_hashes = hash_all(externs.iter()
-                                     .map(|e| cwd.join(e).to_string_lossy().into_owned())
-                                     .collect(),
-                                     &pool);
+        let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
+        let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
-        let staticlib_hashes = hash_all(staticlibs.into_iter()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .collect(),
-                                        &pool);
+        let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
+        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
         let creator = creator.clone();
-        let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
-        Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
+        let hashes = source_files_and_hashes.join3(extern_hashes, staticlib_hashes);
+        Box::new(hashes.and_then(move |((source_files, source_hashes), extern_hashes, staticlib_hashes)|
                                         -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
             let mut m = Digest::new();
@@ -815,12 +819,14 @@ impl<T> CompilerHasher<T> for RustHasher
                 let mut arguments = arguments;
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
+                let inputs = source_files.into_iter().chain(abs_externs).chain(abs_staticlibs).collect();
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
                         sysroot: sysroot,
                         arguments: arguments,
+                        inputs: inputs,
                         outputs: outputs,
                         crate_name: crate_name,
                         cwd,
@@ -1057,7 +1063,7 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["abc.rs", "bar.rs", "baz.rs"],
+        assert_eq!(pathvec!["abc.rs", "bar.rs", "baz.rs"],
                    parse_dep_info(&deps, ""));
     }
 
@@ -1072,10 +1078,10 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
+        assert_eq!(pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
                    parse_dep_info(&deps, "foo/"));
 
-        assert_eq!(stringvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
+        assert_eq!(pathvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
                    parse_dep_info(&deps, "/foo/bar/"));
     }
 
@@ -1090,7 +1096,7 @@ bar.rs:
 
 /foo/bar.rs:
 ";
-        assert_eq!(stringvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
+        assert_eq!(pathvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
                    parse_dep_info(&deps, "/bar/"));
     }
 
@@ -1105,10 +1111,10 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
+        assert_eq!(pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
                    parse_dep_info(&deps, "foo/"));
 
-        assert_eq!(stringvec!["c:/foo/bar/abc.rs", "c:/foo/bar/bar.rs", "c:/foo/bar/baz.rs"],
+        assert_eq!(pathvec!["c:/foo/bar/abc.rs", "c:/foo/bar/bar.rs", "c:/foo/bar/baz.rs"],
                    parse_dep_info(&deps, "c:/foo/bar/"));
     }
 
@@ -1121,7 +1127,7 @@ c:/foo/baz.rs: c:/foo/bar.rs
 c:/foo/abc.rs:
 c:/foo/bar.rs:
 ";
-        assert_eq!(stringvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
+        assert_eq!(pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
                    parse_dep_info(&deps, "c:/bar/"));
     }
 

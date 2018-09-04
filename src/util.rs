@@ -24,7 +24,7 @@ use std::fs::File;
 use std::hash::Hasher;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{self,Stdio};
 use std::time::Duration;
 
@@ -43,9 +43,9 @@ impl Digest {
     /// Calculate the SHA-512 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
     pub fn file<T>(path: T, pool: &CpuPool) -> SFuture<String>
-        where T: Into<PathBuf>
+        where T: AsRef<Path>
     {
-        let path = path.into();
+        let path = path.as_ref();
         let f = ftry!(File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path)));
         Self::reader(f, pool)
     }
