@@ -20,7 +20,6 @@ mod clang;
 mod compiler;
 mod gcc;
 mod msvc;
-mod pkg;
 mod rust;
 
 pub use compiler::compiler::*;

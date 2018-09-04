@@ -152,7 +152,7 @@ impl LruDiskCache {
     pub fn path(&self) -> &Path { self.root.as_path() }
 
     /// Return the path that `key` would be stored at.
-    pub fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf { self.root.join(rel_path) }
+    fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf { self.root.join(rel_path) }
 
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
@@ -250,9 +250,9 @@ impl LruDiskCache {
         self.lru.contains_key(key.as_ref())
     }
 
-    /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
-    /// be opened. Updates the LRU state of the file if present.
-    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<ReadSeek>> {
+    /// Get an opened `File` for `key`, if one exists and can be opened. Updates the LRU state
+    /// of the file if present. Avoid using this method if at all possible, prefer `.get`.
+    pub fn get_file<K: AsRef<OsStr>>(&mut self, key: K) -> Result<File> {
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
         self.lru.get(rel_path)
@@ -260,8 +260,14 @@ impl LruDiskCache {
             .and_then(|_| {
                 let t = filetime_now();
                 set_file_times(&path, t, t)?;
-                Ok(Box::new(File::open(path)?) as Box<ReadSeek>)
+                File::open(path).map_err(Into::into)
             })
+    }
+
+    /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
+    /// be opened. Updates the LRU state of the file if present.
+    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<ReadSeek>> {
+        self.get_file(key).map(|f| Box::new(f) as Box<ReadSeek>)
     }
 }
 

@@ -38,6 +38,7 @@ use redis;
 #[cfg(feature = "reqwest")]
 use reqwest;
 use tempfile;
+use walkdir;
 use which;
 
 error_chain! {
@@ -54,6 +55,7 @@ error_chain! {
         Reqwest(reqwest::Error) #[cfg(feature = "reqwest")];
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
+        WalkDir(walkdir::Error);
     }
 
     errors {

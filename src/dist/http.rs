@@ -60,7 +60,7 @@ mod common {
     }
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
-            let bytes = bincode::serialize(bincode, bincode::Infinite)?;
+            let bytes = bincode::serialize(bincode)?;
             Ok(self.bytes(bytes))
         }
         fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
@@ -74,7 +74,7 @@ mod common {
     }
     impl ReqwestRequestBuilderExt for reqwest::unstable::async::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
-            let bytes = bincode::serialize(bincode, bincode::Infinite)?;
+            let bytes = bincode::serialize(bincode)?;
             Ok(self.bytes(bytes))
         }
         fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
@@ -126,7 +126,7 @@ mod common {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct HeartbeatServerHttpRequest {
-        pub client_jwt_key: Vec<u8>,
+        pub jwt_key: Vec<u8>,
         pub num_cpus: usize,
     }
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,9 +141,10 @@ mod common {
 mod server {
     use bincode;
     use byteorder::{BigEndian, ReadBytesExt};
+    use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use jwt;
     use num_cpus;
-    use rand::{self, Rng};
+    use rand::{self, RngCore};
     use reqwest;
     use rouille;
     use serde;
@@ -151,6 +152,7 @@ mod server {
     use std;
     use std::io::Read;
     use std::net::{IpAddr, SocketAddr};
+    use std::sync::atomic;
     use std::thread;
     use std::time::Duration;
 
@@ -182,7 +184,16 @@ mod server {
     const JWT_KEY_LENGTH: usize = 256 / 8;
     lazy_static!{
         static ref JWT_HEADER: jwt::Header = jwt::Header::new(jwt::Algorithm::HS256);
-        static ref JWT_VALIDATION: jwt::Validation = jwt::Validation::new(jwt::Algorithm::HS256);
+        static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
+            leeway: 0,
+            validate_exp: false,
+            validate_iat: false,
+            validate_nbf: false,
+            aud: None,
+            iss: None,
+            sub: None,
+            algorithms: vec![jwt::Algorithm::HS256],
+        };
     }
 
     // Based on rouille::input::json::json_input
@@ -233,7 +244,7 @@ mod server {
         }
 
         if let Some(mut b) = request.data() {
-            bincode::deserialize_from::<_, O, _>(&mut b, bincode::Infinite).map_err(From::from)
+            bincode::deserialize_from::<_, O>(&mut b).map_err(From::from)
         } else {
             Err(RouilleBincodeError::BodyAlreadyExtracted)
         }
@@ -241,7 +252,7 @@ mod server {
 
     // Based on rouille::Response::json
     pub fn bincode_response<T>(content: &T) -> rouille::Response where T: serde::Serialize {
-        let data = bincode::serialize(content, bincode::Infinite).unwrap();
+        let data = bincode::serialize(content).unwrap();
 
         rouille::Response {
             status_code: 200,
@@ -251,7 +262,7 @@ mod server {
         }
     }
 
-    // Based on try_or_400 in rouille
+    // Based on try_or_400 in rouille, but with logging
     #[derive(Serialize)]
     pub struct ErrJson<'a> {
         description: &'a str,
@@ -267,16 +278,33 @@ mod server {
             serde_json::to_string(&self).unwrap()
         }
     }
-    macro_rules! try_or_500 {
-        ($result:expr) => (
+    macro_rules! try_or_err_and_log {
+        ($reqid:expr, $code:expr, $result:expr) => {
             match $result {
                 Ok(r) => r,
                 Err(err) => {
+                    // TODO: would ideally just use error_chain
+                    use std::error::Error;
+                    let mut err_msg = err.to_string();
+                    let mut maybe_cause = err.cause();
+                    while let Some(cause) = maybe_cause {
+                        err_msg.push_str(", caused by: ");
+                        err_msg.push_str(cause.description());
+                        maybe_cause = cause.cause()
+                    };
+
+                    warn!("Res {} error: {}", $reqid, err_msg);
                     let json = ErrJson::from_err(&err);
-                    return rouille::Response::json(&json).with_status_code(500)
+                    return rouille::Response::json(&json).with_status_code($code)
                 },
             }
-        );
+        };
+    }
+    macro_rules! try_or_400_log {
+        ($reqid:expr, $result:expr) => { try_or_err_and_log!($reqid, 400, $result) };
+    }
+    macro_rules! try_or_500_log {
+        ($reqid:expr, $result:expr) => { try_or_err_and_log!($reqid, 500, $result) };
     }
     fn make_401(short_err: &str) -> rouille::Response {
         rouille::Response {
@@ -354,37 +382,38 @@ mod server {
             }
 
             info!("Scheduler listening for clients on {}", addr);
+            let request_count = atomic::AtomicUsize::new(0);
             let server = rouille::Server::new(addr, move |request| {
-                let request_id = request.remote_addr();
-                trace!("Req {}: {:?}", request_id, request);
+                let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
+                trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
                 let response = (|| router!(request,
                     (POST) (/api/v1/scheduler/alloc_job) => {
                         if !bearer_http_auth(request).map_or(false, &*check_client_auth) {
                             return make_401("invalid_bearer_token")
                         }
-                        let toolchain = try_or_400!(bincode_input(request));
-                        trace!("Req {}: alloc_job: {:?}", request_id, toolchain);
+                        let toolchain = try_or_400_log!(req_id, bincode_input(request));
+                        trace!("Req {}: alloc_job: {:?}", req_id, toolchain);
 
-                        let res: AllocJobResult = try_or_500!(handler.handle_alloc_job(&requester, toolchain));
+                        let res: AllocJobResult = try_or_500_log!(req_id, handler.handle_alloc_job(&requester, toolchain));
                         bincode_response(&res)
                     },
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
                         let server_id = check_server_auth_or_401!(request);
-                        let heartbeat_server = try_or_400!(bincode_input(request));
-                        trace!("Req {}: heartbeat_server: {:?}", request_id, heartbeat_server);
+                        let heartbeat_server = try_or_400_log!(req_id, bincode_input(request));
+                        trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
-                        let HeartbeatServerHttpRequest { num_cpus, client_jwt_key } = heartbeat_server;
+                        let HeartbeatServerHttpRequest { num_cpus, jwt_key } = heartbeat_server;
                         let generate_job_auth = Box::new(move |job_id| {
                             let claims = JobJwt { job_id };
-                            jwt::encode(&JWT_HEADER, &claims, &client_jwt_key).unwrap()
+                            jwt::encode(&JWT_HEADER, &claims, &jwt_key).unwrap()
                         });
                         let res: HeartbeatServerResult = handler.handle_heartbeat_server(server_id, num_cpus, generate_job_auth).unwrap();
                         bincode_response(&res)
                     },
                     (POST) (/api/v1/scheduler/job_state/{job_id: JobId}) => {
                         let server_id = check_server_auth_or_401!(request);
-                        let job_state = try_or_400!(bincode_input(request));
-                        trace!("Req {}: job state: {:?}", request_id, job_state);
+                        let job_state = try_or_400_log!(req_id, bincode_input(request));
+                        trace!("Req {}: job state: {:?}", req_id, job_state);
 
                         let res: UpdateJobStateResult = handler.handle_update_job_state(job_id, server_id, job_state).unwrap();
                         bincode_response(&res)
@@ -398,7 +427,7 @@ mod server {
                         rouille::Response::empty_404()
                     },
                 )) ();
-                trace!("Res {}: {:?}", request_id, response);
+                trace!("Res {}: {:?}", req_id, response);
                 response
             }).unwrap();
             server.run();
@@ -422,29 +451,29 @@ mod server {
         scheduler_addr: SocketAddr,
         scheduler_auth: String,
         handler: S,
-        client_jwt_key: Vec<u8>,
+        jwt_key: Vec<u8>,
     }
 
     impl<S: dist::ServerIncoming + 'static> Server<S> {
         pub fn new(scheduler_addr: IpAddr, scheduler_auth: String, handler: S) -> Self {
-            let mut client_jwt_key = vec![0; JWT_KEY_LENGTH];
+            let mut jwt_key = vec![0; JWT_KEY_LENGTH];
             let mut rng = rand::OsRng::new().unwrap();
-            rng.fill_bytes(&mut client_jwt_key);
+            rng.fill_bytes(&mut jwt_key);
             Self {
                 scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
                 scheduler_auth,
-                client_jwt_key,
+                jwt_key,
                 handler,
             }
         }
 
         pub fn start(self) -> ! {
-            let Self { scheduler_addr, scheduler_auth, client_jwt_key, handler } = self;
+            let Self { scheduler_addr, scheduler_auth, jwt_key, handler } = self;
             let requester = ServerRequester { client: reqwest::Client::new(), scheduler_addr, scheduler_auth: scheduler_auth.clone() };
             let addr = Cfg::server_listen_addr();
 
             // TODO: detect if this panics
-            let heartbeat_req = HeartbeatServerHttpRequest { num_cpus: num_cpus::get(), client_jwt_key: client_jwt_key.clone() };
+            let heartbeat_req = HeartbeatServerHttpRequest { num_cpus: num_cpus::get(), jwt_key: jwt_key.clone() };
             thread::spawn(move || {
                 let url = format!("http://{}:{}/api/v1/scheduler/heartbeat_server", scheduler_addr.ip(), scheduler_addr.port());
                 let client = reqwest::Client::new();
@@ -465,42 +494,43 @@ mod server {
             });
 
             info!("Server listening for clients on {}", addr);
+            let request_count = atomic::AtomicUsize::new(0);
             let server = rouille::Server::new(addr, move |request| {
-                let request_id = request.remote_addr();
-                trace!("Req {}: {:?}", request_id, request);
+                let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
+                trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
                 let response = (|| router!(request,
                     (POST) (/api/v1/distserver/assign_job/{job_id: JobId}) => {
-                        try_jwt_or_401!(request, &client_jwt_key, JobJwt { job_id });
-                        let toolchain = try_or_400!(bincode_input(request));
-                        trace!("Req {}: assign_job({}): {:?}", request_id, job_id, toolchain);
+                        try_jwt_or_401!(request, &jwt_key, JobJwt { job_id });
+                        let toolchain = try_or_400_log!(req_id, bincode_input(request));
+                        trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
-                        let res: AssignJobResult = try_or_500!(handler.handle_assign_job(job_id, toolchain));
+                        let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
                         bincode_response(&res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
-                        try_jwt_or_401!(request, &client_jwt_key, JobJwt { job_id });
-                        trace!("Req {}: submit_toolchain({})", request_id, job_id);
+                        try_jwt_or_401!(request, &jwt_key, JobJwt { job_id });
+                        trace!("Req {}: submit_toolchain({})", req_id, job_id);
 
                         let mut body = request.data().unwrap();
                         let toolchain_rdr = ToolchainReader(Box::new(body));
-                        let res: SubmitToolchainResult = try_or_500!(handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
+                        let res: SubmitToolchainResult = try_or_500_log!(req_id, handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
                         bincode_response(&res)
                     },
                     (POST) (/api/v1/distserver/run_job/{job_id: JobId}) => {
-                        try_jwt_or_401!(request, &client_jwt_key, JobJwt { job_id });
+                        try_jwt_or_401!(request, &jwt_key, JobJwt { job_id });
 
                         let mut body = request.data().unwrap();
                         let bincode_length = body.read_u32::<BigEndian>().unwrap() as u64;
 
                         let mut bincode_reader = body.take(bincode_length);
-                        let runjob = bincode::deserialize_from(&mut bincode_reader, bincode::Infinite).unwrap();
-                        trace!("Req {}: run_job({}): {:?}", request_id, job_id, runjob);
+                        let runjob = bincode::deserialize_from(&mut bincode_reader).unwrap();
+                        trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
                         let RunJobHttpRequest { command, outputs } = runjob;
                         let body = bincode_reader.into_inner();
-                        let inputs_rdr = InputsReader(Box::new(body));
+                        let inputs_rdr = InputsReader(Box::new(ZlibReadDecoder::new(body)));
                         let outputs = outputs.into_iter().collect();
 
-                        let res: RunJobResult = try_or_500!(handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
+                        let res: RunJobResult = try_or_500_log!(req_id, handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
                         bincode_response(&res)
                     },
                     _ => {
@@ -508,7 +538,7 @@ mod server {
                         rouille::Response::empty_404()
                     },
                 ))();
-                trace!("Res {}: {:?}", request_id, response);
+                trace!("Res {}: {:?}", req_id, response);
                 response
             }).unwrap();
             server.run();
@@ -534,15 +564,19 @@ mod server {
 #[cfg(feature = "dist-client")]
 mod client {
     use bincode;
-    use boxfnonce::BoxFnOnce;
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
-    use futures::Future;
+    use dist::pkg::{InputsPackager, ToolchainPackager};
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder as ZlibWriteEncoder;
+    use futures::{Future, Stream};
+    use futures_cpupool::CpuPool;
     use reqwest;
     use std::fs;
-    use std::io::{self, Write};
+    use std::io::Write;
     use std::net::{IpAddr, SocketAddr};
     use std::path::Path;
+    use std::time::Duration;
     use super::super::cache;
     use tokio_core;
 
@@ -554,25 +588,37 @@ mod client {
     use super::common::{
         Cfg,
         ReqwestRequestBuilderExt,
+        bincode_req,
         bincode_req_fut,
 
         RunJobHttpRequest,
     };
     use errors::*;
 
+    const REQUEST_TIMEOUT_SECS: u64 = 600;
+
     pub struct Client {
         auth: &'static config::DistAuth,
         scheduler_addr: SocketAddr,
-        client: reqwest::unstable::async::Client,
+        // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
+        // and only support owned bytes, which means the whole toolchain would end up in memory
+        client: reqwest::Client,
+        client_async: reqwest::unstable::async::Client,
+        pool: CpuPool,
         tc_cache: cache::ClientToolchains,
     }
 
     impl Client {
-        pub fn new(handle: &tokio_core::reactor::Handle, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::DistCustomToolchain], auth: &'static config::DistAuth) -> Self {
+        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::DistCustomToolchain], auth: &'static config::DistAuth) -> Self {
+            let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
+            let client = reqwest::ClientBuilder::new().timeout(timeout).build().unwrap();
+            let client_async = reqwest::unstable::async::ClientBuilder::new().timeout(timeout).build(handle).unwrap();
             Self {
                 auth,
                 scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
-                client: reqwest::unstable::async::Client::new(handle),
+                client,
+                client_async,
+                pool: pool.clone(),
                 tc_cache: cache::ClientToolchains::new(cache_dir, cache_size, custom_toolchains),
             }
         }
@@ -584,33 +630,47 @@ mod client {
                 config::DistAuth::Token { token } => token,
             };
             let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-            Box::new(f_res(self.client.post(&url).bearer_auth(token.to_owned()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
+            Box::new(f_res(self.client_async.post(&url).bearer_auth(token.to_owned()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
         }
         fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
-            let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
-            if let Some(toolchain_bytes) = self.tc_cache.get_toolchain(&tc) {
-                bincode_req_fut(self.client.post(&url).bearer_auth(job_alloc.auth.clone()).bytes(toolchain_bytes))
+            if let Some(toolchain_file) = self.tc_cache.get_toolchain(&tc) {
+                let url = format!("http://{}/api/v1/distserver/submit_toolchain/{}", job_alloc.server_id.addr(), job_alloc.job_id);
+                let mut req = self.client.post(&url);
+
+                Box::new(self.pool.spawn_fn(move || {
+                    req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
+                    bincode_req(&mut req)
+                }))
             } else {
                 f_err("couldn't find toolchain locally")
             }
         }
-        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, mut write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<InputsPackager>) -> SFuture<RunJobResult> {
             let url = format!("http://{}/api/v1/distserver/run_job/{}", job_alloc.server_id.addr(), job_alloc.job_id);
-            let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs }, bincode::Infinite).unwrap();
-            let bincode_length = bincode.len();
-            let mut inputs = vec![];
-            write_inputs(&mut inputs);
+            let mut req = self.client.post(&url);
 
-            let mut body = vec![];
-            body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
-            body.write(&bincode).unwrap();
-            body.write(&inputs).unwrap();
+            Box::new(self.pool.spawn_fn(move || {
+                let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs }).unwrap();
+                let bincode_length = bincode.len();
 
-            bincode_req_fut(self.client.post(&url).bearer_auth(job_alloc.auth.clone()).bytes(body))
+                let mut body = vec![];
+                body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
+                body.write(&bincode).unwrap();
+                {
+                    let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
+                    inputs_packager.write_inputs(&mut compressor).chain_err(|| "Could not write inputs for compilation")?;
+                    compressor.flush().unwrap();
+                    trace!("Compressed inputs from {} -> {}", compressor.total_in(), compressor.total_out());
+                    compressor.finish().unwrap();
+                }
+
+                req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                bincode_req(&mut req)
+            }))
         }
 
-        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
-            self.tc_cache.put_toolchain(compiler_path, weak_key, create)
+        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
+            self.tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager)
         }
         fn may_dist(&self) -> bool {
             true

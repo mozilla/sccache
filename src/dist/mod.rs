@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use boxfnonce::BoxFnOnce;
 use compiler;
 use std::fmt;
-use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::ffi::OsString;
 use std::path::Path;
@@ -42,6 +40,14 @@ pub use dist::cache::TcCache;
 
 pub use self::path_transform::PathTransformer;
 
+#[cfg(feature = "dist-client")]
+pub mod pkg;
+#[cfg(not(feature = "dist-client"))]
+mod pkg {
+    pub trait ToolchainPackager {}
+    pub trait InputsPackager {}
+}
+
 #[cfg(target_os = "windows")]
 mod path_transform {
     use std::collections::HashMap;
@@ -58,7 +64,7 @@ mod path_transform {
                 dist_to_local_path: HashMap::new(),
             }
         }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() { panic!("non absolute path {:?}", p) }
             self.to_dist(p)
         }
@@ -133,7 +139,7 @@ mod path_transform {
 
     impl PathTransformer {
         pub fn new() -> Self { PathTransformer }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() { panic!("non absolute path {:?}", p) }
             self.to_dist(p)
         }
@@ -271,6 +277,39 @@ impl From<ProcessOutput> for process::Output {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputData(Vec<u8>, u64);
+impl OutputData {
+    #[cfg(feature = "dist-server")]
+    pub fn from_reader<R: Read>(r: R) -> Self {
+        use flate2::Compression;
+        use flate2::read::ZlibEncoder as ZlibReadEncoder;
+        let mut compressor = ZlibReadEncoder::new(r, Compression::fast());
+        let mut res = vec![];
+        io::copy(&mut compressor, &mut res).unwrap();
+        OutputData(res, compressor.total_in())
+    }
+    pub fn lens(&self) -> OutputDataLens {
+        OutputDataLens { actual: self.1, compressed: self.0.len() as u64 }
+    }
+    #[cfg(feature = "dist-client")]
+    pub fn into_reader(self) -> impl Read {
+        use flate2::read::ZlibDecoder as ZlibReadDecoder;
+        let decompressor = ZlibReadDecoder::new(io::Cursor::new(self.0));
+        decompressor
+    }
+}
+pub struct OutputDataLens {
+    pub actual: u64,
+    pub compressed: u64,
+}
+impl fmt::Display for OutputDataLens {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Size: {}->{}", self.actual, self.compressed)
+    }
+}
+
 // TODO: standardise on compressed or not for inputs and toolchain
 
 // TODO: make fields not public
@@ -328,7 +367,7 @@ pub enum RunJobResult {
 #[serde(deny_unknown_fields)]
 pub struct JobComplete {
     pub output: ProcessOutput,
-    pub outputs: Vec<(String, Vec<u8>)>,
+    pub outputs: Vec<(String, OutputData)>,
 }
 
 // Status
@@ -355,7 +394,7 @@ pub enum SubmitToolchainResult {
 
 pub struct BuildResult {
     pub output: ProcessOutput,
-    pub outputs: Vec<(String, Vec<u8>)>,
+    pub outputs: Vec<(String, OutputData)>,
 }
 
 ///////////////////
@@ -429,10 +468,8 @@ pub trait Client {
     // To Server
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
-    // TODO: ideally Box<FnOnce or FnBox
-    // BoxFnOnce library doesn't work due to incorrect lifetime inference - https://github.com/rust-lang/rust/issues/28796#issuecomment-410071058
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult>;
-    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult>;
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)>;
     fn may_dist(&self) -> bool;
 }
 
@@ -447,11 +484,11 @@ impl Client for NoopClient {
     fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _write_inputs: Box<FnMut(&mut Write)>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult> {
         panic!("NoopClient");
     }
 
-    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
+    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
         bail!("NoopClient");
     }
     fn may_dist(&self) -> bool {

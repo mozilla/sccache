@@ -18,12 +18,12 @@ use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
 use nix;
 use sccache::dist::{
-    BuildResult, CompileCommand, InputsReader, TcCache, Toolchain,
+    BuildResult, CompileCommand, InputsReader, OutputData, TcCache, Toolchain,
     BuilderIncoming,
 };
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -112,6 +112,7 @@ impl OverlayBuilder {
             entry.clone()
         };
 
+        trace!("Creating build directory for {}-{}", tc.archive_id, id);
         let build_dir = self.dir.join("builds").join(format!("{}-{}", tc.archive_id, id));
         fs::create_dir(&build_dir)?;
         Ok(OverlaySpec { build_dir, toolchain_dir })
@@ -121,7 +122,7 @@ impl OverlayBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
-        crossbeam_utils::scoped::scope(|scope| { scope.spawn(|| {
+        crossbeam_utils::thread::scope(|scope| { scope.spawn(|| {
 
             // Now mounted filesystems will be automatically unmounted when this thread dies
             // (and tmpfs filesystems will be completely destroyed)
@@ -207,8 +208,7 @@ impl OverlayBuilder {
                 let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
                 match fs::File::open(abspath) {
                     Ok(mut file) => {
-                        let mut output = vec![];
-                        file.read_to_end(&mut output).unwrap();
+                        let output = OutputData::from_reader(file);
                         outputs.push((path, output))
                     },
                     Err(e) => {
@@ -507,7 +507,7 @@ impl DockerBuilder {
             // TODO: this isn't great, but cp gives it out as a tar
             let output = Command::new("docker").args(&["exec", cid, "/busybox", "cat"]).arg(abspath).output().unwrap();
             if output.status.success() {
-                outputs.push((path, output.stdout))
+                outputs.push((path, OutputData::from_reader(&*output.stdout)))
             } else {
                 debug!("Missing output path {:?}", path)
             }

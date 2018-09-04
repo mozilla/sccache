@@ -13,21 +13,25 @@
 // limitations under the License.
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
-               pkg::CompilerPackager, Compilation, HashResult};
+               Compilation, HashResult};
 use compiler::args::*;
 use dist;
+#[cfg(feature = "dist-client")]
+use dist::pkg;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
 use mock_command::{CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::env::consts::DLL_EXTENSION;
+use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs;
 use std::hash::Hash;
-use std::io::{self, Read};
+#[cfg(feature = "dist-client")]
+use std::io;
+use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -37,6 +41,9 @@ use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
+
+/// Directory in the sysroot containing binary to which rustc is linked.
+const BINS_DIR: &str = "bin";
 
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
 #[cfg(not(windows))]
@@ -77,10 +84,14 @@ pub struct ParsedArguments {
     output_dir: PathBuf,
     /// Paths to extern crates used in the compile.
     externs: Vec<PathBuf>,
+    /// The directories searched for rlibs
+    crate_link_paths: Vec<PathBuf>,
     /// Static libraries linked to in the compile.
     staticlibs: Vec<PathBuf>,
     /// The crate name passed to --crate-name.
     crate_name: String,
+    /// The crate types that will be generated
+    crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
     /// The value of any `--color` option passed on the commandline.
@@ -96,14 +107,27 @@ pub struct RustCompilation {
     sysroot: PathBuf,
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
+    /// The compiler inputs.
+    inputs: Vec<PathBuf>,
     /// The compiler outputs.
     outputs: HashMap<String, PathBuf>,
+    /// The directories searched for rlibs
+    crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
+    /// The crate types that will be generated
+    crate_types: CrateTypes,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
     env_vars: Vec<(OsString, OsString)>,
+}
+
+// The selection of crate types for this compilation
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrateTypes {
+    rlib: bool,
+    staticlib: bool,
 }
 
 lazy_static! {
@@ -119,27 +143,27 @@ const CACHE_VERSION: &[u8] = b"2";
 
 /// Calculate the SHA-1 digest of each file in `files` on background threads
 /// in `pool`.
-fn hash_all(files: Vec<String>, pool: &CpuPool) -> SFuture<Vec<String>>
+fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
 {
     let start = Instant::now();
     let count = files.len();
     let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)))
+    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
              .map(move |hashes| {
                  trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
                  hashes
              }))
 }
 
-/// Calculate SHA-1 digests for all source files listed in rustc's dep-info output.
-fn hash_source_files<T>(creator: &T,
+/// Get absolute paths for all source files listed in rustc's dep-info output.
+fn get_source_files<T>(creator: &T,
                         crate_name: &str,
                         executable: &Path,
                         arguments: &[OsString],
                         cwd: &Path,
                         env_vars: &[(OsString, OsString)],
                         pool: &CpuPool)
-                        -> SFuture<Vec<String>>
+                        -> SFuture<Vec<PathBuf>>
     where T: CommandCreatorSync,
 {
     let start = Instant::now();
@@ -167,29 +191,29 @@ fn hash_source_files<T>(creator: &T,
                 format!("Failed to parse dep info for {}", name2)
             })
         });
-        Box::new(parsed.and_then(move |files| {
+        Box::new(parsed.map(move |files| {
             trace!("[{}]: got {} source files from dep-info in {}", crate_name,
                    files.len(), fmt_duration_as_secs(&start.elapsed()));
             // Just to make sure we capture temp_dir.
             drop(temp_dir);
-            hash_all(files, &pool)
+            files
         }))
     }))
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
 /// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<String>>
+fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<PathBuf>>
     where T: AsRef<Path>,
           U: AsRef<Path>,
 {
-    let mut f = File::open(file)?;
+    let mut f = fs::File::open(file)?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
     Ok(parse_dep_info(&deps, cwd))
 }
 
-fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
+fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
     where T: AsRef<Path>
 {
     let cwd = cwd.as_ref();
@@ -206,7 +230,7 @@ fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<String>
     let mut deps = line[pos + 2..]
         .split(' ')
         .map(|s| s.trim()).filter(|s| !s.is_empty())
-        .map(|s| cwd.join(s).to_string_lossy().into_owned())
+        .map(|s| cwd.join(s))
         .collect::<Vec<_>>();
     deps.sort();
     deps
@@ -262,7 +286,7 @@ impl Rust {
                     e.file_type().ok().and_then(|t| {
                         let p = e.path();
                         if t.is_file() && p.extension().map(|e| e == DLL_EXTENSION).unwrap_or(false) {
-                            p.into_os_string().into_string().ok()
+                            Some(p)
                         } else {
                             None
                         }
@@ -273,7 +297,7 @@ impl Rust {
             Ok((sysroot, libs))
         });
         Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
-            hash_all(libs, &pool).map(move |digests| {
+            hash_all(&libs, &pool).map(move |digests| {
                 Rust {
                     executable: executable,
                     sysroot,
@@ -334,6 +358,54 @@ macro_rules! make_os_string {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct ArgCrateTypes {
+    rlib: bool,
+    staticlib: bool,
+    others: HashSet<String>,
+}
+impl FromArg for ArgCrateTypes {
+    fn process(arg: OsString) -> ArgParseResult<Self> {
+        let arg = String::process(arg)?;
+        let mut crate_types = ArgCrateTypes {
+            rlib: false,
+            staticlib: false,
+            others: HashSet::new(),
+        };
+        for ty in arg.split(",") {
+            match ty {
+                // It is assumed that "lib" always refers to "rlib", which
+                // is true right now but may not be in the future
+                "lib" |
+                "rlib" => crate_types.rlib = true,
+                "staticlib" => crate_types.staticlib = true,
+                other => { crate_types.others.insert(other.to_owned()); },
+            }
+        }
+        Ok(crate_types)
+    }
+}
+impl IntoArg for ArgCrateTypes {
+    fn into_arg_os_string(self) -> OsString {
+        let ArgCrateTypes { rlib, staticlib, others } = self;
+        let mut types: Vec<_> = others.iter().map(String::as_str)
+            .chain(if rlib { Some("rlib") } else { None })
+            .chain(if staticlib { Some("staticlib") } else { None }).collect();
+        types.sort();
+        let types_string = types.join(",");
+        types_string.into()
+    }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+        let ArgCrateTypes { rlib, staticlib, others } = self;
+        let mut types: Vec<_> = others.iter().map(String::as_str)
+            .chain(if rlib { Some("rlib") } else { None })
+            .chain(if staticlib { Some("staticlib") } else { None }).collect();
+        types.sort();
+        let types_string = types.join(",");
+        Ok(types_string)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct ArgLinkLibrary {
     kind: String,
     name: String,
@@ -349,9 +421,13 @@ impl FromArg for ArgLinkLibrary {
     }
 }
 impl IntoArg for ArgLinkLibrary {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
         make_os_string!(kind, "=", name)
+    }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+        let ArgLinkLibrary { kind, name } = self;
+        Ok(format!("{}={}", kind, name))
     }
 }
 
@@ -371,9 +447,13 @@ impl FromArg for ArgLinkPath {
     }
 }
 impl IntoArg for ArgLinkPath {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgLinkPath { kind, path } = self;
         make_os_string!(kind, "=", path)
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgLinkPath { kind, path } = self;
+        Ok(format!("{}={}", kind, path.into_arg_string(transformer)?))
     }
 }
 
@@ -389,13 +469,21 @@ impl FromArg for ArgCodegen {
     }
 }
 impl IntoArg for ArgCodegen {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgCodegen { opt, value } = self;
         if let Some(value) = value {
             make_os_string!(opt, "=", value)
         } else {
             make_os_string!(opt)
         }
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgCodegen { opt, value } = self;
+        Ok(if let Some(value) = value {
+            format!("{}={}", opt, value.into_arg_string(transformer)?)
+        } else {
+            opt
+        })
     }
 }
 
@@ -414,9 +502,13 @@ impl FromArg for ArgExtern {
     }
 }
 impl IntoArg for ArgExtern {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgExtern { name, path } = self;
         make_os_string!(name, "=", path)
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgExtern { name, path } = self;
+        Ok(format!("{}={}", name, path.into_arg_string(transformer)?))
     }
 }
 
@@ -443,16 +535,23 @@ impl FromArg for ArgTarget {
             return Ok(ArgTarget::Unsure(arg))
         }
         // The file doesn't exist so it can't be a path, safe to assume it's a name
-        Ok(ArgTarget::Name(os_string_to_string_arg(arg)?))
+        Ok(ArgTarget::Name(arg.into_string().map_err(ArgParseError::InvalidUnicode)?))
     }
 }
 impl IntoArg for ArgTarget {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         match self {
             ArgTarget::Name(s) => s.into(),
             ArgTarget::Path(p) => p.into(),
             ArgTarget::Unsure(s) => s.into(),
         }
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        Ok(match self {
+            ArgTarget::Name(s) => s,
+            ArgTarget::Path(p) => p.into_arg_string(transformer)?,
+            ArgTarget::Unsure(s) => s.into_arg_string(transformer)?,
+        })
     }
 }
 
@@ -467,7 +566,7 @@ ArgData!{
     Extern(ArgExtern),
     Color(String),
     CrateName(String),
-    CrateType(String),
+    CrateType(ArgCrateTypes),
     OutDir(PathBuf),
     CodeGen(ArgCodegen),
     PassThrough(OsString),
@@ -485,7 +584,7 @@ static ARGS: [ArgInfo<ArgData>; 33] = [
     take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
     take_arg!("--color", String, CanBeSeparated('='), Color),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
-    take_arg!("--crate-type", String, CanBeSeparated('='), CrateType),
+    take_arg!("--crate-type", ArgCrateTypes, CanBeSeparated('='), CrateType),
     take_arg!("--deny", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--emit", String, CanBeSeparated('='), Emit),
     take_arg!("--error-format", OsString, CanBeSeparated('='), PassThrough),
@@ -521,8 +620,10 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut input = None;
     let mut output_dir = None;
     let mut crate_name = None;
+    let mut crate_types = CrateTypes { rlib: false, staticlib: false };
     let mut extra_filename = None;
     let mut externs = vec![];
+    let mut crate_link_paths = vec![];
     let mut static_lib_names = vec![];
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
@@ -544,6 +645,11 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
             },
             Some(LinkPath(ArgLinkPath { kind, path })) => {
+                // "crate" is not typically necessary as cargo will normally
+                // emit explicit --extern arguments
+                if kind == "crate" || kind == "dependency" || kind == "all" {
+                    crate_link_paths.push(cwd.join(path))
+                }
                 if kind == "native" || kind == "all" {
                     static_link_paths.push(cwd.join(path))
                 }
@@ -555,12 +661,16 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
                 emit = Some(value.split(",").map(str::to_owned).collect())
             }
-            Some(CrateType(value)) => {
+            Some(CrateType(ArgCrateTypes { rlib, staticlib, others })) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the
                 // system linker to link them, and we don't know about all the linker inputs.
-                if value.split(",").any(|t| t != "lib" && t != "rlib" && t != "staticlib") {
-                    cannot_cache!("crate-type")
+                if !others.is_empty() {
+                    let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                    let others_string = others.join(",");
+                    cannot_cache!("crate-type", others_string)
                 }
+                crate_types.rlib |= rlib;
+                crate_types.staticlib |= staticlib;
             }
             Some(CrateName(value)) => crate_name = Some(value.clone()),
             Some(OutDir(value)) => output_dir = Some(value.clone()),
@@ -641,6 +751,12 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     if !emit.is_empty() && !emit.contains("link") {
         return CompilerArguments::NotCompilation;
     }
+    // If it's not an rlib and not a staticlib then crate-type wasn't passed,
+    // so it will usually be inferred as a binary, though the `#![crate_type`
+    // annotation may dictate otherwise - either way, we don't know what to do.
+    if let CrateTypes { rlib: false, staticlib: false } = crate_types {
+        cannot_cache!("crate-type", "No crate-type passed".to_owned())
+    }
     // We won't cache invocations that are outputting anything but
     // linker output and dep-info.
     if emit.iter().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
@@ -680,7 +796,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     CompilerArguments::Ok(ParsedArguments {
         arguments: args,
         output_dir: output_dir.into(),
+        crate_types,
         externs: externs,
+        crate_link_paths,
         staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
@@ -700,11 +818,11 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
-        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
+        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
-            .map(|arg| (arg.to_os_string(), arg.get_data().cloned().map(IntoArg::into_os_string))).collect();
+            .map(|arg| (arg.to_os_string(), arg.get_data().cloned().map(IntoArg::into_arg_os_string))).collect();
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
         // source files for this crate.
@@ -719,22 +837,24 @@ impl<T> CompilerHasher<T> for RustHasher
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .map(|a| a.clone())
             .collect::<Vec<_>>();
-        let source_hashes = hash_source_files(creator, &crate_name, &executable, &filtered_arguments, &cwd, &env_vars, pool);
+        // Find all the source files and hash them
+        let source_hashes_pool = pool.clone();
+        let source_files = get_source_files(creator, &crate_name, &executable, &filtered_arguments, &cwd, &env_vars, pool);
+        let source_files_and_hashes = source_files
+            .and_then(move |source_files| {
+                hash_all(&source_files, &source_hashes_pool).map(|source_hashes| (source_files, source_hashes))
+            });
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
-        let extern_hashes = hash_all(externs.iter()
-                                     .map(|e| cwd.join(e).to_string_lossy().into_owned())
-                                     .collect(),
-                                     &pool);
+        let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
+        let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
-        let staticlib_hashes = hash_all(staticlibs.into_iter()
-                                        .map(|s| s.to_string_lossy().into_owned())
-                                        .collect(),
-                                        &pool);
+        let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
+        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
         let creator = creator.clone();
-        let hashes = source_hashes.join3(extern_hashes, staticlib_hashes);
-        Box::new(hashes.and_then(move |(source_hashes, extern_hashes, staticlib_hashes)|
+        let hashes = source_files_and_hashes.join3(extern_hashes, staticlib_hashes);
+        Box::new(hashes.and_then(move |((source_files, source_hashes), extern_hashes, staticlib_hashes)|
                                         -> SFuture<_> {
             // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
             let mut m = Digest::new();
@@ -811,23 +931,25 @@ impl<T> CompilerHasher<T> for RustHasher
                     let p = output_dir.join(&dep_info);
                     outputs.insert(dep_info.to_string_lossy().into_owned(), p);
                 }
-                let toolchain_creator = Box::new(RustCompilerPackager { sysroot: sysroot.clone() });
                 let mut arguments = arguments;
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
+                let inputs = source_files.into_iter().chain(abs_externs).chain(abs_staticlibs).collect();
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
                         sysroot: sysroot,
                         arguments: arguments,
+                        inputs: inputs,
                         outputs: outputs,
-                        crate_name: crate_name,
+                        crate_link_paths,
+                        crate_name,
+                        crate_types,
                         cwd,
                         env_vars,
                     }),
                     weak_toolchain_key,
-                    toolchain_creator,
                 }
             }))
         }))
@@ -847,17 +969,98 @@ impl<T> CompilerHasher<T> for RustHasher
 }
 
 impl Compilation for RustCompilation {
-    fn generate_compile_commands(&self, _path_transformer: &mut dist::PathTransformer)
+    fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, .. } = *self;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, ref sysroot, .. } = *self;
         trace!("[{}]: compile", crate_name);
-        Ok((CompileCommand {
+
+        let command = CompileCommand {
             executable: executable.to_owned(),
             arguments: arguments.iter().flat_map(|arg| arg.iter_os_strings()).collect(),
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
-        }, None, Cacheable::Yes))
+        };
+
+        macro_rules! try_string_arg {
+            ($e:expr) => {
+                match $e {
+                    Ok(s) => s,
+                    Err(e) => {
+                        debug!("Conversion failed for distributed compile argument: {}", e);
+                        return None
+                    },
+                }
+            };
+        }
+        let dist_command = (|| {
+            let mut dist_arguments = vec![];
+            // flat_map would be nice but the lifetimes don't work out
+            for argument in arguments.iter() {
+                let path_transformer_fn = &mut |p: &Path| path_transformer.to_dist(p);
+                if let Argument::Raw(input_path) = argument {
+                    // Need to explicitly handle the input argument as it's not parsed as a path
+                    let input_path = Path::new(input_path).to_owned();
+                    dist_arguments.push(try_string_arg!(input_path.into_arg_string(path_transformer_fn)))
+                } else {
+                    for string_arg in argument.iter_strings(path_transformer_fn) {
+                        dist_arguments.push(try_string_arg!(string_arg))
+                    }
+                }
+            }
+
+            let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
+
+            Some(dist::CompileCommand {
+                executable: path_transformer.to_dist(&sysroot_executable)?,
+                arguments: dist_arguments,
+                env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+                cwd: path_transformer.to_dist_assert_abs(cwd)?,
+            })
+        })();
+
+        Ok((command, dist_command, Cacheable::Yes))
+    }
+
+    #[cfg(feature = "dist-client")]
+    fn into_dist_packagers(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+
+        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
+        trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
+
+        let mut tar_inputs = vec![];
+        for input_path in inputs.into_iter() {
+            let input_path = pkg::simplify_path(&input_path)?;
+            let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+            tar_inputs.push((input_path, dist_input_path))
+        }
+
+        let mut tar_crate_libs = vec![];
+        for crate_link_path in crate_link_paths.into_iter() {
+            let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            let dir_entries = match fs::read_dir(crate_link_path) {
+                Ok(iter) => iter,
+                Err(ref e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Error::with_chain(e, "Failed to read dir entries in crate link path")),
+            };
+            for entry in dir_entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => return Err(Error::with_chain(e, "Error during iteration over crate link path")),
+                };
+                let path = entry.path();
+                if !path.extension().map(|e| e == "rlib" || e == DLL_EXTENSION).unwrap_or(false) || !path.is_file() {
+                    continue
+                }
+                let dist_path = path_transformer.to_dist(&path).unwrap();
+                tar_crate_libs.push((path, dist_path))
+            }
+        }
+
+        let inputs_packager = Box::new(RustInputsPackager { crate_types, tar_inputs, tar_crate_libs });
+        let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
+
+        Ok((inputs_packager, toolchain_packager))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
@@ -865,25 +1068,119 @@ impl Compilation for RustCompilation {
     }
 }
 
-struct RustCompilerPackager {
+#[cfg(feature = "dist-client")]
+struct RustInputsPackager {
+    crate_types: CrateTypes,
+    tar_inputs: Vec<(PathBuf, String)>,
+    tar_crate_libs: Vec<(PathBuf, String)>,
+}
+
+#[cfg(feature = "dist-client")]
+impl pkg::InputsPackager for RustInputsPackager {
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()> {
+        use ar;
+        use tar;
+
+        let RustInputsPackager { crate_types, tar_inputs, tar_crate_libs } = *{self};
+
+        let mut builder = tar::Builder::new(wtr);
+
+        let mut all_tar_inputs: Vec<_> = tar_inputs.into_iter().chain(tar_crate_libs).collect();
+        all_tar_inputs.sort();
+        // There are almost certainly duplicates from explicit externs also within the lib search paths
+        all_tar_inputs.dedup();
+
+        // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
+        // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
+        let can_trim_rlibs = if let CrateTypes { rlib: true, staticlib: false } = crate_types { true } else { false };
+
+        for (input_path, dist_input_path) in all_tar_inputs.iter() {
+            let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
+            let file = fs::File::open(input_path)?;
+            if can_trim_rlibs && input_path.extension().map(|e| e == "rlib").unwrap_or(false) {
+                let mut archive = ar::Archive::new(file);
+
+                while let Some(entry_result) = archive.next_entry() {
+                    let mut entry = entry_result?;
+                    if entry.header().identifier() != b"rust.metadata.bin" {
+                        continue
+                    }
+                    let mut metadata = vec![];
+                    io::copy(&mut entry, &mut metadata)?;
+                    let mut metadata_ar = vec![];
+                    {
+                        let mut ar_builder = ar::Builder::new(&mut metadata_ar);
+                        ar_builder.append(entry.header(), metadata.as_slice())?
+                    }
+                    file_header.set_size(metadata_ar.len() as u64);
+                    file_header.set_cksum();
+                    builder.append(&file_header, metadata_ar.as_slice())?;
+                    break
+                }
+            } else {
+                file_header.set_cksum();
+                builder.append(&file_header, file)?
+            }
+        }
+
+        // Finish archive
+        let _ = builder.into_inner()?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "dist-client")]
+#[allow(unused)]
+struct RustToolchainPackager {
     sysroot: PathBuf,
 }
 
-impl CompilerPackager for RustCompilerPackager {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
-        use tar;
+#[cfg(feature = "dist-client")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl pkg::ToolchainPackager for RustToolchainPackager {
+    fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
+        use walkdir::WalkDir;
 
         info!("Packaging Rust compiler");
-        let mut builder = tar::Builder::new(f);
-        builder.append_dir_all(&self.sysroot.strip_prefix("/").unwrap(), &self.sysroot).unwrap();
-        builder.finish().unwrap();
-        Ok(())
-    }
+        let RustToolchainPackager { sysroot } = *self;
 
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn write_pkg(self: Box<Self>, _f: File) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
+        let mut package_builder = pkg::ToolchainPackageBuilder::new();
+        package_builder.add_common()?;
+
+        let bins_path = sysroot.join(BINS_DIR);
+        let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
+        package_builder.add_executable_and_deps(sysroot_executable)?;
+
+        // Although by not following symlinks we could break a custom constructed toolchain with
+        // links everywhere, this is just a best-effort auto packaging
+        fn walk_and_add(path: &Path, package_builder: &mut pkg::ToolchainPackageBuilder) -> Result<()> {
+            for entry in WalkDir::new(path).follow_links(false) {
+                let entry = entry?;
+                let file_type = entry.file_type();
+                if file_type.is_dir() {
+                    continue
+                } else if file_type.is_symlink() {
+                    let metadata = fs::metadata(entry.path())?;
+                    if !metadata.file_type().is_file() {
+                        continue
+                    }
+                } else if !file_type.is_file() {
+                    // Device or other oddity
+                    continue
+                }
+                // It's either a file, or a symlink pointing to a file
+                package_builder.add_file(entry.path().to_owned())?
+            }
+            Ok(())
+        }
+
+        walk_and_add(&bins_path, &mut package_builder)?;
+        if BINS_DIR != LIBS_DIR {
+            let libs_path = sysroot.join(LIBS_DIR);
+            walk_and_add(&libs_path, &mut package_builder)?
+        }
+
+        package_builder.into_compressed_tar(f)
     }
 }
 
@@ -927,30 +1224,31 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple() {
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert!(h.dep_info.is_none());
         assert!(h.externs.is_empty());
-        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        let h = parses!("--emit=link", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert!(h.dep_info.is_none());
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir=out", "--crate-name=foo", "--crate-type=lib");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert_eq!(parses!("--emit", "link", "-C", "opt-level=1", "foo.rs",
-                           "--out-dir", "out", "--crate-name", "foo"),
+                           "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib"),
                    parses!("--emit=link", "-Copt-level=1", "foo.rs",
-                           "--out-dir=out", "--crate-name=foo"));
+                           "--out-dir=out", "--crate-name=foo", "--crate-type=lib"));
         let h = parses!("--emit", "link,dep-info", "foo.rs", "--out-dir", "out",
-                        "--crate-name", "my_crate",
+                        "--crate-name", "my_crate", "--crate-type", "lib",
                         "-C", "extra-filename=-abcxyz");
         assert_eq!(h.output_dir.to_str(), Some("out"));
         assert_eq!(h.dep_info.unwrap().to_str().unwrap(), "my_crate-abcxyz.d");
-        fails!("--emit", "link", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "link", "foo.rs", "--crate-name=foo");
-        fails!("--emit", "asm", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out", "--crate-name=foo");
-        fails!("--emit", "link", "foo.rs", "--out-dir", "out");
+        fails!("--emit", "link", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "link", "foo.rs", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm,link", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "asm,link,dep-info", "foo.rs", "--out-dir", "out", "--crate-name=foo", "--crate-type=lib");
+        fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name=foo");
+        fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-type=lib");
         // From an actual cargo compilation, with some args shortened:
         let h = parses!("--crate-name", "foo", "src/lib.rs",
                         "--crate-type", "lib", "--emit=dep-info,link",
@@ -969,15 +1267,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_incremental() {
-        parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
-        let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
+        let r = fails!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                        "-C", "incremental=/foo");
         assert_eq!(r, CompilerArguments::CannotCache("incremental", None))
     }
 
     #[test]
     fn test_parse_arguments_dep_info_no_extra_filename() {
-        let h = parses!("--crate-name", "foo", "src/lib.rs",
+        let h = parses!("--crate-name", "foo", "--crate-type", "lib", "src/lib.rs",
                         "--emit=dep-info,link",
                         "--out-dir", "/out");
         assert_eq!(h.dep_info, Some("foo.d".into()));
@@ -985,11 +1283,12 @@ mod test {
 
     #[test]
     fn test_parse_arguments_native_libs() {
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "bar", "foo.rs", "--out-dir", "out");
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "static=bar", "foo.rs", "--out-dir",
-                "out");
-        parses!("--crate-name", "foo", "--emit", "link", "-l", "dylib=bar", "foo.rs", "--out-dir",
-                "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "bar", "foo.rs",
+                "--out-dir", "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "static=bar", "foo.rs",
+                "--out-dir", "out");
+        parses!("--crate-name", "foo", "--crate-type", "lib,staticlib", "--emit", "link", "-l", "dylib=bar", "foo.rs",
+                "--out-dir", "out");
     }
 
     #[test]
@@ -1010,15 +1309,15 @@ mod test {
 
     #[test]
     fn test_parse_arguments_color() {
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo");
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib");
         assert_eq!(h.color_mode, ColorMode::Auto);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=always");
         assert_eq!(h.color_mode, ColorMode::On);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=never");
         assert_eq!(h.color_mode, ColorMode::Off);
-        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+        let h = parses!("--emit", "link", "foo.rs", "--out-dir", "out", "--crate-name", "foo", "--crate-type", "lib",
                         "--color=auto");
         assert_eq!(h.color_mode, ColorMode::Auto);
     }
@@ -1056,7 +1355,7 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["abc.rs", "bar.rs", "baz.rs"],
+        assert_eq!(pathvec!["abc.rs", "bar.rs", "baz.rs"],
                    parse_dep_info(&deps, ""));
     }
 
@@ -1071,10 +1370,10 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
+        assert_eq!(pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
                    parse_dep_info(&deps, "foo/"));
 
-        assert_eq!(stringvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
+        assert_eq!(pathvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
                    parse_dep_info(&deps, "/foo/bar/"));
     }
 
@@ -1089,7 +1388,7 @@ bar.rs:
 
 /foo/bar.rs:
 ";
-        assert_eq!(stringvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
+        assert_eq!(pathvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
                    parse_dep_info(&deps, "/bar/"));
     }
 
@@ -1104,10 +1403,10 @@ abc.rs:
 
 bar.rs:
 ";
-        assert_eq!(stringvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
+        assert_eq!(pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
                    parse_dep_info(&deps, "foo/"));
 
-        assert_eq!(stringvec!["c:/foo/bar/abc.rs", "c:/foo/bar/bar.rs", "c:/foo/bar/baz.rs"],
+        assert_eq!(pathvec!["c:/foo/bar/abc.rs", "c:/foo/bar/bar.rs", "c:/foo/bar/baz.rs"],
                    parse_dep_info(&deps, "c:/foo/bar/"));
     }
 
@@ -1120,7 +1419,7 @@ c:/foo/baz.rs: c:/foo/bar.rs
 c:/foo/abc.rs:
 c:/foo/bar.rs:
 ";
-        assert_eq!(stringvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
+        assert_eq!(pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
                    parse_dep_info(&deps, "c:/bar/"));
     }
 
@@ -1182,8 +1481,10 @@ c:/foo/bar.rs:
                 ],
                 output_dir: "foo/".into(),
                 externs: vec!["bar.rlib".into()],
+                crate_link_paths: vec![],
                 staticlibs: vec![f.tempdir.path().join("libbaz.a")],
                 crate_name: "foo".into(),
+                crate_types: CrateTypes { rlib: true, staticlib: false },
                 dep_info: None,
                 color_mode: ColorMode::Auto,
             }
@@ -1278,28 +1579,34 @@ c:/foo/bar.rs:
             Ok(())
         }
         assert_eq!(hash_key(&ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
-                                   "out", "--crate-name", "foo", "--extern", "b=b.rlib"], &vec![],
+                                   "out", "--crate-name", "foo", "--crate-type", "lib",
+                                   "--extern", "b=b.rlib"], &vec![],
                             &mk_files),
                    hash_key(&ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
-                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![],
                             &mk_files));
     }
 
     #[test]
     fn test_equal_hashes_link_paths() {
         assert_eq!(hash_key(&ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
-                                   "--crate-name", "foo", "-L", "y=y"], &vec![], nothing),
+                                   "--crate-name", "foo", "--crate-type", "lib",
+                                   "-L", "y=y"], &vec![], nothing),
                    hash_key(&ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
-                                   "--out-dir", "out", "--crate-name", "foo"], &vec![], nothing));
+                                   "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![], nothing));
     }
 
     #[test]
     fn test_equal_hashes_cfg_features() {
         assert_eq!(hash_key(&ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
-                                   "out", "--crate-name", "foo", "--cfg", "feature=b"], &vec![],
+                                   "out", "--crate-name", "foo", "--crate-type", "lib",
+                                   "--cfg", "feature=b"], &vec![],
                             nothing),
                    hash_key(&ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
-                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo"], &vec![],
+                                   "foo.rs", "--out-dir", "out", "--crate-name", "foo",
+                                   "--crate-type", "lib"], &vec![],
                             nothing));
     }
 }

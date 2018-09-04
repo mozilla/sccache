@@ -21,7 +21,7 @@ extern crate tar;
 
 use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
-use rand::Rng;
+use rand::RngCore;
 use sccache::config::INSECURE_DIST_CLIENT_TOKEN;
 use sccache::dist::{
     self,
@@ -407,14 +407,16 @@ struct JobDetail {
     state: JobState,
 }
 
+// To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
+// in alphabetical order
 pub struct Scheduler {
     job_count: AtomicUsize,
 
-    // Currently running jobs, can never be Complete
-    jobs: Mutex<BTreeMap<JobId, JobDetail>>,
-
     // Circular buffer of most recently completed jobs
     finished_jobs: Mutex<ArrayDeque<[(JobId, JobDetail); 1024], arraydeque::Wrapping>>,
+
+    // Currently running jobs, can never be Complete
+    jobs: Mutex<BTreeMap<JobId, JobDetail>>,
 
     servers: Mutex<HashMap<ServerId, ServerDetails>>,
 }
@@ -442,7 +444,10 @@ impl SchedulerIncoming for Scheduler {
     fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult> {
         // TODO: prune old servers
         let (job_id, server_id, auth) = {
+            // LOCKS
+            let mut jobs = self.jobs.lock().unwrap();
             let mut servers = self.servers.lock().unwrap();
+
             let mut best = None;
             let mut best_load: f64 = MAX_PER_CORE_LOAD;
             let num_servers = servers.len();
@@ -462,7 +467,6 @@ impl SchedulerIncoming for Scheduler {
                 server_details.jobs_assigned += 1;
 
                 info!("Job {} created and assigned to server {:?}", job_id, server_id);
-                let mut jobs = self.jobs.lock().unwrap();
                 assert!(jobs.insert(job_id, JobDetail { server_id, state: JobState::Pending }).is_none());
                 let auth = (server_details.generate_job_auth)(job_id);
                 (job_id, server_id, auth)
@@ -473,7 +477,9 @@ impl SchedulerIncoming for Scheduler {
         };
         let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone()).chain_err(|| "assign job failed")?;
         if !need_toolchain {
+            // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
+
             jobs.get_mut(&job_id).unwrap().state = JobState::Ready
         }
         let job_alloc = JobAlloc { auth, job_id, server_id };
@@ -484,8 +490,12 @@ impl SchedulerIncoming for Scheduler {
         if num_cpus == 0 {
             bail!("Invalid number of CPUs (0) specified in heartbeat")
         }
+
+        // LOCKS
+        let mut servers = self.servers.lock().unwrap();
+
         let mut is_new = false;
-        self.servers.lock().unwrap().entry(server_id)
+        servers.entry(server_id)
             .and_modify(|details| details.last_seen = Instant::now())
             .or_insert_with(|| {
                 info!("Registered new server {:?}", server_id);
@@ -496,7 +506,11 @@ impl SchedulerIncoming for Scheduler {
     }
 
     fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> Result<UpdateJobStateResult> {
+        // LOCKS
+        let mut finished_jobs = self.finished_jobs.lock().unwrap();
         let mut jobs = self.jobs.lock().unwrap();
+        let mut servers = self.servers.lock().unwrap();
+
         if let btree_map::Entry::Occupied(mut entry) = jobs.entry(job_id) {
             // TODO: nll should mean not needing to copy this out
             let job_detail = *entry.get();
@@ -510,8 +524,8 @@ impl SchedulerIncoming for Scheduler {
                 },
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, job_entry) = entry.remove_entry();
-                    self.finished_jobs.lock().unwrap().push_back((job_id, job_entry));
-                    self.servers.lock().unwrap().get_mut(&server_id).unwrap().jobs_assigned -= 1
+                    finished_jobs.push_back((job_id, job_entry));
+                    servers.get_mut(&server_id).unwrap().jobs_assigned -= 1
                 },
                 (from, to) => {
                     bail!("Invalid job state transition from {} to {}", from, to)
@@ -525,8 +539,10 @@ impl SchedulerIncoming for Scheduler {
     }
 
     fn handle_status(&self) -> Result<StatusResult> {
+        let servers = self.servers.lock().unwrap();
+
         Ok(StatusResult {
-            num_servers: self.servers.lock().unwrap().len(),
+            num_servers: servers.len(),
         })
     }
 }
