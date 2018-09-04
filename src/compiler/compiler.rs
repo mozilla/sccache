@@ -22,9 +22,10 @@ use compiler::c::{CCompiler, CCompilerKind};
 use compiler::clang::Clang;
 use compiler::gcc::GCC;
 use compiler::msvc::MSVC;
-use compiler::pkg::CompilerPackager;
 use compiler::rust::Rust;
 use dist;
+#[cfg(feature = "dist-client")]
+use dist::pkg;
 use futures::{Future, IntoFuture};
 use futures_cpupool::CpuPool;
 use mock_command::{
@@ -336,7 +337,6 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             out_pretty: String)
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
-    use boxfnonce::BoxFnOnce;
     use futures::future;
     use std::io;
 
@@ -355,15 +355,14 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                 .map(|(_key, path)| path_transformer.to_dist_assert_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .unwrap();
-            compilation.into_dist_inputs_creator(&mut path_transformer)
-                .map(|(inputs_creator, toolchain_creator)| (path_transformer, dist_compile_cmd, inputs_creator, toolchain_creator, dist_output_paths))
+            compilation.into_dist_packagers(&mut path_transformer)
+                .map(|packagers| (path_transformer, dist_compile_cmd, packagers, dist_output_paths))
         })
-        .and_then(move |(path_transformer, mut dist_compile_cmd, inputs_creator, toolchain_creator, dist_output_paths)| {
+        .and_then(move |(path_transformer, mut dist_compile_cmd, (inputs_packager, toolchain_packager), dist_output_paths)| {
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
-            let toolchain_creator_cb = BoxFnOnce::from(move |f| toolchain_creator.write_pkg(f));
             // TODO: put on a thread
             let (dist_toolchain, maybe_dist_compile_executable) =
-                ftry!(dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_creator_cb));
+                ftry!(dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager));
             if let Some(dist_compile_executable) = maybe_dist_compile_executable {
                 dist_compile_cmd.executable = dist_compile_executable;
             }
@@ -391,7 +390,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                     alloc
                         .and_then(move |job_alloc| {
                             debug!("[{}]: Running job", compile_out_pretty2);
-                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_creator)
+                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
                                 .map_err(Into::into)
                         })
                 })
@@ -435,8 +434,8 @@ pub trait Compilation {
     /// Create a function that will create the inputs used to perform a distributed compilation
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     #[cfg(feature = "dist-client")]
-    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer)
-                                -> Result<(Box<FnMut(&mut Write) + Send>, Box<CompilerPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, _path_transformer: &mut dist::PathTransformer)
+                           -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
 
         bail!("distributed compilation not implemented")
     }
