@@ -21,7 +21,7 @@ mod client {
     use serde_json;
     use std::collections::HashMap;
     use std::fs;
-    use std::io::{self, Read, Write};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use tempfile;
@@ -105,24 +105,22 @@ mod client {
 
         // Get the bytes of a toolchain tar
         // TODO: by this point the toolchain should be known to exist
-        pub fn get_toolchain(&self, tc: &Toolchain) -> Option<Vec<u8>> {
+        pub fn get_toolchain(&self, tc: &Toolchain) -> Option<fs::File> {
             // TODO: be more relaxed about path casing and slashes on Windows
-            let mut rdr = if let Some(custom_tc) = self.custom_toolchains.lock().unwrap().get(tc) {
-                Box::new(fs::File::open(&custom_tc.archive).unwrap())
+            let file = if let Some(custom_tc) = self.custom_toolchains.lock().unwrap().get(tc) {
+                fs::File::open(&custom_tc.archive).unwrap()
             } else {
-                match self.cache.lock().unwrap().get(tc) {
-                    Ok(rdr) => rdr,
+                match self.cache.lock().unwrap().get_file(tc) {
+                    Ok(file) => file,
                     Err(LruError::FileNotInCache) => return None,
                     Err(e) => panic!("{}", e),
                 }
             };
-            let mut ret = vec![];
-            rdr.read_to_end(&mut ret).unwrap();
-            Some(ret)
+            Some(file)
         }
         // TODO: It's more correct to have a FnBox or Box<FnOnce> here
         // If the toolchain doesn't already exist, create it and insert into the cache
-        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), io::Result<()>>) -> Result<(Toolchain, Option<String>)> {
+        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, create: BoxFnOnce<(fs::File,), Result<()>>) -> Result<(Toolchain, Option<String>)> {
             if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
                 debug!("Using custom toolchain for {:?}", compiler_path);
                 let (tc, compiler_path) = tc_and_compiler_path.unwrap();
@@ -191,6 +189,10 @@ impl TcCache {
         let verified_archive_id = file_key(self.get(tc)?)?;
         // TODO: remove created toolchain?
         if verified_archive_id == tc.archive_id { Ok(()) } else { Err("written file does not match expected hash key".into()) }
+    }
+
+    pub fn get_file(&mut self, tc: &Toolchain) -> LruResult<fs::File> {
+        self.inner.get_file(make_lru_key_path(&tc.archive_id))
     }
 
     pub fn get(&mut self, tc: &Toolchain) -> LruResult<Box<ReadSeek>> {

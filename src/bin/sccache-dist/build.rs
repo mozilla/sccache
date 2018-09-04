@@ -112,6 +112,7 @@ impl OverlayBuilder {
             entry.clone()
         };
 
+        trace!("Creating build directory for {}-{}", tc.archive_id, id);
         let build_dir = self.dir.join("builds").join(format!("{}-{}", tc.archive_id, id));
         fs::create_dir(&build_dir)?;
         Ok(OverlaySpec { build_dir, toolchain_dir })

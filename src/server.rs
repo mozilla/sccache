@@ -142,6 +142,7 @@ pub fn start_server(port: u16) -> Result<()> {
             info!("Enabling distributed sccache to {}", addr);
             Arc::new(dist::http::Client::new(
                 &core.handle(),
+                &pool,
                 addr,
                 &CONFIG.dist.cache_dir.join("client"),
                 CONFIG.dist.toolchain_cache_size,

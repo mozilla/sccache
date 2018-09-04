@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
-               pkg::CompilerPackager, Compilation, HashResult};
+               Compilation, HashResult};
 use compiler::args::*;
+use compiler::pkg;
 use dist;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
@@ -32,9 +33,11 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
+use tar;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
+use walkdir::WalkDir;
 
 use errors::*;
 
@@ -80,6 +83,8 @@ pub struct ParsedArguments {
     output_dir: PathBuf,
     /// Paths to extern crates used in the compile.
     externs: Vec<PathBuf>,
+    /// The directories searched for rlibs
+    crate_link_paths: Vec<PathBuf>,
     /// Static libraries linked to in the compile.
     staticlibs: Vec<PathBuf>,
     /// The crate name passed to --crate-name.
@@ -103,6 +108,8 @@ pub struct RustCompilation {
     inputs: Vec<PathBuf>,
     /// The compiler outputs.
     outputs: HashMap<String, PathBuf>,
+    /// The directories searched for rlibs
+    crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
     /// The current working directory
@@ -267,7 +274,7 @@ impl Rust {
                     e.file_type().ok().and_then(|t| {
                         let p = e.path();
                         if t.is_file() && p.extension().map(|e| e == DLL_EXTENSION).unwrap_or(false) {
-                            Some(PathBuf::from(p.into_os_string()))
+                            Some(p)
                         } else {
                             None
                         }
@@ -555,6 +562,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut crate_name = None;
     let mut extra_filename = None;
     let mut externs = vec![];
+    let mut crate_link_paths = vec![];
     let mut static_lib_names = vec![];
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
@@ -576,6 +584,11 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 }
             },
             Some(LinkPath(ArgLinkPath { kind, path })) => {
+                // "crate" is not typically necessary as cargo will normally
+                // emit explicit --extern arguments
+                if kind == "crate" || kind == "dependency" || kind == "all" {
+                    crate_link_paths.push(cwd.join(path))
+                }
                 if kind == "native" || kind == "all" {
                     static_link_paths.push(cwd.join(path))
                 }
@@ -713,6 +726,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         arguments: args,
         output_dir: output_dir.into(),
         externs: externs,
+        crate_link_paths,
         staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
@@ -732,7 +746,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
-        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
+        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
@@ -858,6 +872,7 @@ impl<T> CompilerHasher<T> for RustHasher
                         arguments: arguments,
                         inputs: inputs,
                         outputs: outputs,
+                        crate_link_paths,
                         crate_name: crate_name,
                         cwd,
                         env_vars,
@@ -924,8 +939,56 @@ impl Compilation for RustCompilation {
         Ok((command, dist_command, Cacheable::Yes))
     }
 
-    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
-        bail!("distributed compilation not implemented")
+    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
+        let RustCompilation { inputs, crate_link_paths, .. } = *{self};
+        trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
+
+        let mut tar_inputs = vec![];
+        for input_path in inputs.into_iter() {
+            let input_path = pkg::simplify_path(&input_path)?;
+            let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+            tar_inputs.push((input_path, dist_input_path))
+        }
+
+        let mut tar_crate_libs = vec![];
+        for crate_link_path in crate_link_paths.into_iter() {
+            let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            let dir_entries = match fs::read_dir(crate_link_path) {
+                Ok(iter) => iter,
+                Err(ref e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Error::with_chain(e, "Failed to read dir entries in crate link path")),
+            };
+            for entry in dir_entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => return Err(Error::with_chain(e, "Error during iteration over crate link path")),
+                };
+                let path = entry.path();
+                if !path.extension().map(|e| e == "rlib" || e == DLL_EXTENSION).unwrap_or(false) || !path.is_file() {
+                    continue
+                }
+                let dist_path = path_transformer.to_dist(&path).unwrap();
+                tar_crate_libs.push((path, dist_path))
+            }
+        }
+
+        Ok(Box::new(move |wtr| {
+            let mut builder = tar::Builder::new(wtr);
+
+            let mut all_tar_inputs: Vec<_> = tar_inputs.drain(..).chain(tar_crate_libs.drain(..)).collect();
+            all_tar_inputs.sort();
+            // There are almost certainly duplicates from explicit externs also within the search paths
+            all_tar_inputs.dedup();
+
+            for (input_path, dist_input_path) in all_tar_inputs.iter() {
+                let mut file_header = pkg::make_tar_header(input_path, dist_input_path).unwrap();
+                file_header.set_cksum();
+                builder.append(&file_header, fs::File::open(input_path).unwrap()).unwrap();
+            }
+
+            // Finish archive
+            let _ = builder.into_inner().unwrap();
+        }))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
@@ -937,21 +1000,50 @@ struct RustCompilerPackager {
     sysroot: PathBuf,
 }
 
-impl CompilerPackager for RustCompilerPackager {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
-        use tar;
-
+#[cfg(feature = "dist-client")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl pkg::CompilerPackager for RustCompilerPackager {
+    fn write_pkg(self: Box<Self>, f: File) -> Result<()> {
         info!("Packaging Rust compiler");
-        let mut builder = tar::Builder::new(f);
-        builder.append_dir_all(&self.sysroot.strip_prefix("/").unwrap(), &self.sysroot).unwrap();
-        builder.finish().unwrap();
-        Ok(())
-    }
+        let RustCompilerPackager { sysroot } = *self;
 
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn write_pkg(self: Box<Self>, _f: File) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
+        let mut package_builder = pkg::CompilerPackageBuilder::new();
+        package_builder.add_common()?;
+
+        let bins_path = sysroot.join(BINS_DIR);
+        let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
+        package_builder.add_executable_and_deps(sysroot_executable)?;
+
+        // Although by not following symlinks we could break a custom constructed toolchain with
+        // links everywhere, this is just a best-effort auto packaging
+        fn walk_and_add(path: &Path, package_builder: &mut pkg::CompilerPackageBuilder) -> Result<()> {
+            for entry in WalkDir::new(path).follow_links(false) {
+                let entry = entry?;
+                let file_type = entry.file_type();
+                if file_type.is_dir() {
+                    continue
+                } else if file_type.is_symlink() {
+                    let metadata = fs::metadata(entry.path())?;
+                    if !metadata.file_type().is_file() {
+                        continue
+                    }
+                } else if !file_type.is_file() {
+                    // Device or other oddity
+                    continue
+                }
+                // It's either a file, or a symlink pointing to a file
+                package_builder.add_file(entry.path().to_owned())?
+            }
+            Ok(())
+        }
+
+        walk_and_add(&bins_path, &mut package_builder)?;
+        if BINS_DIR != LIBS_DIR {
+            let libs_path = sysroot.join(LIBS_DIR);
+            walk_and_add(&libs_path, &mut package_builder)?
+        }
+
+        package_builder.into_compressed_tar(f)
     }
 }
 
@@ -1250,6 +1342,7 @@ c:/foo/bar.rs:
                 ],
                 output_dir: "foo/".into(),
                 externs: vec!["bar.rlib".into()],
+                crate_link_paths: vec![],
                 staticlibs: vec![f.tempdir.path().join("libbaz.a")],
                 crate_name: "foo".into(),
                 dep_info: None,

@@ -33,6 +33,8 @@ extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
 extern crate filetime;
+#[cfg(feature = "flate2")]
+extern crate flate2;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
@@ -89,6 +91,7 @@ extern crate toml;
 #[cfg(any(feature = "gcs", feature = "azure"))]
 extern crate url;
 extern crate uuid;
+extern crate walkdir;
 extern crate which;
 #[cfg(windows)]
 extern crate winapi;

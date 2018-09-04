@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
-               pkg::CompilerPackager, Compilation, HashResult};
+               Compilation, HashResult};
+use compiler::pkg;
 use dist;
 use futures::Future;
 use futures_cpupool::CpuPool;
@@ -22,7 +23,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -299,37 +300,20 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 
     fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut io::Write)>> {
+        trace!("Dist inputs: {:?}", self.parsed_args.input);
+
         let input_path = self.cwd.join(&self.parsed_args.input);
+        let input_path = pkg::simplify_path(&input_path)?;
         let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
-        // tar-rs imposes that `set_path` takes a relative path
-        assert!(dist_input_path.starts_with("/"));
-        let dist_input_path = dist_input_path.trim_left_matches("/").to_owned();
-        assert!(!dist_input_path.starts_with("/"));
 
         Ok(Box::new(move |wtr| {
             let mut builder = tar::Builder::new(wtr);
-            let metadata_res = fs::metadata(&input_path);
 
-            let mut file_header = tar::Header::new_ustar();
-            // TODO: test this works
-            if let Ok(metadata) = metadata_res {
-                // TODO: if the source file is a symlink, I think this does bad things
-                file_header.set_metadata(&metadata);
-            } else {
-                warn!("Couldn't get metadata of input file, falling back to some defaults");
-                file_header.set_mode(0o644);
-                file_header.set_uid(0);
-                file_header.set_gid(0);
-                file_header.set_mtime(0);
-                file_header.set_device_major(0).expect("expected a ustar header");
-                file_header.set_device_minor(0).expect("expected a ustar header");
-                file_header.set_entry_type(tar::EntryType::file());
-            }
-            file_header.set_path(&dist_input_path).unwrap();
+            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path).unwrap();
             file_header.set_size(self.preprocessed_input.len() as u64); // The metadata is from non-preprocessed
             file_header.set_cksum();
-
             builder.append(&file_header, self.preprocessed_input.as_slice()).unwrap();
+
             // Finish archive
             let _ = builder.into_inner().unwrap();
         }))
@@ -345,10 +329,12 @@ struct CCompilerPackager {
     executable: PathBuf,
 }
 
-impl CompilerPackager for CCompilerPackager {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn write_pkg(self: Box<Self>, f: File) -> io::Result<()> {
+#[cfg(feature = "dist-client")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl pkg::CompilerPackager for CCompilerPackager {
+    fn write_pkg(self: Box<Self>, f: File) -> Result<()> {
         use std::env;
+        use std::fs;
         use std::os::unix::ffi::OsStrExt;
 
         info!("Packaging C compiler");
@@ -367,11 +353,6 @@ impl CompilerPackager for CCompilerPackager {
         fs::remove_file(filename).unwrap();
         env::set_current_dir(curdir).unwrap();
         Ok(())
-    }
-
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    fn write_pkg(self: Box<Self>, _f: File) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::Other, "Automatic packaging not supported on this platform"))
     }
 }
 
