@@ -338,6 +338,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
         where T: CommandCreatorSync {
     use boxfnonce::BoxFnOnce;
     use futures::future;
+    use std::io;
 
     debug!("[{}]: Attempting distributed compilation", out_pretty);
     let compile_out_pretty = out_pretty.clone();
@@ -399,9 +400,12 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                         dist::RunJobResult::Complete(jc) => jc,
                         dist::RunJobResult::JobNotFound => panic!(),
                     };
-                    info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.len())).collect::<Vec<_>>());
-                    for (path, bytes) in jc.outputs {
-                        File::create(path_transformer.to_local(&path)).unwrap().write_all(&bytes).unwrap();
+                    info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.lens().to_string())).collect::<Vec<_>>());
+                    for (path, output_data) in jc.outputs {
+                        let len = output_data.lens().actual;
+                        let mut file = File::create(path_transformer.to_local(&path)).unwrap();
+                        let count = io::copy(&mut output_data.into_reader(), &mut file).unwrap();
+                        assert!(count == len);
                     }
                     jc.output.into()
                 })
@@ -432,7 +436,7 @@ pub trait Compilation {
     // TODO: It's more correct to have a FnBox or Box<FnOnce> here
     #[cfg(feature = "dist-client")]
     fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer)
-                                -> Result<(Box<FnMut(&mut Write)>, Box<CompilerPackager>)> {
+                                -> Result<(Box<FnMut(&mut Write) + Send>, Box<CompilerPackager>)> {
 
         bail!("distributed compilation not implemented")
     }

@@ -1011,7 +1011,7 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write)>, Box<pkg::CompilerPackager>)> {
+    fn into_dist_inputs_creator(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<FnMut(&mut io::Write) + Send>, Box<pkg::CompilerPackager>)> {
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
