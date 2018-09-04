@@ -380,7 +380,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                                         dist::SubmitToolchainResult::JobNotFound |
                                         dist::SubmitToolchainResult::CannotCache => panic!(),
                                     }
-                                }).map_err(Into::into))
+                                }).chain_err(|| "Could not submit toolchain"))
                         },
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
                             f_ok(job_alloc),

@@ -14,6 +14,7 @@
 
 #![recursion_limit = "128"]
 
+extern crate ar;
 extern crate atty;
 extern crate base64;
 extern crate bincode;
