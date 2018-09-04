@@ -22,12 +22,12 @@ use log::Level::Trace;
 use mock_command::{CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::env::consts::DLL_EXTENSION;
+use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -37,6 +37,9 @@ use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
+
+/// Directory in the sysroot containing binary to which rustc is linked.
+const BINS_DIR: &str = "bin";
 
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
 #[cfg(not(windows))]
@@ -351,9 +354,13 @@ impl FromArg for ArgLinkLibrary {
     }
 }
 impl IntoArg for ArgLinkLibrary {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgLinkLibrary { kind, name } = self;
         make_os_string!(kind, "=", name)
+    }
+    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+        let ArgLinkLibrary { kind, name } = self;
+        Ok(format!("{}={}", kind, name))
     }
 }
 
@@ -373,9 +380,13 @@ impl FromArg for ArgLinkPath {
     }
 }
 impl IntoArg for ArgLinkPath {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgLinkPath { kind, path } = self;
         make_os_string!(kind, "=", path)
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgLinkPath { kind, path } = self;
+        Ok(format!("{}={}", kind, path.into_arg_string(transformer)?))
     }
 }
 
@@ -391,13 +402,21 @@ impl FromArg for ArgCodegen {
     }
 }
 impl IntoArg for ArgCodegen {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgCodegen { opt, value } = self;
         if let Some(value) = value {
             make_os_string!(opt, "=", value)
         } else {
             make_os_string!(opt)
         }
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgCodegen { opt, value } = self;
+        Ok(if let Some(value) = value {
+            format!("{}={}", opt, value.into_arg_string(transformer)?)
+        } else {
+            opt
+        })
     }
 }
 
@@ -416,9 +435,13 @@ impl FromArg for ArgExtern {
     }
 }
 impl IntoArg for ArgExtern {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         let ArgExtern { name, path } = self;
         make_os_string!(name, "=", path)
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        let ArgExtern { name, path } = self;
+        Ok(format!("{}={}", name, path.into_arg_string(transformer)?))
     }
 }
 
@@ -445,16 +468,23 @@ impl FromArg for ArgTarget {
             return Ok(ArgTarget::Unsure(arg))
         }
         // The file doesn't exist so it can't be a path, safe to assume it's a name
-        Ok(ArgTarget::Name(os_string_to_string_arg(arg)?))
+        Ok(ArgTarget::Name(arg.into_string().map_err(ArgParseError::InvalidUnicode)?))
     }
 }
 impl IntoArg for ArgTarget {
-    fn into_os_string(self) -> OsString {
+    fn into_arg_os_string(self) -> OsString {
         match self {
             ArgTarget::Name(s) => s.into(),
             ArgTarget::Path(p) => p.into(),
             ArgTarget::Unsure(s) => s.into(),
         }
+    }
+    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+        Ok(match self {
+            ArgTarget::Name(s) => s,
+            ArgTarget::Path(p) => p.into_arg_string(transformer)?,
+            ArgTarget::Unsure(s) => s.into_arg_string(transformer)?,
+        })
     }
 }
 
@@ -706,7 +736,7 @@ impl<T> CompilerHasher<T> for RustHasher
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
-            .map(|arg| (arg.to_os_string(), arg.get_data().cloned().map(IntoArg::into_os_string))).collect();
+            .map(|arg| (arg.to_os_string(), arg.get_data().cloned().map(IntoArg::into_arg_os_string))).collect();
         // `filtered_arguments` omits --emit and --out-dir arguments.
         // It's used for invoking rustc with `--emit=dep-info` to get the list of
         // source files for this crate.
@@ -853,17 +883,49 @@ impl<T> CompilerHasher<T> for RustHasher
 }
 
 impl Compilation for RustCompilation {
-    fn generate_compile_commands(&self, _path_transformer: &mut dist::PathTransformer)
+    fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, .. } = *self;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, ref sysroot, .. } = *self;
         trace!("[{}]: compile", crate_name);
-        Ok((CompileCommand {
+
+        let command = CompileCommand {
             executable: executable.to_owned(),
             arguments: arguments.iter().flat_map(|arg| arg.iter_os_strings()).collect(),
             env_vars: env_vars.to_owned(),
             cwd: cwd.to_owned(),
-        }, None, Cacheable::Yes))
+        };
+
+        let dist_command = (|| {
+            let mut dist_arguments = vec![];
+            // flat_map would be nice but the lifetimes don't work out
+            for argument in arguments.iter() {
+                for string_arg in argument.iter_strings(|p| path_transformer.to_dist(p)) {
+                    dist_arguments.push(match string_arg {
+                        Ok(s) => s,
+                        Err(e) => {
+                            debug!("Conversion failed for distributed compile argument: {}", e);
+                            return None
+                        },
+                    })
+                }
+            }
+
+            let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
+
+            Some(dist::CompileCommand {
+                executable: path_transformer.to_dist(&sysroot_executable)?,
+                arguments: dist_arguments,
+                env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+                cwd: path_transformer.to_dist_assert_abs(cwd)?,
+            })
+        })();
+
+        Ok((command, dist_command, Cacheable::Yes))
+    }
+
+    fn into_dist_inputs_creator(self: Box<Self>, _path_transformer: &mut dist::PathTransformer) -> Result<Box<FnMut(&mut Write)>> {
+        bail!("distributed compilation not implemented")
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
