@@ -342,6 +342,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
 }
 
 struct CCompilerPackager {
+    #[allow(dead_code)]
     executable: PathBuf,
 }
 

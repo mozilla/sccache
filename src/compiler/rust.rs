@@ -866,6 +866,7 @@ impl Compilation for RustCompilation {
 }
 
 struct RustCompilerPackager {
+    #[allow(dead_code)]
     sysroot: PathBuf,
 }
 

@@ -85,6 +85,7 @@ pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'stat
     creator.lock().unwrap().next_command_calls(call);
 }
 
+#[cfg(not(target_os="macos"))]
 pub fn find_sccache_binary() -> PathBuf {
     // Older versions of cargo put the test binary next to the sccache binary.
     // Newer versions put it in the deps/ subdirectory.
