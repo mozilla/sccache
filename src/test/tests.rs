@@ -36,8 +36,10 @@ use std::io::{
     Cursor,
     Write,
 };
+#[cfg(not(target_os="macos"))]
 use std::net::TcpListener;
 use std::path::Path;
+#[cfg(not(target_os="macos"))]
 use std::process::Command;
 use std::sync::{Arc,Mutex,mpsc};
 use std::thread;

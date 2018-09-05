@@ -6,35 +6,36 @@
 extern crate assert_cmd;
 extern crate chrono;
 extern crate env_logger;
+#[cfg(not(target_os="macos"))]
 #[macro_use]
 extern crate log;
 extern crate predicates;
 extern crate tempdir;
-
-use std::env;
-use std::io::Write;
-use std::fs;
-use std::path::Path;
-use assert_cmd::prelude::*;
-use chrono::Local;
-use predicates::prelude::*;
-use std::process::{Command, Stdio};
-use tempdir::TempDir;
-
-fn stop() {
-    trace!("sccache --stop-server");
-    drop(Command::main_binary().unwrap()
-         .arg("--stop-server")
-         .stdout(Stdio::null())
-         .stderr(Stdio::null())
-         .status());
-}
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.
 #[test]
 #[cfg(not(target_os="macos"))] // test currently fails on macos
 fn test_rust_cargo() {
+    use std::env;
+    use std::io::Write;
+    use std::fs;
+    use std::path::Path;
+    use assert_cmd::prelude::*;
+    use chrono::Local;
+    use predicates::prelude::*;
+    use std::process::{Command, Stdio};
+    use tempdir::TempDir;
+
+    fn stop() {
+        trace!("sccache --stop-server");
+        drop(Command::main_binary().unwrap()
+            .arg("--stop-server")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status());
+    }
+
     drop(env_logger::Builder::new()
          .format(|f, record| {
              write!(
