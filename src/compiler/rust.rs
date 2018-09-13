@@ -388,6 +388,10 @@ impl<T> Compiler<T> for Rust
     where T: CommandCreatorSync,
 {
     fn kind(&self) -> CompilerKind { CompilerKind::Rust }
+    #[cfg(feature = "dist-client")]
+    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
+        Box::new(RustToolchainPackager { sysroot: self.sysroot.clone() })
+    }
     /// Parse `arguments` as rustc command-line arguments, determine if
     /// we can cache the result of compilation. This is only intended to
     /// cover a subset of rustc invocations, primarily focused on those

@@ -187,6 +187,10 @@ impl <I> CCompiler<I>
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     fn kind(&self) -> CompilerKind { CompilerKind::C(self.compiler.kind()) }
+    #[cfg(feature = "dist-client")]
+    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
+        Box::new(CToolchainPackager { executable: self.executable.clone() })
+    }
     fn parse_arguments(&self,
                        arguments: &[OsString],
                        cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>> {
@@ -362,7 +366,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         use std::env;
         use std::os::unix::ffi::OsStrExt;
 
-        info!("Packaging C compiler");
+        info!("Packaging C compiler for executable {}", self.executable.display());
         // TODO: write our own, since this is GPL
         let curdir = env::current_dir().unwrap();
         env::set_current_dir("/tmp").unwrap();

@@ -618,6 +618,36 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let stats = request_shutdown(server)?;
             stats.print();
         }
+        Command::ZeroStats => {
+            trace!("Command::ZeroStats");
+            let conn = connect_or_start_server(get_port())?;
+            let stats = request_zero_stats(conn).chain_err(|| {
+                "couldn't zero stats on server"
+            })?;
+            stats.print();
+        }
+        #[cfg(feature = "dist-client")]
+        Command::PackageToolchain(executable, out) => {
+            use compiler;
+            use futures_cpupool::CpuPool;
+
+            trace!("Command::PackageToolchain({})", executable.display());
+            let mut core = Core::new()?;
+            let jobserver = unsafe { Client::new() };
+            let creator = ProcessCommandCreator::new(&core.handle(), &jobserver);
+            let env: Vec<_> = env::vars_os().collect();
+            let pool = CpuPool::new(1);
+            let out_file = File::create(out)?;
+
+            let compiler = compiler::get_compiler_info(&creator, &executable, &env, &pool);
+            let packager = compiler.map(|c| c.get_toolchain_packager());
+            let res = packager.and_then(|p| p.write_pkg(out_file));
+            core.run(res)?
+        }
+        #[cfg(not(feature = "dist-client"))]
+        Command::PackageToolchain(_executable, _out) => {
+            bail!("Toolchain packaging not compiled in")
+        }
         Command::Compile { exe, cmdline, cwd, env_vars } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             let jobserver = unsafe { Client::new() };
@@ -636,14 +666,6 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             return res.chain_err(|| {
                 "failed to execute compile"
             })
-        }
-        Command::ZeroStats => {
-            trace!("Command::ZeroStats");
-            let conn = connect_or_start_server(get_port())?;
-            let stats = request_zero_stats(conn).chain_err(|| {
-                "couldn't zero stats on server"
-            })?;
-            stats.print();
         }
     }
 
