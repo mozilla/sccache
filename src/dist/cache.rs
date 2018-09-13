@@ -19,7 +19,7 @@ mod client {
     use dist::pkg::ToolchainPackager;
     use lru_disk_cache::Error as LruError;
     use serde_json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -44,6 +44,8 @@ mod client {
         custom_toolchains: Mutex<HashMap<Toolchain, CustomToolchain>>,
         // Lookup from local path -> toolchain details
         custom_toolchain_paths: Mutex<HashMap<PathBuf, (CustomToolchain, Option<Toolchain>)>>,
+        // Toolchains configured to not be distributed
+        disabled_toolchains: HashSet<PathBuf>,
         // Local machine mapping from 'weak' hashes to strong toolchain hashes
         // - Weak hashes are what sccache uses to determine if a compiler has changed
         //   on the local machine - they're fast and 'good enough' (assuming we trust
@@ -57,7 +59,7 @@ mod client {
 
     #[cfg(feature = "dist-client")]
     impl ClientToolchains {
-        pub fn new(cache_dir: &Path, cache_size: u64, config_custom_toolchains: &[config::DistCustomToolchain]) -> Self {
+        pub fn new(cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig]) -> Self {
             let cache_dir = cache_dir.to_owned();
             fs::create_dir_all(&cache_dir).unwrap();
 
@@ -76,19 +78,34 @@ mod client {
             let tc_cache_dir = cache_dir.join("tc");
             let cache = Mutex::new(TcCache::new(&tc_cache_dir, cache_size).unwrap());
 
+            // Load in toolchain configuration
             let mut custom_toolchain_paths = HashMap::new();
-            for ct in config_custom_toolchains.into_iter() {
-                if custom_toolchain_paths.contains_key(&ct.compiler_executable) {
-                    panic!("Multiple toolchains for {:?}", ct.compiler_executable)
+            let mut disabled_toolchains = HashSet::new();
+            for ct in toolchain_configs.into_iter() {
+                match ct {
+                    config::DistToolchainConfig::PathOverride { compiler_executable, archive, archive_compiler_executable } => {
+                        debug!("Registering custom toolchain for {}", compiler_executable.display());
+                        let custom_tc = CustomToolchain {
+                            archive: archive.clone(),
+                            compiler_executable: archive_compiler_executable.clone(),
+                        };
+                        if custom_toolchain_paths.insert(compiler_executable.clone(), (custom_tc, None)).is_some() {
+                            panic!("Multiple toolchains for {}", compiler_executable.display())
+                        }
+                        if disabled_toolchains.contains(compiler_executable) {
+                            panic!("Override for toolchain {} conflicts with it being disabled")
+                        }
+                    },
+                    config::DistToolchainConfig::NoDist { compiler_executable } => {
+                        debug!("Disabling toolchain {}", compiler_executable.display());
+                        if !disabled_toolchains.insert(compiler_executable.clone()) {
+                            panic!("Disabled toolchain {} multiple times", compiler_executable.display())
+                        }
+                        if custom_toolchain_paths.contains_key(compiler_executable) {
+                            panic!("Override for toolchain {} conflicts with it being disabled")
+                        }
+                    },
                 }
-                let config::DistCustomToolchain { compiler_executable, archive, archive_compiler_executable } = ct;
-
-                debug!("Registering custom toolchain for {:?}", compiler_executable);
-                let custom_tc = CustomToolchain {
-                    archive: archive.clone(),
-                    compiler_executable: archive_compiler_executable.clone(),
-                };
-                assert!(custom_toolchain_paths.insert(compiler_executable.clone(), (custom_tc, None)).is_none());
             }
             let custom_toolchain_paths = Mutex::new(custom_toolchain_paths);
 
@@ -97,6 +114,7 @@ mod client {
                 cache,
                 custom_toolchains: Mutex::new(HashMap::new()),
                 custom_toolchain_paths,
+                disabled_toolchains,
                 // TODO: shouldn't clear on restart, but also should have some
                 // form of pruning
                 weak_map: Mutex::new(weak_map),
@@ -120,6 +138,9 @@ mod client {
         }
         // If the toolchain doesn't already exist, create it and insert into the cache
         pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
+            if self.disabled_toolchains.contains(compiler_path) {
+                bail!("Toolchain distribution for {} is disabled", compiler_path.display())
+            }
             if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
                 debug!("Using custom toolchain for {:?}", compiler_path);
                 let (tc, compiler_path) = tc_and_compiler_path.unwrap();

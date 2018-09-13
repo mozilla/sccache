@@ -187,10 +187,18 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
-pub struct DistCustomToolchain {
-    pub compiler_executable: PathBuf,
-    pub archive: PathBuf,
-    pub archive_compiler_executable: String,
+#[serde(tag = "type")]
+pub enum DistToolchainConfig {
+    #[serde(rename = "no_dist")]
+    NoDist {
+        compiler_executable: PathBuf,
+    },
+    #[serde(rename = "path_override")]
+    PathOverride {
+        compiler_executable: PathBuf,
+        archive: PathBuf,
+        archive_compiler_executable: String,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -215,7 +223,7 @@ pub struct DistConfig {
     pub auth: DistAuth,
     pub scheduler_addr: Option<IpAddr>,
     pub cache_dir: PathBuf,
-    pub custom_toolchains: Vec<DistCustomToolchain>,
+    pub toolchains: Vec<DistToolchainConfig>,
     pub toolchain_cache_size: u64,
 }
 
@@ -225,7 +233,7 @@ impl Default for DistConfig {
             auth: Default::default(),
             scheduler_addr: Default::default(),
             cache_dir: default_dist_cache_dir(),
-            custom_toolchains: Default::default(),
+            toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
         }
     }
