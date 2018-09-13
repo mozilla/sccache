@@ -58,6 +58,8 @@ const LIBS_DIR: &str = "bin";
 pub struct Rust {
     /// The path to the rustc executable.
     executable: PathBuf,
+    /// The host triple for this rustc.
+    host: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
@@ -69,6 +71,8 @@ pub struct Rust {
 pub struct RustHasher {
     /// The path to the rustc executable.
     executable: PathBuf,
+    /// The host triple for this rustc.
+    host: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
@@ -103,6 +107,8 @@ pub struct ParsedArguments {
 pub struct RustCompilation {
     /// The path to the rustc executable.
     executable: PathBuf,
+    /// The host triple for this rustc.
+    host: String,
     /// The sysroot for this rustc
     sysroot: PathBuf,
     /// All arguments passed to rustc
@@ -266,9 +272,18 @@ impl Rust {
     pub fn new<T>(mut creator: T,
                   executable: PathBuf,
                   env_vars: &[(OsString, OsString)],
+                  rustc_verbose_version: &str,
                   pool: CpuPool) -> SFuture<Rust>
         where T: CommandCreatorSync,
     {
+        // Taken from Cargo
+        let host = ftry!(rustc_verbose_version
+            .lines()
+            .find(|l| l.starts_with("host: "))
+            .map(|l| &l[6..])
+            .ok_or_else(|| Error::from("rustc verbose version didn't have a line for `host:`")))
+            .to_string();
+
         let mut cmd = creator.new_command_sync(&executable);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -296,10 +311,12 @@ impl Rust {
             libs.sort();
             Ok((sysroot, libs))
         });
+
         Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
                     executable: executable,
+                    host,
                     sysroot,
                     compiler_shlibs_digests: digests,
                 }
@@ -331,6 +348,7 @@ impl<T> Compiler<T> for Rust
             CompilerArguments::Ok(args) => {
                 CompilerArguments::Ok(Box::new(RustHasher {
                     executable: self.executable.clone(),
+                    host: self.host.clone(),
                     sysroot: self.sysroot.clone(),
                     compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
                     parsed_args: args,
@@ -818,7 +836,7 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
-        let RustHasher { executable, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
+        let RustHasher { executable, host, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
@@ -939,6 +957,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
                         executable: executable,
+                        host,
                         sysroot: sysroot,
                         arguments: arguments,
                         inputs: inputs,
@@ -972,7 +991,7 @@ impl Compilation for RustCompilation {
     fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, ref sysroot, .. } = *self;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, ref host, ref sysroot, .. } = *self;
         trace!("[{}]: compile", crate_name);
 
         let command = CompileCommand {
@@ -995,6 +1014,8 @@ impl Compilation for RustCompilation {
         }
         let dist_command = (|| {
             let mut dist_arguments = vec![];
+            let mut saw_target = false;
+
             // flat_map would be nice but the lifetimes don't work out
             for argument in arguments.iter() {
                 let path_transformer_fn = &mut |p: &Path| path_transformer.to_dist(p);
@@ -1003,10 +1024,19 @@ impl Compilation for RustCompilation {
                     let input_path = Path::new(input_path).to_owned();
                     dist_arguments.push(try_string_arg!(input_path.into_arg_string(path_transformer_fn)))
                 } else {
+                    if let Some(Target(_)) = argument.get_data() {
+                        saw_target = true
+                    }
                     for string_arg in argument.iter_strings(path_transformer_fn) {
                         dist_arguments.push(try_string_arg!(string_arg))
                     }
                 }
+            }
+
+            // We can't rely on the packaged toolchain necessarily having the same default target triple
+            // as us (typically host triple), so make sure to always explicitly specify a target.
+            if !saw_target {
+                dist_arguments.push(format!("--target={}", host));
             }
 
             let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
@@ -1466,6 +1496,7 @@ c:/foo/bar.rs:
         }
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
             parsed_args: ParsedArguments {
@@ -1554,6 +1585,7 @@ c:/foo/bar.rs:
         pre_func(&f.tempdir.path()).expect("Failed to execute pre_func");
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
+            host: "x86-64-unknown-unknown-unknown".to_owned(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![],
             parsed_args: parsed_args,
