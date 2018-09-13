@@ -93,6 +93,9 @@ pub trait Compiler<T>: Send + 'static
 {
     /// Return the kind of compiler.
     fn kind(&self) -> CompilerKind;
+    /// Retrieve a packager
+    #[cfg(feature = "dist-client")]
+    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(&self,
                        arguments: &[OsString],

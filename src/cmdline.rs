@@ -36,14 +36,16 @@ arg_enum!{
 pub enum Command {
     /// Show cache statistics and exit.
     ShowStats(StatsFormat),
-    /// Zero cache statistics and exit.
-    ZeroStats,
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
     StartServer,
     /// Stop background server.
     StopServer,
+    /// Zero cache statistics and exit.
+    ZeroStats,
+    /// Package a toolchain for distributed compilation (executable, out)
+    PackageToolchain(PathBuf, PathBuf),
     /// Run a compiler command.
     Compile {
         /// The binary to execute.
@@ -71,11 +73,13 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                 "    Azure:     ", cfg!(feature = "azure"), "\n")
                 )
         .args_from_usage(
-            "-s --show-stats 'show cache statistics'
-             -z, --zero-stats 'zero statistics counters'
-             --start-server  'start background server'
-             --stop-server   'stop background server'"
+            "-s --show-stats  'show cache statistics'
+             --start-server   'start background server'
+             --stop-server    'stop background server'
+             -z, --zero-stats 'zero statistics counters'"
                 )
+        .arg(Arg::from_usage("--package-toolchain <executable> <out> 'package toolchain for distributed compilation'")
+             .required(false))
         .arg(Arg::from_usage("--stats-format  'set output format of statistics'")
              .possible_values(&StatsFormat::variants())
              .default_value("text"))
@@ -131,6 +135,7 @@ pub fn parse() -> Result<Command> {
     let start_server = matches.is_present("start-server");
     let stop_server = matches.is_present("stop-server");
     let zero_stats = matches.is_present("zero-stats");
+    let package_toolchain = matches.is_present("package-toolchain");
     let cmd = matches.values_of_os("cmd");
     // Ensure that we've only received one command to run.
     fn is_some<T>(x : &Option<T>) -> bool {
@@ -141,6 +146,8 @@ pub fn parse() -> Result<Command> {
         show_stats,
         start_server,
         stop_server,
+        zero_stats,
+        package_toolchain,
         is_some(&cmd),
             ].iter()
         .filter(|&&x| x).count() > 1 {
@@ -158,6 +165,11 @@ pub fn parse() -> Result<Command> {
         Ok(Command::StopServer)
     } else if zero_stats {
         Ok(Command::ZeroStats)
+    } else if package_toolchain {
+        let mut values = matches.values_of_os("package-toolchain").unwrap();
+        assert!(values.len() == 2);
+        let (executable, out) = (values.next().unwrap(), values.next().unwrap());
+        Ok(Command::PackageToolchain(executable.into(), out.into()))
     } else if let Some(mut args) = cmd {
         if let Some(exe) = args.next() {
             let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
