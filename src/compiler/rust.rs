@@ -24,6 +24,8 @@ use log::Level::Trace;
 use mock_command::{CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "dist-client")]
+use std::env::consts::DLL_PREFIX;
 use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
@@ -35,12 +37,25 @@ use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+#[cfg(feature = "dist-client")]
+use std::sync::Arc;
 use std::time::Instant;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
+
+/// Can dylibs (like proc macros) be distributed on this platform?
+#[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
+const CAN_DIST_DYLIBS: bool = true;
+#[cfg(all(feature = "dist-client", not(all(target_os = "linux", target_arch = "x86_64"))))]
+const CAN_DIST_DYLIBS: bool = false;
+
+#[cfg(feature = "dist-client")]
+const RLIB_PREFIX: &str = "lib";
+#[cfg(feature = "dist-client")]
+const RLIB_EXTENSION: &str = "rlib";
 
 /// Directory in the sysroot containing binary to which rustc is linked.
 const BINS_DIR: &str = "bin";
@@ -64,6 +79,9 @@ pub struct Rust {
     sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// A shared, caching reader for rlib dependencies
+    #[cfg(feature = "dist-client")]
+    rlib_dep_reader: Option<Arc<RlibDepReader>>,
 }
 
 /// A struct on which to hang a `CompilerHasher` impl.
@@ -77,6 +95,10 @@ pub struct RustHasher {
     sysroot: PathBuf,
     /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
+    /// A shared, caching reader for rlib dependencies
+    #[cfg(feature = "dist-client")]
+    rlib_dep_reader: Option<Arc<RlibDepReader>>,
+    /// Parsed arguments from the rustc invocation
     parsed_args: ParsedArguments,
 }
 
@@ -111,6 +133,9 @@ pub struct RustCompilation {
     host: String,
     /// The sysroot for this rustc
     sysroot: PathBuf,
+    /// A shared, caching reader for rlib dependencies
+    #[cfg(feature = "dist-client")]
+    rlib_dep_reader: Option<Arc<RlibDepReader>>,
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
     /// The compiler inputs.
@@ -312,7 +337,35 @@ impl Rust {
             Ok((sysroot, libs))
         });
 
-        Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
+        #[cfg(feature = "dist-client")]
+        let rlib_dep_reader = {
+            let executable = executable.clone();
+            let env_vars = env_vars.to_owned();
+            pool.spawn_fn(move || Ok(RlibDepReader::new_with_check(executable, &env_vars)))
+        };
+
+        #[cfg(feature = "dist-client")]
+        return Box::new(sysroot_and_libs.join(rlib_dep_reader).and_then(move |((sysroot, libs), rlib_dep_reader)| {
+            let rlib_dep_reader = match rlib_dep_reader {
+                Ok(r) => Some(Arc::new(r)),
+                Err(e) => {
+                    warn!("Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}", e);
+                    None
+                },
+            };
+            hash_all(&libs, &pool).map(move |digests| {
+                Rust {
+                    executable: executable,
+                    host,
+                    sysroot,
+                    compiler_shlibs_digests: digests,
+                    rlib_dep_reader,
+                }
+            })
+        }));
+
+        #[cfg(not(feature = "dist-client"))]
+        return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
                     executable: executable,
@@ -321,7 +374,7 @@ impl Rust {
                     compiler_shlibs_digests: digests,
                 }
             })
-        }))
+        }));
     }
 }
 
@@ -351,6 +404,8 @@ impl<T> Compiler<T> for Rust
                     host: self.host.clone(),
                     sysroot: self.sysroot.clone(),
                     compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
+                    #[cfg(feature = "dist-client")]
+                    rlib_dep_reader: self.rlib_dep_reader.clone(),
                     parsed_args: args,
                 }))
             }
@@ -836,7 +891,8 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
-        let RustHasher { executable, host, sysroot, compiler_shlibs_digests, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
+        let RustHasher {
+            executable, host, sysroot, compiler_shlibs_digests, #[cfg(feature = "dist-client")] rlib_dep_reader, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
@@ -967,6 +1023,8 @@ impl<T> CompilerHasher<T> for RustHasher
                         crate_types,
                         cwd,
                         env_vars,
+                        #[cfg(feature = "dist-client")]
+                        rlib_dep_reader,
                     }),
                     weak_toolchain_key,
                 }
@@ -1055,10 +1113,10 @@ impl Compilation for RustCompilation {
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
 
-        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
+        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, rlib_dep_reader, cwd, env_vars, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
-        let inputs_packager = Box::new(RustInputsPackager { crate_link_paths, crate_types, inputs, path_transformer });
+        let inputs_packager = Box::new(RustInputsPackager { cwd, env_vars, crate_link_paths, crate_types, inputs, path_transformer, rlib_dep_reader });
         let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
 
         Ok((inputs_packager, toolchain_packager))
@@ -1071,10 +1129,13 @@ impl Compilation for RustCompilation {
 
 #[cfg(feature = "dist-client")]
 struct RustInputsPackager {
+    cwd: PathBuf,
+    env_vars: Vec<(OsString, OsString)>,
     crate_link_paths: Vec<PathBuf>,
     crate_types: CrateTypes,
     inputs: Vec<PathBuf>,
     path_transformer: dist::PathTransformer,
+    rlib_dep_reader: Option<Arc<RlibDepReader>>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -1083,15 +1144,37 @@ impl pkg::InputsPackager for RustInputsPackager {
         use ar;
         use tar;
 
-        let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer }: RustInputsPackager = *{self};
+        debug!("Packaging compile inputs for compile with cwd {}", self.cwd.display());
+        let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, cwd, env_vars } = *{self};
+
+        let mut rlib_dep_reader_and_names = rlib_dep_reader.map(|r| (r, HashSet::new()));
 
         let mut tar_inputs = vec![];
         for input_path in inputs.into_iter() {
             let input_path = pkg::simplify_path(&input_path)?;
+            if let Some(ext) = input_path.extension() {
+                if !CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
+                    bail!("Cannot distribute dylib input {} on this platform", input_path.display())
+                } else if ext == RLIB_EXTENSION {
+                    if let Some((ref rlib_dep_reader, ref mut dep_crate_names)) = rlib_dep_reader_and_names {
+                        dep_crate_names.extend(rlib_dep_reader.discover_rlib_deps(&cwd, &env_vars, &input_path)
+                            .chain_err(|| format!("Failed to read deps of {}", input_path.display()))?)
+                    }
+                }
+            }
             let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
             tar_inputs.push((input_path, dist_input_path))
         }
 
+        if log_enabled!(Trace) {
+            if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
+                trace!("Identified dependency crate names: {:?}", dep_crate_names)
+            }
+        }
+
+        // Given the link paths, find the things we need to send over the wire to the remote machine. If
+        // we've been able to use a dependency searcher then we can filter down just candidates for that
+        // crate, otherwise we need to send everything.
         let mut tar_crate_libs = vec![];
         for crate_link_path in crate_link_paths.into_iter() {
             let crate_link_path = pkg::simplify_path(&crate_link_path)?;
@@ -1106,15 +1189,48 @@ impl pkg::InputsPackager for RustInputsPackager {
                     Err(e) => return Err(Error::with_chain(e, "Error during iteration over crate link path")),
                 };
                 let path = entry.path();
-                if !path.extension().map(|e| e == "rlib" || e == DLL_EXTENSION).unwrap_or(false) || !path.is_file() {
-                    continue
+
+                {
+                    // Take a look at the path and see if it's something we care about
+                    let libname: &str = match path.file_name().and_then(|s| s.to_str()) {
+                        Some(name) => {
+                            let mut rev_name_split = name.rsplitn(2, '-');
+                            let _extra_filename_and_ext = rev_name_split.next();
+                            let libname = if let Some(libname) = rev_name_split.next() {
+                                libname
+                            } else {
+                                continue
+                            };
+                            assert!(rev_name_split.next().is_none());
+                            libname
+                        },
+                        None => continue,
+                    };
+                    let (crate_name, ext): (&str, _) = match path.extension() {
+                        Some(ext) if libname.starts_with(DLL_PREFIX) && ext == DLL_EXTENSION =>
+                            (&libname[DLL_PREFIX.len()..], ext),
+                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION =>
+                            (&libname[RLIB_PREFIX.len()..], ext),
+                        _ => continue,
+                    };
+                    if let Some((_, ref dep_crate_names)) = rlib_dep_reader_and_names {
+                        // We have a list of crate names we care about, see if this lib is a candidate
+                        if !dep_crate_names.contains(crate_name) {
+                            continue
+                        }
+                    }
+                    if !path.is_file() {
+                        continue
+                    } else if !CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
+                        bail!("Cannot distribute dylib input {} on this platform", path.display())
+                    }
                 }
+
+                // This is a lib that may be of interest during compilation
                 let dist_path = path_transformer.to_dist(&path).unwrap();
                 tar_crate_libs.push((path, dist_path))
             }
         }
-
-        let mut builder = tar::Builder::new(wtr);
 
         let mut all_tar_inputs: Vec<_> = tar_inputs.into_iter().chain(tar_crate_libs).collect();
         all_tar_inputs.sort();
@@ -1125,10 +1241,12 @@ impl pkg::InputsPackager for RustInputsPackager {
         // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
         let can_trim_rlibs = if let CrateTypes { rlib: true, staticlib: false } = crate_types { true } else { false };
 
+        let mut builder = tar::Builder::new(wtr);
+
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
             let file = fs::File::open(input_path)?;
-            if can_trim_rlibs && input_path.extension().map(|e| e == "rlib").unwrap_or(false) {
+            if can_trim_rlibs && input_path.extension().map(|e| e == RLIB_EXTENSION).unwrap_or(false) {
                 let mut archive = ar::Archive::new(file);
 
                 while let Some(entry_result) = archive.next_entry() {
@@ -1172,7 +1290,7 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use walkdir::WalkDir;
 
-        info!("Packaging Rust compiler");
+        info!("Packaging Rust compiler for sysroot {}", self.sysroot.display());
         let RustToolchainPackager { sysroot } = *self;
 
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
@@ -1213,6 +1331,135 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
 
         package_builder.into_compressed_tar(f)
     }
+}
+
+#[cfg(feature = "dist-client")]
+#[derive(Debug)]
+struct RlibDepReader {
+    executable: PathBuf,
+}
+
+#[cfg(feature = "dist-client")]
+impl RlibDepReader {
+    fn new_with_check(executable: PathBuf, env_vars: &[(OsString, OsString)]) -> Result<Self> {
+        use tempfile;
+        use std::process;
+
+        let temp_dir = tempfile::tempdir()
+            .chain_err(|| "Could not create temporary file for rlib output")?;
+        let temp_rlib = temp_dir.path().join("x.rlib");
+
+        let mut cmd = process::Command::new(&executable);
+        cmd
+            .arg("--crate-type=rlib")
+            .arg("-o").arg(&temp_rlib)
+            .arg("-")
+            .env_clear()
+            .envs(ref_env(env_vars));
+
+        let process::Output { status, stdout, stderr } = cmd.output()?;
+
+        if !status.success() {
+            bail!("Failed to compile a minimal rlib with {}", executable.display())
+        }
+        if !stdout.is_empty() {
+            bail!("rustc stdout non-empty when compiling a minimal rlib: {:?}", String::from_utf8_lossy(&stdout))
+        }
+        if !stderr.is_empty() {
+            bail!("rustc stderr non-empty when compiling a minimal rlib: {:?}", String::from_utf8_lossy(&stderr))
+        }
+
+        let rlib_dep_reader = RlibDepReader { executable };
+        if let Err(e) = rlib_dep_reader.discover_rlib_deps(Path::new(""), env_vars, &temp_rlib) {
+            bail!("Failed to read deps from minimal rlib: {}", e)
+        }
+
+        Ok(rlib_dep_reader)
+    }
+
+    fn discover_rlib_deps(&self, cwd: &Path, env_vars: &[(OsString, OsString)], rlib: &Path) -> Result<Vec<String>> {
+        trace!("Discovering depdendencies of {}", rlib.display());
+
+        use std::process;
+
+        let mut cmd = process::Command::new(&self.executable);
+        cmd.args(&["-Z", "ls"]).arg(cwd.join(rlib))
+            .env_clear()
+            .envs(ref_env(env_vars))
+            .env("RUSTC_BOOTSTRAP", "1"); // TODO: this is fairly naughty
+
+        let process::Output { status, stdout, stderr } = cmd.output()?;
+
+        if !status.success() {
+            bail!(format!("Failed to list deps of {}", rlib.display()))
+        }
+        if !stderr.is_empty() {
+            bail!("rustc -Z ls stderr non-empty: {:?}", String::from_utf8_lossy(&stderr))
+        }
+
+        let stdout = String::from_utf8(stdout).chain_err(|| "Error parsing rustc -Z ls output")?;
+        parse_rustc_z_ls(&stdout)
+            .map(|deps| deps.into_iter().map(|dep| dep.to_owned()).collect())
+    }
+}
+
+// Parse output like the following:
+//
+// ```
+// =External Dependencies=
+// 1 std-08a5bd1ca58a28ee
+// 2 core-ed31c38c1a60e6f9
+// 3 compiler_builtins-6bd92a903b271497
+// 4 alloc-5184f4fa2c87f835
+// 5 alloc_system-7a70df28ae5ce6c3
+// 6 libc-fb97b8e8c331f065
+// 7 unwind-3fec89e45492b583
+// 8 alloc_jemalloc-3e9fce05c4bf31e5
+// 9 panic_unwind-376f1801255ba526
+// 10 bitflags-f482823cbc05f4d7
+// 11 cfg_if-cf72e166fff77ced
+// ```
+#[cfg(feature = "dist-client")]
+fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
+    let mut lines = stdout.lines();
+    match lines.next() {
+        Some("=External Dependencies=") => {},
+        Some(s) => bail!("Unknown first line from rustc -Z ls: {}", s),
+        None => bail!("No output from rustc -Z ls"),
+    }
+
+    let mut dep_names = vec![];
+
+    while let Some(line) = lines.next() {
+        if line == "" {
+            break
+        }
+
+        let mut line_splits = line.splitn(2, ' ');
+        let num: usize = line_splits.next().expect("Zero strings from line split").parse()
+            .chain_err(|| "Could not parse number from rustc -Z ls")?;
+        let libstring = line_splits.next().ok_or_else(|| "No lib string on line from rustc -Z ls")?;
+        if num != dep_names.len() + 1 {
+            bail!("Unexpected numbering of {} in rustc -Z ls output", libstring)
+        }
+        assert!(line_splits.next().is_none());
+
+        let mut libstring_splits = libstring.rsplitn(2, '-');
+        // Rustc prints strict hash value (rather than extra filename as it likely should be)
+        let _svh = libstring_splits.next().ok_or_else(|| "No hash in lib string from rustc -Z ls")?;
+        let libname = libstring_splits.next().expect("Zero strings from libstring split");
+        assert!(libstring_splits.next().is_none());
+
+        dep_names.push(libname);
+    }
+
+    while let Some(line) = lines.next() {
+        if line != "" {
+            bail!("Trailing non-blank lines in rustc -Z ls output")
+        }
+    }
+
+    Ok(dep_names)
 }
 
 #[cfg(test)]
@@ -1500,6 +1747,8 @@ c:/foo/bar.rs:
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
             parsed_args: ParsedArguments {
                 arguments: vec![
                     Argument::Raw("a".into()),
@@ -1589,6 +1838,8 @@ c:/foo/bar.rs:
             host: "x86-64-unknown-unknown-unknown".to_owned(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![],
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: None,
             parsed_args: parsed_args,
         });
 
