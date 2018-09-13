@@ -118,7 +118,6 @@ mod client {
             };
             Some(file)
         }
-        // TODO: It's more correct to have a FnBox or Box<FnOnce> here
         // If the toolchain doesn't already exist, create it and insert into the cache
         pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
             if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
