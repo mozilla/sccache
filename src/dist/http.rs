@@ -566,6 +566,7 @@ mod client {
     use bincode;
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
+    use dist::PathTransformer;
     use dist::pkg::{InputsPackager, ToolchainPackager};
     use flate2::Compression;
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
@@ -645,7 +646,7 @@ mod client {
                 f_err("couldn't find toolchain locally")
             }
         }
-        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<InputsPackager>) -> SFuture<RunJobResult> {
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
             let url = format!("http://{}/api/v1/distserver/run_job/{}", job_alloc.server_id.addr(), job_alloc.job_id);
             let mut req = self.client.post(&url);
 
@@ -656,16 +657,17 @@ mod client {
                 let mut body = vec![];
                 body.write_u32::<BigEndian>(bincode_length as u32).unwrap();
                 body.write(&bincode).unwrap();
+                let path_transformer;
                 {
                     let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
-                    inputs_packager.write_inputs(&mut compressor).chain_err(|| "Could not write inputs for compilation")?;
+                    path_transformer = inputs_packager.write_inputs(&mut compressor).chain_err(|| "Could not write inputs for compilation")?;
                     compressor.flush().unwrap();
                     trace!("Compressed inputs from {} -> {}", compressor.total_in(), compressor.total_out());
                     compressor.finish().unwrap();
                 }
 
                 req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-                bincode_req(&mut req)
+                bincode_req(&mut req).map(|res| (res, path_transformer))
             }))
         }
 

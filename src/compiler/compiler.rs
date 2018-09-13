@@ -355,10 +355,10 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                 .map(|(_key, path)| path_transformer.to_dist_assert_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .unwrap();
-            compilation.into_dist_packagers(&mut path_transformer)
-                .map(|packagers| (path_transformer, dist_compile_cmd, packagers, dist_output_paths))
+            compilation.into_dist_packagers(path_transformer)
+                .map(|packagers| (dist_compile_cmd, packagers, dist_output_paths))
         })
-        .and_then(move |(path_transformer, mut dist_compile_cmd, (inputs_packager, toolchain_packager), dist_output_paths)| {
+        .and_then(move |(mut dist_compile_cmd, (inputs_packager, toolchain_packager), dist_output_paths)| {
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
             // TODO: put on a thread
             let (dist_toolchain, maybe_dist_compile_executable) =
@@ -394,7 +394,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                                 .map_err(Into::into)
                         })
                 })
-                .map(move |jres| {
+                .map(move |(jres, path_transformer)| {
                     let jc = match jres {
                         dist::RunJobResult::Complete(jc) => jc,
                         dist::RunJobResult::JobNotFound => panic!(),
@@ -433,7 +433,7 @@ pub trait Compilation {
 
     /// Create a function that will create the inputs used to perform a distributed compilation
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, _path_transformer: &mut dist::PathTransformer)
+    fn into_dist_packagers(self: Box<Self>, _path_transformer: dist::PathTransformer)
                            -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
 
         bail!("distributed compilation not implemented")
