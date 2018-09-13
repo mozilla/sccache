@@ -21,9 +21,15 @@ use dist::pkg;
 use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
+#[cfg(feature = "dist-client")]
+use lru_disk_cache::lru_cache;
 use mock_command::{CommandCreatorSync, RunCommand};
+#[cfg(feature = "dist-client")]
+use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "dist-client")]
+use std::collections::hash_map::RandomState;
 #[cfg(feature = "dist-client")]
 use std::env::consts::DLL_PREFIX;
 use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
@@ -36,10 +42,10 @@ use std::io;
 use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process;
 #[cfg(feature = "dist-client")]
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time;
 use tempdir::TempDir;
 use util::{fmt_duration_as_secs, run_input_output, Digest};
 use util::{HashToDigest, OsStrExt, ref_env};
@@ -176,7 +182,7 @@ const CACHE_VERSION: &[u8] = b"2";
 /// in `pool`.
 fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
 {
-    let start = Instant::now();
+    let start = time::Instant::now();
     let count = files.len();
     let pool = pool.clone();
     Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
@@ -197,7 +203,7 @@ fn get_source_files<T>(creator: &T,
                         -> SFuture<Vec<PathBuf>>
     where T: CommandCreatorSync,
 {
-    let start = Instant::now();
+    let start = time::Instant::now();
     // Get the full list of source files from rustc's dep-info.
     let temp_dir = ftry!(TempDir::new("sccache").chain_err(|| "Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
@@ -310,8 +316,8 @@ impl Rust {
             .to_string();
 
         let mut cmd = creator.new_command_sync(&executable);
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::null())
+        cmd.stdout(process::Stdio::piped())
+            .stderr(process::Stdio::null())
             .arg("--print=sysroot")
             .env_clear()
             .envs(ref_env(env_vars));
@@ -1113,10 +1119,10 @@ impl Compilation for RustCompilation {
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
 
-        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, rlib_dep_reader, cwd, env_vars, .. } = *{self};
+        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, rlib_dep_reader, env_vars, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
-        let inputs_packager = Box::new(RustInputsPackager { cwd, env_vars, crate_link_paths, crate_types, inputs, path_transformer, rlib_dep_reader });
+        let inputs_packager = Box::new(RustInputsPackager { env_vars, crate_link_paths, crate_types, inputs, path_transformer, rlib_dep_reader });
         let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
 
         Ok((inputs_packager, toolchain_packager))
@@ -1129,7 +1135,6 @@ impl Compilation for RustCompilation {
 
 #[cfg(feature = "dist-client")]
 struct RustInputsPackager {
-    cwd: PathBuf,
     env_vars: Vec<(OsString, OsString)>,
     crate_link_paths: Vec<PathBuf>,
     crate_types: CrateTypes,
@@ -1144,8 +1149,8 @@ impl pkg::InputsPackager for RustInputsPackager {
         use ar;
         use tar;
 
-        debug!("Packaging compile inputs for compile with cwd {}", self.cwd.display());
-        let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, cwd, env_vars } = *{self};
+        debug!("Packaging compile inputs for compile");
+        let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, env_vars } = *{self};
 
         let mut rlib_dep_reader_and_names = rlib_dep_reader.map(|r| (r, HashSet::new()));
 
@@ -1157,7 +1162,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                     bail!("Cannot distribute dylib input {} on this platform", input_path.display())
                 } else if ext == RLIB_EXTENSION {
                     if let Some((ref rlib_dep_reader, ref mut dep_crate_names)) = rlib_dep_reader_and_names {
-                        dep_crate_names.extend(rlib_dep_reader.discover_rlib_deps(&cwd, &env_vars, &input_path)
+                        dep_crate_names.extend(rlib_dep_reader.discover_rlib_deps(&env_vars, &input_path)
                             .chain_err(|| format!("Failed to read deps of {}", input_path.display()))?)
                     }
                 }
@@ -1335,7 +1340,39 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
 
 #[cfg(feature = "dist-client")]
 #[derive(Debug)]
+struct RlibDepsDetail {
+    deps: Vec<String>,
+    mtime: time::SystemTime,
+}
+
+#[cfg(feature = "dist-client")]
+struct DepsSize;
+#[cfg(feature = "dist-client")]
+impl lru_cache::Meter<PathBuf, RlibDepsDetail> for DepsSize {
+    type Measure = usize;
+    fn measure<Q: ?Sized>(&self, _k: &Q, v: &RlibDepsDetail) -> usize where PathBuf: Borrow<Q>
+    {
+        use std::mem;
+
+        // TODO: unfortunately there is exactly nothing you can do with the k given the
+        // current trait bounds. Just use some kind of sane value;
+        //let k_size = mem::size_of::<PathBuf>() + k.capacity();
+        let k_size = 3*8 + 100;
+
+        let crate_names_size: usize = v.deps.iter().map(|s| s.capacity()).sum();
+        let v_size: usize =
+            mem::size_of::<RlibDepsDetail>() + // Systemtime and vec itself
+            v.deps.capacity() * mem::size_of::<String>() + // Each string in the vec
+            crate_names_size; // Contents of all strings
+
+        k_size + v_size
+    }
+}
+
+#[cfg(feature = "dist-client")]
+#[derive(Debug)]
 struct RlibDepReader {
+    cache: Mutex<lru_cache::LruCache<PathBuf, RlibDepsDetail, RandomState, DepsSize>>,
     executable: PathBuf,
 }
 
@@ -1343,7 +1380,6 @@ struct RlibDepReader {
 impl RlibDepReader {
     fn new_with_check(executable: PathBuf, env_vars: &[(OsString, OsString)]) -> Result<Self> {
         use tempfile;
-        use std::process;
 
         let temp_dir = tempfile::tempdir()
             .chain_err(|| "Could not create temporary file for rlib output")?;
@@ -1369,21 +1405,40 @@ impl RlibDepReader {
             bail!("rustc stderr non-empty when compiling a minimal rlib: {:?}", String::from_utf8_lossy(&stderr))
         }
 
-        let rlib_dep_reader = RlibDepReader { executable };
-        if let Err(e) = rlib_dep_reader.discover_rlib_deps(Path::new(""), env_vars, &temp_rlib) {
+        // The goal of this cache is to avoid repeated lookups when building a single project. Let's budget 3MB.
+        // Allowing for a 100 byte path, 50 dependecies per rlib and 20 characters per crate name, this roughly
+        // approximates to `path_size + path + vec_size + num_deps * (systemtime_size + string_size + crate_name_len)`
+        //                 `   3*8    +  100 +   3*8    +    50    * (      8         +     3*8     +       20      )`
+        //                 `2748` bytes per crate
+        // Allowing for possible overhead of up to double (for unused space in allocated memory), this means we
+        // can cache information from about 570 rlibs - easily enough for a single project.
+        const CACHE_SIZE: u64 = 3*1024*1024;
+        let cache = lru_cache::LruCache::with_meter(CACHE_SIZE, DepsSize);
+
+        let rlib_dep_reader = RlibDepReader { cache: Mutex::new(cache), executable };
+        if let Err(e) = rlib_dep_reader.discover_rlib_deps(env_vars, &temp_rlib) {
             bail!("Failed to read deps from minimal rlib: {}", e)
         }
 
         Ok(rlib_dep_reader)
     }
 
-    fn discover_rlib_deps(&self, cwd: &Path, env_vars: &[(OsString, OsString)], rlib: &Path) -> Result<Vec<String>> {
-        trace!("Discovering depdendencies of {}", rlib.display());
+    fn discover_rlib_deps(&self, env_vars: &[(OsString, OsString)], rlib: &Path) -> Result<Vec<String>> {
+        let rlib_mtime = fs::metadata(&rlib).and_then(|m| m.modified()).chain_err(|| "Unable to get rlib modified time")?;
 
-        use std::process;
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(deps_detail) = cache.get(rlib) {
+                if rlib_mtime == deps_detail.mtime {
+                    return Ok(deps_detail.deps.clone())
+                }
+            }
+        }
+
+        trace!("Discovering dependencies of {}", rlib.display());
 
         let mut cmd = process::Command::new(&self.executable);
-        cmd.args(&["-Z", "ls"]).arg(cwd.join(rlib))
+        cmd.args(&["-Z", "ls"]).arg(&rlib)
             .env_clear()
             .envs(ref_env(env_vars))
             .env("RUSTC_BOOTSTRAP", "1"); // TODO: this is fairly naughty
@@ -1398,8 +1453,16 @@ impl RlibDepReader {
         }
 
         let stdout = String::from_utf8(stdout).chain_err(|| "Error parsing rustc -Z ls output")?;
-        parse_rustc_z_ls(&stdout)
-            .map(|deps| deps.into_iter().map(|dep| dep.to_owned()).collect())
+        let deps: Vec<_> = parse_rustc_z_ls(&stdout)
+            .map(|deps| deps.into_iter().map(|dep| dep.to_owned()).collect())?;
+
+        {
+            // This will behave poorly if the rlib is changing under our feet, but in that case rustc
+            // will also do the wrong thing, so the user has bigger issues to deal with.
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(rlib.to_owned(), RlibDepsDetail { deps: deps.clone(), mtime: rlib_mtime });
+        }
+        Ok(deps)
     }
 }
 
