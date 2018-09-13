@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use dist;
 use std::io;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -27,7 +28,7 @@ pub trait ToolchainPackager {
 }
 
 pub trait InputsPackager: Send {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()>;
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer>;
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]

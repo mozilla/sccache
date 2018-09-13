@@ -468,7 +468,7 @@ pub trait Client {
     // To Server
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)>;
     fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)>;
     fn may_dist(&self) -> bool;
 }
@@ -484,7 +484,7 @@ impl Client for NoopClient {
     fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
         panic!("NoopClient");
     }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _inputs_packager: Box<pkg::InputsPackager>) -> SFuture<RunJobResult> {
+    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
         panic!("NoopClient");
     }
 

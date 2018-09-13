@@ -412,7 +412,7 @@ impl IntoArg for ArgCrateTypes {
         let types_string = types.join(",");
         types_string.into()
     }
-    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
         let ArgCrateTypes { rlib, staticlib, others } = self;
         let mut types: Vec<_> = others.iter().map(String::as_str)
             .chain(if rlib { Some("rlib") } else { None })
@@ -443,7 +443,7 @@ impl IntoArg for ArgLinkLibrary {
         let ArgLinkLibrary { kind, name } = self;
         make_os_string!(kind, "=", name)
     }
-    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
         Ok(format!("{}={}", kind, name))
     }
@@ -469,7 +469,7 @@ impl IntoArg for ArgLinkPath {
         let ArgLinkPath { kind, path } = self;
         make_os_string!(kind, "=", path)
     }
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
         let ArgLinkPath { kind, path } = self;
         Ok(format!("{}={}", kind, path.into_arg_string(transformer)?))
     }
@@ -495,7 +495,7 @@ impl IntoArg for ArgCodegen {
             make_os_string!(opt)
         }
     }
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
         let ArgCodegen { opt, value } = self;
         Ok(if let Some(value) = value {
             format!("{}={}", opt, value.into_arg_string(transformer)?)
@@ -524,7 +524,7 @@ impl IntoArg for ArgExtern {
         let ArgExtern { name, path } = self;
         make_os_string!(name, "=", path)
     }
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
         let ArgExtern { name, path } = self;
         Ok(format!("{}={}", name, path.into_arg_string(transformer)?))
     }
@@ -564,7 +564,7 @@ impl IntoArg for ArgTarget {
             ArgTarget::Unsure(s) => s.into(),
         }
     }
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
         Ok(match self {
             ArgTarget::Name(s) => s,
             ArgTarget::Path(p) => p.into_arg_string(transformer)?,
@@ -1053,10 +1053,37 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
 
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
+
+        let inputs_packager = Box::new(RustInputsPackager { crate_link_paths, crate_types, inputs, path_transformer });
+        let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
+
+        Ok((inputs_packager, toolchain_packager))
+    }
+
+    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
+        Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
+    }
+}
+
+#[cfg(feature = "dist-client")]
+struct RustInputsPackager {
+    crate_link_paths: Vec<PathBuf>,
+    crate_types: CrateTypes,
+    inputs: Vec<PathBuf>,
+    path_transformer: dist::PathTransformer,
+}
+
+#[cfg(feature = "dist-client")]
+impl pkg::InputsPackager for RustInputsPackager {
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
+        use ar;
+        use tar;
+
+        let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer }: RustInputsPackager = *{self};
 
         let mut tar_inputs = vec![];
         for input_path in inputs.into_iter() {
@@ -1086,32 +1113,6 @@ impl Compilation for RustCompilation {
                 tar_crate_libs.push((path, dist_path))
             }
         }
-
-        let inputs_packager = Box::new(RustInputsPackager { crate_types, tar_inputs, tar_crate_libs });
-        let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
-
-        Ok((inputs_packager, toolchain_packager))
-    }
-
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
-        Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
-    }
-}
-
-#[cfg(feature = "dist-client")]
-struct RustInputsPackager {
-    crate_types: CrateTypes,
-    tar_inputs: Vec<(PathBuf, String)>,
-    tar_crate_libs: Vec<(PathBuf, String)>,
-}
-
-#[cfg(feature = "dist-client")]
-impl pkg::InputsPackager for RustInputsPackager {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()> {
-        use ar;
-        use tar;
-
-        let RustInputsPackager { crate_types, tar_inputs, tar_crate_libs } = *{self};
 
         let mut builder = tar::Builder::new(wtr);
 
@@ -1155,7 +1156,7 @@ impl pkg::InputsPackager for RustInputsPackager {
 
         // Finish archive
         let _ = builder.into_inner()?;
-        Ok(())
+        Ok(path_transformer)
     }
 }
 

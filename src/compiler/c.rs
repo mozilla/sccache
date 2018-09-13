@@ -303,15 +303,12 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: &mut dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
         let CCompilation { parsed_args, cwd, preprocessed_input, executable, .. } = *{self};
         trace!("Dist inputs: {:?}", parsed_args.input);
 
         let input_path = cwd.join(&parsed_args.input);
-        let input_path = pkg::simplify_path(&input_path)?;
-        let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
-
-        let inputs_packager = Box::new(CInputsPackager { input_path, dist_input_path, preprocessed_input });
+        let inputs_packager = Box::new(CInputsPackager { input_path, preprocessed_input, path_transformer });
         let toolchain_packager = Box::new(CToolchainPackager { executable });
         Ok((inputs_packager, toolchain_packager))
     }
@@ -325,16 +322,19 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
 #[cfg(feature = "dist-client")]
 struct CInputsPackager {
     input_path: PathBuf,
-    dist_input_path: String,
+    path_transformer: dist::PathTransformer,
     preprocessed_input: Vec<u8>,
 }
 
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for CInputsPackager {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<()> {
+    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
         use tar;
 
-        let CInputsPackager { input_path, dist_input_path, preprocessed_input } = *{self};
+        let CInputsPackager { input_path, mut path_transformer, preprocessed_input } = *{self};
+
+        let input_path = pkg::simplify_path(&input_path)?;
+        let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
 
         let mut builder = tar::Builder::new(wtr);
 
@@ -345,7 +345,7 @@ impl pkg::InputsPackager for CInputsPackager {
 
         // Finish archive
         let _ = builder.into_inner();
-        Ok(())
+        Ok(path_transformer)
     }
 }
 

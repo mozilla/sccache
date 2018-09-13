@@ -9,7 +9,7 @@ use std::str;
 
 pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
 pub type ArgToStringResult = StdResult<String, ArgToStringError>;
-pub type PathTransformer<'a> = &'a mut FnMut(&Path) -> Option<String>;
+pub type PathTransformerFn<'a> = &'a mut FnMut(&Path) -> Option<String>;
 
 #[derive(Debug, PartialEq)]
 pub enum ArgParseError {
@@ -290,7 +290,7 @@ macro_rules! ArgData {
             fn into_arg_os_string(self) -> OsString {
                 ArgData!{ __matchify self into_arg_os_string () () $($tok)+ }
             }
-            fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+            fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
                 ArgData!{ __matchify self into_arg_string (transformer) () $($tok)+ }
             }
         }
@@ -324,7 +324,7 @@ pub trait FromArg: Sized {
 
 pub trait IntoArg: Sized {
     fn into_arg_os_string(self) -> OsString;
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult;
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult;
 }
 
 impl FromArg for OsString {
@@ -339,23 +339,23 @@ impl FromArg for String {
 
 impl IntoArg for OsString {
     fn into_arg_os_string(self) -> OsString { self }
-    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
         self.into_string().map_err(ArgToStringError::InvalidUnicode)
     }
 }
 impl IntoArg for PathBuf {
     fn into_arg_os_string(self) -> OsString { self.into() }
-    fn into_arg_string(self, transformer: PathTransformer) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
         transformer(&self).ok_or_else(|| ArgToStringError::FailedPathTransform(self))
     }
 }
 impl IntoArg for String {
     fn into_arg_os_string(self) -> OsString { self.into() }
-    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult { Ok(self) }
+    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult { Ok(self) }
 }
 impl IntoArg for () {
     fn into_arg_os_string(self) -> OsString { OsString::new() }
-    fn into_arg_string(self, _transformer: PathTransformer) -> ArgToStringResult { Ok(String::new()) }
+    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult { Ok(String::new()) }
 }
 
 pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String, Option<String>)> {
