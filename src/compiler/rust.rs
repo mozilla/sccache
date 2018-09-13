@@ -1105,10 +1105,38 @@ impl Compilation for RustCompilation {
 
             let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
 
+            // Convert the paths of some important environment variables
+            let mut env_vars = dist::osstring_tuples_to_strings(env_vars)?;
+            let mut changed_out_dir: Option<PathBuf> = None;
+            for (k, v) in env_vars.iter_mut() {
+                match k.as_str() {
+                    // We round-tripped from path to string and back to path, but it should be lossless
+                    "OUT_DIR" => {
+                        let dist_out_dir = path_transformer.to_dist(Path::new(v))?;
+                        if dist_out_dir != *v {
+                            changed_out_dir = Some(v.to_owned().into());
+                        }
+                        *v = dist_out_dir
+                    }
+                    "CARGO" |
+                    "CARGO_MANIFEST_DIR" => {
+                        *v = path_transformer.to_dist(Path::new(v))?
+                    },
+                    _ => (),
+                }
+            }
+            // OUT_DIR was changed during transformation, check if this compilation is relying on anything
+            // inside it - if so, disallow distributed compilation (there are sometimes hardcoded paths present)
+            if let Some(out_dir) = changed_out_dir {
+                if self.inputs.iter().any(|input| input.starts_with(&out_dir)) {
+                    return None
+                }
+            }
+
             Some(dist::CompileCommand {
                 executable: path_transformer.to_dist(&sysroot_executable)?,
                 arguments: dist_arguments,
-                env_vars: dist::osstring_tuples_to_strings(env_vars)?,
+                env_vars,
                 cwd: path_transformer.to_dist_assert_abs(cwd)?,
             })
         })();
