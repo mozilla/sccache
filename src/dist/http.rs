@@ -610,7 +610,7 @@ mod client {
     }
 
     impl Client {
-        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, custom_toolchains: &[config::DistCustomToolchain], auth: &'static config::DistAuth) -> Self {
+        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig], auth: &'static config::DistAuth) -> Self {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new().timeout(timeout).build().unwrap();
             let client_async = reqwest::unstable::async::ClientBuilder::new().timeout(timeout).build(handle).unwrap();
@@ -620,7 +620,7 @@ mod client {
                 client,
                 client_async,
                 pool: pool.clone(),
-                tc_cache: cache::ClientToolchains::new(cache_dir, cache_size, custom_toolchains),
+                tc_cache: cache::ClientToolchains::new(cache_dir, cache_size, toolchain_configs),
             }
         }
     }
