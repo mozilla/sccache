@@ -1104,7 +1104,22 @@ impl Compilation for RustCompilation {
             // We can't rely on the packaged toolchain necessarily having the same default target triple
             // as us (typically host triple), so make sure to always explicitly specify a target.
             if !saw_target {
-                dist_arguments.push(format!("--target={}", host));
+                dist_arguments.push(format!("--target={}", host))
+            }
+
+            // Add any necessary path transforms - although we haven't packaged up inputs yet, we've
+            // probably seen all drives (e.g. on Windows), so let's just transform those rather than
+            // trying to do every single path.
+            // TODO: we do end up with slashes facing the wrong way, but Windows is agnostic so it's
+            // mostly ok. We currently don't do it for every single path because it means we need to
+            // figure out all prefixes and send them over the wire.
+            for (local_path, dist_path) in path_transformer.disk_mappings() {
+                // "The from=to parameter is scanned from right to left, so from may contain '=', but to may not."
+                let local_path = local_path.to_str()?;
+                if local_path.contains('=') {
+                    return None
+                }
+                dist_arguments.push(format!("--remap-path-prefix={}={}", dist_path, local_path))
             }
 
             let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);

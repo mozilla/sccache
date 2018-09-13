@@ -341,6 +341,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                             -> SFuture<(Cacheable, process::Output)>
         where T: CommandCreatorSync {
     use futures::future;
+    use std::error::Error as StdError;
     use std::io;
 
     debug!("[{}]: Attempting distributed compilation", out_pretty);
@@ -415,7 +416,8 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
         })
         // Something failed, do a local compilation
         .or_else(move |e| {
-            info!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty3, e);
+            let cause = e.cause().map(|c| format!(": {}", c)).unwrap_or_else(String::new);
+            info!("[{}]: Could not perform distributed compile, falling back to local: {}{}", compile_out_pretty3, e, cause);
             compile_cmd.execute(&creator)
         })
         .map(move |o| (cacheable, o))

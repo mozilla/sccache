@@ -51,8 +51,38 @@ mod pkg {
 #[cfg(target_os = "windows")]
 mod path_transform {
     use std::collections::HashMap;
-    use std::path::{Component, Path, PathBuf, Prefix};
+    use std::path::{Component, Components, Path, PathBuf, Prefix, PrefixComponent};
     use std::str;
+
+    fn take_prefix<'a>(components: &'a mut Components) -> PrefixComponent<'a> {
+        let prefix = components.next().unwrap();
+        let pc = match prefix {
+            Component::Prefix(pc) => pc,
+            _ => panic!("unrecognised start to path: {:?}", prefix),
+        };
+        let root = components.next().unwrap();
+        if root != Component::RootDir {
+            panic!("unexpected non-root component in path starting {:?}", prefix)
+        }
+        pc
+    }
+
+    fn transform_prefix_component(pc: PrefixComponent) -> Option<String> {
+        match pc.kind() {
+            // Transforming these to the same place means these may flip-flop
+            // in the tracking map, but they're equivalent so not really an
+            // issue
+            Prefix::Disk(diskchar) |
+            Prefix::VerbatimDisk(diskchar) => {
+                assert!(diskchar.is_ascii_alphabetic());
+                Some(format!("/prefix/disk-{}", str::from_utf8(&[diskchar]).unwrap()))
+            },
+            Prefix::Verbatim(_) |
+            Prefix::VerbatimUNC(_, _) |
+            Prefix::DeviceNS(_) |
+            Prefix::UNC(_, _) => None,
+        }
+    }
 
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
@@ -72,31 +102,8 @@ mod path_transform {
             let mut components = p.components();
 
             let maybe_dist_prefix = if p.is_absolute() {
-                let prefix = components.next().unwrap();
-                let dist_prefix = match prefix {
-                    Component::Prefix(pc) => {
-                        match pc.kind() {
-                            // Transforming these to the same place means these may flip-flop
-                            // in the tracking map, but they're equivalent so not really an
-                            // issue
-                            Prefix::Disk(diskchar) |
-                            Prefix::VerbatimDisk(diskchar) => {
-                                assert!(diskchar.is_ascii_alphabetic());
-                                format!("disk-{}", str::from_utf8(&[diskchar]).unwrap())
-                            },
-                            Prefix::Verbatim(_) |
-                            Prefix::VerbatimUNC(_, _) |
-                            Prefix::DeviceNS(_) |
-                            Prefix::UNC(_, _) => return None,
-                        }
-                    },
-                    _ => panic!("unrecognised start to path {:?}", p),
-                };
-
-                let root = components.next().unwrap();
-                if root != Component::RootDir { panic!("unexpected non-root component in {:?}", p) }
-
-                Some(dist_prefix)
+                let pc = take_prefix(&mut components);
+                Some(transform_prefix_component(pc)?)
             } else {
                 None
             };
@@ -105,7 +112,13 @@ mod path_transform {
             for component in components {
                 let part = match component {
                     Component::Prefix(_) |
-                    Component::RootDir => panic!("unexpected part in path {:?}", p),
+                    Component::RootDir => {
+                        // On Windows there is such a thing as a path like C:file.txt
+                        // It's not clear to me what the semantics of such a path are,
+                        // so give up.
+                        error!("unexpected part in path {:?}", p);
+                        return None
+                    },
                     Component::Normal(osstr) => osstr.to_str()?,
                     // TODO: should be forbidden
                     Component::CurDir => ".",
@@ -117,13 +130,33 @@ mod path_transform {
                 dist_suffix.push_str(part)
             }
 
-            let dist_path = if let Some(dist_prefix) = maybe_dist_prefix {
-                format!("/prefix/{}/{}", dist_prefix, dist_suffix)
+            let dist_path = if let Some(mut dist_prefix) = maybe_dist_prefix {
+                dist_prefix.push('/');
+                dist_prefix.push_str(&dist_suffix);
+                dist_prefix
             } else {
                 dist_suffix
             };
             self.dist_to_local_path.insert(dist_path.clone(), p.to_owned());
             Some(dist_path)
+        }
+        pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
+            let mut mappings = HashMap::new();
+            for (_dist_path, local_path) in self.dist_to_local_path.iter() {
+                if !local_path.is_absolute() {
+                    continue
+                }
+                let mut components = local_path.components();
+                let local_prefix = take_prefix(&mut components);
+                let local_prefix_component = Component::Prefix(local_prefix);
+                let local_prefix_path: &Path = local_prefix_component.as_ref();
+                if mappings.contains_key(local_prefix_path) {
+                    continue
+                }
+                let dist_prefix = transform_prefix_component(local_prefix).unwrap();
+                mappings.insert(local_prefix_path.to_owned(), dist_prefix);
+            }
+            mappings.into_iter()
         }
         pub fn to_local(&self, p: &str) -> PathBuf {
             self.dist_to_local_path.get(p).unwrap().clone()
@@ -133,6 +166,7 @@ mod path_transform {
 
 #[cfg(unix)]
 mod path_transform {
+    use std::iter;
     use std::path::{Path, PathBuf};
 
     pub struct PathTransformer;
@@ -145,6 +179,9 @@ mod path_transform {
         }
         pub fn to_dist(&mut self, p: &Path) -> Option<String> {
             p.as_os_str().to_str().map(Into::into)
+        }
+        pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
+            iter::empty()
         }
         pub fn to_local(&self, p: &str) -> PathBuf {
             PathBuf::from(p)
