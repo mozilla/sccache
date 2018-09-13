@@ -647,7 +647,7 @@ fn detect_compiler<T>(creator: &T,
         None => return f_err("could not determine compiler kind"),
         Some(f) => f,
     };
-    let is_rustc = if filename.to_string_lossy().to_lowercase() == "rustc" {
+    let rustc_vv = if filename.to_string_lossy().to_lowercase() == "rustc" {
         // Sanity check that it's really rustc.
         let executable = executable.to_path_buf();
         let child = creator.clone().new_command_sync(&executable)
@@ -655,7 +655,7 @@ fn detect_compiler<T>(creator: &T,
             .stderr(Stdio::null())
             .env_clear()
             .envs(ref_env(env))
-            .args(&["--version"])
+            .args(&["-vV"])
             .spawn();
         let output = child.and_then(move |child| {
             child.wait_with_output()
@@ -665,24 +665,24 @@ fn detect_compiler<T>(creator: &T,
             if output.status.success() {
                 if let Ok(stdout) = String::from_utf8(output.stdout) {
                     if stdout.starts_with("rustc ") {
-                        return true;
+                        return Some(stdout)
                     }
                 }
             }
-            false
+            None
         }))
     } else {
-        f_ok(false)
+        f_ok(None)
     };
 
     let creator = creator.clone();
     let executable = executable.to_owned();
     let env = env.to_owned();
     let pool = pool.clone();
-    Box::new(is_rustc.and_then(move |is_rustc| {
-        if is_rustc {
+    Box::new(rustc_vv.and_then(move |rustc_vv| {
+        if let Some(rustc_verbose_version) = rustc_vv {
             debug!("Found rustc");
-            Box::new(Rust::new(creator, executable, &env, pool)
+            Box::new(Rust::new(creator, executable, &env, &rustc_verbose_version, pool)
                 .map(|c| Some(Box::new(c) as Box<Compiler<T>>)))
         } else {
             detect_c_compiler(creator, executable, env, pool)
@@ -853,8 +853,15 @@ mod test {
         let rustc = f.mk_bin("rustc").unwrap();
         let creator = new_creator();
         let pool = CpuPool::new(1);
-        // rustc --version
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "rustc 1.15 (blah 2017-01-01)", "")));
+        // rustc --vV
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "\
+rustc 1.27.0 (3eda71b00 2018-06-19)
+binary: rustc
+commit-hash: 3eda71b00ad48d7bf4eef4c443e7f611fd061418
+commit-date: 2018-06-19
+host: x86_64-unknown-linux-gnu
+release: 1.27.0
+LLVM version: 6.0", "")));
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
