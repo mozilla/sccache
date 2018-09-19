@@ -667,7 +667,7 @@ ArgData!{
 use self::ArgData::*;
 
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
-static ARGS: [ArgInfo<ArgData>; 34] = [
+counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
@@ -702,7 +702,7 @@ static ARGS: [ArgInfo<ArgData>; 34] = [
     take_arg!("-Z", OsString, CanBeSeparated, PassThrough),
     take_arg!("-l", ArgLinkLibrary, CanBeSeparated, LinkLibrary),
     take_arg!("-o", PathBuf, CanBeSeparated, TooHardPath),
-];
+]);
 
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments>
 {

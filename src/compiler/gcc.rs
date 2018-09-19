@@ -97,7 +97,7 @@ ArgData!{ pub
 use self::ArgData::*;
 
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
-pub static ARGS: [ArgInfo<ArgData>; 65] = [
+counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),
     take_arg!("--param", OsString, Separated, PassThrough),
@@ -163,7 +163,7 @@ pub static ARGS: [ArgInfo<ArgData>; 65] = [
     take_arg!("-u", OsString, CanBeSeparated, PassThrough),
     take_arg!("-x", OsString, CanBeSeparated, Language),
     take_arg!("@", OsString, Concatenated, TooHard),
-];
+]);
 
 /// Parse `arguments`, determining whether it is supported.
 ///

@@ -81,7 +81,7 @@ impl CCompilerImpl for Clang {
     }
 }
 
-pub static ARGS: [ArgInfo<gcc::ArgData>; 10] = [
+counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
     // TODO: should be extracted and reprocessed, though bear in mind some
@@ -95,7 +95,7 @@ pub static ARGS: [ArgInfo<gcc::ArgData>; 10] = [
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-target", OsString, Separated, PassThrough),
-];
+]);
 
 #[cfg(test)]
 mod test {

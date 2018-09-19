@@ -25,6 +25,8 @@ extern crate bytes;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
+#[macro_use]
+extern crate counted_array;
 #[cfg(feature = "rust-crypto")]
 extern crate crypto;
 #[cfg(unix)]

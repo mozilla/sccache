@@ -219,7 +219,7 @@ ArgData!{
 
 use self::ArgData::*;
 
-static ARGS: [ArgInfo<ArgData>; 23] = [
+counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-D", OsString, Concatenated, PreprocessorArgument),
     take_arg!("-FA", OsString, Concatenated, TooHard),
     take_arg!("-FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
@@ -243,7 +243,7 @@ static ARGS: [ArgInfo<ArgData>; 23] = [
     take_arg!("-o", PathBuf, Separated, Output), // Deprecated but valid
     flag!("-showIncludes", ShowIncludes),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
-];
+]);
 
 pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
