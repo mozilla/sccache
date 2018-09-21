@@ -75,6 +75,7 @@ mod path_transform {
             Prefix::Disk(diskchar) |
             Prefix::VerbatimDisk(diskchar) => {
                 assert!(diskchar.is_ascii_alphabetic());
+                let diskchar = diskchar.to_ascii_uppercase();
                 Some(format!("/prefix/disk-{}", str::from_utf8(&[diskchar]).unwrap()))
             },
             Prefix::Verbatim(_) |
@@ -84,6 +85,7 @@ mod path_transform {
         }
     }
 
+    #[derive(Debug)]
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
     }
@@ -141,22 +143,30 @@ mod path_transform {
             Some(dist_path)
         }
         pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
-            let mut mappings = HashMap::new();
+            let mut normal_mappings = HashMap::new();
+            let mut verbatim_mappings = HashMap::new();
             for (_dist_path, local_path) in self.dist_to_local_path.iter() {
                 if !local_path.is_absolute() {
                     continue
                 }
                 let mut components = local_path.components();
-                let local_prefix = take_prefix(&mut components);
+                let mut local_prefix = take_prefix(&mut components);
                 let local_prefix_component = Component::Prefix(local_prefix);
                 let local_prefix_path: &Path = local_prefix_component.as_ref();
+                let mappings = if let Prefix::VerbatimDisk(_) = local_prefix.kind() {
+                    &mut verbatim_mappings
+                } else {
+                    &mut normal_mappings
+                };
                 if mappings.contains_key(local_prefix_path) {
                     continue
                 }
                 let dist_prefix = transform_prefix_component(local_prefix).unwrap();
                 mappings.insert(local_prefix_path.to_owned(), dist_prefix);
             }
-            mappings.into_iter()
+            // Prioritise normal mappings for the same disk, as verbatim mappings can
+            // look odd to users
+            normal_mappings.into_iter().chain(verbatim_mappings)
         }
         pub fn to_local(&self, p: &str) -> PathBuf {
             self.dist_to_local_path.get(p).unwrap().clone()
@@ -169,6 +179,7 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
+    #[derive(Debug)]
     pub struct PathTransformer;
 
     impl PathTransformer {

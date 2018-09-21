@@ -14,6 +14,8 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
+#[cfg(feature = "dist-client")]
+use compiler::OutputsRewriter;
 use compiler::args::*;
 use dist;
 #[cfg(feature = "dist-client")]
@@ -25,14 +27,16 @@ use log::Level::Trace;
 use lru_disk_cache::lru_cache;
 use mock_command::{CommandCreatorSync, RunCommand};
 #[cfg(feature = "dist-client")]
+use regex;
+#[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "dist-client")]
 use std::collections::hash_map::RandomState;
 #[cfg(feature = "dist-client")]
-use std::env::consts::DLL_PREFIX;
-use std::env::consts::{DLL_EXTENSION, EXE_EXTENSION};
+use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
+use std::env::consts::DLL_EXTENSION;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -64,6 +68,7 @@ const RLIB_PREFIX: &str = "lib";
 const RLIB_EXTENSION: &str = "rlib";
 
 /// Directory in the sysroot containing binary to which rustc is linked.
+#[cfg(feature = "dist-client")]
 const BINS_DIR: &str = "bin";
 
 /// Directory in the sysroot containing shared libraries to which rustc is linked.
@@ -154,6 +159,8 @@ pub struct RustCompilation {
     crate_name: String,
     /// The crate types that will be generated
     crate_types: CrateTypes,
+    /// If dependency info is being emitted, the name of the dep info file.
+    dep_info: Option<PathBuf>,
     /// The current working directory
     cwd: PathBuf,
     /// The environment variables
@@ -640,6 +647,7 @@ impl IntoArg for ArgTarget {
 
 ArgData!{
     TooHardFlag,
+    TooHard(OsString),
     TooHardPath(PathBuf),
     NotCompilationFlag,
     NotCompilation(OsString),
@@ -659,7 +667,7 @@ ArgData!{
 use self::ArgData::*;
 
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
-static ARGS: [ArgInfo<ArgData>; 33] = [
+static ARGS: [ArgInfo<ArgData>; 34] = [
     flag!("-", TooHardFlag),
     take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
@@ -678,6 +686,7 @@ static ARGS: [ArgInfo<ArgData>; 33] = [
     take_arg!("--out-dir", PathBuf, CanBeSeparated('='), OutDir),
     take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
     take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
+    take_arg!("--remap-path-prefix", OsString, CanBeSeparated('='), TooHard),
     take_arg!("--sysroot", PathBuf, CanBeSeparated('='), TooHardPath),
     take_arg!("--target", ArgTarget, CanBeSeparated('='), Target),
     take_arg!("--unpretty", OsString, CanBeSeparated('='), NotCompilation),
@@ -715,6 +724,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) |
+            Some(TooHard(_)) |
             Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect(
                     "Can't be Argument::Raw/UnknownFlag",
@@ -1011,10 +1021,13 @@ impl<T> CompilerHasher<T> for RustHasher
                         (o, p)
                     })
                     .collect::<HashMap<_, _>>();
-                if let Some(dep_info) = dep_info {
+                let dep_info = if let Some(dep_info) = dep_info {
                     let p = output_dir.join(&dep_info);
-                    outputs.insert(dep_info.to_string_lossy().into_owned(), p);
-                }
+                    outputs.insert(dep_info.to_string_lossy().into_owned(), p.clone());
+                    Some(p)
+                } else {
+                    None
+                };
                 let mut arguments = arguments;
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
@@ -1031,6 +1044,7 @@ impl<T> CompilerHasher<T> for RustHasher
                         crate_link_paths,
                         crate_name,
                         crate_types,
+                        dep_info,
                         cwd,
                         env_vars,
                         #[cfg(feature = "dist-client")]
@@ -1059,7 +1073,10 @@ impl Compilation for RustCompilation {
     fn generate_compile_commands(&self, path_transformer: &mut dist::PathTransformer)
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
     {
-        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, ref host, ref sysroot, .. } = *self;
+        let RustCompilation { ref executable, ref arguments, ref crate_name, ref cwd, ref env_vars, #[cfg(feature = "dist-client")] ref host, #[cfg(feature = "dist-client")] ref sysroot, .. } = *self;
+        #[cfg(not(feature = "dist-client"))]
+        let _ = path_transformer;
+
         trace!("[{}]: compile", crate_name);
 
         let command = CompileCommand {
@@ -1069,18 +1086,22 @@ impl Compilation for RustCompilation {
             cwd: cwd.to_owned(),
         };
 
-        macro_rules! try_string_arg {
-            ($e:expr) => {
-                match $e {
-                    Ok(s) => s,
-                    Err(e) => {
-                        debug!("Conversion failed for distributed compile argument: {}", e);
-                        return None
-                    },
-                }
-            };
-        }
+        #[cfg(not(feature = "dist-client"))]
+        let dist_command = None;
+        #[cfg(feature = "dist-client")]
         let dist_command = (|| {
+            macro_rules! try_string_arg {
+                ($e:expr) => {
+                    match $e {
+                        Ok(s) => s,
+                        Err(e) => {
+                            debug!("Conversion failed for distributed compile argument: {}", e);
+                            return None
+                        },
+                    }
+                };
+            }
+
             let mut dist_arguments = vec![];
             let mut saw_target = false;
 
@@ -1106,23 +1127,6 @@ impl Compilation for RustCompilation {
             if !saw_target {
                 dist_arguments.push(format!("--target={}", host))
             }
-
-            // Add any necessary path transforms - although we haven't packaged up inputs yet, we've
-            // probably seen all drives (e.g. on Windows), so let's just transform those rather than
-            // trying to do every single path.
-            // TODO: we do end up with slashes facing the wrong way, but Windows is agnostic so it's
-            // mostly ok. We currently don't do it for every single path because it means we need to
-            // figure out all prefixes and send them over the wire.
-            for (local_path, dist_path) in path_transformer.disk_mappings() {
-                // "The from=to parameter is scanned from right to left, so from may contain '=', but to may not."
-                let local_path = local_path.to_str()?;
-                if local_path.contains('=') {
-                    return None
-                }
-                dist_arguments.push(format!("--remap-path-prefix={}={}", dist_path, local_path))
-            }
-
-            let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
 
             // Convert the paths of some important environment variables
             let mut env_vars = dist::osstring_tuples_to_strings(env_vars)?;
@@ -1152,6 +1156,25 @@ impl Compilation for RustCompilation {
                 }
             }
 
+            // Add any necessary path transforms - although we haven't packaged up inputs yet, we've
+            // probably seen all drives (e.g. on Windows), so let's just transform those rather than
+            // trying to do every single path.
+            let mut remapped_disks = HashSet::new();
+            for (local_path, dist_path) in get_path_mappings(&path_transformer) {
+                let local_path = local_path.to_str()?;
+                // "The from=to parameter is scanned from right to left, so from may contain '=', but to may not."
+                if local_path.contains('=') {
+                    return None
+                }
+                if remapped_disks.contains(&dist_path) {
+                    continue
+                }
+                dist_arguments.push(format!("--remap-path-prefix={}={}", &dist_path, local_path));
+                remapped_disks.insert(dist_path);
+            }
+
+            let sysroot_executable = sysroot.join(BINS_DIR).join("rustc").with_extension(EXE_EXTENSION);
+
             Some(dist::CompileCommand {
                 executable: path_transformer.to_dist(&sysroot_executable)?,
                 arguments: dist_arguments,
@@ -1164,20 +1187,29 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
 
-        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, rlib_dep_reader, env_vars, .. } = *{self};
+        let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, dep_info, rlib_dep_reader, env_vars, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
         let inputs_packager = Box::new(RustInputsPackager { env_vars, crate_link_paths, crate_types, inputs, path_transformer, rlib_dep_reader });
-        let toolchain_packager = Box::new(RustToolchainPackager { sysroot: sysroot });
+        let toolchain_packager = Box::new(RustToolchainPackager { sysroot });
+        let outputs_rewriter = Box::new(RustOutputsRewriter { dep_info });
 
-        Ok((inputs_packager, toolchain_packager))
+        Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
     }
+}
+
+// TODO: we do end up with slashes facing the wrong way, but Windows is agnostic so it's
+// mostly ok. We currently don't get mappings for every single path because it means we need to
+// figure out all prefixes and send them over the wire.
+#[cfg(feature = "dist-client")]
+fn get_path_mappings(path_transformer: &dist::PathTransformer) -> impl Iterator<Item=(PathBuf, String)> {
+    path_transformer.disk_mappings()
 }
 
 #[cfg(feature = "dist-client")]
@@ -1199,7 +1231,17 @@ impl pkg::InputsPackager for RustInputsPackager {
         debug!("Packaging compile inputs for compile");
         let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, env_vars } = *{self};
 
-        let mut rlib_dep_reader_and_names = rlib_dep_reader.map(|r| (r, HashSet::new()));
+        // If this is a cargo build, we can assume all immediate `extern crate` dependencies
+        // have been passed on the command line, allowing us to scan them all and find the
+        // complete list of crates we might need.
+        // If it's not a cargo build, we can't to extract the `extern crate` statements and
+        // so have no way to build a list of necessary crates - send all rlibs.
+        let is_cargo = env_vars.iter().any(|(k, _)| k == "CARGO_PKG_NAME");
+        let mut rlib_dep_reader_and_names = if is_cargo {
+            rlib_dep_reader.map(|r| (r, HashSet::new()))
+        } else {
+            None
+        };
 
         let mut tar_inputs = vec![];
         for input_path in inputs.into_iter() {
@@ -1384,6 +1426,52 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         package_builder.into_compressed_tar(f)
     }
 }
+
+#[cfg(feature = "dist-client")]
+struct RustOutputsRewriter {
+    dep_info: Option<PathBuf>,
+}
+
+#[cfg(feature = "dist-client")]
+impl OutputsRewriter for RustOutputsRewriter {
+    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: Vec<(String, PathBuf)>)
+                      -> Result<()> {
+        use std::io::{Seek, Write};
+
+        // Outputs in dep files (the files at the beginning of lines) are untransformed - remap-path-prefix is documented
+        // to only apply to 'inputs'.
+        trace!("Pondering on rewriting dep file {:?}", self.dep_info);
+        if let Some(dep_info) = self.dep_info {
+            for (_dep_info_dist_path, dep_info_local_path) in output_paths {
+                trace!("Comparing with {}", dep_info_local_path.display());
+                if dep_info == dep_info_local_path {
+                    error!("Replacing using the transformer {:?}", path_transformer);
+                    // Found the dep info file
+                    let mut f = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(dep_info)?;
+                    let mut deps = String::new();
+                    f.read_to_string(&mut deps)?;
+                    for (local_path, dist_path) in get_path_mappings(path_transformer) {
+                        let re_str = format!("(?m)^{}", regex::escape(&dist_path));
+                        error!("RE replacing {} with {} in {}", re_str, local_path.to_str().unwrap(), deps);
+                        let re = regex::Regex::new(&re_str).expect("Invalid regex");
+                        deps = re.replace_all(&deps, local_path.to_str().unwrap()).into_owned();
+                    }
+                    f.seek(io::SeekFrom::Start(0))?;
+                    f.write_all(deps.as_bytes())?;
+                    f.set_len(deps.len() as u64)?;
+                    return Ok(())
+                }
+            }
+            // We expected there to be dep info, but none of the outputs matched
+            bail!("No outputs matched dep info file {}", dep_info.display());
+        }
+        Ok(())
+    }
+}
+
 
 #[cfg(feature = "dist-client")]
 #[derive(Debug)]

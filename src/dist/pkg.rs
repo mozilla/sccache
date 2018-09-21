@@ -31,6 +31,10 @@ pub trait InputsPackager: Send {
     fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer>;
 }
 
+pub trait OutputsRepackager {
+    fn repackage_outputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer>;
+}
+
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod toolchain_imp {
     use std::fs;

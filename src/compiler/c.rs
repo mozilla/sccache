@@ -14,6 +14,8 @@
 
 use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
+#[cfg(feature = "dist-client")]
+use compiler::{NoopOutputsRewriter, OutputsRewriter};
 use dist;
 #[cfg(feature = "dist-client")]
 use dist::pkg;
@@ -307,14 +309,15 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
         let CCompilation { parsed_args, cwd, preprocessed_input, executable, .. } = *{self};
         trace!("Dist inputs: {:?}", parsed_args.input);
 
         let input_path = cwd.join(&parsed_args.input);
         let inputs_packager = Box::new(CInputsPackager { input_path, preprocessed_input, path_transformer });
         let toolchain_packager = Box::new(CToolchainPackager { executable });
-        Ok((inputs_packager, toolchain_packager))
+        let outputs_rewriter = Box::new(NoopOutputsRewriter);
+        Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>

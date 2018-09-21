@@ -362,7 +362,7 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
             compilation.into_dist_packagers(path_transformer)
                 .map(|packagers| (dist_compile_cmd, packagers, dist_output_paths))
         })
-        .and_then(move |(mut dist_compile_cmd, (inputs_packager, toolchain_packager), dist_output_paths)| {
+        .and_then(move |(mut dist_compile_cmd, (inputs_packager, toolchain_packager, outputs_rewriter), dist_output_paths)| {
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
             // TODO: put on a thread
             let (dist_toolchain, maybe_dist_compile_executable) =
@@ -404,12 +404,16 @@ fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
                         dist::RunJobResult::JobNotFound => panic!(),
                     };
                     info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.lens().to_string())).collect::<Vec<_>>());
+                    let mut output_paths = vec![];
                     for (path, output_data) in jc.outputs {
                         let len = output_data.lens().actual;
-                        let mut file = File::create(path_transformer.to_local(&path)).unwrap();
+                        let local_path = path_transformer.to_local(&path);
+                        let mut file = File::create(&local_path).unwrap();
                         let count = io::copy(&mut output_data.into_reader(), &mut file).unwrap();
                         assert!(count == len);
+                        output_paths.push((path, local_path))
                     }
+                    outputs_rewriter.handle_outputs(&path_transformer, output_paths).unwrap();
                     jc.output.into()
                 })
             )
@@ -439,7 +443,7 @@ pub trait Compilation {
     /// Create a function that will create the inputs used to perform a distributed compilation
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(self: Box<Self>, _path_transformer: dist::PathTransformer)
-                           -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>)> {
+                           -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
 
         bail!("distributed compilation not implemented")
     }
@@ -449,6 +453,22 @@ pub trait Compilation {
     /// Each item is a descriptive (and unique) name of the output paired with
     /// the path where it'll show up.
     fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>;
+}
+
+#[cfg(feature = "dist-client")]
+pub trait OutputsRewriter {
+    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: Vec<(String, PathBuf)>)
+                      -> Result<()>;
+}
+
+#[cfg(feature = "dist-client")]
+pub struct NoopOutputsRewriter;
+#[cfg(feature = "dist-client")]
+impl OutputsRewriter for NoopOutputsRewriter {
+    fn handle_outputs(self: Box<Self>, _path_transformer: &dist::PathTransformer, _output_paths: Vec<(String, PathBuf)>)
+                      -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Result of generating a hash from a compiler command.

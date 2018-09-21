@@ -402,6 +402,9 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
                                 env_vars: &[(OsString, OsString)])
                                 -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
 {
+    #[cfg(not(feature = "dist-client"))]
+    let _ = path_transformer;
+
     trace!("compile");
 
     let out_file = match parsed_args.outputs.get("obj") {
@@ -434,6 +437,9 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
         cwd: cwd.to_owned(),
     };
 
+    #[cfg(not(feature = "dist-client"))]
+    let dist_command = None;
+    #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
         let language = match parsed_args.language {
