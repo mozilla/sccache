@@ -646,7 +646,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         #[cfg(not(feature = "dist-client"))]
         Command::PackageToolchain(_executable, _out) => {
-            bail!("Toolchain packaging not compiled in")
+            bail!("Toolchain packaging not compiled in, please rebuild with the dist-client feature")
         }
         Command::Compile { exe, cmdline, cwd, env_vars } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);

@@ -547,6 +547,9 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
                             env_vars: &[(OsString, OsString)])
                             -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
 {
+    #[cfg(not(feature = "dist-client"))]
+    let _ = path_transformer;
+
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
@@ -585,6 +588,9 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
         cwd: cwd.to_owned(),
     };
 
+    #[cfg(not(feature = "dist-client"))]
+    let dist_command = None;
+    #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // http://releases.llvm.org/6.0.0/tools/clang/docs/UsersManual.html#clang-cl
         // TODO: Use /T... for language?

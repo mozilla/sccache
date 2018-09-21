@@ -146,6 +146,7 @@ impl<T: ArgumentValue> Argument<T> {
     }
 
     /// Transforms a parsed argument into an iterator over strings, with transformed paths.
+    #[cfg(feature = "dist-client")]
     pub fn iter_strings<F: FnMut(&Path) -> Option<String>>(&self, path_transformer: F) -> IterStrings<T, F> {
         IterStrings {
             arg: self,
@@ -206,12 +207,14 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
     }
 }
 
+#[cfg(feature = "dist-client")]
 pub struct IterStrings<'a, T: 'a, F> {
     arg: &'a Argument<T>,
     emitted: usize,
     path_transformer: F,
 }
 
+#[cfg(feature = "dist-client")]
 impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterStrings<'a, T, F> {
     type Item = ArgToStringResult;
 
