@@ -21,16 +21,18 @@ use crypto::mac::Mac;
 use crypto::md5::Md5;
 use crypto::sha2::Sha256;
 use futures::{Future, Stream};
-use hyper::{header, Method};
+use hyper::Method;
+use hyper::header::HeaderValue;
+use hyperx::header;
 use url::Url;
 use reqwest;
-use reqwest::unstable::async::{Request, Client};
+use reqwest::async::{Request, Client};
 use std::fmt;
 use std::str::FromStr;
 use time;
-use tokio_core::reactor::Handle;
 
 use errors::*;
+use util::HeadersExt;
 
 const BLOB_API_VERSION: &str = "2017-04-17";
 
@@ -67,7 +69,7 @@ impl fmt::Display for BlobContainer {
 }
 
 impl BlobContainer {
-    pub fn new(base_url: &str, container_name: &Option<String>, handle: &Handle) -> Result<BlobContainer> {
+    pub fn new(base_url: &str, container_name: &Option<String>) -> Result<BlobContainer> {
         let container_url = match container_name {
             &Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
             &None           => base_url.to_owned()
@@ -75,7 +77,7 @@ impl BlobContainer {
 
         Ok(BlobContainer {
             url: container_url,
-            client: Client::new(handle),
+            client: Client::new(),
         })
     }
 
@@ -98,17 +100,17 @@ impl BlobContainer {
         let uri_copy = uri.clone();
         let uri_second_copy = uri.clone();
 
-        let mut request = Request::new(Method::Get, uri);
-        request.headers_mut().set_raw("x-ms-date", date);
-        request.headers_mut().set_raw("x-ms-version", BLOB_API_VERSION);
-        request.headers_mut().set_raw("Authorization", auth);
+        let mut request = Request::new(Method::GET, uri);
+        request.headers_mut().insert("x-ms-date", HeaderValue::from_str(&date).expect("Date is an invalid header value"));
+        request.headers_mut().insert("x-ms-version", HeaderValue::from_static(BLOB_API_VERSION));
+        request.headers_mut().insert("Authorization", HeaderValue::from_str(&auth).expect("Authorization is an invalid header value"));
 
         Box::new(self.client.execute(request).chain_err(move || {
             format!("failed GET: {}", uri_copy)
         }).and_then(|res| {
             if res.status().is_success() {
-                let content_length = res.headers().get::<header::ContentLength>()
-                    .map(|&header::ContentLength(len)| len);
+                let content_length = res.headers().get_hyperx::<header::ContentLength>()
+                    .map(|header::ContentLength(len)| len);
                 Ok((res.into_body(), content_length))
             } else {
                 Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
@@ -156,14 +158,14 @@ impl BlobContainer {
             &uri,
             creds);
 
-        let mut request = Request::new(Method::Put, uri);
+        let mut request = Request::new(Method::PUT, uri);
         request.headers_mut().set(header::ContentType(content_type.parse().unwrap()));
         request.headers_mut().set(header::ContentLength(content.len() as u64));
-        request.headers_mut().set_raw("x-ms-blob-type", "BlockBlob");
-        request.headers_mut().set_raw("x-ms-date", date);
-        request.headers_mut().set_raw("x-ms-version", BLOB_API_VERSION);
-        request.headers_mut().set_raw("Authorization", auth);
-        request.headers_mut().set_raw("Content-MD5", content_md5);
+        request.headers_mut().insert("x-ms-blob-type", HeaderValue::from_static("BlockBlob"));
+        request.headers_mut().insert("x-ms-date", HeaderValue::from_str(&date).expect("Invalid x-ms-date header"));
+        request.headers_mut().insert("x-ms-version", HeaderValue::from_static(BLOB_API_VERSION));
+        request.headers_mut().insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid Authorization header"));
+        request.headers_mut().insert("Content-MD5", HeaderValue::from_str(&content_md5).expect("Invalid Content-MD5 header"));
 
         *request.body_mut() = Some(content.into());
 
@@ -238,7 +240,7 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio_core::reactor::Core;
+    use tokio::runtime::current_thread::Runtime;
 
     #[test]
     fn test_signing() {
@@ -286,16 +288,15 @@ mod test {
         let container_name = Some("sccache".to_owned());
         let creds = AzureCredentials::new(&blob_endpoint, &client_name, &client_key, container_name.clone());
 
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
+        let mut runtime = Runtime::new().unwrap();
 
-        let container = BlobContainer::new(creds.azure_blob_endpoint(), &container_name, &handle).unwrap();
+        let container = BlobContainer::new(creds.azure_blob_endpoint(), &container_name).unwrap();
 
         let put_future = container.put("foo", "barbell".as_bytes().to_vec(), &creds);
-        core.run(put_future).unwrap();
+        runtime.block_on(put_future).unwrap();
 
         let get_future = container.get("foo", &creds);
-        let result = core.run(get_future).unwrap();
+        let result = runtime.block_on(get_future).unwrap();
 
         assert_eq!("barbell".as_bytes().to_vec(), result);
     }

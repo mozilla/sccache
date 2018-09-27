@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use bincode;
-use byteorder::{ByteOrder, BigEndian};
-use futures::{Future, future};
+use byteorder::{BigEndian, ByteOrder};
+use futures::{future, Future};
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
-use ring::digest::{SHA512, Context};
+use ring::digest::{Context, SHA512};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -25,7 +25,7 @@ use std::hash::Hasher;
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{self,Stdio};
+use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
 
@@ -38,16 +38,21 @@ pub struct Digest {
 
 impl Digest {
     pub fn new() -> Digest {
-        Digest { inner: Context::new(&SHA512) }
+        Digest {
+            inner: Context::new(&SHA512),
+        }
     }
 
     /// Calculate the SHA-512 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
     pub fn file<T>(path: T, pool: &CpuPool) -> SFuture<String>
-        where T: AsRef<Path>
+    where
+        T: AsRef<Path>,
     {
         let path = path.as_ref();
-        let f = ftry!(File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path)));
+        let f = ftry!(
+            File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))
+        );
         Self::reader(f, pool)
     }
 
@@ -80,7 +85,7 @@ pub fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
         s.push(hex(byte & 0xf));
-        s.push(hex((byte >> 4)& 0xf));
+        s.push(hex((byte >> 4) & 0xf));
     }
     return s;
 
@@ -94,44 +99,56 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// Calculate the SHA-1 digest of each file in `files` on background threads
 /// in `pool`.
-pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
-{
+pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
     let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
-             .map(move |hashes| {
-                 trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
-                 hashes
-             }))
+    Box::new(
+        future::join_all(
+            files
+                .into_iter()
+                .map(move |f| Digest::file(f, &pool))
+                .collect::<Vec<_>>(),
+        ).map(move |hashes| {
+            trace!(
+                "Hashed {} files in {}",
+                count,
+                fmt_duration_as_secs(&start.elapsed())
+            );
+            hashes
+        }),
+    )
 }
 
 /// Format `duration` as seconds with a fractional component.
-pub fn fmt_duration_as_secs(duration: &Duration) -> String
-{
-    format!("{}.{:03} s", duration.as_secs(), duration.subsec_nanos() / 1000_000)
+pub fn fmt_duration_as_secs(duration: &Duration) -> String {
+    format!(
+        "{}.{:03} s",
+        duration.as_secs(),
+        duration.subsec_nanos() / 1000_000
+    )
 }
 
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
-                             -> SFuture<process::Output>
-    where T: CommandChild + 'static,
+fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> SFuture<process::Output>
+where
+    T: CommandChild + 'static,
 {
-    use tokio_io::io::{write_all, read_to_end};
+    use tokio_io::io::{read_to_end, write_all};
     let stdin = input.and_then(|i| {
-        child.take_stdin().map(|stdin| {
-            write_all(stdin, i).chain_err(|| "failed to write stdin")
-        })
+        child
+            .take_stdin()
+            .map(|stdin| write_all(stdin, i).chain_err(|| "failed to write stdin"))
     });
-    let stdout = child.take_stdout().map(|io| {
-        read_to_end(io, Vec::new()).chain_err(|| "failed to read stdout")
-    });
-    let stderr = child.take_stderr().map(|io| {
-        read_to_end(io, Vec::new()).chain_err(|| "failed to read stderr")
-    });
+    let stdout = child
+        .take_stdout()
+        .map(|io| read_to_end(io, Vec::new()).chain_err(|| "failed to read stdout"));
+    let stderr = child
+        .take_stderr()
+        .map(|io| read_to_end(io, Vec::new()).chain_err(|| "failed to read stderr"));
 
     // Finish writing stdin before waiting, because waiting drops stdin.
     let status = Future::and_then(stdin, |io| {
@@ -154,33 +171,36 @@ fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>)
 ///
 /// If the command returns a non-successful exit status, an error of `ErrorKind::ProcessError`
 /// will be returned containing the process output.
-pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>)
-                           -> SFuture<process::Output>
-    where C: RunCommand
+pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> SFuture<process::Output>
+where
+    C: RunCommand,
 {
     let child = command
         .no_console()
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::inherit() })
-        .stdout(Stdio::piped())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        }).stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
 
-    Box::new(child
-             .and_then(|child| {
-                 wait_with_input_output(child, input).and_then(|output| {
-                     if output.status.success() {
-                         f_ok(output)
-                     } else {
-                         f_err(ErrorKind::ProcessError(output))
-                     }
-                 })
-             }))
+    Box::new(child.and_then(|child| {
+        wait_with_input_output(child, input).and_then(|output| {
+            if output.status.success() {
+                f_ok(output)
+            } else {
+                f_err(ErrorKind::ProcessError(output))
+            }
+        })
+    }))
 }
 
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
 pub fn write_length_prefixed_bincode<W, S>(mut writer: W, data: S) -> Result<()>
-    where W: Write,
-          S: Serialize,
+where
+    W: Write,
+    S: Serialize,
 {
     let bytes = bincode::serialize(&data)?;
     let mut len = [0; 4];
@@ -245,10 +265,10 @@ impl OsStrExt for OsStr {
             // u16 iterator we keep going, otherwise we've found a mismatch.
             if to_match < 0xd7ff {
                 if to_match != codepoint {
-                    return false
+                    return false;
                 }
             } else {
-                return false
+                return false;
             }
         }
 
@@ -268,7 +288,7 @@ impl OsStrExt for OsStr {
                 Some(ch) => ch,
                 None => {
                     let codepoints = u16s.collect::<Vec<_>>();
-                    return Some(OsString::from_wide(&codepoints))
+                    return Some(OsString::from_wide(&codepoints));
                 }
             };
 
@@ -277,10 +297,10 @@ impl OsStrExt for OsStr {
 
             if to_match < 0xd7ff {
                 if to_match != codepoint {
-                    return None
+                    return None;
                 }
             } else {
-                return None
+                return None;
             }
             u16s.next();
         }
@@ -312,10 +332,109 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
     env.iter().map(|&(ref k, ref v)| (k, v))
 }
 
+#[cfg(feature = "hyperx")]
+pub use self::http_extension::{HeadersExt, RequestExt};
+
+#[cfg(feature = "hyperx")]
+mod http_extension {
+    use http;
+    use http::header::HeaderValue;
+    use hyperx;
+    use std::fmt;
+
+    pub trait HeadersExt {
+        fn set<H>(&mut self, header: H)
+        where
+            H: hyperx::header::Header + fmt::Display;
+
+        fn get_hyperx<H>(&self) -> Option<H>
+        where
+            H: hyperx::header::Header;
+    }
+
+    impl HeadersExt for http::HeaderMap {
+        fn set<H>(&mut self, header: H)
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.insert(
+                H::header_name(),
+                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+            );
+        }
+
+        fn get_hyperx<H>(&self) -> Option<H>
+        where
+            H: hyperx::header::Header,
+        {
+            http::HeaderMap::get(self, H::header_name())
+                .and_then(|header| H::parse_header(&header.as_bytes().into()).ok())
+        }
+    }
+
+    pub trait RequestExt {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display;
+    }
+
+    impl RequestExt for http::request::Builder {
+        fn set_header<H>(mut self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+            );
+            self
+        }
+    }
+
+    impl RequestExt for http::response::Builder {
+        fn set_header<H>(mut self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+            );
+            self
+        }
+    }
+
+    #[cfg(feature = "reqwest")]
+    impl RequestExt for ::reqwest::async::RequestBuilder {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+            )
+        }
+    }
+
+    #[cfg(feature = "reqwest")]
+    impl RequestExt for ::reqwest::RequestBuilder {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::ffi::{OsStr, OsString};
     use super::OsStrExt;
+    use std::ffi::{OsStr, OsString};
 
     #[test]
     fn simple_starts_with() {

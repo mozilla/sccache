@@ -11,15 +11,16 @@ use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use crypto::sha1::Sha1;
 use futures::{Future, Stream};
-use hyper::header;
+use hyperx::header;
+use hyper::header::HeaderValue;
 use hyper::Method;
 use reqwest;
-use reqwest::unstable::async::{Client, Request};
+use reqwest::async::{Client, Request};
 use simples3::credential::*;
 use time;
-use tokio_core::reactor::Handle;
 
 use errors::*;
+use util::HeadersExt;
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
@@ -71,12 +72,12 @@ impl fmt::Display for Bucket {
 }
 
 impl Bucket {
-    pub fn new(name: &str, endpoint: &str, ssl: Ssl, handle: &Handle) -> Result<Bucket> {
+    pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Result<Bucket> {
         let base_url = base_url(&endpoint, ssl);
         Ok(Bucket {
             name: name.to_owned(),
             base_url: base_url,
-            client: Client::new(handle),
+            client: Client::new(),
         })
     }
 
@@ -93,32 +94,31 @@ impl Bucket {
                     if res.status().is_success() {
                         let content_length = res
                             .headers()
-                            .get::<header::ContentLength>()
-                            .map(|&header::ContentLength(len)| len);
+                            .get_hyperx::<header::ContentLength>()
+                            .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
                         Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
                     }
-                })
-                .and_then(|(body, content_length)| {
+                }).and_then(|(body, content_length)| {
                     body.fold(Vec::new(), |mut body, chunk| {
                         body.extend_from_slice(&chunk);
                         Ok::<_, reqwest::Error>(body)
                     }).chain_err(|| "failed to read HTTP body")
-                        .and_then(move |bytes| {
-                            if let Some(len) = content_length {
-                                if len != bytes.len() as u64 {
-                                    bail!(format!(
-                                        "Bad HTTP body size read: {}, expected {}",
-                                        bytes.len(),
-                                        len
-                                    ));
-                                } else {
-                                    info!("Read {} bytes from {}", bytes.len(), url2);
-                                }
+                    .and_then(move |bytes| {
+                        if let Some(len) = content_length {
+                            if len != bytes.len() as u64 {
+                                bail!(format!(
+                                    "Bad HTTP body size read: {}, expected {}",
+                                    bytes.len(),
+                                    len
+                                ));
+                            } else {
+                                info!("Read {} bytes from {}", bytes.len(), url2);
                             }
-                            Ok(bytes)
-                        })
+                        }
+                        Ok(bytes)
+                    })
                 }),
         )
     }
@@ -126,7 +126,7 @@ impl Bucket {
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials) -> SFuture<()> {
         let url = format!("{}{}", self.base_url, key);
         debug!("PUT {}", url);
-        let mut request = Request::new(Method::Put, url.parse().unwrap());
+        let mut request = Request::new(Method::PUT, url.parse().unwrap());
 
         let content_type = "application/octet-stream";
         let date = time::now_utc().rfc822().to_string();
@@ -137,7 +137,11 @@ impl Bucket {
             if let Some(ref value) = maybe_value {
                 request
                     .headers_mut()
-                    .set_raw(header, vec![value.as_bytes().to_vec()]);
+                    .insert(
+                        header,
+                        HeaderValue::from_str(value)
+                            .unwrap_or_else(|_| panic!("Invalid `{}` header", header))
+                    );
                 canonical_headers
                     .push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
             }
@@ -151,9 +155,7 @@ impl Bucket {
             content_type,
             creds,
         );
-        request
-            .headers_mut()
-            .set_raw("Date", vec![date.into_bytes()]);
+        request.headers_mut().insert("Date", HeaderValue::from_str(&date).expect("Invalid date header"));
         request
             .headers_mut()
             .set(header::ContentType(content_type.parse().unwrap()));
@@ -166,7 +168,7 @@ impl Bucket {
         ]));
         request
             .headers_mut()
-            .set_raw("Authorization", vec![auth.into_bytes()]);
+            .insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid authentication"));
         *request.body_mut() = Some(content.into());
 
         Box::new(self.client.execute(request).then(|result| match result {
