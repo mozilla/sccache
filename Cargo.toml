@@ -37,7 +37,9 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures-cpupool = "0.1"
-hyper = { version = "0.11", optional = true }
+http = "0.1"
+hyper = { version = "0.12", optional = true }
+hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "5.0", optional = true }
 lazy_static = "1.0.0"
@@ -52,9 +54,7 @@ openssl = { version = "0.10", optional = true }
 rand = "0.5"
 redis = { version = "0.9.0", optional = true }
 regex = "1"
-# Exact dependency since we use the unstable async API
-# If updating this, make sure to update dev-dependencies
-reqwest = { version = "=0.8.8", features = ["unstable"], optional = true }
+reqwest = { version = "0.9", optional = true }
 retry = "0.4.0"
 ring = "0.13.2"
 rust-crypto = { version = "0.2.36", optional = true }
@@ -66,12 +66,13 @@ tar = "0.4"
 tempdir = "0.3.4"
 tempfile = "3"
 time = "0.1.35"
-tokio-core = "0.1.6"
+tokio = "0.1.11"
 tokio-io = "0.1"
 tokio-process = "0.2"
-tokio-proto = "0.1"
 tokio-serde-bincode = "0.1"
 tokio-service = "0.1"
+tokio-tcp = "0.1"
+tokio-timer = "0.2"
 toml = "0.4"
 uuid = { version = "0.6", features = ["v4"] }
 url = { version = "1.0", optional = true }
@@ -99,8 +100,6 @@ escargot = "0.3"
 itertools = "0.7"
 predicates = "0.9.0"
 selenium-rs = "0.1"
-# Must match the version of request in dependencies
-reqwest = { version = "=0.8.8" }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.3"
@@ -109,22 +108,23 @@ tokio-uds = "0.2"
 [target.'cfg(windows)'.dependencies]
 kernel32-sys = "0.2.2"
 winapi = { version = "0.3", features = ["winnls"] }
-mio-named-pipes = "0.1"
+tokio-named-pipes = "0.1"
+tokio-reactor = "0.1"
 
 [features]
 default = ["s3"]
 all = ["redis", "s3", "memcached", "gcs", "azure"]
 # gcs requires openssl, which is a pain on Windows.
 all-windows = ["redis", "s3", "memcached", "azure"]
-azure = ["chrono", "hyper", "rust-crypto", "url"]
-s3 = ["chrono", "hyper", "reqwest", "rust-crypto", "simple-s3"]
+azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
+s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "jsonwebtoken", "openssl", "reqwest", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["ar", "flate2", "hyper", "reqwest", "rust-crypto", "url"]
+dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "rust-crypto", "url"]
 # Enables the sccache-dist binary
 dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "void"]
 # Enables dist tests with external requirements

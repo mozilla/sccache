@@ -14,14 +14,17 @@
 #[cfg(feature = "dist-client")]
 pub use self::client::Client;
 #[cfg(feature = "dist-server")]
-pub use self::server::{HEARTBEAT_TIMEOUT, Scheduler, ClientAuthCheck, ClientVisibleMsg, ServerAuthCheck};
-#[cfg(feature = "dist-server")]
 pub use self::server::Server;
+#[cfg(feature = "dist-server")]
+pub use self::server::{
+    ClientAuthCheck, ClientVisibleMsg, Scheduler, ServerAuthCheck, HEARTBEAT_TIMEOUT,
+};
 
 mod common {
     use bincode;
     #[cfg(feature = "dist-client")]
     use futures::{Future, Stream};
+    use hyperx::header;
     use reqwest;
     use serde;
     #[cfg(feature = "dist-server")]
@@ -31,74 +34,94 @@ mod common {
     use dist;
 
     use errors::*;
+    use util::RequestExt;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
-    pub trait ReqwestRequestBuilderExt {
-        fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self>;
-        fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self;
-        fn bearer_auth(&mut self, token: String) -> &mut Self;
+    pub trait ReqwestRequestBuilderExt: Sized {
+        fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self>;
+        fn bytes(self, bytes: Vec<u8>) -> Self;
+        fn bearer_auth(self, token: String) -> Self;
     }
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
-        fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
-            let bytes = bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
+        fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
+            let bytes =
+                bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
             Ok(self.bytes(bytes))
         }
-        fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
-            self.header(reqwest::header::ContentType::octet_stream())
-                .header(reqwest::header::ContentLength(bytes.len() as u64))
+        fn bytes(self, bytes: Vec<u8>) -> Self {
+            self.set_header(header::ContentType::octet_stream())
+                .set_header(header::ContentLength(bytes.len() as u64))
                 .body(bytes)
         }
-        fn bearer_auth(&mut self, token: String) -> &mut Self {
-            self.header(reqwest::header::Authorization(reqwest::header::Bearer { token }))
+        fn bearer_auth(self, token: String) -> Self {
+            self.set_header(header::Authorization(header::Bearer { token }))
         }
     }
-    impl ReqwestRequestBuilderExt for reqwest::unstable::async::RequestBuilder {
-        fn bincode<T: serde::Serialize + ?Sized>(&mut self, bincode: &T) -> Result<&mut Self> {
-            let bytes = bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
+    impl ReqwestRequestBuilderExt for reqwest::async::RequestBuilder {
+        fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
+            let bytes =
+                bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
             Ok(self.bytes(bytes))
         }
-        fn bytes(&mut self, bytes: Vec<u8>) -> &mut Self {
-            self.header(reqwest::header::ContentType::octet_stream())
-                .header(reqwest::header::ContentLength(bytes.len() as u64))
+        fn bytes(self, bytes: Vec<u8>) -> Self {
+            self.set_header(header::ContentType::octet_stream())
+                .set_header(header::ContentLength(bytes.len() as u64))
                 .body(bytes)
         }
-        fn bearer_auth(&mut self, token: String) -> &mut Self {
-            self.header(reqwest::header::Authorization(reqwest::header::Bearer { token }))
+        fn bearer_auth(self, token: String) -> Self {
+            self.set_header(header::Authorization(header::Bearer { token }))
         }
     }
 
-    pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::RequestBuilder) -> Result<T> {
+    pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
+        req: reqwest::RequestBuilder,
+    ) -> Result<T> {
         let mut res = req.send()?;
         let status = res.status();
         let mut body = vec![];
-        res.copy_to(&mut body).chain_err(|| "error reading response body")?;
+        res.copy_to(&mut body)
+            .chain_err(|| "error reading response body")?;
         if !status.is_success() {
-            Err(format!("Error {} (Headers={:?}): {}", status.as_u16(), res.headers(), String::from_utf8_lossy(&body)).into())
+            Err(format!(
+                "Error {} (Headers={:?}): {}",
+                status.as_u16(),
+                res.headers(),
+                String::from_utf8_lossy(&body)
+            ).into())
         } else {
             bincode::deserialize(&body).map_err(Into::into)
         }
     }
     #[cfg(feature = "dist-client")]
-    pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(req: &mut reqwest::unstable::async::RequestBuilder) -> SFuture<T> {
-        Box::new(req.send().map_err(Into::into)
-            .and_then(|res| {
-                let status = res.status();
-                res.into_body().concat2()
-                    .map(move |b| (status, b)).map_err(Into::into)
-            })
-            .and_then(|(status, body)| {
-                if !status.is_success() {
-                    return f_err(format!("Error {}: {}", status.as_u16(), String::from_utf8_lossy(&body)))
-                }
-                match bincode::deserialize(&body) {
-                    Ok(r) => f_ok(r),
-                    Err(e) => f_err(e),
-                }
-            }))
+    pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
+        req: reqwest::async::RequestBuilder,
+    ) -> SFuture<T> {
+        Box::new(
+            req.send()
+                .map_err(Into::into)
+                .and_then(|res| {
+                    let status = res.status();
+                    res.into_body()
+                        .concat2()
+                        .map(move |b| (status, b))
+                        .map_err(Into::into)
+                }).and_then(|(status, body)| {
+                    if !status.is_success() {
+                        return f_err(format!(
+                            "Error {}: {}",
+                            status.as_u16(),
+                            String::from_utf8_lossy(&body)
+                        ));
+                    }
+                    match bincode::deserialize(&body) {
+                        Ok(r) => f_ok(r),
+                        Err(e) => f_err(e),
+                    }
+                }),
+        )
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[derive(Eq, PartialEq)]
+    #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
     #[serde(deny_unknown_fields)]
     pub struct JobJwt {
         pub job_id: dist::JobId,
@@ -107,20 +130,41 @@ mod common {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub enum AllocJobHttpResponse {
-        Success { job_alloc: dist::JobAlloc, need_toolchain: bool, cert_digest: Vec<u8> },
-        Fail { msg: String },
+        Success {
+            job_alloc: dist::JobAlloc,
+            need_toolchain: bool,
+            cert_digest: Vec<u8>,
+        },
+        Fail {
+            msg: String,
+        },
     }
     impl AllocJobHttpResponse {
         #[cfg(feature = "dist-server")]
-        pub fn from_alloc_job_result(res: dist::AllocJobResult, certs: &HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>) -> Self {
+        pub fn from_alloc_job_result(
+            res: dist::AllocJobResult,
+            certs: &HashMap<dist::ServerId, (Vec<u8>, Vec<u8>)>,
+        ) -> Self {
             match res {
-                dist::AllocJobResult::Success { job_alloc, need_toolchain } => {
+                dist::AllocJobResult::Success {
+                    job_alloc,
+                    need_toolchain,
+                } => {
                     if let Some((digest, _)) = certs.get(&job_alloc.server_id) {
-                        AllocJobHttpResponse::Success { job_alloc, need_toolchain, cert_digest: digest.to_owned() }
+                        AllocJobHttpResponse::Success {
+                            job_alloc,
+                            need_toolchain,
+                            cert_digest: digest.to_owned(),
+                        }
                     } else {
-                        AllocJobHttpResponse::Fail { msg: format!("missing certificates for server {}", job_alloc.server_id.addr()) }
+                        AllocJobHttpResponse::Fail {
+                            msg: format!(
+                                "missing certificates for server {}",
+                                job_alloc.server_id.addr()
+                            ),
+                        }
                     }
-                },
+                }
                 dist::AllocJobResult::Fail { msg } => AllocJobHttpResponse::Fail { msg },
             }
         }
@@ -145,7 +189,13 @@ mod common {
     // cert_pem is quite long so elide it (you can retrieve it by hitting the server url anyway)
     impl fmt::Debug for HeartbeatServerHttpRequest {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            let HeartbeatServerHttpRequest { jwt_key, num_cpus, server_nonce, cert_digest, cert_pem } = self;
+            let HeartbeatServerHttpRequest {
+                jwt_key,
+                num_cpus,
+                server_nonce,
+                cert_digest,
+                cert_pem,
+            } = self;
             write!(f, "HeartbeatServerHttpRequest {{ jwt_key: {:?}, num_cpus: {:?}, server_nonce: {:?}, cert_digest: {:?}, cert_pem: [...{} bytes...] }}", jwt_key, num_cpus, server_nonce, cert_digest, cert_pem.len())
         }
     }
@@ -162,31 +212,58 @@ pub mod urls {
     use reqwest;
 
     pub fn scheduler_alloc_job(scheduler_url: &reqwest::Url) -> reqwest::Url {
-        scheduler_url.join("/api/v1/scheduler/alloc_job").expect("failed to create alloc job url")
+        scheduler_url
+            .join("/api/v1/scheduler/alloc_job")
+            .expect("failed to create alloc job url")
     }
-    pub fn scheduler_server_certificate(scheduler_url: &reqwest::Url, server_id: ServerId) -> reqwest::Url {
-        scheduler_url.join(&format!("/api/v1/scheduler/server_certificate/{}", server_id.addr())).expect("failed to create server certificate url")
+    pub fn scheduler_server_certificate(
+        scheduler_url: &reqwest::Url,
+        server_id: ServerId,
+    ) -> reqwest::Url {
+        scheduler_url
+            .join(&format!(
+                "/api/v1/scheduler/server_certificate/{}",
+                server_id.addr()
+            )).expect("failed to create server certificate url")
     }
     pub fn scheduler_heartbeat_server(scheduler_url: &reqwest::Url) -> reqwest::Url {
-        scheduler_url.join("/api/v1/scheduler/heartbeat_server").expect("failed to create heartbeat url")
+        scheduler_url
+            .join("/api/v1/scheduler/heartbeat_server")
+            .expect("failed to create heartbeat url")
     }
     pub fn scheduler_job_state(scheduler_url: &reqwest::Url, job_id: JobId) -> reqwest::Url {
-        scheduler_url.join(&format!("/api/v1/scheduler/job_state/{}", job_id)).expect("failed to create job state url")
+        scheduler_url
+            .join(&format!("/api/v1/scheduler/job_state/{}", job_id))
+            .expect("failed to create job state url")
     }
     pub fn scheduler_status(scheduler_url: &reqwest::Url) -> reqwest::Url {
-        scheduler_url.join("/api/v1/scheduler/status").expect("failed to create alloc job url")
+        scheduler_url
+            .join("/api/v1/scheduler/status")
+            .expect("failed to create alloc job url")
     }
 
     pub fn server_assign_job(server_id: ServerId, job_id: JobId) -> reqwest::Url {
-        let url = format!("https://{}/api/v1/distserver/assign_job/{}", server_id.addr(), job_id);
+        let url = format!(
+            "https://{}/api/v1/distserver/assign_job/{}",
+            server_id.addr(),
+            job_id
+        );
         reqwest::Url::parse(&url).expect("failed to create assign job url")
     }
     pub fn server_submit_toolchain(server_id: ServerId, job_id: JobId) -> reqwest::Url {
-        let url = format!("https://{}/api/v1/distserver/submit_toolchain/{}", server_id.addr(), job_id);
+        let url = format!(
+            "https://{}/api/v1/distserver/submit_toolchain/{}",
+            server_id.addr(),
+            job_id
+        );
         reqwest::Url::parse(&url).expect("failed to create submit toolchain url")
     }
     pub fn server_run_job(server_id: ServerId, job_id: JobId) -> reqwest::Url {
-        let url = format!("https://{}/api/v1/distserver/run_job/{}", server_id.addr(), job_id);
+        let url = format!(
+            "https://{}/api/v1/distserver/run_job/{}",
+            server_id.addr(),
+            job_id
+        );
         reqwest::Url::parse(&url).expect("failed to create run job url")
     }
 }
@@ -215,32 +292,16 @@ mod server {
     use std::time::Duration;
     use void::Void;
 
-    use dist::{
-        self,
-
-        ServerId, ServerNonce, JobId, Toolchain,
-        ToolchainReader, InputsReader,
-        JobAuthorizer,
-
-        AllocJobResult,
-        AssignJobResult,
-        HeartbeatServerResult,
-        RunJobResult,
-        SchedulerStatusResult,
-        SubmitToolchainResult,
-        UpdateJobStateResult, JobState,
-    };
     use super::common::{
-        ReqwestRequestBuilderExt,
-        bincode_req,
-
-        JobJwt,
-        AllocJobHttpResponse,
-        ServerCertificateHttpResponse,
-        HeartbeatServerHttpRequest,
-        RunJobHttpRequest,
+        bincode_req, AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt,
+        ReqwestRequestBuilderExt, RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
+    use dist::{
+        self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
+        JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
+        SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
+    };
     use errors::*;
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -250,29 +311,37 @@ mod server {
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
             .chain_err(|| "failed to generate rsa privkey")?;
-        let privkey_pem = rsa_key.private_key_to_pem()
+        let privkey_pem = rsa_key
+            .private_key_to_pem()
             .chain_err(|| "failed to create pem from rsa privkey")?;
-        let privkey: openssl::pkey::PKey<openssl::pkey::Private> = openssl::pkey::PKey::from_rsa(rsa_key)
-            .chain_err(|| "failed to create openssl pkey from rsa privkey")?;
-        let mut builder = openssl::x509::X509::builder()
-            .chain_err(|| "failed to create x509 builder")?;
+        let privkey: openssl::pkey::PKey<openssl::pkey::Private> =
+            openssl::pkey::PKey::from_rsa(rsa_key)
+                .chain_err(|| "failed to create openssl pkey from rsa privkey")?;
+        let mut builder =
+            openssl::x509::X509::builder().chain_err(|| "failed to create x509 builder")?;
 
         // Populate the certificate with the necessary parts, mostly from mkcert in openssl
-        builder.set_version(2)
+        builder
+            .set_version(2)
             .chain_err(|| "failed to set x509 version")?;
-        let serial_number = openssl::bn::BigNum::from_u32(0).and_then(|bn| bn.to_asn1_integer())
+        let serial_number = openssl::bn::BigNum::from_u32(0)
+            .and_then(|bn| bn.to_asn1_integer())
             .chain_err(|| "failed to create openssl asn1 0")?;
-        builder.set_serial_number(serial_number.as_ref())
+        builder
+            .set_serial_number(serial_number.as_ref())
             .chain_err(|| "failed to set x509 serial number")?;
         let not_before = openssl::asn1::Asn1Time::days_from_now(0)
             .chain_err(|| "failed to create openssl not before asn1")?;
-        builder.set_not_before(not_before.as_ref())
+        builder
+            .set_not_before(not_before.as_ref())
             .chain_err(|| "failed to set not before on x509")?;
         let not_after = openssl::asn1::Asn1Time::days_from_now(365)
             .chain_err(|| "failed to create openssl not after asn1")?;
-        builder.set_not_after(not_after.as_ref())
+        builder
+            .set_not_after(not_after.as_ref())
             .chain_err(|| "failed to set not after on x509")?;
-        builder.set_pubkey(privkey.as_ref())
+        builder
+            .set_pubkey(privkey.as_ref())
             .chain_err(|| "failed to set pubkey for x509")?;
 
         // Add the SubjectAlternativeName
@@ -280,18 +349,23 @@ mod server {
             .ip(&addr.ip().to_string())
             .build(&builder.x509v3_context(None, None))
             .chain_err(|| "failed to build SAN extension for x509")?;
-        builder.append_extension(extension)
+        builder
+            .append_extension(extension)
             .chain_err(|| "failed to append SAN extension for x509")?;
 
         // Finish the certificate
-        builder.sign(&privkey, openssl::hash::MessageDigest::sha1())
+        builder
+            .sign(&privkey, openssl::hash::MessageDigest::sha1())
             .chain_err(|| "failed to sign x509 with sha1")?;
         let cert: openssl::x509::X509 = builder.build();
-        let cert_pem = cert.to_pem()
+        let cert_pem = cert
+            .to_pem()
             .chain_err(|| "failed to create pem from x509")?;
-        let cert_digest = cert.digest(openssl::hash::MessageDigest::sha1())
+        let cert_digest = cert
+            .digest(openssl::hash::MessageDigest::sha1())
             .chain_err(|| "failed to create digest of x509 certificate")?
-            .as_ref().to_owned();
+            .as_ref()
+            .to_owned();
 
         Ok((cert_digest, cert_pem, privkey_pem))
     }
@@ -300,7 +374,9 @@ mod server {
     #[derive(Debug)]
     pub struct ClientVisibleMsg(String);
     impl ClientVisibleMsg {
-        pub fn from_nonsensitive(s: String) -> Self { ClientVisibleMsg(s) }
+        pub fn from_nonsensitive(s: String) -> Self {
+            ClientVisibleMsg(s)
+        }
     }
 
     pub trait ClientAuthCheck: Send + Sync {
@@ -340,19 +416,17 @@ mod server {
             match *self {
                 RouilleBincodeError::BodyAlreadyExtracted => {
                     "the body of the request was already extracted"
-                },
+                }
                 RouilleBincodeError::WrongContentType => {
                     "the request didn't have a binary content type"
-                },
-                RouilleBincodeError::ParseError(_) => {
-                    "error while parsing the bincode body"
-                },
+                }
+                RouilleBincodeError::ParseError(_) => "error while parsing the bincode body",
             }
         }
         fn cause(&self) -> Option<&std::error::Error> {
             match *self {
                 RouilleBincodeError::ParseError(ref e) => Some(e),
-                _ => None
+                _ => None,
             }
         }
     }
@@ -361,7 +435,10 @@ mod server {
             write!(fmt, "{}", std::error::Error::description(self))
         }
     }
-    fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError> where O: serde::de::DeserializeOwned {
+    fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError>
+    where
+        O: serde::de::DeserializeOwned,
+    {
         if let Some(header) = request.header("Content-Type") {
             if !header.starts_with("application/octet-stream") {
                 return Err(RouilleBincodeError::WrongContentType);
@@ -387,7 +464,10 @@ mod server {
     impl<'a> ErrJson<'a> {
         fn from_err<E: ?Sized + std::error::Error>(err: &'a E) -> ErrJson<'a> {
             let cause = err.cause().map(ErrJson::from_err).map(Box::new);
-            ErrJson { description: err.description(), cause }
+            ErrJson {
+                description: err.description(),
+                cause,
+            }
         }
         fn into_data(self) -> String {
             serde_json::to_string(&self).expect("infallible serialization for ErrJson failed")
@@ -406,25 +486,32 @@ mod server {
                         err_msg.push_str(", caused by: ");
                         err_msg.push_str(cause.description());
                         maybe_cause = cause.cause()
-                    };
+                    }
 
                     warn!("Res {} error: {}", $reqid, err_msg);
                     let json = ErrJson::from_err(&err);
-                    return rouille::Response::json(&json).with_status_code($code)
-                },
+                    return rouille::Response::json(&json).with_status_code($code);
+                }
             }
         };
     }
     macro_rules! try_or_400_log {
-        ($reqid:expr, $result:expr) => { try_or_err_and_log!($reqid, 400, $result) };
+        ($reqid:expr, $result:expr) => {
+            try_or_err_and_log!($reqid, 400, $result)
+        };
     }
     macro_rules! try_or_500_log {
-        ($reqid:expr, $result:expr) => { try_or_err_and_log!($reqid, 500, $result) };
+        ($reqid:expr, $result:expr) => {
+            try_or_err_and_log!($reqid, 500, $result)
+        };
     }
     fn make_401_with_body(short_err: &str, body: ClientVisibleMsg) -> rouille::Response {
         rouille::Response {
             status_code: 401,
-            headers: vec![("WWW-Authenticate".into(), format!("Bearer error=\"{}\"", short_err).into())],
+            headers: vec![(
+                "WWW-Authenticate".into(),
+                format!("Bearer error=\"{}\"", short_err).into(),
+            )],
             data: rouille::ResponseBody::from_data(body.0),
             upgrade: None,
         }
@@ -439,14 +526,17 @@ mod server {
 
         let authtype = split.next()?;
         if authtype != "Bearer" {
-            return None
+            return None;
         }
 
         split.next()
     }
 
     // Based on rouille::Response::json
-    pub fn bincode_response<T>(content: &T) -> rouille::Response where T: serde::Serialize {
+    pub fn bincode_response<T>(content: &T) -> rouille::Response
+    where
+        T: serde::Serialize,
+    {
         let data = bincode::serialize(content).chain_err(|| "Failed to serialize response body");
         let data = try_or_500_log!("bincode body serialization", data);
 
@@ -470,8 +560,8 @@ mod server {
                 Err(err) => {
                     let err = Error::from(err);
                     let json = ErrJson::from_err(&err);
-                    return make_401_with_body("invalid_jwt", ClientVisibleMsg(json.into_data()))
-                },
+                    return make_401_with_body("invalid_jwt", ClientVisibleMsg(json.into_data()));
+                }
             }
         }};
     }
@@ -497,14 +587,18 @@ mod server {
                 .and_then(|res| {
                     fn identical_t<T>(_: &T, _: &T) {}
                     identical_t(&res.claims, &valid_claims);
-                    if res.claims == valid_claims { Ok(()) } else { Err("mismatched claims".to_owned()) }
+                    if res.claims == valid_claims {
+                        Ok(())
+                    } else {
+                        Err("mismatched claims".to_owned())
+                    }
                 })
         }
     }
 
     #[test]
     fn test_job_token_verification() {
-        let ja = JWTJobAuthorizer::new(vec![1,2,2]);
+        let ja = JWTJobAuthorizer::new(vec![1, 2, 2]);
 
         let job_id = JobId(55);
         let token = ja.generate_token(job_id).unwrap();
@@ -512,7 +606,7 @@ mod server {
         let job_id2 = JobId(56);
         let token2 = ja.generate_token(job_id2).unwrap();
 
-        let ja2 = JWTJobAuthorizer::new(vec![1,2,3]);
+        let ja2 = JWTJobAuthorizer::new(vec![1, 2, 3]);
 
         // Check tokens are deterministic
         assert_eq!(token, ja.generate_token(job_id).unwrap());
@@ -536,40 +630,74 @@ mod server {
     }
 
     impl<S: dist::SchedulerIncoming + 'static> Scheduler<S> {
-        pub fn new(public_addr: SocketAddr, handler: S, check_client_auth: Box<ClientAuthCheck>, check_server_auth: ServerAuthCheck) -> Self {
-            Self { public_addr, handler, check_client_auth, check_server_auth }
+        pub fn new(
+            public_addr: SocketAddr,
+            handler: S,
+            check_client_auth: Box<ClientAuthCheck>,
+            check_server_auth: ServerAuthCheck,
+        ) -> Self {
+            Self {
+                public_addr,
+                handler,
+                check_client_auth,
+                check_server_auth,
+            }
         }
 
         pub fn start(self) -> Result<Void> {
-            let Self { public_addr, handler, check_client_auth, check_server_auth } = self;
-            let requester = SchedulerRequester { client: Mutex::new(reqwest::Client::new()) };
+            let Self {
+                public_addr,
+                handler,
+                check_client_auth,
+                check_server_auth,
+            } = self;
+            let requester = SchedulerRequester {
+                client: Mutex::new(reqwest::Client::new()),
+            };
 
             macro_rules! check_server_auth_or_401 {
                 ($request:ident) => {{
                     match bearer_http_auth($request).and_then(&*check_server_auth) {
-                        Some(server_id) if server_id.addr().ip() == $request.remote_addr().ip() => server_id,
+                        Some(server_id) if server_id.addr().ip() == $request.remote_addr().ip() => {
+                            server_id
+                        }
                         Some(_) => return make_401("invalid_bearer_token_mismatched_address"),
                         None => return make_401("invalid_bearer_token"),
-                    }}
-                };
+                    }
+                }};
             }
 
-            fn maybe_update_certs(client: &mut reqwest::Client, certs: &mut HashMap<ServerId, (Vec<u8>, Vec<u8>)>, server_id: ServerId, cert_digest: Vec<u8>, cert_pem: Vec<u8>) -> Result<()> {
+            fn maybe_update_certs(
+                client: &mut reqwest::Client,
+                certs: &mut HashMap<ServerId, (Vec<u8>, Vec<u8>)>,
+                server_id: ServerId,
+                cert_digest: Vec<u8>,
+                cert_pem: Vec<u8>,
+            ) -> Result<()> {
                 if let Some((saved_cert_digest, _)) = certs.get(&server_id) {
                     if saved_cert_digest == &cert_digest {
-                        return Ok(())
+                        return Ok(());
                     }
                 }
-                info!("Adding new certificate for {} to scheduler", server_id.addr());
+                info!(
+                    "Adding new certificate for {} to scheduler",
+                    server_id.addr()
+                );
                 let mut client_builder = reqwest::ClientBuilder::new();
                 // Add all the certificates we know about
-                client_builder.add_root_certificate(reqwest::Certificate::from_pem(&cert_pem)
-                    .chain_err(|| "failed to interpret pem as certificate")?);
+                client_builder = client_builder.add_root_certificate(
+                    reqwest::Certificate::from_pem(&cert_pem)
+                        .chain_err(|| "failed to interpret pem as certificate")?,
+                );
                 for (_, cert_pem) in certs.values() {
-                    client_builder.add_root_certificate(reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"));
+                    client_builder = client_builder.add_root_certificate(
+                        reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
+                    );
                 }
                 // Finish the clients
-                let new_client = client_builder.build().chain_err(|| "failed to create a HTTP client")?;
+                let new_client = client_builder
+                    .build()
+                    .chain_err(|| "failed to create a HTTP client")?;
                 // Use the updated certificates
                 *client = new_client;
                 certs.insert(server_id, (cert_digest, cert_pem));
@@ -579,7 +707,8 @@ mod server {
             info!("Scheduler listening for clients on {}", public_addr);
             let request_count = atomic::AtomicUsize::new(0);
             // From server_id -> cert_digest, cert_pem
-            let server_certificates: Mutex<HashMap<ServerId, (Vec<u8>, Vec<u8>)>> = Default::default();
+            let server_certificates: Mutex<HashMap<ServerId, (Vec<u8>, Vec<u8>)>> =
+                Default::default();
 
             let server = rouille::Server::new(public_addr, move |request| {
                 let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
@@ -667,9 +796,15 @@ mod server {
     }
 
     impl dist::SchedulerOutgoing for SchedulerRequester {
-        fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain, auth: String) -> Result<AssignJobResult> {
+        fn do_assign_job(
+            &self,
+            server_id: ServerId,
+            job_id: JobId,
+            tc: Toolchain,
+            auth: String,
+        ) -> Result<AssignJobResult> {
             let url = urls::server_assign_job(server_id, job_id);
-            let mut req = self.client.lock().unwrap().post(url);
+            let req = self.client.lock().unwrap().post(url);
             bincode_req(req.bearer_auth(auth).bincode(&tc)?)
                 .chain_err(|| "POST to scheduler assign_job failed")
         }
@@ -691,11 +826,18 @@ mod server {
     }
 
     impl<S: dist::ServerIncoming + 'static> Server<S> {
-        pub fn new(public_addr: SocketAddr, scheduler_url: reqwest::Url, scheduler_auth: String, handler: S) -> Result<Self> {
-            let (cert_digest, cert_pem, privkey_pem) = create_https_cert_and_privkey(public_addr)
-                .chain_err(|| "failed to create HTTPS certificate for server")?;
+        pub fn new(
+            public_addr: SocketAddr,
+            scheduler_url: reqwest::Url,
+            scheduler_auth: String,
+            handler: S,
+        ) -> Result<Self> {
+            let (cert_digest, cert_pem, privkey_pem) =
+                create_https_cert_and_privkey(public_addr)
+                    .chain_err(|| "failed to create HTTPS certificate for server")?;
             let mut jwt_key = vec![0; JWT_KEY_LENGTH];
-            let mut rng = rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
+            let mut rng = rand::OsRng::new()
+                .chain_err(|| "Failed to initialise a random number generator")?;
             rng.fill_bytes(&mut jwt_key);
             let server_nonce = ServerNonce::from_rng(&mut rng);
 
@@ -713,7 +855,17 @@ mod server {
         }
 
         pub fn start(self) -> Result<Void> {
-            let Self { public_addr, scheduler_url, scheduler_auth, cert_digest, cert_pem, privkey_pem, jwt_key, server_nonce, handler } = self;
+            let Self {
+                public_addr,
+                scheduler_url,
+                scheduler_auth,
+                cert_digest,
+                cert_pem,
+                privkey_pem,
+                jwt_key,
+                server_nonce,
+                handler,
+            } = self;
             let heartbeat_req = HeartbeatServerHttpRequest {
                 num_cpus: num_cpus::get(),
                 jwt_key: jwt_key.clone(),
@@ -723,23 +875,33 @@ mod server {
             };
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
-            let requester = ServerRequester { client: reqwest::Client::new(), scheduler_url, scheduler_auth: scheduler_auth.clone() };
+            let requester = ServerRequester {
+                client: reqwest::Client::new(),
+                scheduler_url,
+                scheduler_auth: scheduler_auth.clone(),
+            };
 
             // TODO: detect if this panics
             thread::spawn(move || {
                 let client = reqwest::Client::new();
                 loop {
                     trace!("Performing heartbeat");
-                    match bincode_req(client.post(heartbeat_url.clone()).bearer_auth(scheduler_auth.clone()).bincode(&heartbeat_req).expect("failed to serialize heartbeat")) {
+                    match bincode_req(
+                        client
+                            .post(heartbeat_url.clone())
+                            .bearer_auth(scheduler_auth.clone())
+                            .bincode(&heartbeat_req)
+                            .expect("failed to serialize heartbeat"),
+                    ) {
                         Ok(HeartbeatServerResult { is_new }) => {
                             trace!("Heartbeat success is_new={}", is_new);
                             // TODO: if is_new, terminate all running jobs
                             thread::sleep(HEARTBEAT_INTERVAL)
-                        },
+                        }
                         Err(e) => {
                             error!("Failed to send heartbeat to server: {}", e);
                             thread::sleep(HEARTBEAT_ERROR_INTERVAL)
-                        },
+                        }
                     }
                 }
             });
@@ -808,23 +970,35 @@ mod server {
     }
 
     impl dist::ServerOutgoing for ServerRequester {
-        fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult> {
+        fn do_update_job_state(
+            &self,
+            job_id: JobId,
+            state: JobState,
+        ) -> Result<UpdateJobStateResult> {
             let url = urls::scheduler_job_state(&self.scheduler_url, job_id);
-            bincode_req(self.client.post(url).bearer_auth(self.scheduler_auth.clone()).bincode(&state)?)
-                .chain_err(|| "POST to scheduler job_state failed")
+            bincode_req(
+                self.client
+                    .post(url)
+                    .bearer_auth(self.scheduler_auth.clone())
+                    .bincode(&state)?,
+            ).chain_err(|| "POST to scheduler job_state failed")
         }
     }
 }
 
 #[cfg(feature = "dist-client")]
 mod client {
+    use super::super::cache;
     use bincode;
     use byteorder::{BigEndian, WriteBytesExt};
     use config;
-    use dist::PathTransformer;
     use dist::pkg::{InputsPackager, ToolchainPackager};
-    use flate2::Compression;
+    use dist::{
+        self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
+        SubmitToolchainResult, Toolchain,
+    };
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
+    use flate2::Compression;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use reqwest;
@@ -833,22 +1007,10 @@ mod client {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use super::super::cache;
-    use tokio_core;
 
-    use dist::{
-        self,
-        Toolchain, CompileCommand,
-        AllocJobResult, JobAlloc, RunJobResult, SubmitToolchainResult,
-    };
     use super::common::{
-        ReqwestRequestBuilderExt,
-        bincode_req,
-        bincode_req_fut,
-
-        AllocJobHttpResponse,
-        ServerCertificateHttpResponse,
-        RunJobHttpRequest,
+        bincode_req, bincode_req_fut, AllocJobHttpResponse, ReqwestRequestBuilderExt,
+        RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
     use errors::*;
@@ -863,50 +1025,78 @@ mod client {
         // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
         // and only support owned bytes, which means the whole toolchain would end up in memory
         client: Arc<Mutex<reqwest::Client>>,
-        client_async: Arc<Mutex<reqwest::unstable::async::Client>>,
-        handle: tokio_core::reactor::Handle,
+        client_async: Arc<Mutex<reqwest::async::Client>>,
         pool: CpuPool,
         tc_cache: Arc<cache::ClientToolchains>,
     }
 
     impl Client {
-        pub fn new(handle: tokio_core::reactor::Handle, pool: &CpuPool, scheduler_url: reqwest::Url, cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig], auth_token: String) -> Result<Self> {
+        pub fn new(
+            pool: &CpuPool,
+            scheduler_url: reqwest::Url,
+            cache_dir: &Path,
+            cache_size: u64,
+            toolchain_configs: &[config::DistToolchainConfig],
+            auth_token: String,
+        ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let client = reqwest::ClientBuilder::new().timeout(timeout).build()
+            let client = reqwest::ClientBuilder::new()
+                .timeout(timeout)
+                .build()
                 .chain_err(|| "failed to create a HTTP client")?;
-            let client_async = reqwest::unstable::async::ClientBuilder::new().timeout(timeout).build(&handle)
+            let client_async = reqwest::async::ClientBuilder::new()
+                .timeout(timeout)
+                .build()
                 .chain_err(|| "failed to create an async HTTP client")?;
-            let client_toolchains = cache::ClientToolchains::new(cache_dir, cache_size, toolchain_configs)
-                .chain_err(|| "failed to initialise client toolchains")?;
+            let client_toolchains =
+                cache::ClientToolchains::new(cache_dir, cache_size, toolchain_configs)
+                    .chain_err(|| "failed to initialise client toolchains")?;
             Ok(Self {
                 auth_token,
                 scheduler_url,
                 server_certs: Default::default(),
                 client: Arc::new(Mutex::new(client)),
                 client_async: Arc::new(Mutex::new(client_async)),
-                handle,
                 pool: pool.clone(),
                 tc_cache: Arc::new(client_toolchains),
             })
         }
 
-        fn update_certs(client: &mut reqwest::Client, client_async: &mut reqwest::unstable::async::Client, handle: tokio_core::reactor::Handle, certs: &mut HashMap<Vec<u8>, Vec<u8>>, cert_digest: Vec<u8>, cert_pem: Vec<u8>) -> Result<()> {
+        fn update_certs(
+            client: &mut reqwest::Client,
+            client_async: &mut reqwest::async::Client,
+            certs: &mut HashMap<Vec<u8>, Vec<u8>>,
+            cert_digest: Vec<u8>,
+            cert_pem: Vec<u8>,
+        ) -> Result<()> {
             let mut client_builder = reqwest::ClientBuilder::new();
-            let mut client_async_builder = reqwest::unstable::async::ClientBuilder::new();
+            let mut client_async_builder = reqwest::async::ClientBuilder::new();
             // Add all the certificates we know about
-            client_builder.add_root_certificate(reqwest::Certificate::from_pem(&cert_pem)
-                .chain_err(|| "failed to interpret pem as certificate")?);
-            client_async_builder.add_root_certificate(reqwest::Certificate::from_pem(&cert_pem)
-                .chain_err(|| "failed to interpret pem as certificate")?);
+            client_builder = client_builder.add_root_certificate(
+                reqwest::Certificate::from_pem(&cert_pem)
+                    .chain_err(|| "failed to interpret pem as certificate")?,
+            );
+            client_async_builder = client_async_builder.add_root_certificate(
+                reqwest::Certificate::from_pem(&cert_pem)
+                    .chain_err(|| "failed to interpret pem as certificate")?,
+            );
             for cert_pem in certs.values() {
-                client_builder.add_root_certificate(reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"));
-                client_async_builder.add_root_certificate(reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"));
+                client_builder = client_builder.add_root_certificate(
+                    reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
+                );
+                client_async_builder = client_async_builder.add_root_certificate(
+                    reqwest::Certificate::from_pem(cert_pem).expect("previously valid cert"),
+                );
             }
             // Finish the clients
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
-            let new_client = client_builder.timeout(timeout).build()
+            let new_client = client_builder
+                .timeout(timeout)
+                .build()
                 .chain_err(|| "failed to create a HTTP client")?;
-            let new_client_async = client_async_builder.timeout(timeout).build(&handle)
+            let new_client_async = client_async_builder
+                .timeout(timeout)
+                .build()
                 .chain_err(|| "failed to create an async HTTP client")?;
             // Use the updated certificates
             *client = new_client;
@@ -921,56 +1111,80 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_alloc_job(&scheduler_url);
             let mut req = self.client_async.lock().unwrap().post(url);
-            ftry!(req.bearer_auth(self.auth_token.clone()).bincode(&tc));
+            req = ftry!(req.bearer_auth(self.auth_token.clone()).bincode(&tc));
 
             let client = self.client.clone();
             let client_async = self.client_async.clone();
-            let handle = self.handle.clone();
             let server_certs = self.server_certs.clone();
-            Box::new(bincode_req_fut(&mut req).map_err(|e| e.chain_err(|| "POST to scheduler alloc_job failed")).and_then(move |res| {
-                match res {
-                    AllocJobHttpResponse::Success { job_alloc, need_toolchain, cert_digest } => {
-                        let server_id = job_alloc.server_id;
-                        let alloc_job_res = f_ok(AllocJobResult::Success { job_alloc, need_toolchain });
-                        if server_certs.lock().unwrap().contains_key(&cert_digest) {
-                            return alloc_job_res
+            Box::new(
+                bincode_req_fut(req)
+                    .map_err(|e| e.chain_err(|| "POST to scheduler alloc_job failed"))
+                    .and_then(move |res| match res {
+                        AllocJobHttpResponse::Success {
+                            job_alloc,
+                            need_toolchain,
+                            cert_digest,
+                        } => {
+                            let server_id = job_alloc.server_id;
+                            let alloc_job_res = f_ok(AllocJobResult::Success {
+                                job_alloc,
+                                need_toolchain,
+                            });
+                            if server_certs.lock().unwrap().contains_key(&cert_digest) {
+                                return alloc_job_res;
+                            }
+                            info!(
+                                "Need to request new certificate for server {}",
+                                server_id.addr()
+                            );
+                            let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
+                            let req = client_async.lock().unwrap().get(url);
+                            Box::new(
+                                bincode_req_fut(req)
+                                    .map_err(|e| {
+                                        e.chain_err(|| "GET to scheduler server_certificate failed")
+                                    }).and_then(move |res: ServerCertificateHttpResponse| {
+                                        ftry!(Self::update_certs(
+                                            &mut client.lock().unwrap(),
+                                            &mut client_async.lock().unwrap(),
+                                            &mut server_certs.lock().unwrap(),
+                                            res.cert_digest,
+                                            res.cert_pem,
+                                        ));
+                                        alloc_job_res
+                                    }),
+                            )
                         }
-                        info!("Need to request new certificate for server {}", server_id.addr());
-                        let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
-                        let mut req = client_async.lock().unwrap().get(url);
-                        Box::new(bincode_req_fut(&mut req).map_err(|e| e.chain_err(|| "GET to scheduler server_certificate failed"))
-                            .and_then(move |res: ServerCertificateHttpResponse| {
-                                ftry!(Self::update_certs(
-                                    &mut client.lock().unwrap(), &mut client_async.lock().unwrap(),
-                                    handle,
-                                    &mut server_certs.lock().unwrap(),
-                                    res.cert_digest, res.cert_pem,
-                                ));
-                                alloc_job_res
-                            }))
-                    },
-                    AllocJobHttpResponse::Fail { msg } => {
-                        f_ok(AllocJobResult::Fail { msg })
-                    },
-                }
-            }))
+                        AllocJobHttpResponse::Fail { msg } => f_ok(AllocJobResult::Fail { msg }),
+                    }),
+            )
         }
-        fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+        fn do_submit_toolchain(
+            &self,
+            job_alloc: JobAlloc,
+            tc: Toolchain,
+        ) -> SFuture<SubmitToolchainResult> {
             match self.tc_cache.get_toolchain(&tc) {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let mut req = self.client.lock().unwrap().post(url);
 
                     Box::new(self.pool.spawn_fn(move || {
-                        req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
-                        bincode_req(&mut req)
+                        let req = req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
+                        bincode_req(req)
                     }))
-                },
+                }
                 Ok(None) => f_err("couldn't find toolchain locally"),
                 Err(e) => f_err(e),
             }
         }
-        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+        fn do_run_job(
+            &self,
+            job_alloc: JobAlloc,
+            command: CompileCommand,
+            outputs: Vec<String>,
+            inputs_packager: Box<InputsPackager>,
+        ) -> SFuture<(RunJobResult, PathTransformer)> {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
 
@@ -980,27 +1194,46 @@ mod client {
                 let bincode_length = bincode.len();
 
                 let mut body = vec![];
-                body.write_u32::<BigEndian>(bincode_length as u32).expect("Infallible write of bincode length to vec failed");
-                body.write(&bincode).expect("Infallible write of bincode body to vec failed");
+                body.write_u32::<BigEndian>(bincode_length as u32)
+                    .expect("Infallible write of bincode length to vec failed");
+                body.write(&bincode)
+                    .expect("Infallible write of bincode body to vec failed");
                 let path_transformer;
                 {
                     let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
-                    path_transformer = inputs_packager.write_inputs(&mut compressor).chain_err(|| "Could not write inputs for compilation")?;
-                    compressor.flush().chain_err(|| "failed to flush compressor")?;
-                    trace!("Compressed inputs from {} -> {}", compressor.total_in(), compressor.total_out());
-                    compressor.finish().chain_err(|| "failed to finish compressor")?;
+                    path_transformer = inputs_packager
+                        .write_inputs(&mut compressor)
+                        .chain_err(|| "Could not write inputs for compilation")?;
+                    compressor
+                        .flush()
+                        .chain_err(|| "failed to flush compressor")?;
+                    trace!(
+                        "Compressed inputs from {} -> {}",
+                        compressor.total_in(),
+                        compressor.total_out()
+                    );
+                    compressor
+                        .finish()
+                        .chain_err(|| "failed to finish compressor")?;
                 }
 
-                req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-                bincode_req(&mut req).map(|res| (res, path_transformer))
+                req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                bincode_req(req).map(|res| (res, path_transformer))
             }))
         }
 
-        fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+        fn put_toolchain(
+            &self,
+            compiler_path: &Path,
+            weak_key: &str,
+            toolchain_packager: Box<ToolchainPackager>,
+        ) -> SFuture<(Toolchain, Option<String>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
-            Box::new(self.pool.spawn_fn(move || tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)))
+            Box::new(self.pool.spawn_fn(move || {
+                tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
+            }))
         }
     }
 }

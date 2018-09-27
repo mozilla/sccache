@@ -38,6 +38,7 @@ use redis;
 #[cfg(feature = "reqwest")]
 use reqwest;
 use tempfile;
+use tokio_timer;
 use walkdir;
 use which;
 
@@ -56,6 +57,7 @@ error_chain! {
         StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
         TempfilePersist(tempfile::PersistError);
         WalkDir(walkdir::Error);
+        Timer(tokio_timer::Error);
     }
 
     errors {
@@ -78,6 +80,7 @@ impl From<which::Error> for Error {
 }
 
 pub type SFuture<T> = Box<Future<Item = T, Error = Error>>;
+pub type SFutureSend<T> = Box<Future<Item = T, Error = Error> + Send>;
 
 pub trait FutureChainErr<T> {
     fn chain_err<F, E>(self, callback: F) -> SFuture<T>
@@ -103,6 +106,16 @@ macro_rules! ftry {
         match $e {
             Ok(v) => v,
             Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
+        }
+    }
+}
+
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+macro_rules! ftry_send {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFutureSend<_>,
         }
     }
 }

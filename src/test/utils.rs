@@ -24,7 +24,6 @@ use std::path::{Path,PathBuf};
 
 use std::sync::{Arc,Mutex};
 use tempdir::TempDir;
-use tokio_core::reactor::Core;
 
 use jobserver::Client;
 use errors::*;
@@ -78,9 +77,8 @@ macro_rules! assert_map_contains {
 }
 
 pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
-    let core = Core::new().unwrap();
     let client = unsafe { Client::new() };
-    Arc::new(Mutex::new(MockCommandCreator::new(&core.handle(), &client)))
+    Arc::new(Mutex::new(MockCommandCreator::new(&client)))
 }
 
 pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,

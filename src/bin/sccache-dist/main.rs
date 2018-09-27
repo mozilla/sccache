@@ -7,6 +7,7 @@ extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
 extern crate flate2;
+extern crate hyperx;
 extern crate jsonwebtoken as jwt;
 extern crate libmount;
 #[macro_use]
@@ -27,16 +28,14 @@ use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
 use rand::RngCore;
 use sccache::config::{
-    INSECURE_DIST_CLIENT_TOKEN,
-    scheduler as scheduler_config,
-    server as server_config,
+    scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
 use sccache::dist::{
-    self,
-    CompileCommand, InputsReader, JobId, JobAlloc, JobState, JobComplete, ServerId, ServerNonce, Toolchain, ToolchainReader,
-    AllocJobResult, AssignJobResult, HeartbeatServerResult, RunJobResult, SchedulerStatusResult, SubmitToolchainResult, UpdateJobStateResult,
-    BuilderIncoming, JobAuthorizer, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
-    TcCache,
+    self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
+    InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
+    SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId, ServerIncoming,
+    ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
+    UpdateJobStateResult,
 };
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
@@ -87,8 +86,13 @@ enum Command {
 }
 
 enum AuthSubcommand {
-    Base64 { num_bytes: usize },
-    JwtHS256ServerToken { secret_key: String, server_id: ServerId },
+    Base64 {
+        num_bytes: usize,
+    },
+    JwtHS256ServerToken {
+        secret_key: String,
+        server_id: ServerId,
+    },
 }
 
 // Only supported on x86_64 Linux machines
@@ -96,20 +100,18 @@ enum AuthSubcommand {
 fn main() {
     init_logging();
     std::process::exit(match parse() {
-        Ok(cmd) => {
-            match run(cmd) {
-                Ok(s) => s,
-                Err(e) =>  {
-                    let stderr = &mut std::io::stderr();
-                    writeln!(stderr, "error: {}", e).unwrap();
+        Ok(cmd) => match run(cmd) {
+            Ok(s) => s,
+            Err(e) => {
+                let stderr = &mut std::io::stderr();
+                writeln!(stderr, "error: {}", e).unwrap();
 
-                    for e in e.iter().skip(1) {
-                        writeln!(stderr, "caused by: {}", e).unwrap();
-                    }
-                    2
+                for e in e.iter().skip(1) {
+                    writeln!(stderr, "caused by: {}", e).unwrap();
                 }
+                2
             }
-        }
+        },
         Err(e) => {
             println!("sccache: {}", e);
             for e in e.iter().skip(1) {
@@ -125,23 +127,34 @@ fn main() {
 pub fn get_app<'a, 'b>() -> App<'a, 'b> {
     App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
-        .subcommand(SubCommand::with_name("auth")
-            .subcommand(SubCommand::with_name("generate-jwt-hs256-key"))
-            .subcommand(SubCommand::with_name("generate-jwt-hs256-server-token")
-                .arg(Arg::from_usage("--server <SERVER_ADDR> 'Generate a key for the specified server'"))
-                .arg(Arg::from_usage("--secret-key [KEY] 'Use specified key to create the token'").required_unless("config"))
-                .arg(Arg::from_usage("--config [PATH] 'Use the key from the scheduler config file'").required_unless("secret-key"))
-            )
-            .subcommand(SubCommand::with_name("generate-shared-token")
-                .arg(Arg::from_usage("--bits [BITS] 'Use the specified number of bits of randomness'").default_value("256"))
-            )
-        )
-        .subcommand(SubCommand::with_name("scheduler")
-            .arg(Arg::from_usage("--config <PATH> 'Use the scheduler config file at PATH'"))
-        )
-        .subcommand(SubCommand::with_name("server")
-            .arg(Arg::from_usage("--config <PATH> 'Use the server config file at PATH'"))
-        )
+        .subcommand(
+            SubCommand::with_name("auth")
+                .subcommand(SubCommand::with_name("generate-jwt-hs256-key"))
+                .subcommand(
+                    SubCommand::with_name("generate-jwt-hs256-server-token")
+                        .arg(Arg::from_usage(
+                            "--server <SERVER_ADDR> 'Generate a key for the specified server'",
+                        )).arg(
+                            Arg::from_usage(
+                                "--secret-key [KEY] 'Use specified key to create the token'",
+                            ).required_unless("config"),
+                        ).arg(
+                            Arg::from_usage(
+                                "--config [PATH] 'Use the key from the scheduler config file'",
+                            ).required_unless("secret-key"),
+                        ),
+                ).subcommand(
+                    SubCommand::with_name("generate-shared-token").arg(
+                        Arg::from_usage(
+                            "--bits [BITS] 'Use the specified number of bits of randomness'",
+                        ).default_value("256"),
+                    ),
+                ),
+        ).subcommand(SubCommand::with_name("scheduler").arg(Arg::from_usage(
+            "--config <PATH> 'Use the scheduler config file at PATH'",
+        ))).subcommand(SubCommand::with_name("server").arg(Arg::from_usage(
+            "--config <PATH> 'Use the server config file at PATH'",
+        )))
 }
 
 fn parse() -> Result<Command> {
@@ -152,50 +165,70 @@ fn parse() -> Result<Command> {
                 ("generate-jwt-hs256-key", Some(_matches)) => {
                     // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
                     AuthSubcommand::Base64 { num_bytes: 256 / 8 }
-                },
+                }
                 ("generate-jwt-hs256-server-token", Some(matches)) => {
                     let server_id = ServerId::new(value_t_or_exit!(matches, "server", SocketAddr));
-                    let secret_key = if let Some(config_path) = matches.value_of("config").map(Path::new) {
+                    let secret_key = if let Some(config_path) =
+                        matches.value_of("config").map(Path::new)
+                    {
                         if let Some(config) = scheduler_config::from_path(config_path)? {
                             match config.server_auth {
                                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
-                                scheduler_config::ServerAuth::Insecure |
-                                scheduler_config::ServerAuth::Token { token: _ } => bail!("Scheduler not configured with JWT HS256"),
+                                scheduler_config::ServerAuth::Insecure
+                                | scheduler_config::ServerAuth::Token { token: _ } => {
+                                    bail!("Scheduler not configured with JWT HS256")
+                                }
                             }
                         } else {
                             bail!("Could not load config")
                         }
                     } else {
-                        matches.value_of("secret-key").expect("missing secret-key in parsed subcommand").to_owned()
+                        matches
+                            .value_of("secret-key")
+                            .expect("missing secret-key in parsed subcommand")
+                            .to_owned()
                     };
-                    AuthSubcommand::JwtHS256ServerToken { secret_key, server_id }
-                },
+                    AuthSubcommand::JwtHS256ServerToken {
+                        secret_key,
+                        server_id,
+                    }
+                }
                 ("generate-shared-token", Some(matches)) => {
                     let bits = value_t_or_exit!(matches, "bits", usize);
                     if bits % 8 != 0 || bits < 64 || bits > 4096 {
                         bail!("Number of bits must be divisible by 8, greater than 64 and less than 4096")
                     }
-                    AuthSubcommand::Base64 { num_bytes: bits / 8 }
-                },
+                    AuthSubcommand::Base64 {
+                        num_bytes: bits / 8,
+                    }
+                }
                 _ => bail!("No subcommand of auth specified"),
             })
         }
         ("scheduler", Some(matches)) => {
-            let config_path = Path::new(matches.value_of("config").expect("missing config in parsed subcommand"));
+            let config_path = Path::new(
+                matches
+                    .value_of("config")
+                    .expect("missing config in parsed subcommand"),
+            );
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
                 bail!("Could not load config")
             }
-        },
+        }
         ("server", Some(matches)) => {
-            let config_path = Path::new(matches.value_of("config").expect("missing config in parsed subcommand"));
+            let config_path = Path::new(
+                matches
+                    .value_of("config")
+                    .expect("missing config in parsed subcommand"),
+            );
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
                 bail!("Could not load config")
             }
-        },
+        }
         _ => bail!("No subcommand specified"),
     })
 }
@@ -208,8 +241,7 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
     let server_addr = split.next().and_then(|addr| addr.parse().ok())?;
     match split.next() {
         Some(t) if t == auth_token => Some(ServerId::new(server_addr)),
-        Some(_) |
-        None => None,
+        Some(_) | None => None,
     }
 }
 
@@ -218,7 +250,11 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
 struct ServerJwt {
     server_id: ServerId,
 }
-fn create_jwt_server_token(server_id: ServerId, header: &jwt::Header, key: &[u8]) -> Result<String> {
+fn create_jwt_server_token(
+    server_id: ServerId,
+    header: &jwt::Header,
+    key: &[u8],
+) -> Result<String> {
     jwt::encode(&header, &ServerJwt { server_id }, key).map_err(Into::into)
 }
 fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
@@ -226,7 +262,11 @@ fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<Serve
         .map(|res| res.claims.server_id)
         .ok()
 }
-fn check_jwt_server_token(server_token: &str, key: &[u8], validation: &jwt::Validation) -> Option<ServerId> {
+fn check_jwt_server_token(
+    server_token: &str,
+    key: &[u8],
+    validation: &jwt::Validation,
+) -> Option<ServerId> {
     jwt::decode::<ServerJwt>(server_token, key, validation)
         .map(|res| res.claims.server_id)
         .ok()
@@ -236,34 +276,54 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng = rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
+            let mut rng = rand::OsRng::new()
+                .chain_err(|| "Failed to initialise a random number generator")?;
             rng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
             Ok(0)
-        },
-        Command::Auth(AuthSubcommand::JwtHS256ServerToken { secret_key, server_id }) => {
+        }
+        Command::Auth(AuthSubcommand::JwtHS256ServerToken {
+            secret_key,
+            server_id,
+        }) => {
             let header = jwt::Header::new(jwt::Algorithm::HS256);
             let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)?;
             let token = create_jwt_server_token(server_id, &header, &secret_key)
                 .chain_err(|| "Failed to create server token")?;
             println!("{}", token);
             Ok(0)
-        },
+        }
 
-        Command::Scheduler(scheduler_config::Config { public_addr, client_auth, server_auth }) => {
+        Command::Scheduler(scheduler_config::Config {
+            public_addr,
+            client_auth,
+            server_auth,
+        }) => {
             let check_client_auth: Box<dist::http::ClientAuthCheck> = match client_auth {
-                scheduler_config::ClientAuth::Insecure =>
-                    Box::new(token_check::EqCheck::new(INSECURE_DIST_CLIENT_TOKEN.to_owned())),
-                scheduler_config::ClientAuth::Token { token } =>
-                    Box::new(token_check::EqCheck::new(token)),
-                scheduler_config::ClientAuth::JwtValidate { audience, issuer, jwks_url } =>
-                    Box::new(token_check::ValidJWTCheck::new(audience.to_owned(), issuer.to_owned(), &jwks_url)
-                        .chain_err(|| "Failed to create a checker for valid JWTs")?),
-                scheduler_config::ClientAuth::Mozilla { required_groups } =>
-                    Box::new(token_check::MozillaCheck::new(required_groups)),
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } =>
-                    Box::new(token_check::ProxyTokenCheck::new(url, cache_secs)),
+                scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
+                    INSECURE_DIST_CLIENT_TOKEN.to_owned(),
+                )),
+                scheduler_config::ClientAuth::Token { token } => {
+                    Box::new(token_check::EqCheck::new(token))
+                }
+                scheduler_config::ClientAuth::JwtValidate {
+                    audience,
+                    issuer,
+                    jwks_url,
+                } => Box::new(
+                    token_check::ValidJWTCheck::new(
+                        audience.to_owned(),
+                        issuer.to_owned(),
+                        &jwks_url,
+                    ).chain_err(|| "Failed to create a checker for valid JWTs")?,
+                ),
+                scheduler_config::ClientAuth::Mozilla { required_groups } => {
+                    Box::new(token_check::MozillaCheck::new(required_groups))
+                }
+                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
+                    Box::new(token_check::ProxyTokenCheck::new(url, cache_secs))
+                }
             };
 
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
@@ -271,31 +331,47 @@ fn run(command: Command) -> Result<i32> {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
                     Box::new(move |server_token| check_server_token(server_token, &token))
-                },
+                }
                 scheduler_config::ServerAuth::Token { token } => {
                     Box::new(move |server_token| check_server_token(server_token, &token))
-                },
+                }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
-                    let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD).chain_err(|| "Secret key base64 invalid")?;
+                    let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)
+                        .chain_err(|| "Secret key base64 invalid")?;
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
                     }
                     let validation = jwt::Validation::new(jwt::Algorithm::HS256);
-                    Box::new(move |server_token| check_jwt_server_token(server_token, &secret_key, &validation))
+                    Box::new(move |server_token| {
+                        check_jwt_server_token(server_token, &secret_key, &validation)
+                    })
                 }
             };
 
             let scheduler = Scheduler::new();
             let http_scheduler = dist::http::Scheduler::new(public_addr, scheduler, check_client_auth, check_server_auth);
             void::unreachable(http_scheduler.start()?);
-        },
+        }
 
-        Command::Server(server_config::Config { builder, cache_dir, public_addr, scheduler_url, scheduler_auth, toolchain_cache_size }) => {
-            let builder: Box<dist::BuilderIncoming<Error=Error>> = match builder {
-                server_config::BuilderType::Docker =>
-                    Box::new(build::DockerBuilder::new().chain_err(|| "Docker builder failed to start")?),
-                server_config::BuilderType::Overlay { bwrap_path, build_dir } =>
-                    Box::new(build::OverlayBuilder::new(bwrap_path, build_dir).chain_err(|| "Overlay builder failed to start")?)
+        Command::Server(server_config::Config {
+            builder,
+            cache_dir,
+            public_addr,
+            scheduler_url,
+            scheduler_auth,
+            toolchain_cache_size,
+        }) => {
+            let builder: Box<dist::BuilderIncoming<Error = Error>> = match builder {
+                server_config::BuilderType::Docker => Box::new(
+                    build::DockerBuilder::new().chain_err(|| "Docker builder failed to start")?,
+                ),
+                server_config::BuilderType::Overlay {
+                    bwrap_path,
+                    build_dir,
+                } => Box::new(
+                    build::OverlayBuilder::new(bwrap_path, build_dir)
+                        .chain_err(|| "Overlay builder failed to start")?,
+                ),
             };
 
             let server_id = ServerId::new(public_addr);
@@ -303,14 +379,20 @@ fn run(command: Command) -> Result<i32> {
                 server_config::SchedulerAuth::Insecure => {
                     warn!("Server starting with DANGEROUSLY_INSECURE scheduler authentication");
                     create_server_token(server_id, &INSECURE_DIST_SERVER_TOKEN)
-                },
+                }
                 server_config::SchedulerAuth::Token { token } => {
                     create_server_token(server_id, &token)
-                },
+                }
                 server_config::SchedulerAuth::JwtToken { token } => {
-                    let token_server_id: ServerId = dangerous_unsafe_extract_jwt_server_token(&token).chain_err(|| "Could not decode scheduler auth jwt")?;
+                    let token_server_id: ServerId =
+                        dangerous_unsafe_extract_jwt_server_token(&token)
+                            .chain_err(|| "Could not decode scheduler auth jwt")?;
                     if token_server_id != server_id {
-                        bail!("JWT server id ({:?}) did not match configured server id ({:?})", token_server_id, server_id)
+                        bail!(
+                            "JWT server id ({:?}) did not match configured server id ({:?})",
+                            token_server_id,
+                            server_id
+                        )
                     }
                     token
                 }
@@ -318,10 +400,14 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .chain_err(|| "Failed to create sccache server instance")?;
-            let http_server = dist::http::Server::new(public_addr, scheduler_url.to_url(), scheduler_auth, server)
-                .chain_err(|| "Failed to create sccache HTTP server instance")?;
+            let http_server = dist::http::Server::new(
+                public_addr,
+                scheduler_url.to_url(),
+                scheduler_auth,
+                server,
+            ).chain_err(|| "Failed to create sccache HTTP server instance")?;
             void::unreachable(http_server.start()?)
-        },
+        }
     }
 }
 
@@ -377,7 +463,11 @@ impl Scheduler {
 
 impl SchedulerIncoming for Scheduler {
     type Error = Error;
-    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult> {
+    fn handle_alloc_job(
+        &self,
+        requester: &SchedulerOutgoing,
+        tc: Toolchain,
+    ) -> Result<AllocJobResult> {
         let (job_id, server_id, auth) = {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
@@ -392,14 +482,14 @@ impl SchedulerIncoming for Scheduler {
                 for (&server_id, details) in servers.iter_mut() {
                     if now.duration_since(details.last_seen) > dist::http::HEARTBEAT_TIMEOUT {
                         dead_servers.push(server_id);
-                        continue
+                        continue;
                     }
                     let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
                     if load < best_load {
                         best = Some((server_id, details));
                         best_load = load;
                         if load == 0f64 {
-                            break
+                            break;
                         }
                     }
                 }
@@ -410,8 +500,13 @@ impl SchedulerIncoming for Scheduler {
                     let job_id = JobId(job_count);
                     assert!(server_details.jobs_assigned.insert(job_id));
 
-                    info!("Job {} created and will be assigned to server {:?}", job_id, server_id);
-                    let auth = server_details.job_authorizer.generate_token(job_id)
+                    info!(
+                        "Job {} created and will be assigned to server {:?}",
+                        job_id, server_id
+                    );
+                    let auth = server_details
+                        .job_authorizer
+                        .generate_token(job_id)
                         .map_err(Error::from)
                         .chain_err(|| "Could not create an auth token for this job")?;
                     Some((job_id, server_id, auth))
@@ -422,10 +517,18 @@ impl SchedulerIncoming for Scheduler {
 
             // We iterated over all servers, prune any that haven't had a heartbeat for too long
             for server_id in dead_servers {
-                warn!("Server {} appears to be dead, pruning it in the scheduler", server_id.addr());
-                let server_details = servers.remove(&server_id).expect("server went missing from map");
+                warn!(
+                    "Server {} appears to be dead, pruning it in the scheduler",
+                    server_id.addr()
+                );
+                let server_details = servers
+                    .remove(&server_id)
+                    .expect("server went missing from map");
                 for job_id in server_details.jobs_assigned {
-                    warn!("Non-terminated job {} was cleaned up in server pruning", job_id);
+                    warn!(
+                        "Non-terminated job {} was cleaned up in server pruning",
+                        job_id
+                    );
                     assert!(jobs.remove(&job_id).is_some())
                 }
             }
@@ -433,24 +536,50 @@ impl SchedulerIncoming for Scheduler {
             if let Some(res) = res {
                 res
             } else {
-                let msg = format!("Insufficient capacity across {} available servers", servers.len());
-                return Ok(AllocJobResult::Fail { msg })
+                let msg = format!(
+                    "Insufficient capacity across {} available servers",
+                    servers.len()
+                );
+                return Ok(AllocJobResult::Fail { msg });
             }
         };
-        let AssignJobResult { state, need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
+        let AssignJobResult {
+            state,
+            need_toolchain,
+        } = requester
+            .do_assign_job(server_id, job_id, tc, auth.clone())
             .chain_err(|| "assign job failed")?;
         {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
 
-            info!("Job {} successfully assigned and saved with state {:?}", job_id, state);
-            assert!(jobs.insert(job_id, JobDetail { server_id, state }).is_none());
+            info!(
+                "Job {} successfully assigned and saved with state {:?}",
+                job_id, state
+            );
+            assert!(
+                jobs.insert(job_id, JobDetail { server_id, state })
+                    .is_none()
+            );
         }
-        let job_alloc = JobAlloc { auth, job_id, server_id };
-        Ok(AllocJobResult::Success { job_alloc, need_toolchain })
+        let job_alloc = JobAlloc {
+            auth,
+            job_id,
+            server_id,
+        };
+        Ok(AllocJobResult::Success {
+            job_alloc,
+            need_toolchain,
+        })
     }
 
-    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<JobAuthorizer>) -> Result<HeartbeatServerResult> {
+    fn handle_heartbeat_server(
+        &self,
+        server_id: ServerId,
+        server_nonce: ServerNonce,
+        num_cpus: usize,
+        job_authorizer: Box<JobAuthorizer>,
+    ) -> Result<HeartbeatServerResult> {
         if num_cpus == 0 {
             bail!("Invalid number of CPUs (0) specified in heartbeat")
         }
@@ -461,22 +590,30 @@ impl SchedulerIncoming for Scheduler {
         match servers.get_mut(&server_id) {
             Some(ref mut details) if details.server_nonce == server_nonce => {
                 details.last_seen = Instant::now();
-                return Ok(HeartbeatServerResult { is_new: false })
-            },
+                return Ok(HeartbeatServerResult { is_new: false });
+            }
             _ => (),
         }
         info!("Registered new server {:?}", server_id);
-        servers.insert(server_id, ServerDetails {
-            last_seen: Instant::now(),
-            jobs_assigned: HashSet::new(),
-            num_cpus,
-            server_nonce,
-            job_authorizer,
-        });
+        servers.insert(
+            server_id,
+            ServerDetails {
+                last_seen: Instant::now(),
+                jobs_assigned: HashSet::new(),
+                num_cpus,
+                server_nonce,
+                job_authorizer,
+            },
+        );
         Ok(HeartbeatServerResult { is_new: true })
     }
 
-    fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> Result<UpdateJobStateResult> {
+    fn handle_update_job_state(
+        &self,
+        job_id: JobId,
+        server_id: ServerId,
+        job_state: JobState,
+    ) -> Result<UpdateJobStateResult> {
         // LOCKS
         let mut finished_jobs = self.finished_jobs.lock().unwrap();
         let mut jobs = self.jobs.lock().unwrap();
@@ -486,13 +623,16 @@ impl SchedulerIncoming for Scheduler {
             // TODO: nll should mean not needing to copy this out
             let job_detail = *entry.get();
             if job_detail.server_id != server_id {
-                bail!("Job id {} is not registed on server {:?}", job_id, server_id)
+                bail!(
+                    "Job id {} is not registed on server {:?}",
+                    job_id,
+                    server_id
+                )
             }
             match (job_detail.state, job_state) {
-                (JobState::Pending, JobState::Ready) |
-                (JobState::Ready,   JobState::Started) => {
+                (JobState::Pending, JobState::Ready) | (JobState::Ready, JobState::Started) => {
                     entry.get_mut().state = job_state
-                },
+                }
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, job_entry) = entry.remove_entry();
                     finished_jobs.push_back((job_id, job_entry));
@@ -501,10 +641,8 @@ impl SchedulerIncoming for Scheduler {
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
-                },
-                (from, to) => {
-                    bail!("Invalid job state transition from {} to {}", from, to)
-                },
+                }
+                (from, to) => bail!("Invalid job state transition from {} to {}", from, to),
             }
             info!("Job {} updated state to {:?}", job_id, job_state);
         } else {
@@ -523,13 +661,17 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<BuilderIncoming<Error=Error>>,
+    builder: Box<BuilderIncoming<Error = Error>>,
     cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
-    pub fn new(builder: Box<BuilderIncoming<Error=Error>>, cache_dir: &Path, toolchain_cache_size: u64) -> Result<Server> {
+    pub fn new(
+        builder: Box<BuilderIncoming<Error = Error>>,
+        cache_dir: &Path,
+        toolchain_cache_size: u64,
+    ) -> Result<Server> {
         let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
             .chain_err(|| "Failed to create toolchain cache")?;
         Ok(Server {
@@ -544,17 +686,33 @@ impl ServerIncoming for Server {
     type Error = Error;
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
+        assert!(
+            self.job_toolchains
+                .lock()
+                .unwrap()
+                .insert(job_id, tc)
+                .is_none()
+        );
         let state = if need_toolchain {
             JobState::Pending
         } else {
             // TODO: can start prepping the build environment now
             JobState::Ready
         };
-        Ok(AssignJobResult { state, need_toolchain })
+        Ok(AssignJobResult {
+            state,
+            need_toolchain,
+        })
     }
-    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
-        requester.do_update_job_state(job_id, JobState::Ready).chain_err(|| "Updating job state failed")?;
+    fn handle_submit_toolchain(
+        &self,
+        requester: &ServerOutgoing,
+        job_id: JobId,
+        tc_rdr: ToolchainReader,
+    ) -> Result<SubmitToolchainResult> {
+        requester
+            .do_update_job_state(job_id, JobState::Ready)
+            .chain_err(|| "Updating job state failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
         let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
@@ -564,20 +722,39 @@ impl ServerIncoming for Server {
         let mut cache = self.cache.lock().unwrap();
         // TODO: this returns before reading all the data, is that valid?
         if cache.contains_toolchain(&tc) {
-            return Ok(SubmitToolchainResult::Success)
+            return Ok(SubmitToolchainResult::Success);
         }
-        Ok(cache.insert_with(&tc, |mut file| io::copy(&mut {tc_rdr}, &mut file).map(|_| ()))
-            .map(|_| SubmitToolchainResult::Success)
+        Ok(cache
+            .insert_with(&tc, |mut file| {
+                io::copy(&mut { tc_rdr }, &mut file).map(|_| ())
+            }).map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
-    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> Result<RunJobResult> {
-        requester.do_update_job_state(job_id, JobState::Started).chain_err(|| "Updating job state failed")?;
+    fn handle_run_job(
+        &self,
+        requester: &ServerOutgoing,
+        job_id: JobId,
+        command: CompileCommand,
+        outputs: Vec<String>,
+        inputs_rdr: InputsReader,
+    ) -> Result<RunJobResult> {
+        requester
+            .do_update_job_state(job_id, JobState::Started)
+            .chain_err(|| "Updating job state failed")?;
         let tc = match self.job_toolchains.lock().unwrap().remove(&job_id) {
             Some(tc) => tc,
             None => return Ok(RunJobResult::JobNotFound),
         };
-        let res = self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache).chain_err(|| "run build failed")?;
-        requester.do_update_job_state(job_id, JobState::Complete).chain_err(|| "Updating job state failed")?;
-        Ok(RunJobResult::Complete(JobComplete { output: res.output, outputs: res.outputs }))
+        let res = self
+            .builder
+            .run_build(tc, command, outputs, inputs_rdr, &self.cache)
+            .chain_err(|| "run build failed")?;
+        requester
+            .do_update_job_state(job_id, JobState::Complete)
+            .chain_err(|| "Updating job state failed")?;
+        Ok(RunJobResult::Complete(JobComplete {
+            output: res.output,
+            outputs: res.outputs,
+        }))
     }
 }

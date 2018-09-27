@@ -41,8 +41,11 @@ extern crate flate2;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
+extern crate http;
 #[cfg(feature = "hyper")]
 extern crate hyper;
+#[cfg(feature = "hyperx")]
+extern crate hyperx;
 #[cfg(test)]
 extern crate itertools;
 #[cfg(feature = "jsonwebtoken")]
@@ -58,20 +61,20 @@ extern crate libc;
 extern crate lru_disk_cache;
 #[cfg(feature = "memcached")]
 extern crate memcached;
-#[cfg(windows)]
-extern crate mio_named_pipes;
 extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]
 extern crate openssl;
 extern crate rand;
-extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
 #[cfg(feature = "reqwest")]
 extern crate reqwest;
 extern crate retry;
+extern crate ring;
+#[cfg(windows)]
+extern crate tokio_named_pipes;
 #[cfg(feature = "rouille")]
 #[macro_use(router)]
 extern crate rouille;
@@ -84,12 +87,15 @@ extern crate tar;
 extern crate tempdir;
 extern crate tempfile;
 extern crate time;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_io;
 extern crate tokio_process;
-extern crate tokio_proto;
+#[cfg(windows)]
+extern crate tokio_reactor;
 extern crate tokio_serde_bincode;
 extern crate tokio_service;
+extern crate tokio_tcp;
+extern crate tokio_timer;
 extern crate toml;
 #[cfg(any(feature = "azure", feature = "gcs", feature = "dist-client"))]
 extern crate url;
@@ -125,7 +131,8 @@ mod protocol;
 pub mod server;
 #[cfg(feature = "simple-s3")]
 mod simples3;
-mod util;
+#[doc(hidden)]
+pub mod util;
 
 use std::env;
 use std::io::Write;
@@ -165,3 +172,4 @@ fn init_logging() {
         }
     }
 }
+
