@@ -17,6 +17,12 @@ extern crate tempdir;
 #[test]
 #[cfg(not(target_os="macos"))] // test currently fails on macos
 fn test_rust_cargo() {
+    test_rust_cargo_cmd("check");
+    test_rust_cargo_cmd("build");
+}
+
+#[cfg(not(target_os="macos"))] // test currently fails on macos
+fn test_rust_cargo_cmd(cmd: &str) {
     use std::env;
     use std::io::Write;
     use std::fs;
@@ -47,7 +53,7 @@ fn test_rust_cargo() {
              )
          })
         .parse(&env::var("RUST_LOG").unwrap_or_default())
-        .init());
+        .try_init());
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
     #[allow(deprecated)]
@@ -80,7 +86,7 @@ fn test_rust_cargo() {
         .success();
     // Now build the crate with cargo.
     Command::new(&cargo)
-        .args(&["build", "--color=never"])
+        .args(&[cmd, "--color=never"])
         .envs(envs.iter().map(|v| *v))
         .current_dir(&crate_dir)
         .assert()
@@ -94,7 +100,7 @@ fn test_rust_cargo() {
         .assert()
         .success();
     Command::new(&cargo)
-        .args(&["build", "--color=always"])
+        .args(&[cmd, "--color=always"])
         .envs(envs.iter().map(|v| *v))
         .current_dir(&crate_dir)
         .assert()

@@ -263,7 +263,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                         let mut entry = CacheWrite::new();
                         for (key, path) in &outputs {
                             let mut f = File::open(&path)?;
-                            let mode = get_file_mode(&path)?;
+                            let mode = get_file_mode(&f)?;
                             entry.put_object(key, &mut f, mode).chain_err(|| {
                                 format!("failed to put object `{:?}` in zip", path)
                             })?;
@@ -590,14 +590,14 @@ impl PartialEq<CompileResult> for CompileResult {
 }
 
 #[cfg(unix)]
-fn get_file_mode(path: &Path) -> Result<Option<u32>>
+fn get_file_mode(file: &File) -> Result<Option<u32>>
 {
     use std::os::unix::fs::MetadataExt;
-    Ok(Some(fs::metadata(path)?.mode()))
+    Ok(Some(file.metadata()?.mode()))
 }
 
 #[cfg(windows)]
-fn get_file_mode(_path: &Path) -> Result<Option<u32>>
+fn get_file_mode(_file: &File) -> Result<Option<u32>>
 {
     Ok(None)
 }
