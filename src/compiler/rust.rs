@@ -37,7 +37,7 @@ use std::collections::hash_map::RandomState;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::env::consts::DLL_EXTENSION;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::hash::Hash;
@@ -131,6 +131,9 @@ pub struct ParsedArguments {
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
     dep_info: Option<PathBuf>,
+    /// rustc says that emits .rlib for --emit=metadata
+    /// https://github.com/rust-lang/rust/issues/54852
+    rename_rlib_to_rmeta: bool,
     /// The value of any `--color` option passed on the commandline.
     color_mode: ColorMode,
 }
@@ -178,6 +181,7 @@ lazy_static! {
     /// Emit types that we will cache.
     static ref ALLOWED_EMIT: HashSet<&'static str> = [
         "link",
+        "metadata",
         "dep-info",
     ].iter().map(|s| *s).collect();
 }
@@ -841,7 +845,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     req!(crate_name);
     // We won't cache invocations that are not producing
     // binary output.
-    if !emit.is_empty() && !emit.contains("link") {
+    if !emit.is_empty() && !emit.contains("link") && !emit.contains("metadata") {
         return CompilerArguments::NotCompilation;
     }
     // If it's not an rlib and not a staticlib then crate-type wasn't passed,
@@ -855,6 +859,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     if emit.iter().any(|e| !ALLOWED_EMIT.contains(e.as_str())) {
         cannot_cache!("unsupported --emit");
     }
+
+    let rename_rlib_to_rmeta = emit.contains("metadata") && !emit.contains("link");
+
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
         let mut dep_info = crate_name.clone();
@@ -895,6 +902,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
+        rename_rlib_to_rmeta,
         color_mode,
     })
 }
@@ -912,7 +920,25 @@ impl<T> CompilerHasher<T> for RustHasher
     {
         let me = *self;
         let RustHasher {
-            executable, host, sysroot, compiler_shlibs_digests, #[cfg(feature = "dist-client")] rlib_dep_reader, parsed_args: ParsedArguments { arguments, output_dir, externs, crate_link_paths, staticlibs, crate_name, crate_types, dep_info, color_mode: _ } } = me;
+            executable,
+            host,
+            sysroot,
+            compiler_shlibs_digests, #[cfg(feature = "dist-client")]
+            rlib_dep_reader,
+            parsed_args:
+                ParsedArguments {
+                    arguments,
+                    output_dir,
+                    externs,
+                    crate_link_paths,
+                    staticlibs,
+                    crate_name,
+                    crate_types,
+                    dep_info,
+                    rename_rlib_to_rmeta,
+                    color_mode: _,
+                },
+        } = me;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments.iter()
@@ -1032,6 +1058,15 @@ impl<T> CompilerHasher<T> for RustHasher
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
                 let inputs = source_files.into_iter().chain(abs_externs).chain(abs_staticlibs).collect();
+
+                if rename_rlib_to_rmeta {
+                    for output in outputs.values_mut() {
+                        if output.extension() == Some(OsStr::new("rlib")) {
+                            output.set_extension("rmeta");
+                        }
+                    }
+                }
+
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
@@ -1965,6 +2000,7 @@ c:/foo/bar.rs:
                 crate_name: "foo".into(),
                 crate_types: CrateTypes { rlib: true, staticlib: false },
                 dep_info: None,
+                rename_rlib_to_rmeta: false,
                 color_mode: ColorMode::Auto,
             }
         });
