@@ -16,16 +16,23 @@ use directories::ProjectDirs;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde_json;
+use std::collections::HashMap;
 use std::env;
-use std::io::Read;
-use std::fs::File;
+use std::io::{Read, Write};
+use std::fs::{self, File};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Mutex;
 use toml;
 
+use errors::*;
+
 lazy_static! {
-    pub static ref CONFIG: Config = { Config::create() };
+    pub static ref CONFIG: Config = Config::create();
+
+    static ref CACHED_CONFIG_PATH: PathBuf = CachedConfig::file_config_path();
+    static ref CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 }
 
 const ORGANIZATION: &str = "Mozilla";
@@ -34,6 +41,7 @@ const DIST_APP_NAME: &str = "sccache-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const HIDDEN_FILE_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CONFIG";
+pub const HIDDEN_CACHED_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CACHED_CONFIG";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
@@ -75,10 +83,12 @@ pub fn parse_size(val: &str) -> Option<u64> {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AzureCacheConfig;
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
@@ -97,6 +107,7 @@ impl Default for DiskCacheConfig {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum GCSCacheRWMode {
     #[serde(rename = "READ_ONLY")]
     ReadOnly,
@@ -106,6 +117,7 @@ pub enum GCSCacheRWMode {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GCSCacheConfig {
     pub bucket: String,
     pub cred_path: Option<PathBuf>,
@@ -114,18 +126,21 @@ pub struct GCSCacheConfig {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     pub url: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
@@ -142,6 +157,7 @@ pub enum CacheType {
 
 #[derive(Debug, Default)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
     azure: Option<AzureCacheConfig>,
     disk: Option<DiskCacheConfig>,
@@ -187,6 +203,7 @@ impl CacheConfigs {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
 pub enum DistToolchainConfig {
     #[serde(rename = "no_dist")]
@@ -203,10 +220,13 @@ pub enum DistToolchainConfig {
 
 #[derive(Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
 pub enum DistAuth {
     #[serde(rename = "token")]
     Token { token: String },
+    #[serde(rename = "oauth2_implicit")]
+    Oauth2Implicit { url: String },
 }
 
 impl Default for DistAuth {
@@ -386,6 +406,82 @@ impl Config {
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
         Config { caches, fallback_cache, dist }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct CachedDistConfig {
+    pub auth_tokens: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct CachedFileConfig {
+    pub dist: CachedDistConfig,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CachedConfig(());
+
+impl CachedConfig {
+    pub fn load() -> Result<Self> {
+        let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
+
+        if cached_file_config.is_none() {
+            let cfg = Self::load_file_config().chain_err(|| "Unable to initialise cached config")?;
+            *cached_file_config = Some(cfg)
+        }
+        Ok(CachedConfig(()))
+    }
+    pub fn with<F: FnOnce(&CachedFileConfig) -> T, T>(&self, f: F) -> T {
+        let cached_file_config = CACHED_CONFIG.lock().unwrap();
+        let cached_file_config = cached_file_config.as_ref().unwrap();
+
+        f(&cached_file_config)
+    }
+    pub fn with_mut<F: FnOnce(&mut CachedFileConfig)>(&self, f: F) -> Result<()> {
+        let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
+        let cached_file_config = cached_file_config.as_mut().unwrap();
+
+        let mut new_config = cached_file_config.clone();
+        f(&mut new_config);
+        Self::save_file_config(&new_config)?;
+        *cached_file_config = new_config;
+        Ok(())
+    }
+
+    fn file_config_path() -> PathBuf {
+        env::var_os("SCCACHE_CACHED_CONF")
+            .map(|p| PathBuf::from(p))
+            .unwrap_or_else(|| {
+                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
+                    .expect("Unable to get config directory");
+                dirs.config_dir().join("cached-config")
+            })
+    }
+    fn load_file_config() -> Result<CachedFileConfig> {
+        let file_conf_path = &*CACHED_CONFIG_PATH;
+
+        if !file_conf_path.exists() {
+            let file_conf_dir = file_conf_path.parent().expect("Cached conf file has no parent directory");
+            if !file_conf_dir.is_dir() {
+                fs::create_dir_all(file_conf_dir).chain_err(|| "Failed to create dir to hold cached config")?
+            }
+            Self::save_file_config(&Default::default())
+                .chain_err(|| format!("Unable to create cached config file at {}", file_conf_path.display()))?
+        }
+        try_read_config_file(&file_conf_path)
+            .ok_or_else(|| format!("Failed to load from {}", file_conf_path.display()).into())
+    }
+    fn save_file_config(c: &CachedFileConfig) -> Result<()> {
+        let file_conf_path = &*CACHED_CONFIG_PATH;
+        let mut file = File::create(file_conf_path)?;
+        file.write_all(&toml::to_vec(c).unwrap()).map_err(Into::into)
     }
 }
 

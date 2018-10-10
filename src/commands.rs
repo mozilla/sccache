@@ -627,6 +627,32 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             stats.print();
         }
         #[cfg(feature = "dist-client")]
+        Command::DistAuth => {
+            use config::{self, CONFIG};
+            use dist;
+            use url::Url;
+
+            match &CONFIG.dist.auth {
+                config::DistAuth::Token { .. } => {
+                    info!("No authentication needed for type 'token'")
+                },
+                config::DistAuth::Oauth2Implicit { url } => {
+                    let cached_config = config::CachedConfig::load()?;
+
+                    let auth_url = Url::parse(&url).map_err(|_| format!("Failed to parse URL {}", url))?;
+                    let token = dist::client_auth::get_token_oauth2_implicit(auth_url)?;
+
+                    cached_config.with_mut(|c| {
+                        c.dist.auth_tokens.insert(url.to_owned(), token);
+                    }).chain_err(|| "Unable to save auth token")?
+                },
+            };
+        }
+        #[cfg(not(feature = "dist-client"))]
+        Command::DistAuth => {
+            bail!("Distributed compilation not compiled in, please rebuild with the dist-client feature")
+        }
+        #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use compiler;
             use futures_cpupool::CpuPool;

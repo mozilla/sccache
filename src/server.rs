@@ -25,7 +25,7 @@ use compiler::{
     MissType,
     get_compiler_info,
 };
-use config::CONFIG;
+use config::{self, CONFIG};
 use dist;
 use filetime::FileTime;
 use futures::future;
@@ -140,6 +140,15 @@ pub fn start_server(port: u16) -> Result<()> {
         #[cfg(feature = "dist-client")]
         Some(addr) => {
             info!("Enabling distributed sccache to {}", addr);
+            let auth_token = match &CONFIG.dist.auth {
+                config::DistAuth::Token { token } => token.to_owned(),
+                config::DistAuth::Oauth2Implicit { url } => {
+                    let cached_config = config::CachedConfig::load().unwrap();
+                    cached_config.with(|c| {
+                        c.dist.auth_tokens.get(url).unwrap().to_owned()
+                    })
+                },
+            };
             Arc::new(dist::http::Client::new(
                 &core.handle(),
                 &pool,
@@ -147,7 +156,7 @@ pub fn start_server(port: u16) -> Result<()> {
                 &CONFIG.dist.cache_dir.join("client"),
                 CONFIG.dist.toolchain_cache_size,
                 &CONFIG.dist.toolchains,
-                &CONFIG.dist.auth,
+                auth_token,
             ))
         },
         #[cfg(not(feature = "dist-client"))]

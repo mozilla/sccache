@@ -27,6 +27,8 @@ use errors::*;
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 mod cache;
+#[cfg(feature = "dist-client")]
+pub mod client_auth;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub mod http;
 #[cfg(test)]

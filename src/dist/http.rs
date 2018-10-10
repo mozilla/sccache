@@ -599,7 +599,7 @@ mod client {
     const REQUEST_TIMEOUT_SECS: u64 = 600;
 
     pub struct Client {
-        auth: &'static config::DistAuth,
+        auth_token: String,
         scheduler_addr: SocketAddr,
         // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
         // and only support owned bytes, which means the whole toolchain would end up in memory
@@ -610,12 +610,12 @@ mod client {
     }
 
     impl Client {
-        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig], auth: &'static config::DistAuth) -> Self {
+        pub fn new(handle: &tokio_core::reactor::Handle, pool: &CpuPool, scheduler_addr: IpAddr, cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig], auth_token: String) -> Self {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new().timeout(timeout).build().unwrap();
             let client_async = reqwest::unstable::async::ClientBuilder::new().timeout(timeout).build(handle).unwrap();
             Self {
-                auth,
+                auth_token,
                 scheduler_addr: Cfg::scheduler_connect_addr(scheduler_addr),
                 client,
                 client_async,
@@ -627,11 +627,8 @@ mod client {
 
     impl dist::Client for Client {
         fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
-            let token = match self.auth {
-                config::DistAuth::Token { token } => token,
-            };
             let url = format!("http://{}/api/v1/scheduler/alloc_job", self.scheduler_addr);
-            Box::new(f_res(self.client_async.post(&url).bearer_auth(token.to_owned()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
+            Box::new(f_res(self.client_async.post(&url).bearer_auth(self.auth_token.clone()).bincode(&tc).map(bincode_req_fut)).and_then(|r| r))
         }
         fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
             if let Some(toolchain_file) = self.tc_cache.get_toolchain(&tc) {

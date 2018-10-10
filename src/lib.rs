@@ -91,7 +91,7 @@ extern crate tokio_proto;
 extern crate tokio_serde_bincode;
 extern crate tokio_service;
 extern crate toml;
-#[cfg(any(feature = "gcs", feature = "azure"))]
+#[cfg(any(feature = "azure", feature = "gcs", feature = "dist-client"))]
 extern crate url;
 extern crate uuid;
 extern crate walkdir;
