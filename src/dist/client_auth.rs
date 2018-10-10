@@ -48,6 +48,7 @@ fn handle_implicit_grant_response(params: HashMap<String, String>) -> Result<(St
         bail!("Token type in response is not {}", TOKEN_TYPE_RESULT_PARAM_VALUE)
     }
     let expires_in = params.get(EXPIRES_IN_RESULT_PARAM).ok_or("No expiry found in response")?;
+    // Calculate ASAP the actual time at which the token will expire
     let expires_at = Instant::now() + Duration::new(expires_in.parse().map_err(|_| "Failed to parse expiry as integer")?, 0);
     let state = params.get(STATE_RESULT_PARAM).ok_or("No state found in response")?;
     Ok((token.to_owned(), expires_at, state.to_owned()))
@@ -160,6 +161,9 @@ fn serve(req: Request<Body>) -> BoxFut {
             let (token, expires_at, auth_state) = handle_implicit_grant_response(query_pairs).unwrap();
             if auth_state != state.auth_state_value {
                 panic!("Mismatched auth states")
+            }
+            if expires_at - Instant::now() < Duration::from_secs(24 * 60 * 60)  {
+                warn!("Token retrieved expires in under one day")
             }
             // Deliberately in reverse order for a 'happens-before' relationship
             state.token_tx.send(token).unwrap();
