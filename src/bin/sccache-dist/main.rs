@@ -13,7 +13,9 @@ extern crate libmount;
 extern crate log;
 extern crate lru_disk_cache;
 extern crate nix;
+extern crate openssl;
 extern crate rand;
+extern crate reqwest;
 extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
@@ -37,7 +39,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use errors::*;
 
@@ -78,6 +80,10 @@ mod scheduler_config {
         Insecure,
         #[serde(rename = "token")]
         Token { token: String },
+        #[serde(rename = "jwt_validate")]
+        JwtValidate { audience: String, issuer: String, jwks_url: String },
+        #[serde(rename = "proxy_token")]
+        ProxyToken { url: String, cache_secs: Option<u64> }
     }
 
     #[derive(Debug)]
@@ -160,6 +166,39 @@ mod build;
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
+// https://auth0.com/docs/jwks
+#[derive(Debug)]
+#[derive(Serialize, Deserialize)]
+struct Jwks {
+    keys: Vec<Jwk>,
+}
+
+#[derive(Debug)]
+#[derive(Serialize, Deserialize)]
+struct Jwk {
+    kid: String,
+    kty: String,
+    n: String,
+    e: String,
+}
+
+impl Jwk {
+    // https://github.com/lawliet89/biscuit/issues/96#issuecomment-399149872
+    fn to_der_pkcs1(&self) -> Result<Vec<u8>> {
+        if self.kty != "RSA" {
+            bail!("Cannot handle non-RSA JWK")
+        }
+
+        // JWK is big-endian, openssl bignum from_slice is big-endian
+        let n = base64::decode_config(&self.n, base64::URL_SAFE).unwrap();
+        let e = base64::decode_config(&self.e, base64::URL_SAFE).unwrap();
+        let n_bn = openssl::bn::BigNum::from_slice(&n).unwrap();
+        let e_bn = openssl::bn::BigNum::from_slice(&e).unwrap();
+        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn).unwrap();
+        let der: Vec<u8> = pubkey.public_key_to_der_pkcs1().unwrap();
+        Ok(der)
+    }
+}
 enum Command {
     Auth(AuthSubcommand),
     Scheduler(scheduler_config::Config),
@@ -332,6 +371,62 @@ fn run(command: Command) -> Result<i32> {
             let check_client_auth: Box<Fn(&str) -> bool + Send + Sync> = match client_auth {
                 scheduler_config::ClientAuth::Insecure => Box::new(move |s| s == INSECURE_DIST_CLIENT_TOKEN),
                 scheduler_config::ClientAuth::Token { token } => Box::new(move |s| s == token),
+                scheduler_config::ClientAuth::JwtValidate { audience, issuer, jwks_url } => {
+                    let mut res = reqwest::get(&jwks_url).unwrap();
+                    if !res.status().is_success() {
+                        bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
+                    }
+                    let jwks: Jwks = res.json().unwrap();
+                    let kid_to_pkcs1: HashMap<String, Vec<u8>> = jwks.keys.into_iter().map(|k| {
+                        let pkcs1 = k.to_der_pkcs1().unwrap();
+                        (k.kid, pkcs1)
+                    }).collect();
+                    Box::new(move |s| {
+                        let header = jwt::decode_header(s).unwrap();
+                        // Prepare validation
+                        let kid = header.kid.unwrap();
+                        let pkcs1 = kid_to_pkcs1.get(&kid).unwrap();
+                        let mut validation = jwt::Validation::new(header.alg);
+                        validation.set_audience(&audience);
+                        validation.iss = Some(issuer.clone());
+                        #[derive(Deserialize)]
+                        struct Claims {}
+                        // Decode the JWT, discarding any claims - we just care about validity
+                        let _tokendata = jwt::decode::<Claims>(s, pkcs1, &validation).unwrap();
+                        true
+                    })
+                },
+                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
+                    let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
+                        cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
+                    let client = reqwest::Client::new();
+                    Box::new(move |s| {
+                        // If the token is cached and not expired, return it
+                        if let Some(ref auth_cache) = maybe_auth_cache {
+                            let mut auth_cache = auth_cache.lock().unwrap();
+                            let (ref mut auth_cache, cache_duration) = *auth_cache;
+                            if let Some(cached_at) = auth_cache.get(s) {
+                                if cached_at.elapsed() < cache_duration {
+                                    return true
+                                }
+                            }
+                            auth_cache.remove(s);
+                        }
+                        // Make a request to check for token validity
+                        let header = reqwest::header::Authorization(reqwest::header::Bearer { token: s.to_owned() });
+                        let res = client.get(&url).header(header).send().unwrap();
+                        if !res.status().is_success() {
+                            return false
+                        }
+                        // Cache the token
+                        if let Some(ref auth_cache) = maybe_auth_cache {
+                            let mut auth_cache = auth_cache.lock().unwrap();
+                            let (ref mut auth_cache, _) = *auth_cache;
+                            auth_cache.insert(s.to_owned(), Instant::now());
+                        }
+                        true
+                    })
+                },
             };
 
             let check_server_auth: Box<Fn(&str) -> Option<ServerId> + Send + Sync> = match server_auth {
