@@ -16,7 +16,7 @@
 #[cfg(feature = "dist-client")]
 pub use self::client::Client;
 #[cfg(feature = "dist-server")]
-pub use self::server::Scheduler;
+pub use self::server::{Scheduler, ClientAuthCheck, ServerAuthCheck};
 #[cfg(feature = "dist-server")]
 pub use self::server::Server;
 
@@ -180,6 +180,9 @@ mod server {
         RunJobHttpRequest,
     };
     use errors::*;
+
+    pub type ClientAuthCheck = Box<Fn(&str) -> bool + Send + Sync>;
+    pub type ServerAuthCheck = Box<Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
     lazy_static!{
@@ -356,13 +359,13 @@ mod server {
     pub struct Scheduler<S> {
         handler: S,
         // Is this client permitted to use the scheduler?
-        check_client_auth: Box<Fn(&str) -> bool + Send + Sync>,
+        check_client_auth: ClientAuthCheck,
         // Do we believe the server is who they appear to be?
-        check_server_auth: Box<Fn(&str) -> Option<ServerId> + Send + Sync>,
+        check_server_auth: ServerAuthCheck,
     }
 
     impl<S: dist::SchedulerIncoming + 'static> Scheduler<S> {
-        pub fn new(handler: S, check_client_auth: Box<Fn(&str) -> bool + Send + Sync>, check_server_auth: Box<Fn(&str) -> Option<ServerId> + Send + Sync>) -> Self {
+        pub fn new(handler: S, check_client_auth: ClientAuthCheck, check_server_auth: ServerAuthCheck) -> Self {
             Self { handler, check_client_auth, check_server_auth }
         }
 

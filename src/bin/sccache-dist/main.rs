@@ -368,7 +368,7 @@ fn run(command: Command) -> Result<i32> {
         },
 
         Command::Scheduler(scheduler_config::Config { client_auth, server_auth }) => {
-            let check_client_auth: Box<Fn(&str) -> bool + Send + Sync> = match client_auth {
+            let check_client_auth: dist::http::ClientAuthCheck = match client_auth {
                 scheduler_config::ClientAuth::Insecure => Box::new(move |s| s == INSECURE_DIST_CLIENT_TOKEN),
                 scheduler_config::ClientAuth::Token { token } => Box::new(move |s| s == token),
                 scheduler_config::ClientAuth::JwtValidate { audience, issuer, jwks_url } => {
@@ -429,7 +429,7 @@ fn run(command: Command) -> Result<i32> {
                 },
             };
 
-            let check_server_auth: Box<Fn(&str) -> Option<ServerId> + Send + Sync> = match server_auth {
+            let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
