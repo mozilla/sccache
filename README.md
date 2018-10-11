@@ -81,7 +81,17 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
 
-In order to statically link against both the CRT and OpenSSL, you will need to build OpenSSL with a statically linked CRT, which is left as an exercise for the reader. Generally it is simpler to just ship the OpenSSL DLLs.
+In order to statically link against both the CRT and OpenSSL, you will need to either build OpenSSL static libraries (with a statically linked CRT) yourself or get a pre-built distribution that provides these.
+
+Then you can set environment variables which get picked up by the `openssl-sys` crate.
+
+See the following example for using pre-built libraries from [Shining Light Productions](https://slproweb.com/products/Win32OpenSSL.html), assuming an installation in `C:\OpenSSL-Win64`:
+
+```
+set OPENSSL_LIB_DIR=C:\OpenSSL-Win64\lib\VC\static
+set OPENSSL_INCLUDE_DIR=C:\OpenSSL-Win64\include
+set OPENSSL_LIBS=libcrypto64MT:libssl64MT
+```
 
 ---
 
