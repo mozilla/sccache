@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use chrono::{Duration, offset, DateTime};
+use directories::UserDirs;
 use futures::{Future, Async, IntoFuture, Stream};
 use futures::future::{self, Shared};
 use hyper::{self, Client, Method};
@@ -15,7 +16,6 @@ use std::ascii::AsciiExt;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env::*;
-use std::env;
 use std::fs::File;
 use std::fs;
 use std::io::BufReader;
@@ -134,16 +134,9 @@ impl ProfileProvider {
         // Default credentials file location:
         // ~/.aws/credentials (Linux/Mac)
         // %USERPROFILE%\.aws\credentials  (Windows)
-        let profile_location = match env::home_dir() {
-            Some(home_path) => {
-                let mut credentials_path = PathBuf::from(".aws");
-
-                credentials_path.push("credentials");
-
-                home_path.join(credentials_path)
-            }
-            None => bail!("The environment variable HOME must be set."),
-        };
+        let profile_location = UserDirs::new()
+            .map(|d| d.home_dir().join(".aws").join("credentials"))
+            .ok_or("Couldn't get user directories")?;
 
         Ok(ProfileProvider {
             credentials: None,
