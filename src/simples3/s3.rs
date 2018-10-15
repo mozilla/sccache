@@ -6,10 +6,8 @@ use std::ascii::AsciiExt;
 use std::fmt;
 
 use base64;
-use crypto::digest::Digest;
-use crypto::hmac::Hmac;
-use crypto::mac::Mac;
-use crypto::sha1::Sha1;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use futures::{Future, Stream};
 use hyper::header;
 use hyper::Method;
@@ -42,19 +40,13 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
     )
 }
 
-fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::new(d, key);
-    hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
-}
-
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
-    let s = hmac(
-        Sha1::new(),
-        signing_key.as_bytes(),
-        string_to_sign.as_bytes(),
-    );
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
+    let mut hmac = Hmac::<Sha1>::new_varkey(signing_key.as_bytes())
+        .expect("HMAC can take key of any size");
+    hmac.input(string_to_sign.as_bytes());
+    let sig = hmac.result().code();
+
+    base64::encode_config(&sig, base64::STANDARD)
 }
 
 /// An S3 bucket.

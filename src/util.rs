@@ -17,12 +17,12 @@ use byteorder::{ByteOrder, BigEndian};
 use futures::Future;
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
-use ring::digest::{SHA512, Context};
+use sha2::{Sha512, Digest as DigestTrait};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
-use std::io::BufReader;
+use std::io;
 use std::io::prelude::*;
 use std::path::Path;
 use std::process::{self,Stdio};
@@ -32,12 +32,12 @@ use errors::*;
 
 #[derive(Clone)]
 pub struct Digest {
-    inner: Context,
+    inner: Sha512,
 }
 
 impl Digest {
     pub fn new() -> Digest {
-        Digest { inner: Context::new(&SHA512) }
+        Digest { inner: Sha512::new() }
     }
 
     /// Calculate the SHA-512 digest of the contents of `path`, running
@@ -50,28 +50,20 @@ impl Digest {
         Self::reader(f, pool)
     }
 
-    pub fn reader<R: Read + Send + 'static>(rdr: R, pool: &CpuPool) -> SFuture<String> {
+    pub fn reader<R: Read + Send + 'static>(mut rdr: R, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
-            let mut m = Digest::new();
-            let mut reader = BufReader::new(rdr);
-            loop {
-                let mut buffer = [0; 1024];
-                let count = reader.read(&mut buffer[..])?;
-                if count == 0 {
-                    break;
-                }
-                m.update(&buffer[..count]);
-            }
-            Ok(m.finish())
+            let mut hasher = Sha512::new();
+            io::copy(&mut rdr, &mut hasher)?;
+            Ok(hex(hasher.result().as_ref()))
         }))
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
-        self.inner.update(bytes);
+        self.inner.input(bytes);
     }
 
     pub fn finish(self) -> String {
-        hex(self.inner.finish().as_ref())
+        hex(self.inner.result().as_ref())
     }
 }
 

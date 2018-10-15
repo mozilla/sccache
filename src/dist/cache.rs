@@ -1,7 +1,7 @@
 use dist::Toolchain;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Result as LruResult;
-use ring::digest::{SHA512, Context};
+use sha2::{Sha512, Digest};
 use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -239,17 +239,8 @@ fn make_lru_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
-// Partially copied from util.rs
 fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
-    let mut m = Context::new(&SHA512);
-    let mut reader = BufReader::new(rdr);
-    loop {
-        let mut buffer = [0; 1024];
-        let count = reader.read(&mut buffer[..])?;
-        if count == 0 {
-            break;
-        }
-        m.update(&buffer[..count]);
-    }
-    Ok(util::hex(m.finish().as_ref()))
+    let mut hasher = Sha512::new();
+    io::copy(&mut rdr, &mut hasher)?;
+    Ok(util::hex(hasher.result().as_ref()))
 }

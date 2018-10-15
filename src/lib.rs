@@ -41,6 +41,8 @@ extern crate flate2;
 #[macro_use]
 extern crate futures;
 extern crate futures_cpupool;
+#[cfg(feature = "hmac")]
+extern crate hmac;
 #[cfg(feature = "hyper")]
 extern crate hyper;
 #[cfg(test)]
@@ -56,6 +58,8 @@ extern crate local_encoding;
 extern crate log;
 extern crate libc;
 extern crate lru_disk_cache;
+#[cfg(feature = "md-5")]
+extern crate md5;
 #[cfg(feature = "memcached")]
 extern crate memcached;
 #[cfg(windows)]
@@ -65,7 +69,6 @@ extern crate number_prefix;
 #[cfg(feature = "openssl")]
 extern crate openssl;
 extern crate rand;
-extern crate ring;
 #[cfg(feature = "redis")]
 extern crate redis;
 extern crate regex;
@@ -75,6 +78,9 @@ extern crate retry;
 #[cfg(feature = "rouille")]
 #[macro_use(router)]
 extern crate rouille;
+#[cfg(feature = "sha-1")]
+extern crate sha1;
+extern crate sha2;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]

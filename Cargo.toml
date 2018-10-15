@@ -37,6 +37,7 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures-cpupool = "0.1"
+hmac = { version = "0.7", optional = true }
 hyper = { version = "0.11", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "5.0", optional = true }
@@ -45,6 +46,7 @@ libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.2.0" }
+md-5 = { version = "0.8", optional = true }
 memcached-rs = { version = "0.3" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.2.5"
@@ -55,8 +57,8 @@ regex = "1"
 # Exact dependency since we use the unstable async API
 reqwest = { version = "=0.8.8", features = ["unstable"], optional = true }
 retry = "0.4.0"
-ring = "0.13.2"
-rust-crypto = { version = "0.2.36", optional = true }
+sha-1 = { version = "0.8", optional = true }
+sha2 = "0.8"
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
@@ -106,8 +108,8 @@ default = ["s3"]
 all = ["redis", "s3", "memcached", "gcs", "azure"]
 # gcs requires openssl, which is a pain on Windows.
 all-windows = ["redis", "s3", "memcached", "azure"]
-azure = ["chrono", "hyper", "rust-crypto", "url"]
-s3 = ["chrono", "hyper", "reqwest", "rust-crypto", "simple-s3"]
+azure = ["chrono", "hyper", "md-5", "hmac", "url"]
+s3 = ["chrono", "hyper", "reqwest", "sha-1", "hmac", "simple-s3"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "jsonwebtoken", "openssl", "reqwest", "url"]
 memcached = ["memcached-rs"]
