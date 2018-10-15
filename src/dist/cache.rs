@@ -3,7 +3,7 @@ use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Result as LruResult;
 use sha2::{Sha512, Digest};
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use util;
 
@@ -231,16 +231,12 @@ impl TcCache {
 fn path_key(path: &Path) -> Result<String> {
     file_key(fs::File::open(path)?)
 }
-fn file_key<RS: ReadSeek + 'static>(rs: RS) -> Result<String> {
-    hash_reader(rs)
+fn file_key<RS: ReadSeek + 'static>(mut rs: RS) -> Result<String> {
+    let mut hasher = Sha512::new();
+    io::copy(&mut rs, &mut hasher)?;
+    Ok(util::hex(hasher.result().as_ref()))
 }
 /// Make a path to the cache entry with key `key`.
 fn make_lru_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
-}
-
-fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
-    let mut hasher = Sha512::new();
-    io::copy(&mut rdr, &mut hasher)?;
-    Ok(util::hex(hasher.result().as_ref()))
 }
