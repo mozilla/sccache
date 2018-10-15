@@ -51,7 +51,8 @@ cache_dir = "/tmp/toolchains"
 # If unspecified the default is 10GB.
 # toolchain_cache_size = 10737418240
 # An IP address and port on which clients can connect to this builder.
-public_addr = "192.168.1.1:9001"
+# NOTE: you must use port 10501 here!
+public_addr = "192.168.1.1:10501"
 # The IP address of the scheduler.
 scheduler_addr = "192.168.1.1"
 
