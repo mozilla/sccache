@@ -26,6 +26,7 @@ use futures::Future;
 use jobserver::Client;
 use log::Level::Trace;
 use mock_command::{
+    CommandChild,
     CommandCreatorSync,
     ProcessCommandCreator,
     RunCommand,
@@ -50,7 +51,6 @@ use strip_ansi_escapes::Writer;
 use tokio_core::reactor::Core;
 use tokio_io::AsyncRead;
 use tokio_io::io::read_exact;
-use util::run_input_output;
 use which::which_in;
 
 use errors::*;
@@ -439,10 +439,14 @@ fn handle_compile_finished(response: CompileFinished,
                     writer: &mut Write,
                     data: &[u8],
                     color_mode: ColorMode) -> Result<()> {
+        // rustc uses the `termcolor` crate which explicitly checks for TERM=="dumb", so
+        // match that behavior here.
+        let dumb_term = env::var("TERM").map(|v| v == "dumb").unwrap_or(false);
         // If the compiler options explicitly requested color output, or if this output stream
         // is a terminal and the compiler options didn't explicitly request non-color output,
         // then write the compiler output directly.
-        if color_mode == ColorMode::On || (atty::is(stream) && color_mode != ColorMode::Off)  {
+        if color_mode == ColorMode::On ||
+            (!dumb_term && atty::is(stream) && color_mode != ColorMode::Off)  {
             writer.write_all(data)?;
         } else {
             // Remove escape codes (and thus colors) while writing.
@@ -518,23 +522,16 @@ fn handle_compile_response<T>(mut creator: T,
         }
     };
 
-    //TODO: possibly capture output here for testing.
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline)
         .current_dir(cwd);
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    match core.run(run_input_output(cmd, None)) {
-        Ok(output) | Err(Error(ErrorKind::ProcessError(output), _)) => {
-            if !output.stdout.is_empty() {
-                stdout.write_all(&output.stdout)?;
-            }
-            if !output.stderr.is_empty() {
-                stderr.write_all(&output.stderr)?;
-            }
-            Ok(output.status.code().unwrap_or_else(|| {
-                if let Some(sig) = status_signal(output.status) {
+    match core.run(cmd.spawn().and_then(|c| c.wait().chain_err(|| "failed to wait for child"))) {
+        Ok(status) => {
+            Ok(status.code().unwrap_or_else(|| {
+                if let Some(sig) = status_signal(status) {
                     println!("Compile terminated by signal {}", sig);
                 }
                 // Arbitrary.
