@@ -317,12 +317,12 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
 
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
-        let CCompilation { parsed_args, cwd, preprocessed_input, executable, .. } = *{self};
+        let CCompilation { parsed_args, cwd, preprocessed_input, executable, compiler, .. } = *{self};
         trace!("Dist inputs: {:?}", parsed_args.input);
 
         let input_path = cwd.join(&parsed_args.input);
         let inputs_packager = Box::new(CInputsPackager { input_path, preprocessed_input, path_transformer });
-        let toolchain_packager = Box::new(CToolchainPackager { executable });
+        let toolchain_packager = Box::new(CToolchainPackager { executable, kind: compiler.kind() });
         let outputs_rewriter = Box::new(NoopOutputsRewriter);
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
@@ -367,31 +367,101 @@ impl pkg::InputsPackager for CInputsPackager {
 #[allow(unused)]
 struct CToolchainPackager {
     executable: PathBuf,
+    kind: CCompilerKind,
 }
 
 #[cfg(feature = "dist-client")]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
-        use std::env;
-        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::ffi::OsStringExt;
+        use pkg::ToolchainPackageBuilder as Builder;
 
-        info!("Packaging C compiler for executable {}", self.executable.display());
-        // TODO: write our own, since this is GPL
-        let curdir = env::current_dir().unwrap();
-        env::set_current_dir("/tmp").unwrap();
-        let output = process::Command::new("icecc-create-env").arg(&self.executable).output().unwrap();
-        if !output.status.success() {
-            println!("{:?}\n\n\n===========\n\n\n{:?}", output.stdout, output.stderr);
-            panic!("failed to create toolchain")
+        info!("Generating toolchain {}", self.executable.display());
+        let mut package_builder = Builder::new();
+        package_builder.add_common()?;
+        package_builder.add_executable_and_deps(self.executable.clone())?;
+
+        // Helper to use -print-file-name and -print-prog-name to look up
+        // files by path.
+        let named_file = |kind: &str, name: &str| -> Option<PathBuf> {
+            let mut output = process::Command::new(&self.executable)
+                .arg(&format!("-print-{}-name={}", kind, name))
+                .output()
+                .ok()?;
+            debug!(
+                "find named {} {} output:\n{}\n===\n{}",
+                kind,
+                name,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            if !output.status.success() {
+                debug!("exit failure");
+                return None;
+            }
+
+            // Remove the trailing newline (if present)
+            if output.stdout.last() == Some(&b'\n') {
+                output.stdout.pop();
+            }
+
+            // Create our PathBuf from the raw bytes, and return if absolute.
+            let path: PathBuf = OsString::from_vec(output.stdout).into();
+            if path.is_absolute() {
+                Some(path)
+            } else {
+                None
+            }
+        };
+
+        // Helper to add a named file/program by to the package.
+        // We ignore the case where the file doesn't exist, as we don't need it.
+        let add_named_prog = |builder: &mut pkg::ToolchainPackageBuilder, name: &str| -> Result<()> {
+            if let Some(path) = named_file("prog", name) {
+                builder.add_executable_and_deps(path)?;
+            }
+            Ok(())
+        };
+        let add_named_file = |builder: &mut pkg::ToolchainPackageBuilder, name: &str| -> Result<()> {
+            if let Some(path) = named_file("file", name) {
+                builder.add_file(path)?;
+            }
+            Ok(())
+        };
+
+        // Add basic |as| and |objcopy| programs.
+        add_named_prog(&mut package_builder, "as")?;
+        add_named_prog(&mut package_builder, "objcopy")?;
+
+        // Linker configuration.
+        if Path::new("/etc/ld.so.conf").is_file() {
+            package_builder.add_file("/etc/ld.so.conf".into())?;
         }
-        let file_line = output.stdout.split(|&b| b == b'\n').find(|line| line.starts_with(b"creating ")).unwrap();
-        let filename = &file_line[b"creating ".len()..];
-        let filename = OsStr::from_bytes(filename);
-        io::copy(&mut fs::File::open(filename).unwrap(), &mut {f}).unwrap();
-        fs::remove_file(filename).unwrap();
-        env::set_current_dir(curdir).unwrap();
-        Ok(())
+
+        // Compiler-specific handling
+        match self.kind {
+            CCompilerKind::Clang => {
+                // Clang uses internal header files, so add them.
+                if let Some(limits_h) = named_file("file", "include/limits.h") {
+                    info!("limits_h = {}", limits_h.display());
+                    package_builder.add_dir_contents(limits_h.parent().unwrap())?;
+                }
+            }
+
+            CCompilerKind::GCC => {
+                // Various external programs / files which may be needed by gcc
+                add_named_prog(&mut package_builder, "cc1")?;
+                add_named_prog(&mut package_builder, "cc1plus")?;
+                add_named_file(&mut package_builder, "specs")?;
+                add_named_file(&mut package_builder, "liblto_plugin.so")?;
+            }
+
+            _ => unreachable!(),
+        }
+
+        // Bundle into a compressed tarfile.
+        package_builder.into_compressed_tar(f)
     }
 }
 

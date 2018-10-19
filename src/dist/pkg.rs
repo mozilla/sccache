@@ -54,13 +54,14 @@ mod toolchain_imp {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
     use std::collections::BTreeMap;
-    use std::io::Write;
+    use std::io::{Write, Read};
     use std::fs;
     use std::path::{Component, Path, PathBuf};
     use std::process;
     use std::str;
     use super::tarify_path;
     use tar;
+    use walkdir::WalkDir;
 
     use errors::*;
 
@@ -114,6 +115,31 @@ mod toolchain_imp {
             }
             let tar_path = tarify_path(&file_path)?;
             self.file_set.insert(tar_path, file_path);
+            Ok(())
+        }
+
+        pub fn add_dir_contents(&mut self, dir_path: &Path) -> Result<()> {
+            // Although by not following symlinks we could break a custom
+            // constructed toolchain with links everywhere, this is just a
+            // best-effort auto packaging
+            for entry in WalkDir::new(&dir_path).follow_links(false) {
+                let entry = entry?;
+                let file_type = entry.file_type();
+                if file_type.is_dir() {
+                    continue
+                } else if file_type.is_symlink() {
+                    let metadata = fs::metadata(entry.path())?;
+                    if !metadata.file_type().is_file() {
+                        continue
+                    }
+                } else if !file_type.is_file() {
+                    // Device or other oddity
+                    continue
+                }
+                trace!("walkdir add_file {}", entry.path().display());
+                // It's either a file, or a symlink pointing to a file
+                self.add_file(entry.path().to_owned())?
+            }
             Ok(())
         }
 
