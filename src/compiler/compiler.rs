@@ -665,7 +665,7 @@ fn detect_compiler<T>(creator: &T,
                       -> SFuture<Option<Box<Compiler<T>>>>
     where T: CommandCreatorSync
 {
-    trace!("detect_compiler");
+    trace!("detect_compiler: {}", executable.display());
 
     // First, see if this looks like rustc.
     let filename = match executable.file_stem() {

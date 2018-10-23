@@ -7,7 +7,7 @@ use hyper::server::{Http, NewService, const_service, service_fn};
 use serde::Serialize;
 use serde_json;
 use std::io;
-use std::net::ToSocketAddrs;
+use std::net::{ToSocketAddrs, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 use url::Url;
@@ -17,8 +17,8 @@ use errors::*;
 
 type BoxFut = Box<Future<Item = Response<Body>, Error = hyper::Error> + Send>;
 
-// These ports need to be registered as valid redirect urls in the oauth provider you're using
-const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
+// These (arbitrary) ports need to be registered as valid redirect urls in the oauth provider you're using
+pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
 // Warn if the token will expire in under this amount of time
 const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -353,6 +353,17 @@ fn try_serve(serve: fn(Request<Body>) -> BoxFut) -> Result<Server<impl NewServic
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port).to_socket_addrs().unwrap();
         let addr = addrs.next().unwrap();
+
+        // Hyper binds with reuseaddr and reuseport so binding won't fail as you'd expect on Linux
+        match TcpStream::connect(addr) {
+            // Already open
+            Ok(_) => continue,
+            // Doesn't seem to be open
+            Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
+            Err(e) => {
+                return Err(Error::with_chain(e, format!("Failed to bind to {}", addr)))
+            },
+        }
 
         let new_service = const_service(service_fn(serve));
         match Http::new().bind(&addr, new_service) {

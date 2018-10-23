@@ -185,7 +185,7 @@ mod server {
     pub type ServerAuthCheck = Box<Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
-    lazy_static!{
+    lazy_static! {
         static ref JWT_HEADER: jwt::Header = jwt::Header::new(jwt::Algorithm::HS256);
         static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
             leeway: 0,

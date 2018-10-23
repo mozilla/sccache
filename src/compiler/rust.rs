@@ -1549,10 +1549,8 @@ struct RlibDepReader {
 #[cfg(feature = "dist-client")]
 impl RlibDepReader {
     fn new_with_check(executable: PathBuf, env_vars: &[(OsString, OsString)]) -> Result<Self> {
-        use tempfile;
-
-        let temp_dir = tempfile::tempdir()
-            .chain_err(|| "Could not create temporary file for rlib output")?;
+        let temp_dir = TempDir::new("sccache-rlibreader")
+            .chain_err(|| "Could not create temporary directory for rlib output")?;
         let temp_rlib = temp_dir.path().join("x.rlib");
 
         let mut cmd = process::Command::new(&executable);
