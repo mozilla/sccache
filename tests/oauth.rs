@@ -1,3 +1,4 @@
+#![cfg(all(feature = "dist-client", feature = "dist-tests"))]
 extern crate assert_cmd;
 extern crate chrono;
 extern crate escargot;
@@ -12,7 +13,7 @@ use escargot::CargoBuild;
 use sccache::config::DistAuth;
 use selenium_rs::webdriver::{Browser, WebDriver, Selector};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -162,7 +163,6 @@ impl Drop for SeleniumContainer {
 }
 
 #[test]
-#[cfg(feature = "dist-client")]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64", feature = "dist-tests")), ignore)]
 fn test_auth() {
     // Make sure the client auth port isn't in use, as sccache will gracefully fall back
@@ -173,7 +173,7 @@ fn test_auth() {
     // selenium instance (download the standalone server and the chrome driver, running the former and putting the
     // latter on the PATH). Alternatively, because we use the '-debug' image you can use vnc with the password 'secret'.
     assert_eq!(TcpStream::connect(("localhost", 4444)).unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
-    let selenium = SeleniumContainer::new();
+    let _selenium = SeleniumContainer::new();
     thread::sleep(Duration::from_secs(3));
 
     // Code grant PKCE
@@ -204,7 +204,7 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     match status {
         Some(s) => assert!(s.success()),
         None => {
-            sccache_process.kill();
+            sccache_process.kill().unwrap();
             panic!("Waited too long for process to exit")
         },
     }
