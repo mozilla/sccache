@@ -116,7 +116,7 @@ memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["ar", "flate2", "hyper", "reqwest", "url"]
+dist-client = ["ar", "flate2", "hyper", "reqwest", "rust-crypto", "url"]
 # Enables the sccache-dist binary
 dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille"]
 # Enables dist tests with external requirements
