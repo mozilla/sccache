@@ -225,8 +225,10 @@ pub enum DistToolchainConfig {
 pub enum DistAuth {
     #[serde(rename = "token")]
     Token { token: String },
+    #[serde(rename = "oauth2_code_grant_pkce")]
+    Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
     #[serde(rename = "oauth2_implicit")]
-    Oauth2Implicit { url: String },
+    Oauth2Implicit { client_id: String, auth_url: String },
 }
 
 impl Default for DistAuth {

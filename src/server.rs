@@ -142,10 +142,16 @@ pub fn start_server(port: u16) -> Result<()> {
             info!("Enabling distributed sccache to {}", addr);
             let auth_token = match &CONFIG.dist.auth {
                 config::DistAuth::Token { token } => token.to_owned(),
-                config::DistAuth::Oauth2Implicit { url } => {
+                config::DistAuth::Oauth2CodeGrantPKCE { client_id: _, auth_url, token_url: _ } => {
                     let cached_config = config::CachedConfig::load().unwrap();
                     cached_config.with(|c| {
-                        c.dist.auth_tokens.get(url).unwrap().to_owned()
+                        c.dist.auth_tokens.get(auth_url).unwrap().to_owned()
+                    })
+                },
+                config::DistAuth::Oauth2Implicit { client_id: _, auth_url } => {
+                    let cached_config = config::CachedConfig::load().unwrap();
+                    cached_config.with(|c| {
+                        c.dist.auth_tokens.get(auth_url).unwrap().to_owned()
                     })
                 },
             };

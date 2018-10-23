@@ -633,14 +633,24 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 config::DistAuth::Token { .. } => {
                     info!("No authentication needed for type 'token'")
                 },
-                config::DistAuth::Oauth2Implicit { url } => {
+                config::DistAuth::Oauth2CodeGrantPKCE { client_id, auth_url, token_url } => {
                     let cached_config = config::CachedConfig::load()?;
 
-                    let auth_url = Url::parse(&url).map_err(|_| format!("Failed to parse URL {}", url))?;
-                    let token = dist::client_auth::get_token_oauth2_implicit(auth_url)?;
+                    let parsed_auth_url = Url::parse(auth_url).map_err(|_| format!("Failed to parse URL {}", auth_url))?;
+                    let token = dist::client_auth::get_token_oauth2_code_grant_pkce(client_id, parsed_auth_url, token_url)?;
 
                     cached_config.with_mut(|c| {
-                        c.dist.auth_tokens.insert(url.to_owned(), token);
+                        c.dist.auth_tokens.insert(auth_url.to_owned(), token);
+                    }).chain_err(|| "Unable to save auth token")?
+                },
+                config::DistAuth::Oauth2Implicit { client_id, auth_url } => {
+                    let cached_config = config::CachedConfig::load()?;
+
+                    let parsed_auth_url = Url::parse(auth_url).map_err(|_| format!("Failed to parse URL {}", auth_url))?;
+                    let token = dist::client_auth::get_token_oauth2_implicit(client_id, parsed_auth_url)?;
+
+                    cached_config.with_mut(|c| {
+                        c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                     }).chain_err(|| "Unable to save auth token")?
                 },
             };
