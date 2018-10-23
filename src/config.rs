@@ -459,7 +459,7 @@ impl CachedConfig {
 
     fn file_config_path() -> PathBuf {
         env::var_os("SCCACHE_CACHED_CONF")
-            .map(|p| PathBuf::from(p))
+            .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
                     .expect("Unable to get config directory");
@@ -482,7 +482,7 @@ impl CachedConfig {
     }
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
-        let mut file = File::create(file_conf_path)?;
+        let mut file = File::create(file_conf_path).chain_err(|| "Could not open config for writing")?;
         file.write_all(&toml::to_vec(c).unwrap()).map_err(Into::into)
     }
 }
