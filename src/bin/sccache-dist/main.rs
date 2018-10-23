@@ -39,7 +39,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{UNIX_EPOCH, Duration, Instant, SystemTime};
 
 use errors::*;
 
@@ -82,6 +82,8 @@ mod scheduler_config {
         Token { token: String },
         #[serde(rename = "jwt_validate")]
         JwtValidate { audience: String, issuer: String, jwks_url: String },
+        #[serde(rename = "mozilla")]
+        Mozilla,
         #[serde(rename = "proxy_token")]
         ProxyToken { url: String, cache_secs: Option<u64> }
     }
@@ -199,6 +201,7 @@ impl Jwk {
         Ok(der)
     }
 }
+
 enum Command {
     Auth(AuthSubcommand),
     Scheduler(scheduler_config::Config),
@@ -318,6 +321,123 @@ fn parse() -> Result<Command> {
     })
 }
 
+// Check a JWT is valid
+fn check_jwt_validity(audience: &str, issuer: &str, kid_to_pkcs1: &HashMap<String, Vec<u8>>, token: &str) -> Result<()> {
+    let header = jwt::decode_header(token).chain_err(|| "Could not decode jwt header")?;
+    // Prepare validation
+    let kid = header.kid.chain_err(|| "No kid found")?;
+    let pkcs1 = kid_to_pkcs1.get(&kid).chain_err(|| "kid not found in jwks")?;
+    let mut validation = jwt::Validation::new(header.alg);
+    validation.set_audience(&audience);
+    validation.iss = Some(issuer.to_owned());
+    #[derive(Deserialize)]
+    struct Claims {}
+    // Decode the JWT, discarding any claims - we just care about validity
+    let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
+        .chain_err(|| "Unable to validate and decode jwt")?;
+    Ok(())
+}
+
+// https://infosec.mozilla.org/guidelines/iam/openid_connect#session-handling
+const MOZ_SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 15);
+
+// Mozilla-specific check by forwarding the token onto person api
+fn check_mozilla(auth_cache: &Mutex<HashMap<String, Instant>>, client: &reqwest::Client, token: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct MozillaToken {
+        exp: u64,
+        sub: String,
+    }
+    let unsafe_token = jwt::dangerous_unsafe_decode::<MozillaToken>(token).chain_err(|| "Unable to decode jwt")?;
+    let user = unsafe_token.claims.sub;
+    if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
+        bail!("JWT expired")
+    }
+    // If the token is cached and not expired, return it
+    {
+        let mut auth_cache = auth_cache.lock().unwrap();
+        if let Some(cached_at) = auth_cache.get(token) {
+            if cached_at.elapsed() < MOZ_SESSION_TIMEOUT {
+                return Ok(())
+            }
+        }
+        auth_cache.remove(token);
+    }
+    // Ask person api about groups (as a side effect, checking the JWT)
+    // https://github.com/mozilla-iam/cis/blob/master/docs/rfcs/UserProfilesv2.md
+    let url = reqwest::Url::parse("https://person-api.sso.mozilla.com/v2/profile/").unwrap().join(&user)
+        .chain_err(|| format!("Could not create person api url for {}", user))?;
+    let header = reqwest::header::Authorization(reqwest::header::Bearer { token: token.to_owned() });
+    let mut res = client.get(url.clone()).header(header).send().unwrap();
+    if !res.status().is_success() {
+        bail!("JWT forwarded to {} returned {} {}", url, res.status().as_u16(), res.status());
+    }
+    #[derive(Deserialize)]
+    struct CISProfileV2AccessInformationLDAPItem {
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct CISProfileV2AccessInformationLDAP {
+        value: Vec<CISProfileV2AccessInformationLDAPItem>,
+    }
+    #[derive(Deserialize)]
+    struct CISProfileV2AccessInformation {
+        ldap: CISProfileV2AccessInformationLDAP,
+    }
+    #[derive(Deserialize)]
+    struct CISProfileV2 {
+        access_information: CISProfileV2AccessInformation,
+    }
+    let profile: CISProfileV2 = res.json().chain_err(|| "Cannot decode CIS V2 profile from person API")?;
+    let is_allowed = profile.access_information.ldap.value.into_iter().any(|item| item.name == "hris_dept_firefox");
+    if !is_allowed {
+        bail!("Failed to validate cis v2 profile for {}", user)
+    }
+    // Cache the token
+    {
+        let mut auth_cache = auth_cache.lock().unwrap();
+        auth_cache.insert(token.to_owned(), Instant::now());
+    }
+    Ok(())
+}
+
+// Don't check a token is valid (it may not even be a JWT) just forward it to
+// an API and check for success
+fn check_token_forwarding(url: &str, maybe_auth_cache: &Option<Mutex<(HashMap<String, Instant>, Duration)>>, client: &reqwest::Client, token: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Token {
+        exp: u64,
+    }
+    let unsafe_token = jwt::dangerous_unsafe_decode::<Token>(token).chain_err(|| "Unable to decode jwt")?;
+    if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
+        bail!("JWT expired")
+    }
+    // If the token is cached and not cache has not expired, return it
+    if let Some(ref auth_cache) = maybe_auth_cache {
+        let mut auth_cache = auth_cache.lock().unwrap();
+        let (ref mut auth_cache, cache_duration) = *auth_cache;
+        if let Some(cached_at) = auth_cache.get(token) {
+            if cached_at.elapsed() < cache_duration {
+                return Ok(())
+            }
+        }
+        auth_cache.remove(token);
+    }
+    // Make a request to another API, which as a side effect should actually check the token
+    let header = reqwest::header::Authorization(reqwest::header::Bearer { token: token.to_owned() });
+    let res = client.get(url).header(header).send().unwrap();
+    if !res.status().is_success() {
+        bail!("JWT forwarded to {} returned {} {}", url, res.status().as_u16(), res.status());
+    }
+    // Cache the token
+    if let Some(ref auth_cache) = maybe_auth_cache {
+        let mut auth_cache = auth_cache.lock().unwrap();
+        let (ref mut auth_cache, _) = *auth_cache;
+        auth_cache.insert(token.to_owned(), Instant::now());
+    }
+    Ok(())
+}
+
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
     format!("{} {}", server_id.addr(), auth_token)
 }
@@ -377,23 +497,30 @@ fn run(command: Command) -> Result<i32> {
                         bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
                     }
                     let jwks: Jwks = res.json().unwrap();
-                    let kid_to_pkcs1: HashMap<String, Vec<u8>> = jwks.keys.into_iter().map(|k| {
-                        let pkcs1 = k.to_der_pkcs1().unwrap();
-                        (k.kid, pkcs1)
-                    }).collect();
+                    let kid_to_pkcs1 = jwks.keys.into_iter()
+                        .map(|k| k.to_der_pkcs1().map(|pkcs1| (k.kid, pkcs1)).unwrap())
+                        .collect();
                     Box::new(move |s| {
-                        let header = jwt::decode_header(s).unwrap();
-                        // Prepare validation
-                        let kid = header.kid.unwrap();
-                        let pkcs1 = kid_to_pkcs1.get(&kid).unwrap();
-                        let mut validation = jwt::Validation::new(header.alg);
-                        validation.set_audience(&audience);
-                        validation.iss = Some(issuer.clone());
-                        #[derive(Deserialize)]
-                        struct Claims {}
-                        // Decode the JWT, discarding any claims - we just care about validity
-                        let _tokendata = jwt::decode::<Claims>(s, pkcs1, &validation).unwrap();
-                        true
+                        match check_jwt_validity(&audience, &issuer, &kid_to_pkcs1, s) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!("JWT validation failed: {}", e);
+                                false
+                            },
+                        }
+                    })
+                },
+                scheduler_config::ClientAuth::Mozilla => {
+                    let auth_cache: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
+                    let client = reqwest::Client::new();
+                    Box::new(move |s| {
+                        match check_mozilla(&auth_cache, &client, s) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!("JWT validation failed: {}", e);
+                                false
+                            },
+                        }
                     })
                 },
                 scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
@@ -401,30 +528,13 @@ fn run(command: Command) -> Result<i32> {
                         cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
                     let client = reqwest::Client::new();
                     Box::new(move |s| {
-                        // If the token is cached and not expired, return it
-                        if let Some(ref auth_cache) = maybe_auth_cache {
-                            let mut auth_cache = auth_cache.lock().unwrap();
-                            let (ref mut auth_cache, cache_duration) = *auth_cache;
-                            if let Some(cached_at) = auth_cache.get(s) {
-                                if cached_at.elapsed() < cache_duration {
-                                    return true
-                                }
-                            }
-                            auth_cache.remove(s);
+                        match check_token_forwarding(&url, &maybe_auth_cache, &client, s) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!("JWT validation failed: {}", e);
+                                false
+                            },
                         }
-                        // Make a request to check for token validity
-                        let header = reqwest::header::Authorization(reqwest::header::Bearer { token: s.to_owned() });
-                        let res = client.get(&url).header(header).send().unwrap();
-                        if !res.status().is_success() {
-                            return false
-                        }
-                        // Cache the token
-                        if let Some(ref auth_cache) = maybe_auth_cache {
-                            let mut auth_cache = auth_cache.lock().unwrap();
-                            let (ref mut auth_cache, _) = *auth_cache;
-                            auth_cache.insert(s.to_owned(), Instant::now());
-                        }
-                        true
                     })
                 },
             };
