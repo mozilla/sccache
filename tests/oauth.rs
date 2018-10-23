@@ -170,7 +170,8 @@ fn test_auth() {
     assert_eq!(TcpStream::connect(("localhost", client_auth_port)).unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
 
     // NOTE: if you want to debug selenium, you can comment out the three lines below and just use a local
-    // selenium instance (download the standalone server and the chrome driver, putting the latter on the PATH)
+    // selenium instance (download the standalone server and the chrome driver, running the former and putting the
+    // latter on the PATH). Alternatively, because we use the '-debug' image you can use vnc with the password 'secret'.
     assert_eq!(TcpStream::connect(("localhost", 4444)).unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
     let selenium = SeleniumContainer::new();
     thread::sleep(Duration::from_secs(3));
