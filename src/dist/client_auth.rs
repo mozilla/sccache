@@ -1,11 +1,13 @@
+use error_chain::ChainedError;
 use futures::sync::oneshot;
 use futures::Future;
 use hyper;
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, Request, Response, Server, StatusCode};
 use hyper::header::{ContentLength, ContentType};
 use hyper::server::{Http, NewService, const_service, service_fn};
 use serde::Serialize;
 use serde_json;
+use std::collections::HashMap;
 use std::io;
 use std::net::{ToSocketAddrs, TcpStream};
 use std::sync::mpsc;
@@ -15,12 +17,38 @@ use uuid::Uuid;
 
 use errors::*;
 
-type BoxFut = Box<Future<Item = Response<Body>, Error = hyper::Error> + Send>;
-
 // These (arbitrary) ports need to be registered as valid redirect urls in the oauth provider you're using
 pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
-// Warn if the token will expire in under this amount of time
-const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
+// If token is valid for under this amount of time, print a warning
+const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
+const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
+
+trait ServeFn: Fn(Request<Body>) -> Box<Future<Item = Response<Body>, Error = hyper::Error>> + Copy + 'static {}
+impl<T> ServeFn for T where T: Fn(Request<Body>) -> Box<Future<Item = Response<Body>, Error = hyper::Error>> + Copy + 'static {}
+
+fn serve_sfuture(serve: fn(Request<Body>) -> SFuture<Response<Body>>) -> impl ServeFn {
+    move |req: Request<Body>| {
+        let uri = req.uri().to_owned();
+        Box::new(serve(req)
+            .or_else(move |e| {
+                let body = e.display_chain().to_string();
+                eprintln!("Error during a request to {} on the client auth web server\n{}", uri, body);
+                let len = body.len();
+                Ok(Response::new()
+                    .with_status(StatusCode::InternalServerError)
+                    .with_body(body)
+                    .with_header(ContentType::text())
+                    .with_header(ContentLength(len as u64)))
+            })) as Box<Future<Item=_, Error=_>>
+    }
+}
+
+fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
+    // Url::parse operates on absolute URLs, so ensure there's a prefix
+    let url = Url::parse("http://unused_base").expect("Failed to parse fake url prefix")
+        .join(url).chain_err(|| "Failed to parse url while extracting query params")?;
+    Ok(url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect())
+}
 
 fn html_response(body: &'static str) -> Response {
     Response::new()
@@ -29,13 +57,13 @@ fn html_response(body: &'static str) -> Response {
         .with_header(ContentLength(body.len() as u64))
 }
 
-fn json_response<T: Serialize>(data: &T) -> Response {
-    let body = serde_json::to_vec(data).unwrap();
+fn json_response<T: Serialize>(data: &T) -> Result<Response> {
+    let body = serde_json::to_vec(data).chain_err(|| "Failed to serialize to JSON")?;
     let len = body.len();
-    Response::new()
+    Ok(Response::new()
         .with_body(body)
         .with_header(ContentType::json())
-        .with_header(ContentLength(len as u64))
+        .with_header(ContentLength(len as u64)))
 }
 
 const REDIRECT_WITH_AUTH_JSON: &str = r##"<!doctype html>
@@ -78,7 +106,7 @@ mod code_grant_pkce {
     use std::sync::Mutex;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-    use super::{ONE_DAY, REDIRECT_WITH_AUTH_JSON, BoxFut, html_response, json_response};
+    use super::{MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING, REDIRECT_WITH_AUTH_JSON, query_pairs, html_response, json_response};
     use url::Url;
 
     use errors::*;
@@ -128,9 +156,9 @@ mod code_grant_pkce {
         pub static ref STATE: Mutex<Option<State>> = Mutex::new(None);
     }
 
-    pub fn generate_verifier_and_challenge() -> (String, String) {
+    pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
-        let mut rng = rand::OsRng::new().unwrap();
+        let mut rng = rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
         rng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
         let mut hasher = HASHER::new();
@@ -138,7 +166,7 @@ mod code_grant_pkce {
         let mut code_challenge_bytes = vec![0; hasher.output_bytes()];
         hasher.result(&mut code_challenge_bytes);
         let code_challenge = base64::encode_config(&code_challenge_bytes, base64::URL_SAFE_NO_PAD);
-        (code_verifier, code_challenge)
+        Ok((code_verifier, code_challenge))
     }
 
     pub fn finish_url(client_id: &str, url: &mut Url, redirect_uri: &str, state: &str, code_challenge: &str) {
@@ -174,7 +202,7 @@ mod code_grant_pkce {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> BoxFut {
+    pub fn serve(req: Request<Body>) -> SFuture<Response> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -183,14 +211,14 @@ mod code_grant_pkce {
                 html_response(REDIRECT_WITH_AUTH_JSON)
             },
             (&Method::Get, "/auth_detail.json") => {
-                json_response(&state.auth_url)
+                ftry!(json_response(&state.auth_url))
             },
             (&Method::Get, "/redirect") => {
-                let url = Url::parse("http://unused_base").unwrap().join(req.uri().as_ref()).unwrap();
-                let query_pairs = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
-                let (code, auth_state) = handle_code_response(query_pairs).unwrap();
+                let query_pairs = ftry!(query_pairs(req.uri().as_ref()));
+                let (code, auth_state) = ftry!(handle_code_response(query_pairs)
+                    .chain_err(|| "Failed to handle response from redirect"));
                 if auth_state != state.auth_state_value {
-                    panic!("Mismatched auth states")
+                    return f_err("Mismatched auth states after redirect")
                 }
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.code_tx.send(code).unwrap();
@@ -214,9 +242,10 @@ mod code_grant_pkce {
             bail!("Sending code to {} failed, HTTP error: {}", token_url, res.status())
         }
 
-        let (token, expires_at) = handle_token_response(res.json().unwrap())?;
-        if expires_at - Instant::now() < ONE_DAY * 2  {
-            warn!("Token retrieved expires in under two days")
+        let (token, expires_at) = handle_token_response(res.json().chain_err(|| "Failed to parse token response as JSON")?)?;
+        if expires_at - Instant::now() < MIN_TOKEN_VALIDITY  {
+            warn!("Token retrieved expires in under {}", MIN_TOKEN_VALIDITY_WARNING);
+            eprintln!("Token retrieved expires in under {}", MIN_TOKEN_VALIDITY_WARNING);
         }
         Ok(token)
     }
@@ -230,7 +259,7 @@ mod implicit {
     use std::sync::Mutex;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-    use super::{ONE_DAY, REDIRECT_WITH_AUTH_JSON, BoxFut, html_response, json_response};
+    use super::{MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING, REDIRECT_WITH_AUTH_JSON, query_pairs, html_response, json_response};
     use url::Url;
 
     use errors::*;
@@ -309,7 +338,7 @@ mod implicit {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> BoxFut {
+    pub fn serve(req: Request<Body>) -> SFuture<Response> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -318,25 +347,26 @@ mod implicit {
                 html_response(REDIRECT_WITH_AUTH_JSON)
             },
             (&Method::Get, "/auth_detail.json") => {
-                json_response(&state.auth_url)
+                ftry!(json_response(&state.auth_url))
             },
             (&Method::Get, "/redirect") => {
                 html_response(SAVE_AUTH_AFTER_REDIRECT)
             },
             (&Method::Post, "/save_auth") => {
-                let url = Url::parse("http://unused_base").unwrap().join(req.uri().as_ref()).unwrap();
-                let query_pairs = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
-                let (token, expires_at, auth_state) = handle_response(query_pairs).unwrap();
+                let query_pairs = ftry!(query_pairs(req.uri().as_ref()));
+                let (token, expires_at, auth_state) = ftry!(handle_response(query_pairs)
+                    .chain_err(|| "Failed to save auth after redirect"));
                 if auth_state != state.auth_state_value {
-                    panic!("Mismatched auth states")
+                    return f_err("Mismatched auth states after redirect")
                 }
-                if expires_at - Instant::now() < ONE_DAY * 2 {
-                    warn!("Token retrieved expires in under two days")
+                if expires_at - Instant::now() < MIN_TOKEN_VALIDITY {
+                    warn!("Token retrieved expires in under {}", MIN_TOKEN_VALIDITY_WARNING);
+                    eprintln!("Token retrieved expires in under {}", MIN_TOKEN_VALIDITY_WARNING);
                 }
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.token_tx.send(token).unwrap();
                 state.shutdown_tx.take().unwrap().send(()).unwrap();
-                json_response(&"")
+                ftry!(json_response(&""))
             },
             _ => {
                 warn!("Route not found");
@@ -348,11 +378,11 @@ mod implicit {
     }
 }
 
-fn try_serve(serve: fn(Request<Body>) -> BoxFut) -> Result<Server<impl NewService<Request=Request, Response=Response<Body>, Error=hyper::error::Error> + 'static, Body>> {
+fn try_serve(serve: impl ServeFn) -> Result<Server<impl NewService<Request=Request, Response=Response<Body>, Error=hyper::Error>, Body>> {
     // Try all the valid ports
     for &port in VALID_PORTS {
-        let mut addrs = ("localhost", port).to_socket_addrs().unwrap();
-        let addr = addrs.next().unwrap();
+        let mut addrs = ("localhost", port).to_socket_addrs().expect("Failed to interpret localhost address to listen on");
+        let addr = addrs.next().expect("Expected at least one address in parsed socket address");
 
         // Hyper binds with reuseaddr and reuseport so binding won't fail as you'd expect on Linux
         match TcpStream::connect(addr) {
@@ -361,7 +391,7 @@ fn try_serve(serve: fn(Request<Body>) -> BoxFut) -> Result<Server<impl NewServic
             // Doesn't seem to be open
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
             Err(e) => {
-                return Err(Error::with_chain(e, format!("Failed to bind to {}", addr)))
+                return Err(Error::from(e).chain_err(|| format!("Failed to check {} is available for binding", addr)))
             },
         }
 
@@ -374,7 +404,7 @@ fn try_serve(serve: fn(Request<Body>) -> BoxFut) -> Result<Server<impl NewServic
                 continue
             },
             Err(e) => {
-                return Err(Error::with_chain(e, format!("Failed to bind to {}", addr)))
+                return Err(Error::from(e).chain_err(|| format!("Failed to bind to {}", addr)))
             },
         }
     }
@@ -383,12 +413,12 @@ fn try_serve(serve: fn(Request<Body>) -> BoxFut) -> Result<Server<impl NewServic
 
 // https://auth0.com/docs/api-auth/tutorials/authorization-code-grant-pkce
 pub fn get_token_oauth2_code_grant_pkce(client_id: &str, mut auth_url: Url, token_url: &str) -> Result<String> {
-    let server = try_serve(code_grant_pkce::serve)?;
-    let port = server.local_addr().unwrap().port();
+    let server = try_serve(serve_sfuture(code_grant_pkce::serve))?;
+    let port = server.local_addr().chain_err(|| "Failed to retrieve local address of server")?.port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
     let auth_state_value = Uuid::new_v4().simple().to_string();
-    let (verifier, challenge) = code_grant_pkce::generate_verifier_and_challenge();
+    let (verifier, challenge) = code_grant_pkce::generate_verifier_and_challenge()?;
     code_grant_pkce::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value, &challenge);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
@@ -413,8 +443,8 @@ pub fn get_token_oauth2_code_grant_pkce(client_id: &str, mut auth_url: Url, toke
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let server = try_serve(implicit::serve)?;
-    let port = server.local_addr().unwrap().port();
+    let server = try_serve(serve_sfuture(implicit::serve))?;
+    let port = server.local_addr().chain_err(|| "Failed to retrieve local address of server")?.port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
     let auth_state_value = Uuid::new_v4().simple().to_string();

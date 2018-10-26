@@ -30,9 +30,15 @@ extern crate which;
 
 use assert_cmd::prelude::*;
 use escargot::CargoBuild;
+use harness::{
+    sccache_command,
+    sccache_client_cfg,
+    start_local_daemon, stop_local_daemon,
+    write_json_cfg, write_source,
+    get_stats, zero_stats,
+};
 use log::Level::Trace;
 use predicates::prelude::*;
-use sccache::server::ServerInfo;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr,OsString};
@@ -48,6 +54,8 @@ use std::process::{
 use std::str;
 use tempdir::TempDir;
 use which::which_in;
+
+mod harness;
 
 #[derive(Clone)]
 struct Compiler {
@@ -66,34 +74,6 @@ const COMPILERS: &'static [&'static str] = &["clang"];
 
 //TODO: could test gcc when targeting mingw.
 
-fn sccache_command() -> Command {
-    CargoBuild::new()
-        .bin("sccache")
-        .current_release()
-        .current_target()
-        .run()
-        .unwrap()
-        .command()
-}
-
-fn stop() {
-    trace!("sccache --stop-server");
-    drop(sccache_command()
-         .arg("--stop-server")
-         .stdout(Stdio::null())
-         .stderr(Stdio::null())
-         .status());
-}
-
-fn zero_stats() {
-    trace!("sccache --zero-stats");
-    drop(sccache_command()
-         .arg("--zero-stats")
-         .stdout(Stdio::null())
-         .stderr(Stdio::null())
-         .status());
-}
-
 macro_rules! vec_from {
     ( $t:ty, $( $x:expr ),* ) => {
         vec!($( Into::<$t>::into(&$x), )*)
@@ -106,24 +86,6 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     }
-}
-
-fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
-    sccache_command()
-        .args(&["--show-stats", "--stats-format=json"])
-        .assert()
-        .success()
-        .stdout(predicate::function(move |output: &[u8]| {
-            let s = str::from_utf8(output).expect("Output not UTF-8");
-            f(serde_json::from_str(s).expect("Failed to parse JSON stats"));
-            true
-        }));
-}
-
-fn write_source(path: &Path, filename: &str, contents: &str) {
-    let p = path.join(filename);
-    let mut f = File::create(&p).unwrap();
-    f.write_all(contents.as_bytes()).unwrap();
 }
 
 const INPUT: &'static str = "test.c";
@@ -369,24 +331,18 @@ fn test_sccache_command() {
         warn!("No compilers found, skipping test");
     } else {
         // Ensure there's no existing sccache server running.
-        stop();
-        // Create a subdir for the cache.
-        let cache = tempdir.path().join("cache");
-        fs::create_dir_all(&cache).unwrap();
+        stop_local_daemon();
+        // Create the configurations
+        let sccache_cfg = sccache_client_cfg(tempdir.path());
+        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
         // Start a server.
         trace!("start server");
-        // Don't run this with run() because on Windows `wait_with_output`
-        // will hang because the internal server process is not detached.
-        sccache_command()
-            .arg("--start-server")
-            .env("SCCACHE_DIR", &cache)
-            .status()
-            .unwrap()
-            .success();
+        start_local_daemon(&tempdir.path().join("sccache-cfg.json"), &sccache_cached_cfg_path);
         for compiler in compilers {
             run_sccache_command_tests(compiler, tempdir.path());
             zero_stats();
         }
-        stop();
+        stop_local_daemon();
     }
 }

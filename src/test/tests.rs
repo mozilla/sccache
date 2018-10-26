@@ -21,13 +21,13 @@ use ::commands::{
     request_shutdown,
     request_stats,
 };
-use dist::NoopClient;
 use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
 use jobserver::Client;
 use ::mock_command::*;
 use ::server::{
+    DistClientContainer,
     ServerMessage,
     SccacheServer,
 };
@@ -76,14 +76,14 @@ fn run_server_thread<T>(cache_dir: &Path, options: T)
                             .and_then(|o| o.cache_size.as_ref())
                             .map(|s| *s)
                             .unwrap_or(u64::MAX);
-    let pool = CpuPool::new(1);
-    let dist_client = Arc::new(NoopClient);
-    let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
-
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
+        let pool = CpuPool::new(1);
+        let dist_client = DistClientContainer::new_disabled();
+        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
+
         let core = Core::new().unwrap();
         let client = unsafe { Client::new() };
         let srv = SccacheServer::new(0, pool, core, client, dist_client, storage).unwrap();

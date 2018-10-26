@@ -524,7 +524,7 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
             executable: path_transformer.to_dist(&executable)?,
             arguments: arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
-            cwd: path_transformer.to_dist_assert_abs(cwd)?,
+            cwd: path_transformer.to_dist_abs(cwd)?,
         })
     })();
 
@@ -1044,11 +1044,12 @@ mod test {
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
         let mut path_transformer = dist::PathTransformer::new();
-        let (command, _, cacheable) = generate_compile_commands(&mut path_transformer,
-                                                                &compiler,
-                                                                &parsed_args,
-                                                                f.tempdir.path(),
-                                                                &[]).unwrap();
+        let (command, dist_command, cacheable) = generate_compile_commands(&mut path_transformer,
+                                                                           &compiler,
+                                                                           &parsed_args,
+                                                                           f.tempdir.path(),
+                                                                           &[]).unwrap();
+        assert!(dist_command.is_some());
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.

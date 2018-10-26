@@ -348,7 +348,8 @@ impl pkg::InputsPackager for CInputsPackager {
         let CInputsPackager { input_path, mut path_transformer, preprocessed_input } = *{self};
 
         let input_path = pkg::simplify_path(&input_path)?;
-        let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+        let dist_input_path = path_transformer.to_dist(&input_path)
+            .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
 
         let mut builder = tar::Builder::new(wtr);
 

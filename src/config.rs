@@ -14,13 +14,16 @@
 
 use directories::ProjectDirs;
 use regex::Regex;
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+use reqwest;
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+use serde::ser::{Serialize, Serializer};
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 use serde_json;
 use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
 use std::fs::{self, File};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
@@ -66,7 +69,7 @@ fn default_disk_cache_size() -> u64 { TEN_GIGS }
 fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
 
 pub fn parse_size(val: &str) -> Option<u64> {
-    let re = Regex::new(r"^(\d+)([KMGT])$").unwrap();
+    let re = Regex::new(r"^(\d+)([KMGT])$").expect("Fixed regex parse failure");
     re.captures(val)
         .and_then(|caps| {
             caps.get(1)
@@ -82,6 +85,48 @@ pub fn parse_size(val: &str) -> Option<u64> {
                 _ => None,
             }
         })
+}
+
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HTTPUrl(reqwest::Url);
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+impl Serialize for HTTPUrl {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error> where S: Serializer {
+        serializer.serialize_str(self.0.as_str())
+    }
+}
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+impl<'a> Deserialize<'a> for HTTPUrl {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error> where D: Deserializer<'a> {
+        use serde::de::Error;
+        let helper: String = Deserialize::deserialize(deserializer)?;
+        let url = parse_http_url(&helper).map_err(D::Error::custom)?;
+        Ok(HTTPUrl(url))
+    }
+}
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+fn parse_http_url(url: &str) -> Result<reqwest::Url> {
+    use std::net::SocketAddr;
+    let url = if let Ok(sa) = url.parse::<SocketAddr>() {
+        warn!("Url {} has no scheme, assuming http", url);
+        reqwest::Url::parse(&format!("http://{}", sa))
+    } else {
+        reqwest::Url::parse(url)
+    }.map_err(|e| format!("{}", e))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        bail!("url not http or https")
+    }
+    // TODO: relative url handling just hasn't been implemented and tested
+    if url.path() != "/" {
+        bail!("url has a relative path (currently unsupported)")
+    }
+    Ok(url)
+}
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+impl HTTPUrl {
+    pub fn from_url(u: reqwest::Url) -> Self { HTTPUrl(u) }
+    pub fn to_url(&self) -> reqwest::Url { self.0.clone() }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,12 +207,12 @@ pub enum CacheType {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
-    azure: Option<AzureCacheConfig>,
-    disk: Option<DiskCacheConfig>,
-    gcs: Option<GCSCacheConfig>,
-    memcached: Option<MemcachedCacheConfig>,
-    redis: Option<RedisCacheConfig>,
-    s3: Option<S3CacheConfig>,
+    pub azure: Option<AzureCacheConfig>,
+    pub disk: Option<DiskCacheConfig>,
+    pub gcs: Option<GCSCacheConfig>,
+    pub memcached: Option<MemcachedCacheConfig>,
+    pub redis: Option<RedisCacheConfig>,
+    pub s3: Option<S3CacheConfig>,
 }
 
 impl CacheConfigs {
@@ -204,7 +249,7 @@ impl CacheConfigs {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
@@ -221,12 +266,15 @@ pub enum DistToolchainConfig {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum DistAuth {
+    #[serde(rename = "token")]
     Token { token: String },
+    #[serde(rename = "oauth2_code_grant_pkce")]
     Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
+    #[serde(rename = "oauth2_implicit")]
     Oauth2Implicit { client_id: String, auth_url: String },
 }
 
@@ -279,7 +327,10 @@ impl Default for DistAuth {
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
     pub auth: DistAuth,
-    pub scheduler_addr: Option<IpAddr>,
+    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+    pub scheduler_url: Option<HTTPUrl>,
+    #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+    pub scheduler_url: Option<String>,
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
     pub toolchain_cache_size: u64,
@@ -289,7 +340,7 @@ impl Default for DistConfig {
     fn default() -> Self {
         Self {
             auth: Default::default(),
-            scheduler_addr: Default::default(),
+            scheduler_url: Default::default(),
             cache_dir: default_dist_cache_dir(),
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
@@ -430,7 +481,9 @@ impl Config {
                     .expect("Unable to get config directory");
                 dirs.config_dir().join("config")
             });
-        let file_conf = try_read_config_file(&file_conf_path)?.unwrap_or_default();
+        let file_conf = try_read_config_file(&file_conf_path)
+            .chain_err(|| "Failed to load config file")?
+            .unwrap_or_default();
 
         Ok(Config::from_env_and_file_configs(env_conf, file_conf))
     }
@@ -515,7 +568,8 @@ impl CachedConfig {
             Self::save_file_config(&Default::default())
                 .chain_err(|| format!("Unable to create cached config file at {}", file_conf_path.display()))?
         }
-        try_read_config_file(&file_conf_path)?
+        try_read_config_file(&file_conf_path)
+            .chain_err(|| "Failed to load cached config file")?
             .ok_or_else(|| format!("Failed to load from {}", file_conf_path.display()).into())
     }
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
@@ -527,6 +581,7 @@ impl CachedConfig {
 
 #[cfg(feature = "dist-server")]
 pub mod scheduler {
+    use std::net::SocketAddr;
     use std::path::Path;
 
     use errors::*;
@@ -565,19 +620,21 @@ pub mod scheduler {
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct Config {
+        pub public_addr: SocketAddr,
         pub client_auth: ClientAuth,
         pub server_auth: ServerAuth,
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path)
+        super::try_read_config_file(&conf_path).chain_err(|| "Failed to load scheduler config file")
     }
 }
 
 #[cfg(feature = "dist-server")]
 pub mod server {
-    use std::net::{IpAddr, SocketAddr};
+    use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
+    use super::HTTPUrl;
 
     use errors::*;
 
@@ -615,14 +672,14 @@ pub mod server {
         pub builder: BuilderType,
         pub cache_dir: PathBuf,
         pub public_addr: SocketAddr,
-        pub scheduler_addr: IpAddr,
+        pub scheduler_url: HTTPUrl,
         pub scheduler_auth: SchedulerAuth,
         #[serde(default = "default_toolchain_cache_size")]
         pub toolchain_cache_size: u64,
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path)
+        super::try_read_config_file(&conf_path).chain_err(|| "Failed to load server config file")
     }
 }
 

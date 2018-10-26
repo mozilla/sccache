@@ -21,6 +21,7 @@ extern crate sccache;
 extern crate serde_derive;
 extern crate serde_json;
 extern crate tar;
+extern crate void;
 
 use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
@@ -32,9 +33,9 @@ use sccache::config::{
 };
 use sccache::dist::{
     self,
-    CompileCommand, InputsReader, JobId, JobAlloc, JobState, JobComplete, ServerId, Toolchain, ToolchainReader,
-    AllocJobResult, AssignJobResult, HeartbeatServerResult, RunJobResult, StatusResult, SubmitToolchainResult, UpdateJobStateResult,
-    BuilderIncoming, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
+    CompileCommand, InputsReader, JobId, JobAlloc, JobState, JobComplete, ServerId, ServerNonce, Toolchain, ToolchainReader,
+    AllocJobResult, AssignJobResult, HeartbeatServerResult, RunJobResult, SchedulerStatusResult, SubmitToolchainResult, UpdateJobStateResult,
+    BuilderIncoming, JobAuthorizer, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
     TcCache,
 };
 use std::collections::{btree_map, BTreeMap, HashMap};
@@ -44,7 +45,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{UNIX_EPOCH, Duration, Instant, SystemTime};
+use std::time::Instant;
 
 use errors::*;
 
@@ -56,6 +57,7 @@ mod errors {
     use base64;
     use jwt;
     use lru_disk_cache;
+    use openssl;
     use sccache;
 
     error_chain! {
@@ -64,6 +66,7 @@ mod errors {
             Io(io::Error);
             Jwt(jwt::errors::Error);
             Lru(lru_disk_cache::Error);
+            Openssl(openssl::error::ErrorStack);
         }
 
         links {
@@ -73,42 +76,9 @@ mod errors {
 }
 
 mod build;
+mod token_check;
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
-
-// https://auth0.com/docs/jwks
-#[derive(Debug)]
-#[derive(Serialize, Deserialize)]
-struct Jwks {
-    keys: Vec<Jwk>,
-}
-
-#[derive(Debug)]
-#[derive(Serialize, Deserialize)]
-struct Jwk {
-    kid: String,
-    kty: String,
-    n: String,
-    e: String,
-}
-
-impl Jwk {
-    // https://github.com/lawliet89/biscuit/issues/96#issuecomment-399149872
-    fn to_der_pkcs1(&self) -> Result<Vec<u8>> {
-        if self.kty != "RSA" {
-            bail!("Cannot handle non-RSA JWK")
-        }
-
-        // JWK is big-endian, openssl bignum from_slice is big-endian
-        let n = base64::decode_config(&self.n, base64::URL_SAFE).unwrap();
-        let e = base64::decode_config(&self.e, base64::URL_SAFE).unwrap();
-        let n_bn = openssl::bn::BigNum::from_slice(&n).unwrap();
-        let e_bn = openssl::bn::BigNum::from_slice(&e).unwrap();
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn).unwrap();
-        let der: Vec<u8> = pubkey.public_key_to_der_pkcs1().unwrap();
-        Ok(der)
-    }
-}
 
 enum Command {
     Auth(AuthSubcommand),
@@ -120,8 +90,6 @@ enum AuthSubcommand {
     Base64 { num_bytes: usize },
     JwtHS256ServerToken { secret_key: String, server_id: ServerId },
 }
-
-enum Void {}
 
 // Only supported on x86_64 Linux machines
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -144,6 +112,9 @@ fn main() {
         }
         Err(e) => {
             println!("sccache: {}", e);
+            for e in e.iter().skip(1) {
+                println!("caused by: {}", e);
+            }
             get_app().print_help().unwrap();
             println!("");
             1
@@ -183,7 +154,7 @@ fn parse() -> Result<Command> {
                     AuthSubcommand::Base64 { num_bytes: 256 / 8 }
                 },
                 ("generate-jwt-hs256-server-token", Some(matches)) => {
-                    let server_id = ServerId(value_t_or_exit!(matches, "server", SocketAddr));
+                    let server_id = ServerId::new(value_t_or_exit!(matches, "server", SocketAddr));
                     let secret_key = if let Some(config_path) = matches.value_of("config").map(Path::new) {
                         if let Some(config) = scheduler_config::from_path(config_path)? {
                             match config.server_auth {
@@ -195,7 +166,7 @@ fn parse() -> Result<Command> {
                             bail!("Could not load config")
                         }
                     } else {
-                        matches.value_of("secret-key").unwrap().to_owned()
+                        matches.value_of("secret-key").expect("missing secret-key in parsed subcommand").to_owned()
                     };
                     AuthSubcommand::JwtHS256ServerToken { secret_key, server_id }
                 },
@@ -210,7 +181,7 @@ fn parse() -> Result<Command> {
             })
         }
         ("scheduler", Some(matches)) => {
-            let config_path = Path::new(matches.value_of("config").unwrap());
+            let config_path = Path::new(matches.value_of("config").expect("missing config in parsed subcommand"));
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
@@ -218,7 +189,7 @@ fn parse() -> Result<Command> {
             }
         },
         ("server", Some(matches)) => {
-            let config_path = Path::new(matches.value_of("config").unwrap());
+            let config_path = Path::new(matches.value_of("config").expect("missing config in parsed subcommand"));
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
@@ -229,178 +200,6 @@ fn parse() -> Result<Command> {
     })
 }
 
-// Check a JWT is valid
-fn check_jwt_validity(audience: &str, issuer: &str, kid_to_pkcs1: &HashMap<String, Vec<u8>>, token: &str) -> Result<()> {
-    let header = jwt::decode_header(token).chain_err(|| "Could not decode jwt header")?;
-    trace!("Validating JWT in scheduler");
-    // Prepare validation
-    let kid = header.kid.chain_err(|| "No kid found")?;
-    let pkcs1 = kid_to_pkcs1.get(&kid).chain_err(|| "kid not found in jwks")?;
-    let mut validation = jwt::Validation::new(header.alg);
-    validation.set_audience(&audience);
-    validation.iss = Some(issuer.to_owned());
-    #[derive(Deserialize)]
-    struct Claims {}
-    // Decode the JWT, discarding any claims - we just care about validity
-    let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
-        .chain_err(|| "Unable to validate and decode jwt")?;
-    Ok(())
-}
-
-// https://infosec.mozilla.org/guidelines/iam/openid_connect#session-handling
-const MOZ_SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 15);
-const MOZ_USERINFO_ENDPOINT: &str = "https://auth.mozilla.auth0.com/userinfo";
-
-// Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
-fn check_mozilla(auth_cache: &Mutex<HashMap<String, Instant>>, client: &reqwest::Client, required_groups: &[String], token: &str) -> Result<()> {
-    // azp == client_id
-    // {
-    //   "iss": "https://auth.mozilla.auth0.com/",
-    //   "sub": "ad|Mozilla-LDAP|asayers",
-    //   "aud": [
-    //     "sccache",
-    //     "https://auth.mozilla.auth0.com/userinfo"
-    //   ],
-    //   "iat": 1541103283,
-    //   "exp": 1541708083,
-    //   "azp": "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo",
-    //   "scope": "openid"
-    // }
-    #[derive(Deserialize)]
-    struct MozillaToken {
-        exp: u64,
-        sub: String,
-    }
-    // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
-    let unsafe_token = jwt::dangerous_unsafe_decode::<MozillaToken>(token).chain_err(|| "Unable to decode jwt")?;
-    let user = unsafe_token.claims.sub;
-    trace!("Validating token for user {} with mozilla", user);
-    if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
-        bail!("JWT expired")
-    }
-    // If the token is cached and not expired, return it
-    {
-        let mut auth_cache = auth_cache.lock().unwrap();
-        if let Some(cached_at) = auth_cache.get(token) {
-            if cached_at.elapsed() < MOZ_SESSION_TIMEOUT {
-                return Ok(())
-            }
-        }
-        auth_cache.remove(token);
-    }
-
-    debug!("User {} not in cache, validating via auth0 endpoint", user);
-    // Retrieve the groups from the auth0 /userinfo endpoint, which Mozilla rules populate with groups
-    // https://github.com/mozilla-iam/auth0-deploy/blob/6889f1dde12b84af50bb4b2e2f00d5e80d5be33f/rules/CIS-Claims-fixups.js#L158-L168
-    let url = reqwest::Url::parse(MOZ_USERINFO_ENDPOINT).unwrap();
-    let header = reqwest::header::Authorization(reqwest::header::Bearer { token: token.to_owned() });
-    let mut res = client.get(url.clone()).header(header).send().unwrap();
-    let res_text = res.text().unwrap();
-    if !res.status().is_success() {
-        bail!("JWT forwarded to {} returned {}: {}", url, res.status(), res_text)
-    }
-
-    // The API didn't return a HTTP error code, let's check the response
-    let () = check_mozilla_profile(&user, required_groups, &res_text)
-        .chain_err(|| format!("Validation of the user profile failed for {}", user))?;
-
-    // Validation success, cache the token
-    debug!("Validation for user {} succeeded, caching", user);
-    {
-        let mut auth_cache = auth_cache.lock().unwrap();
-        auth_cache.insert(token.to_owned(), Instant::now());
-    }
-    Ok(())
-}
-
-fn check_mozilla_profile(user: &str, required_groups: &[String], profile: &str) -> Result<()> {
-    #[derive(Deserialize)]
-    struct UserInfo {
-        sub: String,
-        #[serde(rename = "https://sso.mozilla.com/claim/groups")]
-        groups: Vec<String>,
-    }
-    let profile: UserInfo = serde_json::from_str(profile)
-        .chain_err(|| format!("Could not parse profile: {}", profile))?;
-    if user != profile.sub {
-        bail!("User {} retrieved in profile is different to desired user {}", profile.sub, user)
-    }
-    for group in required_groups.iter() {
-        if !profile.groups.contains(group) {
-            bail!("User {} is not a member of required group {}", user, group)
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn test_auth_verify_check_mozilla_profile() {
-    // A successful response
-    let profile =  r#"{
-        "sub": "ad|Mozilla-LDAP|asayers",
-        "https://sso.mozilla.com/claim/groups": [
-            "everyone",
-            "hris_dept_firefox",
-            "hris_individual_contributor",
-            "hris_nonmanagers",
-            "hris_is_staff",
-            "hris_workertype_contractor"
-        ],
-        "https://sso.mozilla.com/claim/README_FIRST": "Please refer to https://github.com/mozilla-iam/person-api in order to query Mozilla IAM CIS user profile data"
-    }"#;
-
-    // If the user has been deactivated since the token was issued. Note this may be partnered with an error code
-    // response so may never reach validation
-    let profile_fail = r#"{
-        "error": "unauthorized",
-        "error_description": "user is blocked"
-    }"#;
-
-    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &["hris_dept_firefox".to_owned()], profile).is_ok());
-    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &[], profile).is_ok());
-    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &["hris_the_ceo".to_owned()], profile).is_err());
-
-    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &[], profile_fail).is_err());
-}
-
-// Don't check a token is valid (it may not even be a JWT) just forward it to
-// an API and check for success
-fn check_token_forwarding(url: &str, maybe_auth_cache: &Option<Mutex<(HashMap<String, Instant>, Duration)>>, client: &reqwest::Client, token: &str) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Token {
-        exp: u64,
-    }
-    let unsafe_token = jwt::dangerous_unsafe_decode::<Token>(token).chain_err(|| "Unable to decode jwt")?;
-    trace!("Validating token by forwarding to {}", url);
-    if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
-        bail!("JWT expired")
-    }
-    // If the token is cached and not cache has not expired, return it
-    if let Some(ref auth_cache) = maybe_auth_cache {
-        let mut auth_cache = auth_cache.lock().unwrap();
-        let (ref mut auth_cache, cache_duration) = *auth_cache;
-        if let Some(cached_at) = auth_cache.get(token) {
-            if cached_at.elapsed() < cache_duration {
-                return Ok(())
-            }
-        }
-        auth_cache.remove(token);
-    }
-    // Make a request to another API, which as a side effect should actually check the token
-    let header = reqwest::header::Authorization(reqwest::header::Bearer { token: token.to_owned() });
-    let res = client.get(url).header(header).send().unwrap();
-    if !res.status().is_success() {
-        bail!("JWT forwarded to {} returned {}", url, res.status());
-    }
-    // Cache the token
-    if let Some(ref auth_cache) = maybe_auth_cache {
-        let mut auth_cache = auth_cache.lock().unwrap();
-        let (ref mut auth_cache, _) = *auth_cache;
-        auth_cache.insert(token.to_owned(), Instant::now());
-    }
-    Ok(())
-}
-
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
     format!("{} {}", server_id.addr(), auth_token)
 }
@@ -408,7 +207,7 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
     let mut split = server_token.splitn(2, |c| c == ' ');
     let server_addr = split.next().and_then(|addr| addr.parse().ok())?;
     match split.next() {
-        Some(t) if t == auth_token => Some(ServerId(server_addr)),
+        Some(t) if t == auth_token => Some(ServerId::new(server_addr)),
         Some(_) |
         None => None,
     }
@@ -419,8 +218,8 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
 struct ServerJwt {
     server_id: ServerId,
 }
-fn create_jwt_server_token(server_id: ServerId, header: &jwt::Header, key: &[u8]) -> String {
-    jwt::encode(&header, &ServerJwt { server_id }, key).unwrap()
+fn create_jwt_server_token(server_id: ServerId, header: &jwt::Header, key: &[u8]) -> Result<String> {
+    jwt::encode(&header, &ServerJwt { server_id }, key).map_err(Into::into)
 }
 fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
     jwt::dangerous_unsafe_decode::<ServerJwt>(&server_token)
@@ -437,7 +236,7 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng = rand::OsRng::new().unwrap();
+            let mut rng = rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
             rng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
@@ -446,60 +245,25 @@ fn run(command: Command) -> Result<i32> {
         Command::Auth(AuthSubcommand::JwtHS256ServerToken { secret_key, server_id }) => {
             let header = jwt::Header::new(jwt::Algorithm::HS256);
             let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)?;
-            println!("{}", create_jwt_server_token(server_id, &header, &secret_key));
+            let token = create_jwt_server_token(server_id, &header, &secret_key)
+                .chain_err(|| "Failed to create server token")?;
+            println!("{}", token);
             Ok(0)
         },
 
-        Command::Scheduler(scheduler_config::Config { client_auth, server_auth }) => {
-            let check_client_auth: dist::http::ClientAuthCheck = match client_auth {
-                scheduler_config::ClientAuth::Insecure => Box::new(move |s| s == INSECURE_DIST_CLIENT_TOKEN),
-                scheduler_config::ClientAuth::Token { token } => Box::new(move |s| s == token),
-                scheduler_config::ClientAuth::JwtValidate { audience, issuer, jwks_url } => {
-                    let mut res = reqwest::get(&jwks_url).unwrap();
-                    if !res.status().is_success() {
-                        bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
-                    }
-                    let jwks: Jwks = res.json().unwrap();
-                    let kid_to_pkcs1 = jwks.keys.into_iter()
-                        .map(|k| k.to_der_pkcs1().map(|pkcs1| (k.kid, pkcs1)).unwrap())
-                        .collect();
-                    Box::new(move |s| {
-                        match check_jwt_validity(&audience, &issuer, &kid_to_pkcs1, s) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!("JWT validation failed: {}", e);
-                                false
-                            },
-                        }
-                    })
-                },
-                scheduler_config::ClientAuth::Mozilla { required_groups } => {
-                    let auth_cache: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
-                    let client = reqwest::Client::new();
-                    Box::new(move |s| {
-                        match check_mozilla(&auth_cache, &client, &required_groups, s) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!("JWT validation failed: {}", e);
-                                false
-                            },
-                        }
-                    })
-                },
-                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } => {
-                    let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
-                        cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
-                    let client = reqwest::Client::new();
-                    Box::new(move |s| {
-                        match check_token_forwarding(&url, &maybe_auth_cache, &client, s) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!("JWT validation failed: {}", e);
-                                false
-                            },
-                        }
-                    })
-                },
+        Command::Scheduler(scheduler_config::Config { public_addr, client_auth, server_auth }) => {
+            let check_client_auth: Box<dist::http::ClientAuthCheck> = match client_auth {
+                scheduler_config::ClientAuth::Insecure =>
+                    Box::new(token_check::EqCheck::new(INSECURE_DIST_CLIENT_TOKEN.to_owned())),
+                scheduler_config::ClientAuth::Token { token } =>
+                    Box::new(token_check::EqCheck::new(token)),
+                scheduler_config::ClientAuth::JwtValidate { audience, issuer, jwks_url } =>
+                    Box::new(token_check::ValidJWTCheck::new(audience.to_owned(), issuer.to_owned(), &jwks_url)
+                        .chain_err(|| "Failed to create a checker for valid JWTs")?),
+                scheduler_config::ClientAuth::Mozilla { required_groups } =>
+                    Box::new(token_check::MozillaCheck::new(required_groups)),
+                scheduler_config::ClientAuth::ProxyToken { url, cache_secs } =>
+                    Box::new(token_check::ProxyTokenCheck::new(url, cache_secs)),
             };
 
             let check_server_auth: dist::http::ServerAuthCheck = match server_auth {
@@ -522,18 +286,19 @@ fn run(command: Command) -> Result<i32> {
             };
 
             let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(scheduler, check_client_auth, check_server_auth);
-            let _: Void = http_scheduler.start();
+            let http_scheduler = dist::http::Scheduler::new(public_addr, scheduler, check_client_auth, check_server_auth);
+            void::unreachable(http_scheduler.start()?);
         },
 
-        Command::Server(server_config::Config { builder, cache_dir, public_addr, scheduler_addr, scheduler_auth, toolchain_cache_size }) => {
+        Command::Server(server_config::Config { builder, cache_dir, public_addr, scheduler_url, scheduler_auth, toolchain_cache_size }) => {
             let builder: Box<dist::BuilderIncoming<Error=Error>> = match builder {
-                server_config::BuilderType::Docker => Box::new(build::DockerBuilder::new()),
+                server_config::BuilderType::Docker =>
+                    Box::new(build::DockerBuilder::new().chain_err(|| "Docker builder failed to start")?),
                 server_config::BuilderType::Overlay { bwrap_path, build_dir } =>
                     Box::new(build::OverlayBuilder::new(bwrap_path, build_dir).chain_err(|| "Overlay builder failed to start")?)
             };
 
-            let server_id = ServerId(public_addr);
+            let server_id = ServerId::new(public_addr);
             let scheduler_auth = match scheduler_auth {
                 server_config::SchedulerAuth::Insecure => {
                     warn!("Server starting with DANGEROUSLY_INSECURE scheduler authentication");
@@ -551,9 +316,11 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
-            let server = Server::new(builder, &cache_dir, toolchain_cache_size);
-            let http_server = dist::http::Server::new(scheduler_addr, scheduler_auth, server);
-            let _: Void = http_server.start();
+            let server = Server::new(builder, &cache_dir, toolchain_cache_size)
+                .chain_err(|| "Failed to create sccache server instance")?;
+            let http_server = dist::http::Server::new(public_addr, scheduler_url.to_url(), scheduler_auth, server)
+                .chain_err(|| "Failed to create sccache HTTP server instance")?;
+            void::unreachable(http_server.start()?)
         },
     }
 }
@@ -593,7 +360,8 @@ struct ServerDetails {
     jobs_assigned: usize,
     last_seen: Instant,
     num_cpus: usize,
-    generate_job_auth: Box<Fn(JobId) -> String + Send>,
+    server_nonce: ServerNonce,
+    job_authorizer: Box<JobAuthorizer>,
 }
 
 impl Scheduler {
@@ -636,25 +404,22 @@ impl SchedulerIncoming for Scheduler {
 
                 info!("Job {} created and assigned to server {:?}", job_id, server_id);
                 assert!(jobs.insert(job_id, JobDetail { server_id, state: JobState::Pending }).is_none());
-                let auth = (server_details.generate_job_auth)(job_id);
+                let auth = server_details.job_authorizer.generate_token(job_id)
+                    .map_err(Error::from)
+                    .chain_err(|| "Could not create an auth token for this job")?;
                 (job_id, server_id, auth)
             } else {
                 let msg = format!("Insufficient capacity across {} available servers", num_servers);
                 return Ok(AllocJobResult::Fail { msg })
             }
         };
-        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone()).chain_err(|| "assign job failed")?;
-        if !need_toolchain {
-            // LOCKS
-            let mut jobs = self.jobs.lock().unwrap();
-
-            jobs.get_mut(&job_id).unwrap().state = JobState::Ready
-        }
+        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
+            .chain_err(|| "assign job failed")?;
         let job_alloc = JobAlloc { auth, job_id, server_id };
         Ok(AllocJobResult::Success { job_alloc, need_toolchain })
     }
 
-    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize, generate_job_auth: Box<Fn(JobId) -> String + Send>) -> Result<HeartbeatServerResult> {
+    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<JobAuthorizer>) -> Result<HeartbeatServerResult> {
         if num_cpus == 0 {
             bail!("Invalid number of CPUs (0) specified in heartbeat")
         }
@@ -662,15 +427,22 @@ impl SchedulerIncoming for Scheduler {
         // LOCKS
         let mut servers = self.servers.lock().unwrap();
 
-        let mut is_new = false;
-        servers.entry(server_id)
-            .and_modify(|details| details.last_seen = Instant::now())
-            .or_insert_with(|| {
-                info!("Registered new server {:?}", server_id);
-                is_new = true;
-                ServerDetails { jobs_assigned: 0, num_cpus, generate_job_auth, last_seen: Instant::now() }
-            });
-        Ok(HeartbeatServerResult { is_new })
+        match servers.get_mut(&server_id) {
+            Some(ref mut details) if details.server_nonce == server_nonce => {
+                details.last_seen = Instant::now();
+                return Ok(HeartbeatServerResult { is_new: false })
+            },
+            _ => (),
+        }
+        info!("Registered new server {:?}", server_id);
+        servers.insert(server_id, ServerDetails {
+            last_seen: Instant::now(),
+            jobs_assigned: 0,
+            num_cpus,
+            server_nonce,
+            job_authorizer,
+        });
+        Ok(HeartbeatServerResult { is_new: true })
     }
 
     fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> Result<UpdateJobStateResult> {
@@ -693,7 +465,11 @@ impl SchedulerIncoming for Scheduler {
                 (JobState::Started, JobState::Complete) => {
                     let (job_id, job_entry) = entry.remove_entry();
                     finished_jobs.push_back((job_id, job_entry));
-                    servers.get_mut(&server_id).unwrap().jobs_assigned -= 1
+                    if let Some(entry) = servers.get_mut(&server_id) {
+                        entry.jobs_assigned -= 1
+                    } else {
+                        bail!("Job was marked as finished, but server is not known to scheduler")
+                    }
                 },
                 (from, to) => {
                     bail!("Invalid job state transition from {} to {}", from, to)
@@ -706,10 +482,10 @@ impl SchedulerIncoming for Scheduler {
         Ok(UpdateJobStateResult::Success)
     }
 
-    fn handle_status(&self) -> Result<StatusResult> {
+    fn handle_status(&self) -> Result<SchedulerStatusResult> {
         let servers = self.servers.lock().unwrap();
 
-        Ok(StatusResult {
+        Ok(SchedulerStatusResult {
             num_servers: servers.len(),
         })
     }
@@ -722,22 +498,25 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(builder: Box<BuilderIncoming<Error=Error>>, cache_dir: &Path, toolchain_cache_size: u64) -> Server {
-        Server {
+    pub fn new(builder: Box<BuilderIncoming<Error=Error>>, cache_dir: &Path, toolchain_cache_size: u64) -> Result<Server> {
+        let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
+            .chain_err(|| "Failed to create toolchain cache")?;
+        Ok(Server {
             builder,
-            cache: Mutex::new(TcCache::new(&cache_dir.join("tc"), toolchain_cache_size).unwrap()),
+            cache: Mutex::new(cache),
             job_toolchains: Mutex::new(HashMap::new()),
-        }
+        })
     }
 }
 
 impl ServerIncoming for Server {
     type Error = Error;
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
+    fn handle_assign_job(&self, requester: &ServerOutgoing, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
         if !need_toolchain {
-            // TODO: can start prepping the container now
+            requester.do_update_job_state(job_id, JobState::Ready).chain_err(|| "Updating job state failed")?;
+            // TODO: can start prepping the build environment now
         }
         Ok(AssignJobResult { need_toolchain })
     }

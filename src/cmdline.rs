@@ -172,9 +172,12 @@ pub fn parse() -> Result<Command> {
     } else if dist_auth {
         Ok(Command::DistAuth)
     } else if package_toolchain {
-        let mut values = matches.values_of_os("package-toolchain").unwrap();
+        let mut values = matches.values_of_os("package-toolchain").expect("Parsed package-toolchain but no values");
         assert!(values.len() == 2);
-        let (executable, out) = (values.next().unwrap(), values.next().unwrap());
+        let (executable, out) = (
+            values.next().expect("package-toolchain missing value 1"),
+            values.next().expect("package-toolchain missing value 2")
+        );
         Ok(Command::PackageToolchain(executable.into(), out.into()))
     } else if let Some(mut args) = cmd {
         if let Some(exe) = args.next() {

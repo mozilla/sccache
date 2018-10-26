@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use compiler;
+use rand::{self, RngCore};
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -56,17 +57,17 @@ mod path_transform {
     use std::path::{Component, Components, Path, PathBuf, Prefix, PrefixComponent};
     use std::str;
 
-    fn take_prefix<'a>(components: &'a mut Components) -> PrefixComponent<'a> {
-        let prefix = components.next().unwrap();
+    fn take_prefix<'a>(components: &'a mut Components) -> Option<PrefixComponent<'a>> {
+        let prefix = components.next()?;
         let pc = match prefix {
             Component::Prefix(pc) => pc,
-            _ => panic!("unrecognised start to path: {:?}", prefix),
+            _ => return None,
         };
-        let root = components.next().unwrap();
+        let root = components.next()?;
         if root != Component::RootDir {
-            panic!("unexpected non-root component in path starting {:?}", prefix)
+            return None
         }
-        pc
+        Some(pc)
     }
 
     fn transform_prefix_component(pc: PrefixComponent) -> Option<String> {
@@ -78,7 +79,7 @@ mod path_transform {
             Prefix::VerbatimDisk(diskchar) => {
                 assert!(diskchar.is_ascii_alphabetic());
                 let diskchar = diskchar.to_ascii_uppercase();
-                Some(format!("/prefix/disk-{}", str::from_utf8(&[diskchar]).unwrap()))
+                Some(format!("/prefix/disk-{}", str::from_utf8(&[diskchar]).expect("invalid disk char")))
             },
             Prefix::Verbatim(_) |
             Prefix::VerbatimUNC(_, _) |
@@ -98,20 +99,23 @@ mod path_transform {
                 dist_to_local_path: HashMap::new(),
             }
         }
-        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
-            if !p.is_absolute() { panic!("non absolute path {:?}", p) }
+        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+            if !p.is_absolute() { return None }
             self.to_dist(p)
         }
         pub fn to_dist(&mut self, p: &Path) -> Option<String> {
             let mut components = p.components();
 
+            // Extract the prefix (e.g. "C:/") if present
             let maybe_dist_prefix = if p.is_absolute() {
-                let pc = take_prefix(&mut components);
+                let pc = take_prefix(&mut components)
+                    .expect("could not take prefix from absolute path");
                 Some(transform_prefix_component(pc)?)
             } else {
                 None
             };
 
+            // Reconstruct the path (minus the prefix) as a Linux path
             let mut dist_suffix = String::new();
             for component in components {
                 let part = match component {
@@ -152,7 +156,8 @@ mod path_transform {
                     continue
                 }
                 let mut components = local_path.components();
-                let mut local_prefix = take_prefix(&mut components);
+                let mut local_prefix = take_prefix(&mut components)
+                    .expect("could not take prefix from absolute path");
                 let local_prefix_component = Component::Prefix(local_prefix);
                 let local_prefix_path: &Path = local_prefix_component.as_ref();
                 let mappings = if let Prefix::VerbatimDisk(_) = local_prefix.kind() {
@@ -163,16 +168,72 @@ mod path_transform {
                 if mappings.contains_key(local_prefix_path) {
                     continue
                 }
-                let dist_prefix = transform_prefix_component(local_prefix).unwrap();
+                let dist_prefix = transform_prefix_component(local_prefix)
+                    .expect("prefix already in tracking map could not be transformed");
                 mappings.insert(local_prefix_path.to_owned(), dist_prefix);
             }
             // Prioritise normal mappings for the same disk, as verbatim mappings can
             // look odd to users
             normal_mappings.into_iter().chain(verbatim_mappings)
         }
-        pub fn to_local(&self, p: &str) -> PathBuf {
-            self.dist_to_local_path.get(p).unwrap().clone()
+        pub fn to_local(&self, p: &str) -> Option<PathBuf> {
+            self.dist_to_local_path.get(p).cloned()
         }
+    }
+
+    #[test]
+    fn test_basic() {
+        let mut pt = PathTransformer::new();
+        assert_eq!(pt.to_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
+        assert_eq!(pt.to_dist(Path::new(r#"C:\a\b.c"#)).unwrap(), "/prefix/disk-C/a/b.c");
+        assert_eq!(pt.to_dist(Path::new("X:/other.c")).unwrap(), "/prefix/disk-X/other.c");
+        let mut disk_mappings: Vec<_> = pt.disk_mappings().collect();
+        disk_mappings.sort();
+        assert_eq!(
+            disk_mappings,
+            &[
+                (Path::new("C:").into(), "/prefix/disk-C".into()),
+                (Path::new("X:").into(), "/prefix/disk-X".into()),
+            ]
+        );
+        assert_eq!(pt.to_local("/prefix/disk-C/a").unwrap(), Path::new("C:/a"));
+        assert_eq!(pt.to_local("/prefix/disk-C/a/b.c").unwrap(), Path::new("C:/a/b.c"));
+        assert_eq!(pt.to_local("/prefix/disk-X/other.c").unwrap(), Path::new("X:/other.c"));
+    }
+
+    #[test]
+    fn test_relative_paths() {
+        let mut pt = PathTransformer::new();
+        assert_eq!(pt.to_dist(Path::new("a/b")).unwrap(), "a/b");
+        assert_eq!(pt.to_dist(Path::new(r#"a\b"#)).unwrap(), "a/b");
+        assert_eq!(pt.to_local("a/b").unwrap(), Path::new("a/b"));
+    }
+
+    #[test]
+    fn test_verbatim_disks() {
+        let mut pt = PathTransformer::new();
+        assert_eq!(pt.to_dist(Path::new("X:/other.c")).unwrap(), "/prefix/disk-X/other.c");
+        pt.to_dist(Path::new(r#"\\?\X:\out\other.o"#));
+        assert_eq!(pt.to_local("/prefix/disk-X/other.c").unwrap(), Path::new("X:/other.c"));
+        assert_eq!(pt.to_local("/prefix/disk-X/out/other.o").unwrap(), Path::new(r#"\\?\X:\out\other.o"#));
+        let disk_mappings: Vec<_> = pt.disk_mappings().collect();
+        // Verbatim disks should come last
+        assert_eq!(
+            disk_mappings,
+            &[
+                (Path::new("X:").into(), "/prefix/disk-X".into()),
+                (Path::new(r#"\\?\X:"#).into(), "/prefix/disk-X".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_slash_directions() {
+        let mut pt = PathTransformer::new();
+        assert_eq!(pt.to_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
+        assert_eq!(pt.to_dist(Path::new("C:\\a")).unwrap(), "/prefix/disk-C/a");
+        assert_eq!(pt.to_local("/prefix/disk-C/a").unwrap(), Path::new("C:/a"));
+        assert_eq!(pt.disk_mappings().count(), 1);
     }
 }
 
@@ -186,8 +247,8 @@ mod path_transform {
 
     impl PathTransformer {
         pub fn new() -> Self { PathTransformer }
-        pub fn to_dist_assert_abs(&mut self, p: &Path) -> Option<String> {
-            if !p.is_absolute() { panic!("non absolute path {:?}", p) }
+        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+            if !p.is_absolute() { return None }
             self.to_dist(p)
         }
         pub fn to_dist(&mut self, p: &Path) -> Option<String> {
@@ -196,8 +257,8 @@ mod path_transform {
         pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
             iter::empty()
         }
-        pub fn to_local(&self, p: &str) -> PathBuf {
-            PathBuf::from(p)
+        pub fn to_local(&self, p: &str) -> Option<PathBuf> {
+            Some(PathBuf::from(p))
         }
     }
 }
@@ -257,12 +318,31 @@ impl FromStr for JobId {
 #[derive(Hash, Eq, PartialEq)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ServerId(pub SocketAddr);
+pub struct ServerId(SocketAddr);
 impl ServerId {
+    pub fn new(addr: SocketAddr) -> Self {
+        ServerId(addr)
+    }
     pub fn addr(&self) -> SocketAddr {
         self.0
     }
 }
+impl FromStr for ServerId {
+    type Err = <SocketAddr as FromStr>::Err;
+    fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+        SocketAddr::from_str(s).map(ServerId)
+    }
+}
+#[derive(Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerNonce(u64);
+impl ServerNonce {
+    pub fn from_rng(rng: &mut rand::OsRng) -> Self {
+        ServerNonce(rng.next_u64())
+    }
+}
+
 
 #[derive(Hash, Eq, PartialEq)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -294,17 +374,30 @@ pub struct CompileCommand {
     pub cwd: String,
 }
 
-// process::Output is not serialize
+// process::Output is not serialize so we have a custom Output type. However,
+// we cannot encode all information in here, such as Unix signals, as the other
+// end may not understand them (e.g. if it's Windows)
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessOutput {
-    code: Option<i32>, // TODO: extract the extra info from the UnixCommandExt
+    code: i32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }
-impl From<process::Output> for ProcessOutput {
-    fn from(o: process::Output) -> Self {
-        ProcessOutput { code: o.status.code(), stdout: o.stdout, stderr: o.stderr }
+impl ProcessOutput {
+    #[cfg(unix)]
+    pub fn try_from(o: process::Output) -> Result<Self> {
+        let process::Output { status, stdout, stderr } = o;
+        let code = match (status.code(), status.signal()) {
+            (Some(c), _)    => c,
+            (None, Some(s)) => bail!("Process status {} terminated with signal {}", status, s),
+            (None, None)    => bail!("Process status {} has no exit code or signal", status),
+        };
+        Ok(ProcessOutput { code, stdout, stderr })
+    }
+    #[cfg(test)]
+    pub fn fake_output(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Self {
+        Self { code, stdout, stderr }
     }
 }
 #[cfg(unix)]
@@ -317,13 +410,14 @@ fn exit_status(code: i32) -> process::ExitStatus {
 }
 #[cfg(windows)]
 fn exit_status(code: i32) -> process::ExitStatus {
-    // TODO: this is probably a subideal conversion
+    // TODO: this is probably a subideal conversion - it's not clear how Unix exit codes map to
+    // Windows exit codes (other than 0 being a success)
     process::ExitStatus::from_raw(code as u32)
 }
 impl From<ProcessOutput> for process::Output {
     fn from(o: ProcessOutput) -> Self {
         // TODO: handle signals, i.e. None code
-        process::Output { status: exit_status(o.code.unwrap()), stdout: o.stdout, stderr: o.stderr }
+        process::Output { status: exit_status(o.code), stdout: o.stdout, stderr: o.stderr }
     }
 }
 
@@ -331,14 +425,14 @@ impl From<ProcessOutput> for process::Output {
 #[serde(deny_unknown_fields)]
 pub struct OutputData(Vec<u8>, u64);
 impl OutputData {
-    #[cfg(feature = "dist-server")]
-    pub fn from_reader<R: Read>(r: R) -> Self {
+    #[cfg(any(feature = "dist-server", all(feature = "dist-client", test)))]
+    pub fn try_from_reader<R: Read>(r: R) -> io::Result<Self> {
         use flate2::Compression;
         use flate2::read::ZlibEncoder as ZlibReadEncoder;
         let mut compressor = ZlibReadEncoder::new(r, Compression::fast());
         let mut res = vec![];
-        io::copy(&mut compressor, &mut res).unwrap();
-        OutputData(res, compressor.total_in())
+        io::copy(&mut compressor, &mut res)?;
+        Ok(OutputData(res, compressor.total_in()))
     }
     pub fn lens(&self) -> OutputDataLens {
         OutputDataLens { actual: self.1, compressed: self.0.len() as u64 }
@@ -366,7 +460,7 @@ impl fmt::Display for OutputDataLens {
 
 // AllocJob
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobAlloc {
     pub auth: String,
@@ -422,9 +516,9 @@ pub struct JobComplete {
 
 // Status
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StatusResult {
+pub struct SchedulerStatusResult {
     pub num_servers: usize,
 }
 
@@ -479,24 +573,31 @@ pub trait ServerOutgoing {
     fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
 }
 
+// Trait to handle the creation and verification of job authorization tokens
+#[cfg(feature = "dist-server")]
+pub trait JobAuthorizer: Send {
+    fn generate_token(&self, job_id: JobId) -> ExtResult<String, String>;
+    fn verify_token(&self, job_id: JobId, token: &str) -> ExtResult<(), String>;
+}
+
 #[cfg(feature = "dist-server")]
 pub trait SchedulerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Client
     fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
-    fn handle_heartbeat_server(&self, server_id: ServerId, num_cpus: usize, generate_job_auth: Box<Fn(JobId) -> String + Send>) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<JobAuthorizer>) -> ExtResult<HeartbeatServerResult, Self::Error>;
     // From Server
     fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> ExtResult<UpdateJobStateResult, Self::Error>;
     // From anyone
-    fn handle_status(&self) -> ExtResult<StatusResult, Self::Error>;
+    fn handle_status(&self) -> ExtResult<SchedulerStatusResult, Self::Error>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait ServerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Scheduler
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
+    fn handle_assign_job(&self, requester: &ServerOutgoing, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
     fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> ExtResult<SubmitToolchainResult, Self::Error>;
     // From Client
@@ -519,29 +620,5 @@ pub trait Client {
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
     fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)>;
-    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)>;
-    fn may_dist(&self) -> bool;
-}
-
-/////////
-
-pub struct NoopClient;
-
-impl Client for NoopClient {
-    fn do_alloc_job(&self, _tc: Toolchain) -> SFuture<AllocJobResult> {
-        f_ok(AllocJobResult::Fail { msg: "Using NoopClient".to_string() })
-    }
-    fn do_submit_toolchain(&self, _job_alloc: JobAlloc, _tc: Toolchain) -> SFuture<SubmitToolchainResult> {
-        panic!("NoopClient");
-    }
-    fn do_run_job(&self, _job_alloc: JobAlloc, _command: CompileCommand, _outputs: Vec<String>, _inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
-        panic!("NoopClient");
-    }
-
-    fn put_toolchain(&self, _compiler_path: &Path, _weak_key: &str, _toolchain_packager: Box<pkg::ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
-        bail!("NoopClient");
-    }
-    fn may_dist(&self) -> bool {
-        false
-    }
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)>;
 }

@@ -1200,7 +1200,7 @@ impl Compilation for RustCompilation {
                 executable: path_transformer.to_dist(&sysroot_executable)?,
                 arguments: dist_arguments,
                 env_vars,
-                cwd: path_transformer.to_dist_assert_abs(cwd)?,
+                cwd: path_transformer.to_dist_abs(cwd)?,
             })
         })();
 
@@ -1277,7 +1277,8 @@ impl pkg::InputsPackager for RustInputsPackager {
                     }
                 }
             }
-            let dist_input_path = path_transformer.to_dist(&input_path).unwrap();
+            let dist_input_path = path_transformer.to_dist(&input_path)
+                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
             tar_inputs.push((input_path, dist_input_path))
         }
 
@@ -1296,12 +1297,12 @@ impl pkg::InputsPackager for RustInputsPackager {
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
                 Err(ref e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(Error::with_chain(e, "Failed to read dir entries in crate link path")),
+                Err(e) => return Err(Error::from(e).chain_err(|| "Failed to read dir entries in crate link path")),
             };
             for entry in dir_entries {
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(e) => return Err(Error::with_chain(e, "Error during iteration over crate link path")),
+                    Err(e) => return Err(Error::from(e).chain_err(|| "Error during iteration over crate link path")),
                 };
                 let path = entry.path();
 
@@ -1342,7 +1343,8 @@ impl pkg::InputsPackager for RustInputsPackager {
                 }
 
                 // This is a lib that may be of interest during compilation
-                let dist_path = path_transformer.to_dist(&path).unwrap();
+                let dist_path = path_transformer.to_dist(&path)
+                    .chain_err(|| format!("unable to transform lib path {}", path.display()))?;
                 tar_crate_libs.push((path, dist_path))
             }
         }
@@ -1455,34 +1457,34 @@ struct RustOutputsRewriter {
 
 #[cfg(feature = "dist-client")]
 impl OutputsRewriter for RustOutputsRewriter {
-    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: Vec<(String, PathBuf)>)
+    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: &[PathBuf])
                       -> Result<()> {
-        use std::io::{Seek, Write};
+        use std::io::Write;
 
-        // Outputs in dep files (the files at the beginning of lines) are untransformed - remap-path-prefix is documented
-        // to only apply to 'inputs'.
+        // Outputs in dep files (the files at the beginning of lines) are untransformed at this point -
+        // remap-path-prefix is documented to only apply to 'inputs'.
         trace!("Pondering on rewriting dep file {:?}", self.dep_info);
         if let Some(dep_info) = self.dep_info {
-            for (_dep_info_dist_path, dep_info_local_path) in output_paths {
+            for dep_info_local_path in output_paths {
                 trace!("Comparing with {}", dep_info_local_path.display());
-                if dep_info == dep_info_local_path {
-                    error!("Replacing using the transformer {:?}", path_transformer);
-                    // Found the dep info file
-                    let mut f = fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .open(dep_info)?;
+                if dep_info == *dep_info_local_path {
+                    info!("Replacing using the transformer {:?}", path_transformer);
+                    // Found the dep info file, read it in
+                    let mut f = fs::File::open(&dep_info).chain_err(|| "Failed to open dep info file")?;
                     let mut deps = String::new();
-                    f.read_to_string(&mut deps)?;
+                    {f}.read_to_string(&mut deps)?;
+                    // Replace all the output paths, at the beginning of lines
                     for (local_path, dist_path) in get_path_mappings(path_transformer) {
                         let re_str = format!("(?m)^{}", regex::escape(&dist_path));
-                        error!("RE replacing {} with {} in {}", re_str, local_path.to_str().unwrap(), deps);
+                        let local_path_str = local_path.to_str()
+                            .chain_err(|| format!("could not convert {} to string for RE replacement", local_path.display()))?;
+                        error!("RE replacing {} with {} in {}", re_str, local_path_str, deps);
                         let re = regex::Regex::new(&re_str).expect("Invalid regex");
-                        deps = re.replace_all(&deps, local_path.to_str().unwrap()).into_owned();
+                        deps = re.replace_all(&deps, local_path_str).into_owned();
                     }
-                    f.seek(io::SeekFrom::Start(0))?;
-                    f.write_all(deps.as_bytes())?;
-                    f.set_len(deps.len() as u64)?;
+                    // Write the depinfo file
+                    let mut f = fs::File::create(&dep_info).chain_err(|| "Failed to recreate dep info file")?;
+                    {f}.write_all(deps.as_bytes())?;
                     return Ok(())
                 }
             }
@@ -1491,6 +1493,53 @@ impl OutputsRewriter for RustOutputsRewriter {
         }
         Ok(())
     }
+}
+
+#[test]
+#[cfg(all(feature = "dist-client", target_os = "windows"))]
+fn test_rust_outputs_rewriter() {
+    use compiler::compiler::OutputsRewriter;
+    use std::io::Write;
+    use test::utils::create_file;
+
+    let mut pt = dist::PathTransformer::new();
+    pt.to_dist(Path::new("c:\\")).unwrap();
+    let mappings: Vec<_> = pt.disk_mappings().collect();
+    assert!(mappings.len() == 1);
+    let linux_prefix = &mappings[0].1;
+
+    let depinfo_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+
+{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+
+src/bin/sccache-dist/main.rs:
+src/bin/sccache-dist/build.rs:
+src/bin/sccache-dist/token_check.rs:
+", prefix=linux_prefix);
+
+    let depinfo_resulting_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+
+{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+
+src/bin/sccache-dist/main.rs:
+src/bin/sccache-dist/build.rs:
+src/bin/sccache-dist/token_check.rs:
+", prefix="c:");
+
+    let tempdir = TempDir::new("sccache_test").unwrap();
+    let tempdir = tempdir.path();
+    let depinfo_file = create_file(tempdir, "depinfo.d", |mut f| {
+        f.write_all(depinfo_data.as_bytes())
+    }).unwrap();
+
+    let ror = Box::new(RustOutputsRewriter {
+        dep_info: Some(depinfo_file.clone()),
+    });
+    let () = ror.handle_outputs(&pt, &[depinfo_file.clone()]).unwrap();
+
+    let mut s = String::new();
+    fs::File::open(depinfo_file).unwrap().read_to_string(&mut s).unwrap();
+    assert_eq!(s, depinfo_resulting_data)
 }
 
 
@@ -1663,6 +1712,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
 
         let mut libstring_splits = libstring.rsplitn(2, '-');
         // Rustc prints strict hash value (rather than extra filename as it likely should be)
+        // https://github.com/rust-lang/rust/pull/55555
         let _svh = libstring_splits.next().ok_or_else(|| "No hash in lib string from rustc -Z ls")?;
         let libname = libstring_splits.next().expect("Zero strings from libstring split");
         assert!(libstring_splits.next().is_none());
