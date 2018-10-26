@@ -36,13 +36,13 @@ mod client {
     }
 
     // TODO: possibly shouldn't be public
-    #[cfg(feature = "dist-client")]
     pub struct ClientToolchains {
         cache_dir: PathBuf,
         cache: Mutex<TcCache>,
-        // Lookup from dist toolchain -> toolchain details
-        custom_toolchains: Mutex<HashMap<Toolchain, CustomToolchain>>,
+        // Lookup from dist toolchain -> path to custom toolchain archive
+        custom_toolchain_archives: Mutex<HashMap<Toolchain, PathBuf>>,
         // Lookup from local path -> toolchain details
+        // The Option<Toolchain> could be populated on startup, but it's lazy for efficiency
         custom_toolchain_paths: Mutex<HashMap<PathBuf, (CustomToolchain, Option<Toolchain>)>>,
         // Toolchains configured to not be distributed
         disabled_toolchains: HashSet<PathBuf>,
@@ -57,26 +57,32 @@ mod client {
         weak_map: Mutex<HashMap<String, String>>,
     }
 
-    #[cfg(feature = "dist-client")]
     impl ClientToolchains {
-        pub fn new(cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig]) -> Self {
+        pub fn new(cache_dir: &Path, cache_size: u64, toolchain_configs: &[config::DistToolchainConfig]) -> Result<Self> {
             let cache_dir = cache_dir.to_owned();
-            fs::create_dir_all(&cache_dir).unwrap();
+            fs::create_dir_all(&cache_dir).chain_err(|| "failed to create top level toolchain cache dir")?;
 
             let toolchain_creation_dir = cache_dir.join("toolchain_tmp");
             if toolchain_creation_dir.exists() {
-                fs::remove_dir_all(&toolchain_creation_dir).unwrap()
+                fs::remove_dir_all(&toolchain_creation_dir).chain_err(|| "failed to clean up temporary toolchain creation directory")?
             }
-            fs::create_dir(&toolchain_creation_dir).unwrap();
+            fs::create_dir(&toolchain_creation_dir).chain_err(|| "failed to create temporary toolchain creation directory")?;
 
             let weak_map_path = cache_dir.join("weak_map.json");
             if !weak_map_path.exists() {
-                fs::File::create(&weak_map_path).unwrap().write_all(b"{}").unwrap()
+                fs::File::create(&weak_map_path)
+                    .and_then(|mut f| f.write_all(b"{}"))
+                    .chain_err(|| "failed to create new toolchain weak map file")?
             }
-            let weak_map = serde_json::from_reader(fs::File::open(weak_map_path).unwrap()).unwrap();
+            let weak_map = fs::File::open(weak_map_path)
+                .map_err(Error::from)
+                .and_then(|f| serde_json::from_reader(f).map_err(Error::from))
+                .chain_err(|| "failed to load toolchain weak map")?;
 
             let tc_cache_dir = cache_dir.join("tc");
-            let cache = Mutex::new(TcCache::new(&tc_cache_dir, cache_size).unwrap());
+            let cache = TcCache::new(&tc_cache_dir, cache_size)
+                .map(Mutex::new)
+                .chain_err(|| "failed to initialise a toolchain cache")?;
 
             // Load in toolchain configuration
             let mut custom_toolchain_paths = HashMap::new();
@@ -90,51 +96,52 @@ mod client {
                             compiler_executable: archive_compiler_executable.clone(),
                         };
                         if custom_toolchain_paths.insert(compiler_executable.clone(), (custom_tc, None)).is_some() {
-                            panic!("Multiple toolchains for {}", compiler_executable.display())
+                            bail!("Multiple toolchains for {}", compiler_executable.display())
                         }
                         if disabled_toolchains.contains(compiler_executable) {
-                            panic!("Override for toolchain {} conflicts with it being disabled")
+                            bail!("Override for toolchain {} conflicts with it being disabled", compiler_executable.display())
                         }
                     },
                     config::DistToolchainConfig::NoDist { compiler_executable } => {
                         debug!("Disabling toolchain {}", compiler_executable.display());
                         if !disabled_toolchains.insert(compiler_executable.clone()) {
-                            panic!("Disabled toolchain {} multiple times", compiler_executable.display())
+                            bail!("Disabled toolchain {} multiple times", compiler_executable.display())
                         }
                         if custom_toolchain_paths.contains_key(compiler_executable) {
-                            panic!("Override for toolchain {} conflicts with it being disabled")
+                            bail!("Override for toolchain {} conflicts with it being disabled", compiler_executable.display())
                         }
                     },
                 }
             }
             let custom_toolchain_paths = Mutex::new(custom_toolchain_paths);
 
-            Self {
+            Ok(Self {
                 cache_dir,
                 cache,
-                custom_toolchains: Mutex::new(HashMap::new()),
+                custom_toolchain_archives: Mutex::new(HashMap::new()),
                 custom_toolchain_paths,
                 disabled_toolchains,
                 // TODO: shouldn't clear on restart, but also should have some
                 // form of pruning
                 weak_map: Mutex::new(weak_map),
-            }
+            })
         }
 
         // Get the bytes of a toolchain tar
         // TODO: by this point the toolchain should be known to exist
-        pub fn get_toolchain(&self, tc: &Toolchain) -> Option<fs::File> {
+        pub fn get_toolchain(&self, tc: &Toolchain) -> Result<Option<fs::File>> {
             // TODO: be more relaxed about path casing and slashes on Windows
-            let file = if let Some(custom_tc) = self.custom_toolchains.lock().unwrap().get(tc) {
-                fs::File::open(&custom_tc.archive).unwrap()
+            let file = if let Some(custom_tc_archive) = self.custom_toolchain_archives.lock().unwrap().get(tc) {
+                fs::File::open(custom_tc_archive)
+                    .chain_err(|| format!("could not open file for toolchain {}", custom_tc_archive.display()))?
             } else {
                 match self.cache.lock().unwrap().get_file(tc) {
                     Ok(file) => file,
-                    Err(LruError::FileNotInCache) => return None,
-                    Err(e) => panic!("{}", e),
+                    Err(LruError::FileNotInCache) => return Ok(None),
+                    Err(e) => return Err(Error::from(e).chain_err(|| "error while retrieving toolchain from cache")),
                 }
             };
-            Some(file)
+            Ok(Some(file))
         }
         // If the toolchain doesn't already exist, create it and insert into the cache
         pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
@@ -143,7 +150,7 @@ mod client {
             }
             if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
                 debug!("Using custom toolchain for {:?}", compiler_path);
-                let (tc, compiler_path) = tc_and_compiler_path.unwrap();
+                let (tc, compiler_path) = tc_and_compiler_path?;
                 return Ok((tc, Some(compiler_path)))
             }
             if let Some(archive_id) = self.weak_to_strong(weak_key) {
@@ -157,7 +164,7 @@ mod client {
             let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
             toolchain_packager.write_pkg(tmpfile.reopen()?).chain_err(|| "Could not package toolchain")?;
             let tc = cache.insert_file(tmpfile.path())?;
-            self.record_weak(weak_key.to_owned(), tc.archive_id.clone());
+            self.record_weak(weak_key.to_owned(), tc.archive_id.clone())?;
             Ok((tc, None))
         }
 
@@ -171,7 +178,14 @@ mod client {
                     };
                     let tc = Toolchain { archive_id };
                     *maybe_tc = Some(tc.clone());
-                    assert!(self.custom_toolchains.lock().unwrap().insert(tc.clone(), custom_tc.clone()).is_none());
+                    // If this entry already exists, someone has two custom toolchains with the same strong hash
+                    if let Some(old_path) = self.custom_toolchain_archives.lock().unwrap().insert(tc.clone(), custom_tc.archive.clone()) {
+                        // Log a warning if the user has identical toolchains at two different locations - it's
+                        // not strictly wrong, but it is a bit odd
+                        if old_path != custom_tc.archive {
+                            warn!("Detected interchangable toolchain archives at {} and {}", old_path.display(), custom_tc.archive.display())
+                        }
+                    }
                     Some(Ok((tc, custom_tc.compiler_executable.clone())))
                 },
                 None => None,
@@ -181,11 +195,114 @@ mod client {
         fn weak_to_strong(&self, weak_key: &str) -> Option<String> {
             self.weak_map.lock().unwrap().get(weak_key).map(String::to_owned)
         }
-        fn record_weak(&self, weak_key: String, key: String) {
+        fn record_weak(&self, weak_key: String, key: String) -> Result<()> {
             let mut weak_map = self.weak_map.lock().unwrap();
             weak_map.insert(weak_key, key);
             let weak_map_path = self.cache_dir.join("weak_map.json");
-            serde_json::to_writer(fs::File::create(weak_map_path).unwrap(), &*weak_map).unwrap()
+            fs::File::create(weak_map_path).map_err(Error::from)
+                .and_then(|f| serde_json::to_writer(f, &*weak_map).map_err(Error::from))
+                .chain_err(|| "failed to enter toolchain in weak map")
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use config;
+        use std::io::Write;
+        use tempdir::TempDir;
+        use test::utils::create_file;
+
+        use super::ClientToolchains;
+
+        struct PanicToolchainPackager;
+        impl PanicToolchainPackager {
+            fn new() -> Box<Self> { Box::new(PanicToolchainPackager) }
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        impl ::dist::pkg::ToolchainPackager for PanicToolchainPackager {
+            fn write_pkg(self: Box<Self>, _f: ::std::fs::File) -> ::errors::Result<()> {
+                panic!("should not have called packager")
+            }
+        }
+
+        #[test]
+        fn test_client_toolchains_custom() {
+            let td = TempDir::new("sccache").unwrap();
+
+            let ct1 = create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();
+
+            let client_toolchains = ClientToolchains::new(&td.path().join("cache"), 1024, &[
+                config::DistToolchainConfig::PathOverride {
+                    compiler_executable: "/my/compiler".into(),
+                    archive: ct1,
+                    archive_compiler_executable: "/my/compiler/in_archive".into(),
+                },
+            ]).unwrap();
+
+            let (_tc, newpath) = client_toolchains.put_toolchain("/my/compiler".as_ref(), "weak_key", PanicToolchainPackager::new()).unwrap();
+            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+        }
+
+        #[test]
+        fn test_client_toolchains_custom_multiuse_archive() {
+            let td = TempDir::new("sccache").unwrap();
+
+            let ct1 = create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();
+
+            let client_toolchains = ClientToolchains::new(&td.path().join("cache"), 1024, &[
+                config::DistToolchainConfig::PathOverride {
+                    compiler_executable: "/my/compiler".into(),
+                    archive: ct1.clone(),
+                    archive_compiler_executable: "/my/compiler/in_archive".into(),
+                },
+                // Uses the same archive, but a maps a different external compiler to a different achive compiler
+                config::DistToolchainConfig::PathOverride {
+                    compiler_executable: "/my/compiler2".into(),
+                    archive: ct1.clone(),
+                    archive_compiler_executable: "/my/compiler2/in_archive".into(),
+                },
+                // Uses the same archive, but a maps a different external compiler to the same achive compiler as the first
+                config::DistToolchainConfig::PathOverride {
+                    compiler_executable: "/my/compiler3".into(),
+                    archive: ct1,
+                    archive_compiler_executable: "/my/compiler/in_archive".into(),
+                },
+            ]).unwrap();
+
+            let (_tc, newpath) = client_toolchains.put_toolchain("/my/compiler".as_ref(), "weak_key", PanicToolchainPackager::new()).unwrap();
+            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+            let (_tc, newpath) = client_toolchains.put_toolchain("/my/compiler2".as_ref(), "weak_key2", PanicToolchainPackager::new()).unwrap();
+            assert!(newpath.unwrap() == "/my/compiler2/in_archive");
+            let (_tc, newpath) = client_toolchains.put_toolchain("/my/compiler3".as_ref(), "weak_key2", PanicToolchainPackager::new()).unwrap();
+            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+        }
+
+        #[test]
+        fn test_client_toolchains_nodist() {
+            let td = TempDir::new("sccache").unwrap();
+
+            let client_toolchains = ClientToolchains::new(&td.path().join("cache"), 1024, &[
+                config::DistToolchainConfig::NoDist { compiler_executable: "/my/compiler".into() },
+            ]).unwrap();
+
+            assert!(client_toolchains.put_toolchain("/my/compiler".as_ref(), "weak_key", PanicToolchainPackager::new()).is_err());
+        }
+
+        #[test]
+        fn test_client_toolchains_custom_nodist_conflict() {
+            let td = TempDir::new("sccache").unwrap();
+
+            let ct1 = create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();
+
+            let client_toolchains = ClientToolchains::new(&td.path().join("cache"), 1024, &[
+                config::DistToolchainConfig::PathOverride {
+                    compiler_executable: "/my/compiler".into(),
+                    archive: ct1,
+                    archive_compiler_executable: "/my/compiler".into(),
+                },
+                config::DistToolchainConfig::NoDist { compiler_executable: "/my/compiler".into() },
+            ]);
+            assert!(client_toolchains.is_err())
         }
     }
 }

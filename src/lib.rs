@@ -94,6 +94,8 @@ extern crate toml;
 #[cfg(any(feature = "azure", feature = "gcs", feature = "dist-client"))]
 extern crate url;
 extern crate uuid;
+#[cfg(feature = "void")]
+extern crate void;
 extern crate walkdir;
 extern crate which;
 #[cfg(windows)]
@@ -145,6 +147,9 @@ pub fn main() {
         },
         Err(e) => {
             println!("sccache: {}", e);
+            for e in e.iter().skip(1) {
+                println!("caused by: {}", e);
+            }
             cmdline::get_app().print_help().unwrap();
             println!("");
             1

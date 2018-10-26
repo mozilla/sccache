@@ -23,7 +23,7 @@ use errors::*;
 
 pub use self::toolchain_imp::*;
 
-pub trait ToolchainPackager {
+pub trait ToolchainPackager: Send {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()>;
 }
 
@@ -44,7 +44,7 @@ mod toolchain_imp {
 
     // Distributed client, but an unsupported platform for toolchain packaging so
     // create a failing implementation that will conflict with any others.
-    impl<T> ToolchainPackager for T {
+    impl<T: Send> ToolchainPackager for T {
         fn write_pkg(self: Box<Self>, _f: fs::File) -> Result<()> {
             bail!("Automatic packaging not supported on this platform")
         }
@@ -54,7 +54,7 @@ mod toolchain_imp {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
     use std::collections::BTreeMap;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::fs;
     use std::path::{Component, Path, PathBuf};
     use std::process;
@@ -88,7 +88,9 @@ mod toolchain_imp {
                 if self.file_set.contains_key(&tar_path) {
                     continue
                 }
-                remaining.extend(find_ldd_libraries(&obj_path)?);
+                let ldd_libraries = find_ldd_libraries(&obj_path)
+                    .chain_err(|| format!("Failed to analyse {} with ldd", obj_path.display()))?;
+                remaining.extend(ldd_libraries);
                 self.file_set.insert(tar_path, obj_path);
             }
             Ok(())
@@ -146,13 +148,43 @@ mod toolchain_imp {
     //         libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f6877711000)
     //         /lib64/ld-linux-x86-64.so.2 (0x00007f6878171000)
     //         libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f68774f4000)
+    //
+    // Elf executables can be statically or dynamically linked, and position independant (PIE) or not:
+    // - dynamic + PIE = ET_DYN, ldd stdouts something like the list above and exits with code 0
+    // - dynamic + non-PIE = ET_EXEC, ldd stdouts something like the list above and exits with code 0
+    // - static + PIE = ET_DYN, ldd stdouts something like "\tstatically linked" or
+    //   "\tldd (0x7f79ef662000)" and exits with code 0
+    // - static + non-PIE = ET_EXEC, ldd stderrs something like "\tnot a dynamic executable" or
+    //   "ldd: a.out: Not a valid dynamic program" and exits with code 1
+    //
     fn find_ldd_libraries(executable: &Path) -> Result<Vec<PathBuf>> {
 
         let process::Output { status, stdout, stderr } = process::Command::new("ldd").arg(executable).output()?;
 
-        // Not a file ldd understands
+        // Not a file ldd can handle. This can be a non-executable, or a static non-PIE
         if !status.success() {
-            bail!(format!("ldd failed to run on {}", executable.to_string_lossy()))
+            // Best-effort detection of static non-PIE
+            let mut elf = fs::File::open(executable)?;
+            let mut elf_bytes = [0; 0x12];
+            elf.read_exact(&mut elf_bytes)?;
+            if elf_bytes[..0x4] != [0x7f, 0x45, 0x4c, 0x46] {
+                bail!("Elf magic not found")
+            }
+            let little_endian = match elf_bytes[0x5] {
+                1 => true,
+                2 => false,
+                _ => bail!("Invalid endianness in elf header"),
+            };
+            let e_type = if little_endian {
+                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+            } else {
+                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+            };
+            if e_type != 0x02 {
+                bail!("ldd failed on a non-ET_EXEC elf")
+            }
+            // It appears to be an ET_EXEC, good enough for us
+            return Ok(vec![])
         }
 
         if !stderr.is_empty() {
@@ -160,9 +192,12 @@ mod toolchain_imp {
         }
 
         let stdout = str::from_utf8(&stdout).map_err(|_| "ldd output not utf8")?;
+        Ok(parse_ldd_output(stdout))
+    }
 
-        // If it's static the output will be a line like "not a dynamic executable", so be forgiving
-        // in the parsing here and treat parsing oddities as an empty list.
+    // If it's a static PIE the output will be a line like "\tstatically linked", so be forgiving
+    // in the parsing here and treat parsing oddities as an empty list.
+    fn parse_ldd_output(stdout: &str) -> Vec<PathBuf> {
         let mut libs = vec![];
         for line in stdout.lines() {
             let line = line.trim();
@@ -195,7 +230,38 @@ mod toolchain_imp {
 
             libs.push(libpath)
         }
-        Ok(libs)
+        libs
+    }
+
+    #[test]
+    fn test_ldd_parse() {
+        let ubuntu_ls_output = "\tlinux-vdso.so.1 =>  (0x00007fffcfffe000)
+\tlibselinux.so.1 => /lib/x86_64-linux-gnu/libselinux.so.1 (0x00007f69caa6b000)
+\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f69ca6a1000)
+\tlibpcre.so.3 => /lib/x86_64-linux-gnu/libpcre.so.3 (0x00007f69ca431000)
+\tlibdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f69ca22d000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f69cac8d000)
+\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f69ca010000)
+";
+        assert_eq!(parse_ldd_output(ubuntu_ls_output).iter().map(|p| p.to_str().unwrap()).collect::<Vec<_>>(), &[
+            "/lib/x86_64-linux-gnu/libselinux.so.1",
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/lib/x86_64-linux-gnu/libpcre.so.3",
+            "/lib/x86_64-linux-gnu/libdl.so.2",
+            "/lib64/ld-linux-x86-64.so.2",
+            "/lib/x86_64-linux-gnu/libpthread.so.0",
+        ])
+    }
+
+    #[test]
+    fn test_ldd_parse_static() {
+        let static_outputs = &[
+            "\tstatically linked", // glibc ldd output
+            "\tldd (0x7f79ef662000)", // musl ldd output
+        ];
+        for static_output in static_outputs {
+            assert_eq!(parse_ldd_output(static_output).len(), 0)
+        }
     }
 }
 

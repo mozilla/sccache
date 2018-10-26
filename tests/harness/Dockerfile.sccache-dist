@@ -1,0 +1,15 @@
+FROM ubuntu:18.04 as bwrap-build
+RUN apt-get update && \
+    apt-get install -y wget xz-utils gcc libcap-dev make && \
+    apt-get clean
+RUN wget -q -O - https://github.com/projectatomic/bubblewrap/releases/download/v0.3.1/bubblewrap-0.3.1.tar.xz | \
+    tar -xJ
+RUN cd /bubblewrap-0.3.1 && \
+    ./configure --disable-man && \
+    make
+
+FROM aidanhs/ubuntu-docker:18.04-17.03.2-ce
+RUN apt-get update && \
+    apt-get install libcap2 libssl1.0.0 && \
+    apt-get clean
+COPY --from=bwrap-build /bubblewrap-0.3.1/bwrap /bwrap

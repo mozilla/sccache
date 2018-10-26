@@ -22,9 +22,12 @@ use compiler::{
     CompilerArguments,
     CompilerHasher,
     CompileResult,
+    DistType,
     MissType,
     get_compiler_info,
 };
+#[cfg(feature = "dist-client")]
+use config;
 use config::Config;
 use dist;
 use filetime::FileTime;
@@ -46,11 +49,17 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
 use std::io::{self, Write};
+#[cfg(feature = "dist-client")]
+use std::mem;
 use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
 use std::path::PathBuf;
 use std::process::{Output, ExitStatus};
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(feature = "dist-client")]
+use std::sync::Mutex;
+#[cfg(feature = "dist-client")]
+use std::time::Instant;
 use std::time::Duration;
 use std::u64;
 use tokio_core::net::TcpListener;
@@ -68,6 +77,11 @@ use errors::*;
 
 /// If the server is idle for this many seconds, shut down.
 const DEFAULT_IDLE_TIMEOUT: u64 = 600;
+
+/// If the dist client couldn't be created, retry creation at this number
+/// of seconds from now (or later)
+#[cfg(feature = "dist-client")]
+const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,6 +141,159 @@ fn get_signal(_status: ExitStatus) -> i32 {
     panic!("no signals on windows")
 }
 
+pub struct DistClientContainer {
+    // The actual dist client state
+    #[cfg(feature = "dist-client")]
+    state: Mutex<DistClientState>,
+}
+
+#[cfg(feature = "dist-client")]
+struct DistClientConfig {
+    // Reusable items tied to an SccacheServer instance
+    handle: Handle,
+    pool: CpuPool,
+
+    // From the static dist configuration
+    scheduler_url: Option<config::HTTPUrl>,
+    auth: config::DistAuth,
+    cache_dir: PathBuf,
+    toolchain_cache_size: u64,
+    toolchains: Vec<config::DistToolchainConfig>,
+}
+
+#[cfg(feature = "dist-client")]
+enum DistClientState {
+    #[cfg(feature = "dist-client")]
+    Some(Arc<dist::Client>),
+    #[cfg(feature = "dist-client")]
+    RetryCreateAt(DistClientConfig, Instant),
+    Disabled,
+}
+
+#[cfg(not(feature = "dist-client"))]
+impl DistClientContainer {
+    #[cfg(not(feature = "dist-client"))]
+    fn new(config: &Config, _: &CpuPool, _: Handle) -> Self {
+        if let Some(_) = config.dist.scheduler_url {
+            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
+        }
+        Self {}
+    }
+
+    pub fn new_disabled() -> Self {
+        Self {}
+    }
+
+
+    fn get_client(&self) -> Option<Arc<dist::Client>> {
+        None
+    }
+}
+
+#[cfg(feature = "dist-client")]
+impl DistClientContainer {
+    fn new(config: &Config, pool: &CpuPool, handle: Handle) -> Self {
+        let config = DistClientConfig {
+            handle,
+            pool: pool.clone(),
+
+            scheduler_url: config.dist.scheduler_url.clone(),
+            auth: config.dist.auth.clone(),
+            cache_dir: config.dist.cache_dir.clone(),
+            toolchain_cache_size: config.dist.toolchain_cache_size,
+            toolchains: config.dist.toolchains.clone(),
+        };
+        let state = Self::create_state(config);
+        Self { state: Mutex::new(state) }
+    }
+
+    pub fn new_disabled() -> Self {
+        Self { state: Mutex::new(DistClientState::Disabled) }
+    }
+
+
+    fn get_client(&self) -> Option<Arc<dist::Client>> {
+        let mut guard = self.state.lock();
+        let state = guard.as_mut().unwrap();
+        let state: &mut DistClientState = &mut **state;
+        Self::maybe_recreate_state(state);
+        match state {
+            DistClientState::Some(dc) => Some(dc.clone()),
+            DistClientState::Disabled |
+            DistClientState::RetryCreateAt(_, _) => None,
+        }
+    }
+
+    fn maybe_recreate_state(state: &mut DistClientState) {
+        if let DistClientState::RetryCreateAt(_, instant) = *state {
+            if instant > Instant::now() {
+                return
+            }
+            let config = match mem::replace(state, DistClientState::Disabled) {
+                DistClientState::RetryCreateAt(config, _) => config,
+                _ => unreachable!(),
+            };
+            info!("Attempting to recreate the dist client");
+            *state = Self::create_state(config)
+        }
+    }
+
+    // Attempt to recreate the dist client
+    fn create_state(config: DistClientConfig) -> DistClientState {
+        macro_rules! try_or_retry_later {
+            ($v:expr) => {{
+                match $v {
+                    Ok(v) => v,
+                    Err(e) => {
+                        use error_chain::ChainedError;
+                        error!("{}", e.display_chain());
+                        return DistClientState::RetryCreateAt(config, Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT)
+                    },
+                }
+            }};
+        }
+        // TODO: NLL would avoid this clone
+        match config.scheduler_url.clone() {
+            Some(addr) => {
+                let url = addr.to_url();
+                info!("Enabling distributed sccache to {}", url);
+                let auth_token = match &config.auth {
+                    config::DistAuth::Token { token } => Ok(token.to_owned()),
+                    config::DistAuth::Oauth2CodeGrantPKCE { client_id: _, auth_url, token_url: _ } |
+                    config::DistAuth::Oauth2Implicit { client_id: _, auth_url } =>
+                        Self::get_cached_config_auth_token(auth_url),
+                };
+                // TODO: NLL would let us move this inside the previous match
+                let auth_token = try_or_retry_later!(auth_token.chain_err(|| "could not load client auth token"));
+                let dist_client = dist::http::Client::new(
+                    config.handle.clone(),
+                    &config.pool,
+                    url,
+                    &config.cache_dir.join("client"),
+                    config.toolchain_cache_size,
+                    &config.toolchains,
+                    auth_token,
+                );
+                let dist_client = try_or_retry_later!(dist_client.chain_err(|| "failure during dist client creation"));
+                info!("Successfully created dist client");
+                DistClientState::Some(Arc::new(dist_client))
+            },
+            None => {
+                info!("No scheduler address configured, disabling distributed sccache");
+                DistClientState::Disabled
+            },
+        }
+    }
+
+    fn get_cached_config_auth_token(auth_url: &str) -> Result<String> {
+        let cached_config = config::CachedConfig::load()?;
+        cached_config.with(|c| {
+            c.dist.auth_tokens.get(auth_url).map(String::to_owned)
+        }).ok_or_else(|| Error::from(format!("token for url {} not present in cached config", auth_url)))
+    }
+}
+
+
 /// Start an sccache server, listening on `port`.
 ///
 /// Spins an event loop handling client connections until a client
@@ -136,46 +303,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
-    let dist_client: Arc<dist::Client> = match config.dist.scheduler_addr {
-        #[cfg(feature = "dist-client")]
-        Some(addr) => {
-            use config;
-            info!("Enabling distributed sccache to {}", addr);
-            let auth_token = match &config.dist.auth {
-                config::DistAuth::Token { token } => token.to_owned(),
-                config::DistAuth::Oauth2CodeGrantPKCE { client_id: _, auth_url, token_url: _ } => {
-                    let cached_config = config::CachedConfig::load().unwrap();
-                    cached_config.with(|c| {
-                        c.dist.auth_tokens.get(auth_url).unwrap().to_owned()
-                    })
-                },
-                config::DistAuth::Oauth2Implicit { client_id: _, auth_url } => {
-                    let cached_config = config::CachedConfig::load().unwrap();
-                    cached_config.with(|c| {
-                        c.dist.auth_tokens.get(auth_url).unwrap().to_owned()
-                    })
-                },
-            };
-            Arc::new(dist::http::Client::new(
-                &core.handle(),
-                &pool,
-                addr,
-                &config.dist.cache_dir.join("client"),
-                config.dist.toolchain_cache_size,
-                &config.dist.toolchains,
-                auth_token,
-            ))
-        },
-        #[cfg(not(feature = "dist-client"))]
-        Some(_) => {
-            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache");
-            Arc::new(dist::NoopClient)
-        },
-        None => {
-            info!("No scheduler address configured, disabling distributed sccache");
-            Arc::new(dist::NoopClient)
-        },
-    };
+    let dist_client = DistClientContainer::new(config, &pool, core.handle());
     let storage = storage_from_config(config, &pool, &core.handle());
     let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, dist_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
@@ -210,7 +338,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                pool: CpuPool,
                core: Core,
                client: Client,
-               dist_client: Arc<dist::Client>,
+               dist_client: DistClientContainer,
                storage: Arc<Storage>) -> Result<SccacheServer<C>> {
         let handle = core.handle();
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
@@ -363,7 +491,7 @@ struct SccacheService<C: CommandCreatorSync> {
     stats: Rc<RefCell<ServerStats>>,
 
     /// Distributed sccache client
-    dist_client: Arc<dist::Client>,
+    dist_client: Rc<DistClientContainer>,
 
     /// Cache storage.
     storage: Arc<Storage>,
@@ -459,7 +587,7 @@ impl<C> Service for SccacheService<C>
 impl<C> SccacheService<C>
     where C: CommandCreatorSync,
 {
-    pub fn new(dist_client: Arc<dist::Client>,
+    pub fn new(dist_client: DistClientContainer,
                storage: Arc<Storage>,
                handle: Handle,
                client: &Client,
@@ -468,7 +596,7 @@ impl<C> SccacheService<C>
                info: ActiveInfo) -> SccacheService<C> {
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
-            dist_client,
+            dist_client: Rc::new(dist_client),
             storage: storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
             pool: pool,
@@ -627,7 +755,7 @@ impl<C> SccacheService<C>
         };
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let result = hasher.get_cached_or_compile(self.dist_client.clone(),
+        let result = hasher.get_cached_or_compile(self.dist_client.get_client(),
                                                   self.creator.clone(),
                                                   self.storage.clone(),
                                                   arguments,
@@ -652,7 +780,12 @@ impl<C> SccacheService<C>
                             stats.cache_hits += 1;
                             stats.cache_read_hit_duration += duration;
                         },
-                        CompileResult::CacheMiss(miss_type, duration, future) => {
+                        CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
+                            match dist_type {
+                                DistType::NoDist => {},
+                                DistType::Ok => stats.dist_compiles += 1,
+                                DistType::Error => stats.dist_errors += 1,
+                            }
                             match miss_type {
                                 MissType::Normal => {}
                                 MissType::ForcedRecache => {
@@ -784,6 +917,10 @@ pub struct ServerStats {
     pub compile_fails: u64,
     /// Counts of reasons why compiles were not cached.
     pub not_cached: HashMap<String, usize>,
+    /// The count of compilations that were successfully distributed
+    pub dist_compiles: u64,
+    /// The count of compilations that were distributed but failed and had to be re-run locally
+    pub dist_errors: u64,
 }
 
 /// Info and stats about the server.
@@ -817,6 +954,8 @@ impl Default for ServerStats {
             cache_read_miss_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
             not_cached: HashMap::new(),
+            dist_compiles: u64::default(),
+            dist_errors: u64::default(),
         }
     }
 }
@@ -861,6 +1000,8 @@ impl ServerStats {
         set_stat!(stats_vec, self.requests_not_cacheable, "Non-cacheable calls");
         set_stat!(stats_vec, self.requests_not_compile, "Non-compilation calls");
         set_stat!(stats_vec, self.requests_unsupported_compiler, "Unsupported compiler calls");
+        set_stat!(stats_vec, self.dist_compiles, "Successful distributed compilations");
+        set_stat!(stats_vec, self.dist_errors, "Failed distributed compilations");
         set_duration_stat!(stats_vec, self.cache_write_duration, self.cache_writes, "Average cache write");
         set_duration_stat!(stats_vec, self.cache_read_miss_duration, self.cache_misses, "Average cache read miss");
         set_duration_stat!(stats_vec, self.cache_read_hit_duration, self.cache_hits, "Average cache read hit");

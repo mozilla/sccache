@@ -38,7 +38,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
-#[cfg(unix)]
+#[cfg(any(feature = "dist-client", unix))]
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -129,7 +129,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     fn get_cached_or_compile(self: Box<Self>,
-                             dist_client: Arc<dist::Client>,
+                             dist_client: Option<Arc<dist::Client>>,
                              creator: T,
                              storage: Arc<Storage>,
                              arguments: Vec<OsString>,
@@ -143,7 +143,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, dist_client.may_dist(), &pool);
+        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, dist_client.is_some(), &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!("[{}]: generate_hash_key took {}", out_pretty, fmt_duration_as_secs(&start.elapsed()));
             let (key, compilation, weak_toolchain_key) = match res {
@@ -244,7 +244,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                 let start = Instant::now();
                 let compile = dist_or_local_compile(dist_client, creator, cwd, compilation, weak_toolchain_key, out_pretty.clone());
 
-                Box::new(compile.and_then(move |(cacheable, compiler_result)| {
+                Box::new(compile.and_then(move |(cacheable, dist_type, compiler_result)| {
                     let duration = start.elapsed();
                     if !compiler_result.status.success() {
                         debug!("[{}]: Compiled but failed, not storing in cache",
@@ -296,7 +296,7 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
                                 })
                             });
                         let future = Box::new(future);
-                        Ok((CompileResult::CacheMiss(miss_type, duration, future), compiler_result))
+                        Ok((CompileResult::CacheMiss(miss_type, dist_type, duration, future), compiler_result))
                     }).chain_err(move || {
                         format!("failed to store `{}` to cache", o)
                     }))
@@ -315,116 +315,176 @@ pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 }
 
 #[cfg(not(feature = "dist-client"))]
-fn dist_or_local_compile<T>(_dist_client: Arc<dist::Client>,
+fn dist_or_local_compile<T>(_dist_client: Option<Arc<dist::Client>>,
                             creator: T,
                             _cwd: PathBuf,
                             compilation: Box<Compilation>,
                             _weak_toolchain_key: String,
                             out_pretty: String)
-                            -> SFuture<(Cacheable, process::Output)>
+                            -> SFuture<(Cacheable, DistType, process::Output)>
         where T: CommandCreatorSync {
-    debug!("[{}]: Compiling locally", out_pretty);
 
     let mut path_transformer = dist::PathTransformer::new();
-    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&mut path_transformer).unwrap();
+    let compile_commands = compilation.generate_compile_commands(&mut path_transformer)
+        .chain_err(|| "Failed to generate compile commands");
+    let (compile_cmd, _dist_compile_cmd, cacheable) = match compile_commands {
+        Ok(cmds) => cmds,
+        Err(e) => return f_err(e),
+    };
+
+    debug!("[{}]: Compiling locally", out_pretty);
     Box::new(compile_cmd.execute(&creator)
-        .map(move |o| (cacheable, o)))
+        .map(move |o| (cacheable, DistType::NoDist, o)))
 }
 
 #[cfg(feature = "dist-client")]
-fn dist_or_local_compile<T>(dist_client: Arc<dist::Client>,
+fn dist_or_local_compile<T>(dist_client: Option<Arc<dist::Client>>,
                             creator: T,
                             cwd: PathBuf,
                             compilation: Box<Compilation>,
                             weak_toolchain_key: String,
                             out_pretty: String)
-                            -> SFuture<(Cacheable, process::Output)>
+                            -> SFuture<(Cacheable, DistType, process::Output)>
         where T: CommandCreatorSync {
     use futures::future;
-    use std::error::Error as StdError;
     use std::io;
+
+    let mut path_transformer = dist::PathTransformer::new();
+    let compile_commands = compilation.generate_compile_commands(&mut path_transformer)
+        .chain_err(|| "Failed to generate compile commands");
+    let (compile_cmd, dist_compile_cmd, cacheable) = match compile_commands {
+        Ok(cmds) => cmds,
+        Err(e) => return f_err(e),
+    };
+
+    let dist_client = match dist_client {
+        Some(dc) => dc,
+        None => {
+            debug!("[{}]: Compiling locally", out_pretty);
+            return Box::new(compile_cmd.execute(&creator)
+                .map(move |o| (cacheable, DistType::NoDist, o)))
+        }
+    };
 
     debug!("[{}]: Attempting distributed compilation", out_pretty);
     let compile_out_pretty = out_pretty.clone();
     let compile_out_pretty2 = out_pretty.clone();
     let compile_out_pretty3 = out_pretty.clone();
-    let mut path_transformer = dist::PathTransformer::new();
-    let (compile_cmd, dist_compile_cmd, cacheable) = compilation.generate_compile_commands(&mut path_transformer).unwrap();
+    let compile_out_pretty4 = out_pretty.clone();
     let local_executable = compile_cmd.executable.clone();
     // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
     Box::new(future::result(dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into()))
         .and_then(move |dist_compile_cmd| {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
-                .map(|(_key, path)| path_transformer.to_dist_assert_abs(&cwd.join(path)))
+                .map(|(_key, path)| path_transformer.to_dist_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
-                .unwrap();
+                .ok_or_else(|| Error::from("Failed to adapt an output path for distributed compile"))?;
             compilation.into_dist_packagers(path_transformer)
                 .map(|packagers| (dist_compile_cmd, packagers, dist_output_paths))
         })
         .and_then(move |(mut dist_compile_cmd, (inputs_packager, toolchain_packager, outputs_rewriter), dist_output_paths)| {
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
-            // TODO: put on a thread
-            let (dist_toolchain, maybe_dist_compile_executable) =
-                ftry!(dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager));
-            if let Some(dist_compile_executable) = maybe_dist_compile_executable {
-                dist_compile_cmd.executable = dist_compile_executable;
-            }
-
-            debug!("[{}]: Requesting allocation", compile_out_pretty2);
-            Box::new(dist_client.do_alloc_job(dist_toolchain.clone()).map_err(Into::into)
+            dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager)
+                .and_then(|(dist_toolchain, maybe_dist_compile_executable)| {
+                    if let Some(dist_compile_executable) = maybe_dist_compile_executable {
+                        dist_compile_cmd.executable = dist_compile_executable;
+                    }
+                    Ok((dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths))
+                })
+        })
+        .and_then(move |(dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths)| {
+            debug!("[{}]: Requesting allocation", compile_out_pretty3);
+            dist_client.do_alloc_job(dist_toolchain.clone()).chain_err(|| "failed to allocate job")
                 .and_then(move |jares| {
                     let alloc = match jares {
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
-                            debug!("[{}]: Sending toolchain", compile_out_pretty2);
+                            debug!("[{}]: Sending toolchain {} for job {}",
+                                compile_out_pretty3, dist_toolchain.archive_id, job_alloc.job_id);
                             Box::new(dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain)
-                                .map(move |res| {
+                                .and_then(move |res| {
                                     match res {
-                                        dist::SubmitToolchainResult::Success => job_alloc,
-                                        dist::SubmitToolchainResult::JobNotFound |
-                                        dist::SubmitToolchainResult::CannotCache => panic!(),
+                                        dist::SubmitToolchainResult::Success => Ok(job_alloc),
+                                        dist::SubmitToolchainResult::JobNotFound =>
+                                            bail!("Job {} not found on server", job_alloc.job_id),
+                                        dist::SubmitToolchainResult::CannotCache =>
+                                            bail!("Toolchain for job {} could not be cached by server", job_alloc.job_id),
                                     }
-                                }).chain_err(|| "Could not submit toolchain"))
+                                })
+                                .chain_err(|| "Could not submit toolchain"))
                         },
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
                             f_ok(job_alloc),
                         dist::AllocJobResult::Fail { msg } =>
-                            f_err(Error::with_chain(Error::from("Failed to allocate job"), msg)),
+                            f_err(Error::from("Failed to allocate job").chain_err(|| msg)),
                     };
                     alloc
                         .and_then(move |job_alloc| {
-                            debug!("[{}]: Running job", compile_out_pretty2);
+                            let job_id = job_alloc.job_id;
+                            debug!("[{}]: Running job", compile_out_pretty3);
                             dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
-                                .map_err(Into::into)
+                                .map(move |res| (job_id, res))
+                                .chain_err(|| "could not run distributed compilation job")
                         })
                 })
-                .map(move |(jres, path_transformer)| {
+                .and_then(move |(job_id, (jres, path_transformer))| {
                     let jc = match jres {
                         dist::RunJobResult::Complete(jc) => jc,
-                        dist::RunJobResult::JobNotFound => panic!(),
+                        dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
                     };
                     info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.lens().to_string())).collect::<Vec<_>>());
-                    let mut output_paths = vec![];
+                    let mut output_paths: Vec<PathBuf> = vec![];
+                    macro_rules! try_or_cleanup {
+                        ($v:expr) => {{
+                            match $v {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    // Do our best to clear up. We may end up deleting a file that we just wrote over
+                                    // the top of, but it's better to clear up too much than too little
+                                    for local_path in output_paths.iter() {
+                                        if let Err(e) = fs::remove_file(local_path) {
+                                            if e.kind() != io::ErrorKind::NotFound {
+                                                warn!("{} while attempting to clear up {}", e, local_path.display())
+                                            }
+                                        }
+                                    }
+                                    return Err(e)
+                                },
+                            }
+                        }};
+                    }
+
                     for (path, output_data) in jc.outputs {
                         let len = output_data.lens().actual;
-                        let local_path = path_transformer.to_local(&path);
-                        let mut file = File::create(&local_path).unwrap();
-                        let count = io::copy(&mut output_data.into_reader(), &mut file).unwrap();
+                        let local_path = try_or_cleanup!(path_transformer.to_local(&path)
+                            .chain_err(|| format!("unable to transform output path {}", path)));
+                        output_paths.push(local_path);
+                        // Do this first so cleanup works correctly
+                        let local_path = output_paths.last().expect("nothing in vec after push");
+
+                        let mut file = try_or_cleanup!(File::create(&local_path)
+                            .chain_err(|| format!("Failed to create output file {}", local_path.display())));
+                        let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
+                            .chain_err(|| format!("Failed to write output to {}", local_path.display())));
+
                         assert!(count == len);
-                        output_paths.push((path, local_path))
                     }
-                    outputs_rewriter.handle_outputs(&path_transformer, output_paths).unwrap();
-                    jc.output.into()
+                    try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths)
+                        .chain_err(|| "failed to rewrite outputs from compile"));
+                    Ok((DistType::Ok, jc.output.into()))
                 })
-            )
         })
         // Something failed, do a local compilation
         .or_else(move |e| {
-            let cause = e.cause().map(|c| format!(": {}", c)).unwrap_or_else(String::new);
-            info!("[{}]: Could not perform distributed compile, falling back to local: {}{}", compile_out_pretty3, e, cause);
-            compile_cmd.execute(&creator)
+            let mut errmsg = e.to_string();
+            for cause in e.iter() {
+                errmsg.push_str(": ");
+                errmsg.push_str(&cause.to_string());
+            }
+            warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
+            compile_cmd.execute(&creator).map(|o| (DistType::Error, o))
         })
-        .map(move |o| (cacheable, o))
+        .map(move |(dt, o)| (cacheable, dt, o))
     )
 }
 
@@ -457,16 +517,15 @@ pub trait Compilation {
 
 #[cfg(feature = "dist-client")]
 pub trait OutputsRewriter {
-    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: Vec<(String, PathBuf)>)
-                      -> Result<()>;
+    /// Perform any post-compilation handling of outputs, given a Vec of the dist_path and local_path
+    fn handle_outputs(self: Box<Self>, path_transformer: &dist::PathTransformer, output_paths: &[PathBuf]) -> Result<()>;
 }
 
 #[cfg(feature = "dist-client")]
 pub struct NoopOutputsRewriter;
 #[cfg(feature = "dist-client")]
 impl OutputsRewriter for NoopOutputsRewriter {
-    fn handle_outputs(self: Box<Self>, _path_transformer: &dist::PathTransformer, _output_paths: Vec<(String, PathBuf)>)
-                      -> Result<()> {
+    fn handle_outputs(self: Box<Self>, _path_transformer: &dist::PathTransformer, _output_paths: &[PathBuf]) -> Result<()> {
         Ok(())
     }
 }
@@ -513,6 +572,17 @@ macro_rules! try_or_cannot_cache {
     }};
 }
 
+/// Specifics about distributed compilation.
+#[derive(Debug, PartialEq)]
+pub enum DistType {
+    /// Distribution was not enabled.
+    NoDist,
+    /// Distributed compile success.
+    Ok,
+    /// Distributed compile failed.
+    Error,
+}
+
 /// Specifics about cache misses.
 #[derive(Debug, PartialEq)]
 pub enum MissType {
@@ -542,7 +612,7 @@ pub enum CompileResult {
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
     /// being stored in the cache.
-    CacheMiss(MissType, Duration, SFuture<CacheWriteInfo>),
+    CacheMiss(MissType, DistType, Duration, SFuture<CacheWriteInfo>),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
     /// Not in cache, but compilation failed.
@@ -568,7 +638,7 @@ impl fmt::Debug for CompileResult {
         match self {
             &CompileResult::Error => write!(f, "CompileResult::Error"),
             &CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
-            &CompileResult::CacheMiss(ref m, ref d, _) => write!(f, "CompileResult::CacheMiss({:?}, {:?}, _)", d, m),
+            &CompileResult::CacheMiss(ref m, ref dt, ref d, _) => write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt),
             &CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
             &CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
         }
@@ -581,7 +651,7 @@ impl PartialEq<CompileResult> for CompileResult {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
             (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
-            (&CompileResult::CacheMiss(ref m, _, _), &CompileResult::CacheMiss(ref n, _, _)) => m == n,
+            (&CompileResult::CacheMiss(ref m, ref dt, _, _), &CompileResult::CacheMiss(ref n, ref dt2, _, _)) => m == n && dt == dt2,
             (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
             (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
             _ => false,
@@ -814,7 +884,6 @@ mod test {
     use super::*;
     use cache::Storage;
     use cache::disk::DiskCache;
-    use dist;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use mock_command::*;
@@ -926,7 +995,7 @@ LLVM version: 6.0", "")));
     }
 
     #[test]
-    fn test_compiler_get_cached_or_compile_uncached() {
+    fn test_compiler_get_cached_or_compile() {
         use env_logger;
         drop(env_logger::try_init());
         let creator = new_creator();
@@ -934,7 +1003,7 @@ LLVM version: 6.0", "")));
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(dist::NoopClient);
+        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -977,7 +1046,7 @@ LLVM version: 6.0", "")));
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
-            CompileResult::CacheMiss(MissType::Normal, _, f) => {
+            CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
@@ -1009,7 +1078,8 @@ LLVM version: 6.0", "")));
     }
 
     #[test]
-    fn test_compiler_get_cached_or_compile_cached() {
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist() {
         use env_logger;
         drop(env_logger::try_init());
         let creator = new_creator();
@@ -1017,7 +1087,6 @@ LLVM version: 6.0", "")));
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(dist::NoopClient);
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1034,13 +1103,8 @@ LLVM version: 6.0", "")));
         const COMPILER_STDOUT : &'static [u8] = b"compiler stdout";
         const COMPILER_STDERR : &'static [u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
-        let o = obj.clone();
-        next_command_calls(&creator, move |_| {
-            // Pretend to compile something.
-            let mut f = File::create(&o)?;
-            f.write_all(b"file contents")?;
-            Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
-        });
+        // Dist client will do the compilation
+        let dist_client = Some(test_dist::OneshotClient::new(0, COMPILER_STDOUT.to_owned(), COMPILER_STDERR.to_owned()));
         let cwd = f.tempdir.path();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
@@ -1060,13 +1124,12 @@ LLVM version: 6.0", "")));
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
-            CompileResult::CacheMiss(MissType::Normal, _, f) => {
+            CompileResult::CacheMiss(MissType::Normal, DistType::Ok, _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
-
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -1103,7 +1166,7 @@ LLVM version: 6.0", "")));
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(dist::NoopClient);
+        let dist_client = None;
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1145,7 +1208,7 @@ LLVM version: 6.0", "")));
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
-            CompileResult::CacheMiss(MissType::CacheReadError, _, f) => {
+            CompileResult::CacheMiss(MissType::CacheReadError, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
@@ -1166,7 +1229,7 @@ LLVM version: 6.0", "")));
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(dist::NoopClient);
+        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1213,7 +1276,7 @@ LLVM version: 6.0", "")));
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
-            CompileResult::CacheMiss(MissType::Normal, _, f) => {
+            CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
@@ -1236,7 +1299,7 @@ LLVM version: 6.0", "")));
         // Ensure that the object file was created.
         assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
         match cached {
-            CompileResult::CacheMiss(MissType::ForcedRecache, _, f) => {
+            CompileResult::CacheMiss(MissType::ForcedRecache, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
@@ -1256,7 +1319,7 @@ LLVM version: 6.0", "")));
         let pool = CpuPool::new(1);
         let core = Core::new().unwrap();
         let handle = core.handle();
-        let dist_client = Arc::new(dist::NoopClient);
+        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"),
                                      u64::MAX,
                                      &pool);
@@ -1290,5 +1353,283 @@ LLVM version: 6.0", "")));
         // Shouldn't get anything on stdout, since that would just be preprocessor spew!
         assert_eq!(b"", res.stdout.as_slice());
         assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    #[cfg(feature = "dist-client")]
+    fn test_compiler_get_cached_or_compile_dist_error() {
+        use env_logger;
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let pool = CpuPool::new(1);
+        let core = Core::new().unwrap();
+        let handle = core.handle();
+        let dist_clients = vec![
+            test_dist::ErrorPutToolchainClient::new(),
+            test_dist::ErrorAllocJobClient::new(),
+            test_dist::ErrorSubmitToolchainClient::new(),
+            test_dist::ErrorRunJobClient::new(),
+        ];
+        let storage = DiskCache::new(&f.tempdir.path().join("cache"),
+                                     u64::MAX,
+                                     &pool);
+        let storage: Arc<Storage> = Arc::new(storage);
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(&creator,
+                                  &f.bins[0],
+                                  &[],
+                                  &pool).wait().unwrap();
+        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
+        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        // The compiler should be invoked twice, since we're forcing
+        // recaching.
+        let obj = f.tempdir.path().join("foo.o");
+        for _ in dist_clients.iter() {
+            // The preprocessor invocation.
+            next_command(&creator, Ok(MockChild::new(exit_status(0), "preprocessor output", "")));
+            // The compiler invocation.
+            let o = obj.clone();
+            next_command_calls(&creator, move |_| {
+                // Pretend to compile something.
+                let mut f = File::create(&o)?;
+                f.write_all(b"file contents")?;
+                Ok(MockChild::new(exit_status(0), COMPILER_STDOUT, COMPILER_STDERR))
+            });
+        }
+        let cwd = f.tempdir.path();
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
+            CompilerArguments::Ok(h) => h,
+            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        // All these dist clients will fail, but should still result in successful compiles
+        for dist_client in dist_clients {
+            if obj.is_file() {
+                fs::remove_file(&obj).unwrap();
+            }
+            let hasher = hasher.clone();
+            let (cached, res) = hasher.get_cached_or_compile(Some(dist_client.clone()),
+                                                             creator.clone(),
+                                                             storage.clone(),
+                                                             arguments.clone(),
+                                                             cwd.to_path_buf(),
+                                                             vec![],
+                                                             CacheControl::ForceRecache,
+                                                             pool.clone(),
+                                                             handle.clone()).wait().unwrap();
+            // Ensure that the object file was created.
+            assert_eq!(true, fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap());
+            match cached {
+                CompileResult::CacheMiss(MissType::ForcedRecache, DistType::Error, _, f) => {
+                    // wait on cache write future so we don't race with it!
+                    f.wait().unwrap();
+                }
+                _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            }
+            assert_eq!(exit_status(0), res.status);
+            assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+            assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "dist-client")]
+mod test_dist {
+    use dist::pkg;
+    use dist::{
+        self,
+
+        CompileCommand,
+        PathTransformer,
+
+        JobId, ServerId,
+        JobAlloc, Toolchain, OutputData, ProcessOutput,
+
+        AllocJobResult, RunJobResult, SubmitToolchainResult, JobComplete,
+    };
+    use std::cell::Cell;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use errors::*;
+
+    pub struct ErrorPutToolchainClient;
+    impl ErrorPutToolchainClient {
+        pub fn new() -> Arc<dist::Client> {
+            Arc::new(ErrorPutToolchainClient)
+        }
+    }
+    impl dist::Client for ErrorPutToolchainClient {
+        fn do_alloc_job(&self, _: Toolchain) -> SFuture<AllocJobResult> {
+            unreachable!()
+        }
+        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
+            unreachable!()
+        }
+        fn do_run_job(&self, _: JobAlloc, _: CompileCommand, _: Vec<String>, _: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+            unreachable!()
+        }
+        fn put_toolchain(&self, _: &Path, _: &str, _: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+            f_err("put toolchain failure")
+        }
+    }
+
+    pub struct ErrorAllocJobClient {
+        tc: Toolchain,
+    }
+    impl ErrorAllocJobClient {
+        pub fn new() -> Arc<dist::Client> {
+            Arc::new(Self {
+                tc: Toolchain { archive_id: "somearchiveid".to_owned() },
+            })
+        }
+    }
+    impl dist::Client for ErrorAllocJobClient {
+        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+            assert_eq!(self.tc, tc);
+            f_err("alloc job failure")
+        }
+        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
+            unreachable!()
+        }
+        fn do_run_job(&self, _: JobAlloc, _: CompileCommand, _: Vec<String>, _: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+            unreachable!()
+        }
+        fn put_toolchain(&self, _: &Path, _: &str, _: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+            f_ok((self.tc.clone(), None))
+        }
+    }
+
+    pub struct ErrorSubmitToolchainClient {
+        has_started: Cell<bool>,
+        tc: Toolchain,
+    }
+    impl ErrorSubmitToolchainClient {
+        pub fn new() -> Arc<dist::Client> {
+            Arc::new(Self {
+                has_started: Cell::new(false),
+                tc: Toolchain { archive_id: "somearchiveid".to_owned() },
+            })
+        }
+    }
+    impl dist::Client for ErrorSubmitToolchainClient {
+        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+            assert!(!self.has_started.replace(true));
+            assert_eq!(self.tc, tc);
+            f_ok(AllocJobResult::Success {
+                job_alloc: JobAlloc { auth: "abcd".to_owned(), job_id: JobId(0), server_id: ServerId::new(([0, 0, 0, 0], 1).into()) },
+                need_toolchain: true,
+            })
+        }
+        fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(self.tc, tc);
+            f_err("submit toolchain failure")
+        }
+        fn do_run_job(&self, _: JobAlloc, _: CompileCommand, _: Vec<String>, _: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+            unreachable!()
+        }
+        fn put_toolchain(&self, _: &Path, _: &str, _: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+            f_ok((self.tc.clone(), None))
+        }
+    }
+
+    pub struct ErrorRunJobClient {
+        has_started: Cell<bool>,
+        tc: Toolchain,
+    }
+    impl ErrorRunJobClient {
+        pub fn new() -> Arc<dist::Client> {
+            Arc::new(Self {
+                has_started: Cell::new(false),
+                tc: Toolchain { archive_id: "somearchiveid".to_owned() },
+            })
+        }
+    }
+    impl dist::Client for ErrorRunJobClient {
+        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+            assert!(!self.has_started.replace(true));
+            assert_eq!(self.tc, tc);
+            f_ok(AllocJobResult::Success {
+                job_alloc: JobAlloc { auth: "abcd".to_owned(), job_id: JobId(0), server_id: ServerId::new(([0, 0, 0, 0], 1).into()) },
+                need_toolchain: true,
+            })
+        }
+        fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(self.tc, tc);
+            f_ok(SubmitToolchainResult::Success)
+        }
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, _: Vec<String>, _: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(command.executable, "/overridden/compiler");
+            f_err("run job failure")
+        }
+        fn put_toolchain(&self, _: &Path, _: &str, _: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+            f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        }
+    }
+
+    pub struct OneshotClient {
+        has_started: Cell<bool>,
+        tc: Toolchain,
+        output: ProcessOutput,
+    }
+
+    impl OneshotClient {
+        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dist::Client> {
+            Arc::new(Self {
+                has_started: Cell::new(false),
+                tc: Toolchain { archive_id: "somearchiveid".to_owned() },
+                output: ProcessOutput::fake_output(code, stdout, stderr),
+            })
+        }
+    }
+
+    impl dist::Client for OneshotClient {
+        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+            assert!(!self.has_started.replace(true));
+            assert_eq!(self.tc, tc);
+
+            f_ok(AllocJobResult::Success {
+                job_alloc: JobAlloc {
+                    auth: "abcd".to_owned(),
+                    job_id: JobId(0),
+                    server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
+                },
+                need_toolchain: true,
+            })
+        }
+        fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(self.tc, tc);
+
+            f_ok(SubmitToolchainResult::Success)
+        }
+        fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)> {
+            assert_eq!(job_alloc.job_id, JobId(0));
+            assert_eq!(command.executable, "/overridden/compiler");
+
+            let mut inputs = vec![];
+            let path_transformer = inputs_packager.write_inputs(&mut inputs).unwrap();
+            let outputs = outputs.into_iter()
+                .map(|name| {
+                    let data = format!("some data in {}", name);
+                    let data = OutputData::try_from_reader(data.as_bytes()).unwrap();
+                    (name, data)
+                })
+                .collect();
+            let result = RunJobResult::Complete(JobComplete {
+                output: self.output.clone(),
+                outputs,
+            });
+            f_ok((result, path_transformer))
+        }
+        fn put_toolchain(&self, _: &Path, _: &str, _: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)> {
+            f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        }
     }
 }
