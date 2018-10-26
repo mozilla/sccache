@@ -336,6 +336,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             Some(Language(_)) |
             Some(Output(_)) |
             Some(TooHardFlag) |
+            Some(XClang(_)) |
             Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().unwrap_or(
                     "Can't handle complex arguments through clang",

@@ -84,9 +84,8 @@ impl CCompilerImpl for Clang {
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
-    // TODO: should be extracted and reprocessed, though bear in mind some
-    // flags are not valid under a -Xclang
-    take_arg!("-Xclang", OsString, Separated, TooHard),
+    take_arg!("-Xclang", OsString, Separated, XClang),
+    take_arg!("-add-plugin", OsString, Separated, PassThrough),
     flag!("-fcxx-modules", TooHardFlag),
     flag!("-fmodules", TooHardFlag),
     flag!("-fprofile-instr-generate", ProfileGenerate),
@@ -94,7 +93,9 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fprofile-instr-use", OsString, Concatenated, TooHard),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-load", OsString, Separated, PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
+    flag!("-verify", PreprocessorArgumentFlag),
 ]);
 
 #[cfg(test)]
@@ -161,5 +162,35 @@ mod test {
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
         assert_eq!(CompilerArguments::CannotCache("-fmodules", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
+    }
+
+    #[test]
+    fn test_parse_xclang_invalid() {
+        assert_eq!(CompilerArguments::CannotCache("Can't handle Raw arguments with -Xclang", None),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "broken"]));
+        assert_eq!(CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"]));
+        assert_eq!(CompilerArguments::CannotCache("argument parse", Some("Unexpected end of args".to_string())),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "-load"]));
+    }
+
+    #[test]
+    fn test_parse_xclang_load() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-load", "-Xclang", "plugin.so");
+        println!("A {:#?}", a);
+        // TODO: Verify plugin.so is part of hash?
+        assert_eq!(ovec!["-Xclang", "-load", "-Xclang", "plugin.so"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_add_plugin() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-add-plugin", "-Xclang", "foo");
+        assert_eq!(ovec!["-Xclang", "-add-plugin", "-Xclang", "foo"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_verify() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-verify");
+        assert_eq!(ovec!["-Xclang", "-verify"], a.preprocessor_args);
     }
 }
