@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use ::compiler::{
+    clang,
     Cacheable,
     CompilerArguments,
     CompileCommand,
@@ -92,6 +93,8 @@ ArgData!{ pub
     ProfileGenerate,
     TestCoverage,
     Coverage,
+    // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
+    XClang(OsString),
 }
 
 use self::ArgData::*;
@@ -194,6 +197,7 @@ where
     let mut language = None;
     let mut profile_generate = false;
     let mut outputs_gcno = false;
+    let mut xclangs: Vec<OsString> = vec![];
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -253,6 +257,7 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
+            Some(XClang(s)) => xclangs.push(s.clone()),
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
@@ -280,6 +285,7 @@ where
             Some(DoCompilation) |
             Some(Language(_)) |
             Some(Output(_)) |
+            Some(XClang(_)) |
             Some(DepTarget(_)) => None,
             Some(TooHardFlag) |
             Some(TooHard(_)) => unreachable!(),
@@ -301,6 +307,55 @@ where
             };
             args.extend(arg.normalize(norm).iter_os_strings());
         };
+    }
+
+    let xclang_it = ExpandIncludeFile::new(cwd, &xclangs);
+    for arg in ArgsIter::new(xclang_it, (&ARGS[..], &clang::ARGS[..])) {
+        let arg = try_or_cannot_cache!(arg, "argument parse");
+        let args = match arg.get_data() {
+            Some(SplitDwarf) |
+            Some(ProfileGenerate) |
+            Some(TestCoverage) |
+            Some(Coverage) |
+            Some(DoCompilation) |
+            Some(Language(_)) |
+            Some(Output(_)) |
+            Some(TooHardFlag) |
+            Some(XClang(_)) |
+            Some(TooHard(_)) => {
+                cannot_cache!(arg.flag_str().unwrap_or(
+                    "Can't handle complex arguments through clang",
+                ))
+            }
+            None => {
+                match arg {
+                    Argument::Raw(_) => cannot_cache!("Can't handle Raw arguments with -Xclang"),
+                    Argument::UnknownFlag(_) => cannot_cache!("Can't handle UnknownFlag arguments with -Xclang"),
+                    _ => unreachable!(),
+                }
+            }
+            Some(PassThrough(_)) |
+            Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(PreprocessorArgumentFlag) |
+            Some(PreprocessorArgument(_)) |
+            Some(PreprocessorArgumentPath(_)) |
+            Some(DepTarget(_)) |
+            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+        };
+
+        if let Some(args) = args {
+            // Normalize attributes such as "-I foo", "-D FOO=bar", as
+            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+            // "-include foo", "-idirafter bar", etc.
+            let norm = match arg.flag_str() {
+                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+                _ => NormalizedDisposition::Separated,
+            };
+            for arg in arg.normalize(norm).iter_os_strings() {
+                args.push("-Xclang".into());
+                args.push(arg)
+            }
+        }
     }
 
     // We only support compilation.
