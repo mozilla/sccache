@@ -215,8 +215,8 @@ mod code_grant_pkce {
         }
 
         let (token, expires_at) = handle_token_response(res.json().unwrap())?;
-        if expires_at - Instant::now() < ONE_DAY  {
-            warn!("Token retrieved expires in under one day")
+        if expires_at - Instant::now() < ONE_DAY * 2  {
+            warn!("Token retrieved expires in under two days")
         }
         Ok(token)
     }
@@ -330,8 +330,8 @@ mod implicit {
                 if auth_state != state.auth_state_value {
                     panic!("Mismatched auth states")
                 }
-                if expires_at - Instant::now() < ONE_DAY  {
-                    warn!("Token retrieved expires in under one day")
+                if expires_at - Instant::now() < ONE_DAY * 2 {
+                    warn!("Token retrieved expires in under two days")
                 }
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.token_tx.send(token).unwrap();
@@ -392,6 +392,7 @@ pub fn get_token_oauth2_code_grant_pkce(client_id: &str, mut auth_url: Url, toke
     code_grant_pkce::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value, &challenge);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
+    println!("Please visit http://localhost:{} in your browser", port);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (code_tx, code_rx) = mpsc::sync_channel(1);
     let state = code_grant_pkce::State {
@@ -420,6 +421,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
+    println!("Please visit http://localhost:{} in your browser", port);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (token_tx, token_rx) = mpsc::sync_channel(1);
     let state = implicit::State {

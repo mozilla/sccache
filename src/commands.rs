@@ -647,7 +647,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
                     cached_config.with_mut(|c| {
                         c.dist.auth_tokens.insert(auth_url.to_owned(), token);
-                    }).chain_err(|| "Unable to save auth token")?
+                    }).chain_err(|| "Unable to save auth token")?;
+                    println!("Saved token")
                 },
                 config::DistAuth::Oauth2Implicit { client_id, auth_url } => {
                     let cached_config = config::CachedConfig::load()?;
@@ -657,7 +658,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
                     cached_config.with_mut(|c| {
                         c.dist.auth_tokens.insert(auth_url.to_owned(), token);
-                    }).chain_err(|| "Unable to save auth token")?
+                    }).chain_err(|| "Unable to save auth token")?;
+                    println!("Saved token")
                 },
             };
         }
