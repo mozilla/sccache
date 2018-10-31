@@ -130,8 +130,6 @@ use std::io::Write;
 
 pub fn main() {
     init_logging();
-    // Initialise config
-    let _ = config::CONFIG.caches.len();
     std::process::exit(match cmdline::parse() {
         Ok(cmd) => match commands::run_command(cmd) {
             Ok(s) => s,

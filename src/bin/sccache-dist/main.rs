@@ -24,7 +24,11 @@ extern crate tar;
 use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
 use rand::RngCore;
-use sccache::config::INSECURE_DIST_CLIENT_TOKEN;
+use sccache::config::{
+    INSECURE_DIST_CLIENT_TOKEN,
+    scheduler as scheduler_config,
+    server as server_config,
+};
 use sccache::dist::{
     self,
     CompileCommand, InputsReader, JobId, JobAlloc, JobState, JobComplete, ServerId, Toolchain, ToolchainReader,
@@ -64,103 +68,6 @@ mod errors {
         links {
             Sccache(sccache::errors::Error, sccache::errors::ErrorKind);
         }
-    }
-}
-
-mod scheduler_config {
-    use sccache;
-    use std::path::Path;
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    #[serde(deny_unknown_fields)]
-    pub enum ClientAuth {
-        #[serde(rename = "DANGEROUSLY_INSECURE")]
-        Insecure,
-        #[serde(rename = "token")]
-        Token { token: String },
-        #[serde(rename = "jwt_validate")]
-        JwtValidate { audience: String, issuer: String, jwks_url: String },
-        #[serde(rename = "mozilla")]
-        Mozilla,
-        #[serde(rename = "proxy_token")]
-        ProxyToken { url: String, cache_secs: Option<u64> }
-    }
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    #[serde(deny_unknown_fields)]
-    pub enum ServerAuth {
-        #[serde(rename = "DANGEROUSLY_INSECURE")]
-        Insecure,
-        #[serde(rename = "jwt_hs256")]
-        JwtHS256 { secret_key: String },
-        #[serde(rename = "token")]
-        Token { token: String },
-    }
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Config {
-        pub client_auth: ClientAuth,
-        pub server_auth: ServerAuth,
-    }
-
-    pub fn from_path(conf_path: &Path) -> Option<Config> {
-        sccache::config::try_read_config_file(&conf_path)
-    }
-}
-
-mod server_config {
-    use sccache;
-    use std::net::{IpAddr, SocketAddr};
-    use std::path::{Path, PathBuf};
-
-    const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
-    fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    #[serde(deny_unknown_fields)]
-    pub enum BuilderType {
-        #[serde(rename = "docker")]
-        Docker,
-        #[serde(rename = "overlay")]
-        Overlay { build_dir: PathBuf, bwrap_path: PathBuf },
-    }
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "type")]
-    #[serde(deny_unknown_fields)]
-    pub enum SchedulerAuth {
-        #[serde(rename = "DANGEROUSLY_INSECURE")]
-        Insecure,
-        #[serde(rename = "jwt_token")]
-        JwtToken { token: String },
-        #[serde(rename = "token")]
-        Token { token: String },
-    }
-
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Config {
-        pub builder: BuilderType,
-        pub cache_dir: PathBuf,
-        pub public_addr: SocketAddr,
-        pub scheduler_addr: IpAddr,
-        pub scheduler_auth: SchedulerAuth,
-        #[serde(default = "default_toolchain_cache_size")]
-        pub toolchain_cache_size: u64,
-    }
-
-    pub fn from_path(conf_path: &Path) -> Option<Config> {
-        sccache::config::try_read_config_file(&conf_path)
     }
 }
 
@@ -277,7 +184,7 @@ fn parse() -> Result<Command> {
                 ("generate-jwt-hs256-server-token", Some(matches)) => {
                     let server_id = ServerId(value_t_or_exit!(matches, "server", SocketAddr));
                     let secret_key = if let Some(config_path) = matches.value_of("config").map(Path::new) {
-                        if let Some(config) = scheduler_config::from_path(config_path) {
+                        if let Some(config) = scheduler_config::from_path(config_path)? {
                             match config.server_auth {
                                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
                                 scheduler_config::ServerAuth::Insecure |
@@ -303,7 +210,7 @@ fn parse() -> Result<Command> {
         }
         ("scheduler", Some(matches)) => {
             let config_path = Path::new(matches.value_of("config").unwrap());
-            if let Some(config) = scheduler_config::from_path(config_path) {
+            if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
                 bail!("Could not load config")
@@ -311,7 +218,7 @@ fn parse() -> Result<Command> {
         },
         ("server", Some(matches)) => {
             let config_path = Path::new(matches.value_of("config").unwrap());
-            if let Some(config) = server_config::from_path(config_path) {
+            if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
                 bail!("Could not load config")

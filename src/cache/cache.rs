@@ -23,7 +23,7 @@ use cache::redis::RedisCache;
 use cache::s3::S3Cache;
 #[cfg(feature = "gcs")]
 use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
-use config::{self, CONFIG, CacheType};
+use config::{self, CacheType, Config};
 use futures_cpupool::CpuPool;
 #[cfg(feature = "gcs")]
 use serde_json;
@@ -165,8 +165,8 @@ pub trait Storage {
 }
 
 /// Get a suitable `Storage` implementation from configuration.
-pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
-    for cache_type in CONFIG.caches.iter() {
+pub fn storage_from_config(config: &Config, pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
+    for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {
                 debug!("Trying Azure Blob Store account");
@@ -261,7 +261,7 @@ pub fn storage_from_config(pool: &CpuPool, _handle: &Handle) -> Arc<Storage> {
     }
 
     info!("No configured caches successful, falling back to default");
-    let (dir, size) = (&CONFIG.fallback_cache.dir, CONFIG.fallback_cache.size);
+    let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     trace!("Using DiskCache({:?}, {})", dir, size);
-    Arc::new(DiskCache::new(dir, size, pool))
+    Arc::new(DiskCache::new(&dir, size, pool))
 }
