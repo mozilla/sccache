@@ -118,7 +118,7 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "reqwest", "rust-crypto", "url"]
 # Enables the sccache-dist binary
-dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille"]
+dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "url"]
 # Enables dist tests with external requirements
 dist-tests = []
 

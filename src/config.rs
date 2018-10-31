@@ -14,7 +14,7 @@
 
 use directories::ProjectDirs;
 use regex::Regex;
-use serde::de::DeserializeOwned;
+use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 use serde_json;
 use std::collections::HashMap;
 use std::env;
@@ -22,6 +22,7 @@ use std::io::{Read, Write};
 use std::fs::{self, File};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
 use toml;
@@ -37,6 +38,10 @@ const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
 const DIST_APP_NAME: &str = "sccache-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
+
+const MOZILLA_OAUTH_PKCE_CLIENT_ID: &str = "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo";
+const MOZILLA_OAUTH_PKCE_AUTH_URL: &str = "https://auth.mozilla.auth0.com/authorize?audience=https://person-api.sso.mozilla.com&scope=read:profile";
+const MOZILLA_OAUTH_PKCE_TOKEN_URL: &str = "https://auth.mozilla.auth0.com/oauth/token";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
@@ -214,16 +219,49 @@ pub enum DistToolchainConfig {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum DistAuth {
-    #[serde(rename = "token")]
     Token { token: String },
-    #[serde(rename = "oauth2_code_grant_pkce")]
     Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
-    #[serde(rename = "oauth2_implicit")]
     Oauth2Implicit { client_id: String, auth_url: String },
+}
+
+// Convert a type = "mozilla" immediately into an actual oauth configuration
+// https://github.com/serde-rs/serde/issues/595 could help if implemented
+impl<'a> Deserialize<'a> for DistAuth {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error> where D: Deserializer<'a> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[serde(tag = "type")]
+        pub enum Helper {
+            #[serde(rename = "token")]
+            Token { token: String },
+            #[serde(rename = "mozilla")]
+            Mozilla,
+            #[serde(rename = "oauth2_code_grant_pkce")]
+            Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
+            #[serde(rename = "oauth2_implicit")]
+            Oauth2Implicit { client_id: String, auth_url: String },
+        }
+
+        let helper: Helper = Deserialize::deserialize(deserializer)?;
+
+        Ok(match helper {
+            Helper::Token { token } =>
+                DistAuth::Token { token },
+            Helper::Mozilla =>
+                DistAuth::Oauth2CodeGrantPKCE {
+                    client_id: MOZILLA_OAUTH_PKCE_CLIENT_ID.to_owned(),
+                    auth_url: MOZILLA_OAUTH_PKCE_AUTH_URL.to_owned(),
+                    token_url: MOZILLA_OAUTH_PKCE_TOKEN_URL.to_owned(),
+                },
+            Helper::Oauth2CodeGrantPKCE { client_id, auth_url, token_url } =>
+                DistAuth::Oauth2CodeGrantPKCE { client_id, auth_url, token_url },
+            Helper::Oauth2Implicit { client_id, auth_url } =>
+                DistAuth::Oauth2Implicit { client_id, auth_url },
+        })
+    }
 }
 
 impl Default for DistAuth {
@@ -502,7 +540,7 @@ pub mod scheduler {
         #[serde(rename = "jwt_validate")]
         JwtValidate { audience: String, issuer: String, jwks_url: String },
         #[serde(rename = "mozilla")]
-        Mozilla,
+        Mozilla { required_groups: Vec<String> },
         #[serde(rename = "proxy_token")]
         ProxyToken { url: String, cache_secs: Option<u64> }
     }
