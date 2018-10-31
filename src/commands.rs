@@ -22,6 +22,7 @@ use client::{
 };
 use cmdline::{Command, StatsFormat};
 use compiler::ColorMode;
+use config::Config;
 use futures::Future;
 use jobserver::Client;
 use log::Level::Trace;
@@ -567,6 +568,11 @@ pub fn do_compile<T>(creator: T,
 
 /// Run `cmd` and return the process exit status.
 pub fn run_command(cmd: Command) -> Result<i32> {
+
+    // Config isn't required for all commands, but if it's broken then we should flag
+    // it early and loudly.
+    let config = &Config::load()?;
+
     match cmd {
         Command::ShowStats(fmt) => {
             trace!("Command::ShowStats({:?})", fmt);
@@ -584,7 +590,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             // Can't report failure here, we're already daemonized.
             daemonize()?;
             redirect_error_log()?;
-            server::start_server(get_port())?;
+            server::start_server(config, get_port())?;
         }
         Command::StartServer => {
             trace!("Command::StartServer");
@@ -625,11 +631,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         #[cfg(feature = "dist-client")]
         Command::DistAuth => {
-            use config::{self, CONFIG};
+            use config;
             use dist;
             use url::Url;
 
-            match &CONFIG.dist.auth {
+            match &config.dist.auth {
                 config::DistAuth::Token { .. } => {
                     info!("No authentication needed for type 'token'")
                 },

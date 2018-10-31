@@ -25,7 +25,7 @@ use compiler::{
     MissType,
     get_compiler_info,
 };
-use config::{self, CONFIG};
+use config::Config;
 use dist;
 use filetime::FileTime;
 use futures::future;
@@ -131,16 +131,17 @@ fn get_signal(_status: ExitStatus) -> i32 {
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
-pub fn start_server(port: u16) -> Result<()> {
+pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
     let core = Core::new()?;
     let pool = CpuPool::new(20);
-    let dist_client: Arc<dist::Client> = match CONFIG.dist.scheduler_addr {
+    let dist_client: Arc<dist::Client> = match config.dist.scheduler_addr {
         #[cfg(feature = "dist-client")]
         Some(addr) => {
+            use config;
             info!("Enabling distributed sccache to {}", addr);
-            let auth_token = match &CONFIG.dist.auth {
+            let auth_token = match &config.dist.auth {
                 config::DistAuth::Token { token } => token.to_owned(),
                 config::DistAuth::Oauth2CodeGrantPKCE { client_id: _, auth_url, token_url: _ } => {
                     let cached_config = config::CachedConfig::load().unwrap();
@@ -159,9 +160,9 @@ pub fn start_server(port: u16) -> Result<()> {
                 &core.handle(),
                 &pool,
                 addr,
-                &CONFIG.dist.cache_dir.join("client"),
-                CONFIG.dist.toolchain_cache_size,
-                &CONFIG.dist.toolchains,
+                &config.dist.cache_dir.join("client"),
+                config.dist.toolchain_cache_size,
+                &config.dist.toolchains,
                 auth_token,
             ))
         },
@@ -175,7 +176,7 @@ pub fn start_server(port: u16) -> Result<()> {
             Arc::new(dist::NoopClient)
         },
     };
-    let storage = storage_from_config(&pool, &core.handle());
+    let storage = storage_from_config(config, &pool, &core.handle());
     let res = SccacheServer::<ProcessCommandCreator>::new(port, pool, core, client, dist_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {

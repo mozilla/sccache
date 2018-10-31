@@ -29,8 +29,6 @@ use toml;
 use errors::*;
 
 lazy_static! {
-    pub static ref CONFIG: Config = Config::create();
-
     static ref CACHED_CONFIG_PATH: PathBuf = CachedConfig::file_config_path();
     static ref CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 }
@@ -39,9 +37,6 @@ const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
 const DIST_APP_NAME: &str = "sccache-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
-
-pub const HIDDEN_FILE_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CONFIG";
-pub const HIDDEN_CACHED_CONFIG_DATA_VAR: &str = "_SCCACHE_TEST_CACHED_CONFIG";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
@@ -271,26 +266,36 @@ pub struct FileConfig {
     pub dist: DistConfig,
 }
 
-pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
+// If the file doesn't exist or we can't read it, log the issue and proceed. If the
+// config exists but doesn't parse then something is wrong - return an error.
+pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     debug!("Attempting to read config file at {:?}", path);
-    let mut file = File::open(path)
-        .map_err(|e| debug!("Couldn't open config file: {}", e))
-        .ok()?;
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            debug!("Couldn't open config file: {}", e);
+            return Ok(None)
+        },
+    };
 
     let mut string = String::new();
-    file.read_to_string(&mut string)
-        .map_err(|e| warn!("Failed to read config file: {}", e))
-        .ok()?;
+    match file.read_to_string(&mut string) {
+        Ok(_) => (),
+        Err(e) => {
+            warn!("Failed to read config file: {}", e);
+            return Ok(None)
+        }
+    }
 
-    let toml: toml::Value = toml::from_str(&string)
-        .map_err(|e| warn!("Failed to parse config as toml: {}", e))
-        .ok()?;
+    let res = if path.extension().map_or(false, |e| e == "json") {
+        serde_json::from_str(&string)
+            .chain_err(|| format!("Failed to load json config file from {}", path.display()))?
+    } else {
+        toml::from_str(&string)
+            .chain_err(|| format!("Failed to load toml config file from {}", path.display()))?
+    };
 
-    toml.try_into()
-        .map_err(|e| {
-            warn!("Invalid format of config: {}", e);
-        })
-        .ok()
+    Ok(Some(res))
 }
 
 #[derive(Debug)]
@@ -374,27 +379,19 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn create() -> Config {
+    pub fn load() -> Result<Config> {
         let env_conf = config_from_env();
 
-        let file_conf = env::var_os(HIDDEN_FILE_CONFIG_DATA_VAR)
-            .map(|cfg_os_str| {
-                let cfg_str = cfg_os_str.into_string().expect("Test config invalid utf8");
-                serde_json::from_str(&cfg_str).expect("Invalid test config")
-            })
-            .or_else(|| {
-                let file_conf_path = env::var_os("SCCACHE_CONF")
-                    .map(|p| PathBuf::from(p))
-                    .unwrap_or_else(|| {
-                        let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
-                            .expect("Unable to get config directory");
-                        dirs.config_dir().join("config")
-                    });
-                try_read_config_file(&file_conf_path)
-            })
-            .unwrap_or_default();
+        let file_conf_path = env::var_os("SCCACHE_CONF")
+            .map(|p| PathBuf::from(p))
+            .unwrap_or_else(|| {
+                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
+                    .expect("Unable to get config directory");
+                dirs.config_dir().join("config")
+            });
+        let file_conf = try_read_config_file(&file_conf_path)?.unwrap_or_default();
 
-        Config::from_env_and_file_configs(env_conf, file_conf)
+        Ok(Config::from_env_and_file_configs(env_conf, file_conf))
     }
 
     fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
@@ -477,13 +474,114 @@ impl CachedConfig {
             Self::save_file_config(&Default::default())
                 .chain_err(|| format!("Unable to create cached config file at {}", file_conf_path.display()))?
         }
-        try_read_config_file(&file_conf_path)
+        try_read_config_file(&file_conf_path)?
             .ok_or_else(|| format!("Failed to load from {}", file_conf_path.display()).into())
     }
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
         let mut file = File::create(file_conf_path).chain_err(|| "Could not open config for writing")?;
         file.write_all(&toml::to_vec(c).unwrap()).map_err(Into::into)
+    }
+}
+
+#[cfg(feature = "dist-server")]
+pub mod scheduler {
+    use std::path::Path;
+
+    use errors::*;
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    #[serde(deny_unknown_fields)]
+    pub enum ClientAuth {
+        #[serde(rename = "DANGEROUSLY_INSECURE")]
+        Insecure,
+        #[serde(rename = "token")]
+        Token { token: String },
+        #[serde(rename = "jwt_validate")]
+        JwtValidate { audience: String, issuer: String, jwks_url: String },
+        #[serde(rename = "mozilla")]
+        Mozilla,
+        #[serde(rename = "proxy_token")]
+        ProxyToken { url: String, cache_secs: Option<u64> }
+    }
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    #[serde(deny_unknown_fields)]
+    pub enum ServerAuth {
+        #[serde(rename = "DANGEROUSLY_INSECURE")]
+        Insecure,
+        #[serde(rename = "jwt_hs256")]
+        JwtHS256 { secret_key: String },
+        #[serde(rename = "token")]
+        Token { token: String },
+    }
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Config {
+        pub client_auth: ClientAuth,
+        pub server_auth: ServerAuth,
+    }
+
+    pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
+        super::try_read_config_file(&conf_path)
+    }
+}
+
+#[cfg(feature = "dist-server")]
+pub mod server {
+    use std::net::{IpAddr, SocketAddr};
+    use std::path::{Path, PathBuf};
+
+    use errors::*;
+
+    const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
+    fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    #[serde(deny_unknown_fields)]
+    pub enum BuilderType {
+        #[serde(rename = "docker")]
+        Docker,
+        #[serde(rename = "overlay")]
+        Overlay { build_dir: PathBuf, bwrap_path: PathBuf },
+    }
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    #[serde(deny_unknown_fields)]
+    pub enum SchedulerAuth {
+        #[serde(rename = "DANGEROUSLY_INSECURE")]
+        Insecure,
+        #[serde(rename = "jwt_token")]
+        JwtToken { token: String },
+        #[serde(rename = "token")]
+        Token { token: String },
+    }
+
+    #[derive(Debug)]
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Config {
+        pub builder: BuilderType,
+        pub cache_dir: PathBuf,
+        pub public_addr: SocketAddr,
+        pub scheduler_addr: IpAddr,
+        pub scheduler_auth: SchedulerAuth,
+        #[serde(default = "default_toolchain_cache_size")]
+        pub toolchain_cache_size: u64,
+    }
+
+    pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
+        super::try_read_config_file(&conf_path)
     }
 }
 

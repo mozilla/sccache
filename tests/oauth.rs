@@ -1,4 +1,4 @@
-#![cfg(all(feature = "dist-client", feature = "dist-tests"))]
+#![cfg(all(feature = "dist-client"))]
 extern crate assert_cmd;
 extern crate chrono;
 extern crate escargot;
@@ -10,10 +10,9 @@ extern crate tempdir;
 extern crate toml;
 
 use escargot::CargoBuild;
-use sccache::config::DistAuth;
 use selenium_rs::webdriver::{Browser, WebDriver, Selector};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -38,14 +37,14 @@ const BROWSER_MAX_WAIT: Duration = Duration::from_secs(10);
 const TEST_USERNAME: &str = "test@example.com";
 const TEST_PASSWORD: &str = "test1234";
 
-fn generate_code_grant_pkce_auth_config() -> DistAuth {
+fn generate_code_grant_pkce_auth_config() -> sccache::config::DistAuth {
     sccache::config::DistAuth::Oauth2CodeGrantPKCE {
         client_id: "Xmbl6zRW1o1tJ5LQOz0p65NwY47aMO7A".to_owned(),
         auth_url: "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/".to_owned(),
         token_url: "https://sccache-test.auth0.com/oauth/token".to_owned(),
     }
 }
-fn generate_implicit_auth_config() -> DistAuth {
+fn generate_implicit_auth_config() -> sccache::config::DistAuth {
     sccache::config::DistAuth::Oauth2Implicit {
         client_id: "TTborSAyjBnSi1W11201ZzNu9gSg63bq".to_owned(),
         auth_url: "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/".to_owned(),
@@ -58,7 +57,7 @@ fn config_with_dist_auth(tmpdir: &Path, auth_config: sccache::config::DistAuth) 
         dist: sccache::config::DistConfig {
             auth: auth_config,
             scheduler_addr: None,
-            cache_dir: tmpdir.join("cache"),
+            cache_dir: tmpdir.join("unused-cache"),
             toolchains: vec![],
             toolchain_cache_size: 0,
         },
@@ -188,10 +187,12 @@ fn test_auth() {
 fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     let conf_dir = TempDir::new("sccache-test-conf").unwrap();
     let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
+    let sccache_config_path = conf_dir.path().join("sccache-config.json");
+    fs::File::create(&sccache_config_path).unwrap().write_all(&serde_json::to_vec(&sccache_config).unwrap()).unwrap();
     let sccache_cached_config_path = conf_dir.path().join("sccache-cached-config");
     let envs = vec![
         ("RUST_LOG", "sccache=trace".into()),
-        (sccache::config::HIDDEN_FILE_CONFIG_DATA_VAR, serde_json::to_string(&sccache_config).unwrap().into()),
+        ("SCCACHE_CONF", sccache_config_path.into_os_string()),
         ("SCCACHE_CACHED_CONF", sccache_cached_config_path.clone().into_os_string()),
     ];
 
