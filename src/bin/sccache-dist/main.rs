@@ -21,7 +21,6 @@ extern crate sccache;
 extern crate serde_derive;
 extern crate serde_json;
 extern crate tar;
-extern crate url;
 
 use arraydeque::ArrayDeque;
 use clap::{App, Arg, SubCommand};
@@ -46,7 +45,6 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{UNIX_EPOCH, Duration, Instant, SystemTime};
-use url::percent_encoding::{utf8_percent_encode, USERINFO_ENCODE_SET};
 
 use errors::*;
 
@@ -251,14 +249,29 @@ fn check_jwt_validity(audience: &str, issuer: &str, kid_to_pkcs1: &HashMap<Strin
 
 // https://infosec.mozilla.org/guidelines/iam/openid_connect#session-handling
 const MOZ_SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 15);
+const MOZ_USERINFO_ENDPOINT: &str = "https://auth.mozilla.auth0.com/userinfo";
 
-// Mozilla-specific check by forwarding the token onto person api
+// Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
 fn check_mozilla(auth_cache: &Mutex<HashMap<String, Instant>>, client: &reqwest::Client, required_groups: &[String], token: &str) -> Result<()> {
+    // azp == client_id
+    // {
+    //   "iss": "https://auth.mozilla.auth0.com/",
+    //   "sub": "ad|Mozilla-LDAP|asayers",
+    //   "aud": [
+    //     "sccache",
+    //     "https://auth.mozilla.auth0.com/userinfo"
+    //   ],
+    //   "iat": 1541103283,
+    //   "exp": 1541708083,
+    //   "azp": "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo",
+    //   "scope": "openid"
+    // }
     #[derive(Deserialize)]
     struct MozillaToken {
         exp: u64,
         sub: String,
     }
+    // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
     let unsafe_token = jwt::dangerous_unsafe_decode::<MozillaToken>(token).chain_err(|| "Unable to decode jwt")?;
     let user = unsafe_token.claims.sub;
     trace!("Validating token for user {} with mozilla", user);
@@ -275,33 +288,24 @@ fn check_mozilla(auth_cache: &Mutex<HashMap<String, Instant>>, client: &reqwest:
         }
         auth_cache.remove(token);
     }
-    // Ask person api about groups (as a side effect, checking the JWT)
-    // https://github.com/mozilla-iam/person-api#get-v1profileuser_id
-    // https://github.com/mozilla-iam/person-api/blob/master/person-api/vault.py
-    // USERINFO may not be strictly correct, but it needs to encode '|'
-    let urlencoded_user = utf8_percent_encode(&user, USERINFO_ENCODE_SET).to_string();
-    let url = reqwest::Url::parse("https://person-api.sso.mozilla.com/v1/profile/").unwrap().join(&urlencoded_user)
-        .chain_err(|| format!("Could not create person api url for {}", user))?;
+
+    debug!("User {} not in cache, validating via auth0 endpoint", user);
+    // Retrieve the groups from the auth0 /userinfo endpoint, which Mozilla rules populate with groups
+    // https://github.com/mozilla-iam/auth0-deploy/blob/6889f1dde12b84af50bb4b2e2f00d5e80d5be33f/rules/CIS-Claims-fixups.js#L158-L168
+    let url = reqwest::Url::parse(MOZ_USERINFO_ENDPOINT).unwrap();
     let header = reqwest::header::Authorization(reqwest::header::Bearer { token: token.to_owned() });
     let mut res = client.get(url.clone()).header(header).send().unwrap();
+    let res_text = res.text().unwrap();
     if !res.status().is_success() {
-        bail!("JWT forwarded to {} returned {} {}", url, res.status().as_u16(), res.status());
+        bail!("JWT forwarded to {} returned {}: {}", url, res.status(), res_text)
     }
 
-    #[derive(Deserialize)]
-    #[derive(Debug)]
-    #[allow(non_snake_case)]
-    struct Response {
-        statusCode: u16,
-        body: String,
-    }
-    let response: Response = res.json().chain_err(|| "Cannot parse response from person api")?;
-    if response.statusCode != 200 {
-        bail!("Response from person api had non-200 response: {:?}", response)
-    }
-    let () = check_mozilla_profile(&user, required_groups, &response.body)
+    // The API didn't return a HTTP error code, let's check the response
+    let () = check_mozilla_profile(&user, required_groups, &res_text)
         .chain_err(|| format!("Validation of the user profile failed for {}", user))?;
-    // Cache the token
+
+    // Validation success, cache the token
+    debug!("Validation for user {} succeeded, caching", user);
     {
         let mut auth_cache = auth_cache.lock().unwrap();
         auth_cache.insert(token.to_owned(), Instant::now());
@@ -311,56 +315,52 @@ fn check_mozilla(auth_cache: &Mutex<HashMap<String, Instant>>, client: &reqwest:
 
 fn check_mozilla_profile(user: &str, required_groups: &[String], profile: &str) -> Result<()> {
     #[derive(Deserialize)]
-    struct PersonAPIProfile {
-        user_id: String,
+    struct UserInfo {
+        sub: String,
+        #[serde(rename = "https://sso.mozilla.com/claim/groups")]
         groups: Vec<String>,
     }
-    let profile: PersonAPIProfile = serde_json::from_str(profile)
-        .chain_err(|| "body field in response from person api could not be parsed as a profile")?;
-    if user != profile.user_id {
-        bail!("User {} retrieved from person api is different to desired user {}", profile.user_id, user)
+    let profile: UserInfo = serde_json::from_str(profile)
+        .chain_err(|| format!("Could not parse profile: {}", profile))?;
+    if user != profile.sub {
+        bail!("User {} retrieved in profile is different to desired user {}", profile.sub, user)
     }
     for group in required_groups.iter() {
-        if !profile.groups.iter().any(|profile_group| profile_group == group) {
-            bail!("User is not a member of group {}", group)
+        if !profile.groups.contains(group) {
+            bail!("User {} is not a member of required group {}", user, group)
         }
     }
     Ok(())
 }
 
 #[test]
-fn test_check_mozilla_profile() {
-    let profile = r#"{
-        "nicknames": [],
-        "PGPFingerprints": [],
-        "lastName": "NULL",
-        "lastModified": "2018-10-30T14:05:50+00:00",
-        "created": "2018-10-30T14:05:50+00:00",
-        "phoneNumbers": [],
-        "userName": "asayers",
-        "picture": "https://secure.gravatar.com/avatar/5c583a68b5db9956269d0aa2b05a9a20?s=160x160&r=pg&d=https%3A%2F%2Fcdn.mozillians.org%2Fmedia%2Fimg%2Fdefault_avatar.png",
-        "uris": [],
-        "firstName": "NULL",
-        "displayName": "NULL",
-        "groups": [
+fn test_auth_verify_check_mozilla_profile() {
+    // A successful response
+    let profile =  r#"{
+        "sub": "ad|Mozilla-LDAP|asayers",
+        "https://sso.mozilla.com/claim/groups": [
+            "everyone",
             "hris_dept_firefox",
             "hris_individual_contributor",
             "hris_nonmanagers",
             "hris_is_staff",
             "hris_workertype_contractor"
         ],
-        "active": true,
-        "user_id": "ad|Mozilla-LDAP|asayers",
-        "shirtSize": "NULL",
-        "emails": [{"verified": true, "name": "LDAP Provider", "value": "asayers@mozilla.com", "primary": true}],
-        "preferredLanguage": "en_US",
-        "SSHFingerprints": [],
-        "timezone": "NULL",
-        "authoritativeGroups": [],
-        "primaryEmail": "asayers@mozilla.com",
-        "tags": []
+        "https://sso.mozilla.com/claim/README_FIRST": "Please refer to https://github.com/mozilla-iam/person-api in order to query Mozilla IAM CIS user profile data"
     }"#;
-    check_mozilla_profile("ad|Mozilla-LDAP|asayers", &["hris_dept_firefox".to_owned()], profile).unwrap()
+
+    // If the user has been deactivated since the token was issued. Note this may be partnered with an error code
+    // response so may never reach validation
+    let profile_fail = r#"{
+        "error": "unauthorized",
+        "error_description": "user is blocked"
+    }"#;
+
+    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &["hris_dept_firefox".to_owned()], profile).is_ok());
+    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &[], profile).is_ok());
+    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &["hris_the_ceo".to_owned()], profile).is_err());
+
+    assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &[], profile_fail).is_err());
 }
 
 // Don't check a token is valid (it may not even be a JWT) just forward it to
