@@ -93,6 +93,7 @@ ArgData!{ pub
     ProfileGenerate,
     TestCoverage,
     Coverage,
+    ExtraHashFile(PathBuf),
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
     XClang(OsString),
 }
@@ -190,6 +191,7 @@ where
     let mut dep_target = None;
     let mut common_args = vec!();
     let mut preprocessor_args = vec!();
+    let mut extra_hash_files = vec!();
     let mut compilation = false;
     let mut multiple_input = false;
     let mut split_dwarf = false;
@@ -243,6 +245,7 @@ where
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget(s)) => dep_target = Some(s.clone()),
+            Some(ExtraHashFile(_)) |
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
@@ -276,6 +279,7 @@ where
             Some(ProfileGenerate) |
             Some(TestCoverage) |
             Some(Coverage) |
+            Some(ExtraHashFile(_)) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
             Some(PreprocessorArgumentFlag) |
@@ -336,6 +340,10 @@ where
             }
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(path.clone());
+                Some(&mut common_args)
+            }
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
@@ -406,6 +414,7 @@ where
         outputs: outputs,
         preprocessor_args: preprocessor_args,
         common_args: common_args,
+        extra_hash_files: extra_hash_files,
         msvc_show_includes: false,
         profile_generate,
     })
@@ -704,6 +713,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            extra_hash_files: _,
             profile_generate,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
@@ -734,6 +744,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            extra_hash_files: _,
             profile_generate,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
@@ -764,6 +775,7 @@ mod test {
             preprocessor_args,
             msvc_show_includes,
             common_args,
+            extra_hash_files: _,
             profile_generate,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
@@ -1024,6 +1036,7 @@ mod test {
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            extra_hash_files: vec!(),
             msvc_show_includes: false,
             profile_generate: false,
         };

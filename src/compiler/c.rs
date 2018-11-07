@@ -34,7 +34,7 @@ use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{HashToDigest, Digest};
+use util::{HashToDigest, Digest, hash_all};
 
 use errors::*;
 
@@ -83,6 +83,8 @@ pub struct ParsedArguments {
     pub preprocessor_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor or the compiler.
     pub common_args: Vec<OsString>,
+    /// Extra files that need to have their contents hashed.
+    pub extra_hash_files: Vec<PathBuf>,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
     pub msvc_show_includes: bool,
     /// Whether the compilation is generating profiling or coverage data.
@@ -224,7 +226,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                          cwd: PathBuf,
                          env_vars: Vec<(OsString, OsString)>,
                          may_dist: bool,
-                         _pool: &CpuPool)
+                         pool: &CpuPool)
                          -> SFuture<HashResult>
     {
         let me = *self;
@@ -237,6 +239,8 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
             e
         });
         let out_pretty = parsed_args.output_pretty().into_owned();
+        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone());
+
         Box::new(result.or_else(move |err| {
             match err {
                 Error(ErrorKind::ProcessError(output), _) => {
@@ -257,30 +261,33 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                    parsed_args.output_pretty(),
                    preprocessor_result.stdout.len());
 
-            let key = {
-                hash_key(&executable_digest,
-                         parsed_args.language,
-                         &parsed_args.common_args,
-                         &env_vars,
-                         &preprocessor_result.stdout)
-            };
-            // A compiler binary may be a symlink to another and so has the same digest, but that means
-            // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
-            // executable path to try and prevent this
-            let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
-            Ok(HashResult {
-                key: key,
-                compilation: Box::new(CCompilation {
-                    parsed_args: parsed_args,
-                    #[cfg(feature = "dist-client")]
-                    preprocessed_input: preprocessor_result.stdout,
-                    executable: executable,
-                    compiler: compiler,
-                    cwd,
-                    env_vars,
-                }),
-                weak_toolchain_key,
-            })
+            Box::new(extra_hashes.and_then(move |extra_hashes| {
+                let key = {
+                    hash_key(&executable_digest,
+                             parsed_args.language,
+                             &parsed_args.common_args,
+                             &extra_hashes,
+                             &env_vars,
+                             &preprocessor_result.stdout)
+                };
+                // A compiler binary may be a symlink to another and so has the same digest, but that means
+                // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
+                // executable path to try and prevent this
+                let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+                Ok(HashResult {
+                    key: key,
+                    compilation: Box::new(CCompilation {
+                        parsed_args: parsed_args,
+                        #[cfg(feature = "dist-client")]
+                        preprocessed_input: preprocessor_result.stdout,
+                        executable: executable,
+                        compiler: compiler,
+                        cwd,
+                        env_vars,
+                    }),
+                    weak_toolchain_key,
+                })
+            }))
         }))
     }
 
@@ -389,7 +396,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION: &[u8] = b"6";
+pub const CACHE_VERSION: &[u8] = b"7";
 
 lazy_static! {
     /// Environment variables that are factored into the cache key.
@@ -403,6 +410,7 @@ lazy_static! {
 pub fn hash_key(compiler_digest: &str,
                 language: Language,
                 arguments: &[OsString],
+                extra_hashes: &[String],
                 env_vars: &[(OsString, OsString)],
                 preprocessor_output: &[u8]) -> String
 {
@@ -414,6 +422,10 @@ pub fn hash_key(compiler_digest: &str,
     for arg in arguments {
         arg.hash(&mut HashToDigest { digest: &mut m });
     }
+    for hash in extra_hashes {
+        m.update(hash.as_bytes());
+    }
+
     for &(ref var, ref val) in env_vars.iter() {
         if CACHED_ENV_VARS.contains(var.as_os_str()) {
             var.hash(&mut HashToDigest { digest: &mut m });
@@ -433,8 +445,8 @@ mod test {
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED : &'static [u8] = b"hello world";
-        assert_neq!(hash_key("abcd", Language::C, &args, &[], &PREPROCESSED),
-                    hash_key("wxyz", Language::C, &args, &[], &PREPROCESSED));
+        assert_neq!(hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED),
+                    hash_key("wxyz", Language::C, &args, &[], &[], &PREPROCESSED));
     }
 
     #[test]
@@ -445,21 +457,21 @@ mod test {
         let ab = ovec!["a", "b"];
         let a = ovec!["a"];
         const PREPROCESSED: &'static [u8] = b"hello world";
-        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, Language::C, &xyz, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &xyz, &[], &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, Language::C, &ab, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &ab, &[], &[], &PREPROCESSED));
 
-        assert_neq!(hash_key(digest, Language::C, &abc, &[], &PREPROCESSED),
-                    hash_key(digest, Language::C, &a, &[], &PREPROCESSED));
+        assert_neq!(hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &a, &[], &[], &PREPROCESSED));
     }
 
     #[test]
     fn test_hash_key_preprocessed_content_differs() {
         let args = ovec!["a", "b", "c"];
-        assert_neq!(hash_key("abcd", Language::C, &args, &[], &b"hello world"[..]),
-                    hash_key("abcd", Language::C, &args, &[], &b"goodbye"[..]));
+        assert_neq!(hash_key("abcd", Language::C, &args, &[], &[], &b"hello world"[..]),
+                    hash_key("abcd", Language::C, &args, &[], &[], &b"goodbye"[..]));
     }
 
     #[test]
@@ -468,13 +480,24 @@ mod test {
         let digest = "abcd";
         const PREPROCESSED: &'static [u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let h1 = hash_key(digest, Language::C, &args, &[], &PREPROCESSED);
+            let h1 = hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
-            let h2 = hash_key(digest, Language::C, &args, &vars, &PREPROCESSED);
+            let h2 = hash_key(digest, Language::C, &args, &[], &vars, &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something else"))];
-            let h3 = hash_key(digest, Language::C, &args, &vars, &PREPROCESSED);
+            let h3 = hash_key(digest, Language::C, &args, &[], &vars, &PREPROCESSED);
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
+    }
+
+    #[test]
+    fn test_extra_hash_data() {
+        let args = ovec!["a", "b", "c"];
+        let digest = "abcd";
+        const PREPROCESSED: &'static [u8] = b"hello world";
+        let extra_data = stringvec!["hello", "world"];
+
+        assert_neq!(hash_key(digest, Language::C, &args, &extra_data, &[], &PREPROCESSED),
+                    hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED));
     }
 }

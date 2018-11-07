@@ -250,6 +250,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     let mut input_arg = None;
     let mut common_args = vec!();
     let mut preprocessor_args = vec!();
+    let mut extra_hash_files = vec!();
     let mut compilation = false;
     let mut debug_info = false;
     let mut pdb = None;
@@ -351,6 +352,10 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             }
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(path.clone());
+                Some(&mut common_args)
+            }
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
@@ -417,6 +422,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
         outputs: outputs,
         preprocessor_args: preprocessor_args,
         common_args: common_args,
+        extra_hash_files: extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate: false,
     })
@@ -871,6 +877,7 @@ mod test {
             outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            extra_hash_files: vec!(),
             msvc_show_includes: false,
             profile_generate: false,
         };
@@ -902,6 +909,7 @@ mod test {
                           ("pdb", pdb.into())].into_iter().collect(),
             preprocessor_args: vec!(),
             common_args: vec!(),
+            extra_hash_files: vec!(),
             msvc_show_includes: false,
             profile_generate: false,
         };
