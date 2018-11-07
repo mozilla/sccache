@@ -93,7 +93,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fprofile-instr-use", OsString, Concatenated, TooHard),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    take_arg!("-load", OsString, Separated, PassThrough),
+    take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
 ]);
@@ -178,8 +178,8 @@ mod test {
     fn test_parse_xclang_load() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-load", "-Xclang", "plugin.so");
         println!("A {:#?}", a);
-        // TODO: Verify plugin.so is part of hash?
         assert_eq!(ovec!["-Xclang", "-load", "-Xclang", "plugin.so"], a.common_args);
+        assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
     }
 
     #[test]
