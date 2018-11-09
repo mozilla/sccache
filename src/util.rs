@@ -14,7 +14,7 @@
 
 use bincode;
 use byteorder::{ByteOrder, BigEndian};
-use futures::Future;
+use futures::{Future, future};
 use futures_cpupool::CpuPool;
 use mock_command::{CommandChild, RunCommand};
 use ring::digest::{SHA512, Context};
@@ -24,8 +24,9 @@ use std::fs::File;
 use std::hash::Hasher;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
+use std::time;
 use std::time::Duration;
 
 use errors::*;
@@ -89,6 +90,20 @@ pub fn hex(bytes: &[u8]) -> String {
             _ => (b'a' + byte - 10) as char,
         }
     }
+}
+
+/// Calculate the SHA-1 digest of each file in `files` on background threads
+/// in `pool`.
+pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
+{
+    let start = time::Instant::now();
+    let count = files.len();
+    let pool = pool.clone();
+    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
+             .map(move |hashes| {
+                 trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
+                 hashes
+             }))
 }
 
 /// Format `duration` as seconds with a fractional component.
