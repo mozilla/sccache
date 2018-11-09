@@ -20,7 +20,7 @@ use compiler::args::*;
 use dist;
 #[cfg(feature = "dist-client")]
 use dist::pkg;
-use futures::{Future, future};
+use futures::Future;
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
@@ -51,7 +51,7 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, run_input_output, Digest};
+use util::{fmt_duration_as_secs, run_input_output, Digest, hash_all};
 use util::{HashToDigest, OsStrExt, ref_env};
 
 use errors::*;
@@ -188,20 +188,6 @@ lazy_static! {
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"2";
-
-/// Calculate the SHA-1 digest of each file in `files` on background threads
-/// in `pool`.
-fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>>
-{
-    let start = time::Instant::now();
-    let count = files.len();
-    let pool = pool.clone();
-    Box::new(future::join_all(files.into_iter().map(move |f| Digest::file(f, &pool)).collect::<Vec<_>>())
-             .map(move |hashes| {
-                 trace!("Hashed {} files in {}", count, fmt_duration_as_secs(&start.elapsed()));
-                 hashes
-             }))
-}
 
 /// Get absolute paths for all source files listed in rustc's dep-info output.
 fn get_source_files<T>(creator: &T,
