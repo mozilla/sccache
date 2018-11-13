@@ -193,7 +193,10 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     fn kind(&self) -> CompilerKind { CompilerKind::C(self.compiler.kind()) }
     #[cfg(feature = "dist-client")]
     fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
-        Box::new(CToolchainPackager { executable: self.executable.clone() })
+        Box::new(CToolchainPackager {
+            executable: self.executable.clone(),
+            kind: self.compiler.kind(),
+        })
     }
     fn parse_arguments(&self,
                        arguments: &[OsString],
