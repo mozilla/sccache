@@ -53,6 +53,7 @@ use std::time::Instant;
 use std::u64;
 use tokio;
 use tokio::runtime::current_thread::Runtime;
+use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
@@ -634,8 +635,18 @@ where
     where
         T: AsyncRead + AsyncWrite + 'static,
     {
+        let mut builder = length_delimited::Builder::new();
+        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
+            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
+                builder.max_frame_length(max_frame_length);
+            } else {
+                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is  not a valid number, using default");
+            }
+        }
+        let io = builder.new_framed(socket);
+
         let (sink, stream) = SccacheTransport {
-            inner: WriteBincode::new(ReadBincode::new(Framed::new(socket))),
+            inner: WriteBincode::new(ReadBincode::new(io)),
         }.split();
         let sink = sink.sink_from_err::<Error>();
 
