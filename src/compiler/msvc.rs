@@ -890,6 +890,7 @@ mod test {
                                                                            &parsed_args,
                                                                            f.tempdir.path(),
                                                                            &[]).unwrap();
+        #[cfg(feature = "dist-client")]
         assert!(dist_command.is_some());
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
@@ -923,6 +924,7 @@ mod test {
                                                                            &parsed_args,
                                                                            f.tempdir.path(),
                                                                            &[]).unwrap();
+        #[cfg(feature = "dist-client")]
         assert!(dist_command.is_some());
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::No, cacheable);
