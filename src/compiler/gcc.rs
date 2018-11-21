@@ -1051,6 +1051,8 @@ mod test {
                                                                            &[]).unwrap();
         #[cfg(feature = "dist-client")]
         assert!(dist_command.is_some());
+        #[cfg(not(feature = "dist-client"))]
+        assert!(dist_command.is_none());
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.

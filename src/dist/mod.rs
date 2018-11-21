@@ -479,6 +479,7 @@ pub enum AllocJobResult {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssignJobResult {
+    pub state: JobState,
     pub need_toolchain: bool,
 }
 
@@ -597,7 +598,7 @@ pub trait SchedulerIncoming: Send + Sync {
 pub trait ServerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Scheduler
-    fn handle_assign_job(&self, requester: &ServerOutgoing, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
     fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> ExtResult<SubmitToolchainResult, Self::Error>;
     // From Client

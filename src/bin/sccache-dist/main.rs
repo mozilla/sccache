@@ -38,7 +38,7 @@ use sccache::dist::{
     BuilderIncoming, JobAuthorizer, SchedulerIncoming, SchedulerOutgoing, ServerIncoming, ServerOutgoing,
     TcCache,
 };
-use std::collections::{btree_map, BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{self, Write};
 use std::net::SocketAddr;
@@ -357,7 +357,7 @@ pub struct Scheduler {
 }
 
 struct ServerDetails {
-    jobs_assigned: usize,
+    jobs_assigned: HashSet<JobId>,
     last_seen: Instant,
     num_cpus: usize,
     server_nonce: ServerNonce,
@@ -378,43 +378,74 @@ impl Scheduler {
 impl SchedulerIncoming for Scheduler {
     type Error = Error;
     fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> Result<AllocJobResult> {
-        // TODO: prune old servers
         let (job_id, server_id, auth) = {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
             let mut servers = self.servers.lock().unwrap();
 
-            let mut best = None;
-            let mut best_load: f64 = MAX_PER_CORE_LOAD;
-            let num_servers = servers.len();
-            for (&server_id, details) in servers.iter_mut() {
-                let load = details.jobs_assigned as f64 / details.num_cpus as f64;
-                if load < best_load {
-                    best = Some((server_id, details));
-                    best_load = load;
-                    if load == 0f64 {
-                        break
+            // TODO: NLL would let us simplify this
+            let mut dead_servers = vec![];
+            let res = {
+                let mut best = None;
+                let mut best_load: f64 = MAX_PER_CORE_LOAD;
+                let now = Instant::now();
+                for (&server_id, details) in servers.iter_mut() {
+                    if now.duration_since(details.last_seen) > dist::http::HEARTBEAT_TIMEOUT {
+                        dead_servers.push(server_id);
+                        continue
+                    }
+                    let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
+                    if load < best_load {
+                        best = Some((server_id, details));
+                        best_load = load;
+                        if load == 0f64 {
+                            break
+                        }
                     }
                 }
-            }
-            if let Some((server_id, server_details)) = best {
-                let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
-                let job_id = JobId(job_count);
-                server_details.jobs_assigned += 1;
 
-                info!("Job {} created and assigned to server {:?}", job_id, server_id);
-                assert!(jobs.insert(job_id, JobDetail { server_id, state: JobState::Pending }).is_none());
-                let auth = server_details.job_authorizer.generate_token(job_id)
-                    .map_err(Error::from)
-                    .chain_err(|| "Could not create an auth token for this job")?;
-                (job_id, server_id, auth)
+                // Assign the job to our best choice
+                if let Some((server_id, server_details)) = best {
+                    let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
+                    let job_id = JobId(job_count);
+                    assert!(server_details.jobs_assigned.insert(job_id));
+
+                    info!("Job {} created and will be assigned to server {:?}", job_id, server_id);
+                    let auth = server_details.job_authorizer.generate_token(job_id)
+                        .map_err(Error::from)
+                        .chain_err(|| "Could not create an auth token for this job")?;
+                    Some((job_id, server_id, auth))
+                } else {
+                    None
+                }
+            };
+
+            // We iterated over all servers, prune any that haven't had a heartbeat for too long
+            for server_id in dead_servers {
+                warn!("Server {} appears to be dead, pruning it in the scheduler", server_id.addr());
+                let server_details = servers.remove(&server_id).expect("server went missing from map");
+                for job_id in server_details.jobs_assigned {
+                    warn!("Non-terminated job {} was cleaned up in server pruning", job_id);
+                    assert!(jobs.remove(&job_id).is_some())
+                }
+            }
+
+            if let Some(res) = res {
+                res
             } else {
-                let msg = format!("Insufficient capacity across {} available servers", num_servers);
+                let msg = format!("Insufficient capacity across {} available servers", servers.len());
                 return Ok(AllocJobResult::Fail { msg })
             }
         };
-        let AssignJobResult { need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
+        let AssignJobResult { state, need_toolchain } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
             .chain_err(|| "assign job failed")?;
+        {
+            // LOCKS
+            let mut jobs = self.jobs.lock().unwrap();
+
+            info!("Job {} successfully assigned and saved with state {:?}", job_id, state);
+            assert!(jobs.insert(job_id, JobDetail { server_id, state }).is_none());
+        }
         let job_alloc = JobAlloc { auth, job_id, server_id };
         Ok(AllocJobResult::Success { job_alloc, need_toolchain })
     }
@@ -437,7 +468,7 @@ impl SchedulerIncoming for Scheduler {
         info!("Registered new server {:?}", server_id);
         servers.insert(server_id, ServerDetails {
             last_seen: Instant::now(),
-            jobs_assigned: 0,
+            jobs_assigned: HashSet::new(),
             num_cpus,
             server_nonce,
             job_authorizer,
@@ -466,7 +497,7 @@ impl SchedulerIncoming for Scheduler {
                     let (job_id, job_entry) = entry.remove_entry();
                     finished_jobs.push_back((job_id, job_entry));
                     if let Some(entry) = servers.get_mut(&server_id) {
-                        entry.jobs_assigned -= 1
+                        assert!(entry.jobs_assigned.remove(&job_id))
                     } else {
                         bail!("Job was marked as finished, but server is not known to scheduler")
                     }
@@ -511,14 +542,16 @@ impl Server {
 
 impl ServerIncoming for Server {
     type Error = Error;
-    fn handle_assign_job(&self, requester: &ServerOutgoing, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(self.job_toolchains.lock().unwrap().insert(job_id, tc).is_none());
-        if !need_toolchain {
-            requester.do_update_job_state(job_id, JobState::Ready).chain_err(|| "Updating job state failed")?;
+        let state = if need_toolchain {
+            JobState::Pending
+        } else {
             // TODO: can start prepping the build environment now
-        }
-        Ok(AssignJobResult { need_toolchain })
+            JobState::Ready
+        };
+        Ok(AssignJobResult { state, need_toolchain })
     }
     fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
         requester.do_update_job_state(job_id, JobState::Ready).chain_err(|| "Updating job state failed")?;

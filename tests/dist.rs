@@ -157,10 +157,10 @@ fn test_dist_nobuilder() {
 struct FailingServer;
 impl ServerIncoming for FailingServer {
     type Error = Error;
-    fn handle_assign_job(&self, requester: &ServerOutgoing, job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
+    fn handle_assign_job(&self, _job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = false;
-        requester.do_update_job_state(job_id, JobState::Ready).chain_err(|| "Updating job state failed")?;
-        Ok(AssignJobResult { need_toolchain })
+        let state = JobState::Ready;
+        Ok(AssignJobResult { need_toolchain, state })
     }
     fn handle_submit_toolchain(&self, _requester: &ServerOutgoing, _job_id: JobId, _tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
         panic!("should not have submitted toolchain")

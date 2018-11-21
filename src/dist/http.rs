@@ -14,7 +14,7 @@
 #[cfg(feature = "dist-client")]
 pub use self::client::Client;
 #[cfg(feature = "dist-server")]
-pub use self::server::{Scheduler, ClientAuthCheck, ClientVisibleMsg, ServerAuthCheck};
+pub use self::server::{HEARTBEAT_TIMEOUT, Scheduler, ClientAuthCheck, ClientVisibleMsg, ServerAuthCheck};
 #[cfg(feature = "dist-server")]
 pub use self::server::Server;
 
@@ -242,6 +242,10 @@ mod server {
     };
     use super::urls;
     use errors::*;
+
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+    const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
+    pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
@@ -730,11 +734,11 @@ mod server {
                         Ok(HeartbeatServerResult { is_new }) => {
                             trace!("Heartbeat success is_new={}", is_new);
                             // TODO: if is_new, terminate all running jobs
-                            thread::sleep(Duration::from_secs(30))
+                            thread::sleep(HEARTBEAT_INTERVAL)
                         },
                         Err(e) => {
                             error!("Failed to send heartbeat to server: {}", e);
-                            thread::sleep(Duration::from_secs(10))
+                            thread::sleep(HEARTBEAT_ERROR_INTERVAL)
                         },
                     }
                 }
@@ -752,7 +756,7 @@ mod server {
                         let toolchain = try_or_400_log!(req_id, bincode_input(request));
                         trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
-                        let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(&requester, job_id, toolchain));
+                        let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
                         bincode_response(&res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
