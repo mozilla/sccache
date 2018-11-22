@@ -1445,8 +1445,6 @@ struct RustToolchainPackager {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 impl pkg::ToolchainPackager for RustToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
-        use walkdir::WalkDir;
-
         info!("Packaging Rust compiler for sysroot {}", self.sysroot.display());
         let RustToolchainPackager { sysroot } = *self;
 
@@ -1457,33 +1455,10 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         let sysroot_executable = bins_path.join("rustc").with_extension(EXE_EXTENSION);
         package_builder.add_executable_and_deps(sysroot_executable)?;
 
-        // Although by not following symlinks we could break a custom constructed toolchain with
-        // links everywhere, this is just a best-effort auto packaging
-        fn walk_and_add(path: &Path, package_builder: &mut pkg::ToolchainPackageBuilder) -> Result<()> {
-            for entry in WalkDir::new(path).follow_links(false) {
-                let entry = entry?;
-                let file_type = entry.file_type();
-                if file_type.is_dir() {
-                    continue
-                } else if file_type.is_symlink() {
-                    let metadata = fs::metadata(entry.path())?;
-                    if !metadata.file_type().is_file() {
-                        continue
-                    }
-                } else if !file_type.is_file() {
-                    // Device or other oddity
-                    continue
-                }
-                // It's either a file, or a symlink pointing to a file
-                package_builder.add_file(entry.path().to_owned())?
-            }
-            Ok(())
-        }
-
-        walk_and_add(&bins_path, &mut package_builder)?;
+        package_builder.add_dir_contents(&bins_path)?;
         if BINS_DIR != LIBS_DIR {
             let libs_path = sysroot.join(LIBS_DIR);
-            walk_and_add(&libs_path, &mut package_builder)?
+            package_builder.add_dir_contents(&libs_path)?
         }
 
         package_builder.into_compressed_tar(f)
