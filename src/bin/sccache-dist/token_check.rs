@@ -1,4 +1,5 @@
 use base64;
+use hyperx;
 use jwt;
 use openssl;
 use reqwest;
