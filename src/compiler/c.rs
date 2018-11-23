@@ -378,10 +378,9 @@ struct CToolchainPackager {
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::os::unix::ffi::OsStringExt;
-        use pkg::ToolchainPackageBuilder as Builder;
 
         info!("Generating toolchain {}", self.executable.display());
-        let mut package_builder = Builder::new();
+        let mut package_builder = pkg::ToolchainPackageBuilder::new();
         package_builder.add_common()?;
         package_builder.add_executable_and_deps(self.executable.clone())?;
 
