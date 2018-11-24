@@ -1944,6 +1944,19 @@ bar.rs:
                    parse_dep_info(&deps, ""));
     }
 
+
+    #[test]
+    fn test_parse_dep_info_with_escaped_spaces() {
+        let deps = r#"foo: baz.rs abc\ def.rs
+
+baz.rs:
+
+abc def.rs:
+"#;
+        assert_eq!(pathvec!["abc def.rs", "baz.rs"],
+                   parse_dep_info(&deps, ""));
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn test_parse_dep_info_cwd() {
