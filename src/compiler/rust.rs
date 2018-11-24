@@ -261,11 +261,38 @@ fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
         None => return vec![],
         Some(p) => p,
     };
-    let mut deps = line[pos + 2..]
-        .split(' ')
-        .map(|s| s.trim()).filter(|s| !s.is_empty())
-        .map(|s| cwd.join(s))
-        .collect::<Vec<_>>();
+
+    let mut deps = Vec::new();
+    let mut current_dep = String::new();
+
+    let mut iter = line[pos + 2..].chars().peekable();
+
+    loop {
+        match iter.next() {
+          Some('\\') => {
+              if iter.peek() == Some(&' ') {
+                  current_dep.push(' ');
+                  iter.next();
+              } else {
+                  current_dep.push('\\');
+              }
+          },
+          Some(' ') => {
+              deps.push(current_dep);
+              current_dep = String::new();
+          },
+          Some(c) => current_dep.push(c),
+          None => {
+            if !current_dep.is_empty() {
+              deps.push(current_dep);
+            }
+
+            break
+          },
+        }
+    }
+
+    let mut deps = deps.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
     deps.sort();
     deps
 }
