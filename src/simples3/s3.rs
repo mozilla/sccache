@@ -13,6 +13,7 @@ use crypto::sha1::Sha1;
 use futures::{future, Future, Stream};
 use hyper::header::HeaderValue;
 use hyper::Method;
+use hyperx::header;
 use reqwest::r#async::{Client, Request};
 
 use crate::errors::*;
