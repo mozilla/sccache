@@ -192,6 +192,7 @@ pub struct RedisCacheConfig {
 pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
+    pub get_auth: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -406,7 +407,12 @@ fn config_from_env() -> EnvConfig {
                     _ => format!("{}.s3.amazonaws.com", bucket),
                 },
             };
-            S3CacheConfig { bucket, endpoint }
+
+            let get_auth = env::var("SCCACHE_S3_GET_AUTH")
+                .ok()
+                .map_or(false, |v| v.to_lowercase() == "true");
+
+            S3CacheConfig { bucket, endpoint, get_auth }
         });
 
     let redis = env::var("SCCACHE_REDIS").ok()

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use cache::{Cache, CacheRead, CacheWrite, Storage};
+use config;
 use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
@@ -37,7 +38,7 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str) -> Result<S3Cache> {
+    pub fn new(config: &config::S3CacheConfig) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().ok_or("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -51,15 +52,11 @@ impl S3Cache {
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         //TODO: configurable SSL
-        let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No)?);
-        let get_auth = env::var("SCCACHE_S3_GET_AUTH")
-            .unwrap_or("false".to_string())
-            .to_lowercase()
-            == "true";
+        let bucket = Rc::new(Bucket::new(&config.bucket, &config.endpoint, Ssl::No)?);
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
-            get_auth: get_auth,
+            get_auth: config.get_auth,
         })
     }
 }

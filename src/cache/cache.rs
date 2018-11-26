@@ -257,13 +257,10 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
                     Err(e) => warn!("Failed to create RedisCache: {:?}", e),
                 }
             }
-            CacheType::S3(config::S3CacheConfig {
-                ref bucket,
-                ref endpoint,
-            }) => {
-                debug!("Trying S3Cache({}, {})", bucket, endpoint);
+            CacheType::S3(ref config) => {
+                debug!("Trying S3Cache: {:?}", config);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&bucket, &endpoint) {
+                match S3Cache::new(config) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);
