@@ -16,14 +16,14 @@ use directories::ProjectDirs;
 use regex::Regex;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use reqwest;
+use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
-use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 use serde_json;
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
 use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
@@ -46,7 +46,8 @@ const MOZILLA_OAUTH_PKCE_CLIENT_ID: &str = "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo";
 // The sccache audience is an API set up in auth0 for sccache to allow 7 day expiry,
 // the openid scope allows us to query the auth0 /userinfo endpoint which contains
 // group information due to Mozilla rules.
-const MOZILLA_OAUTH_PKCE_AUTH_URL: &str = "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid";
+const MOZILLA_OAUTH_PKCE_AUTH_URL: &str =
+    "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid";
 const MOZILLA_OAUTH_PKCE_TOKEN_URL: &str = "https://auth.mozilla.auth0.com/oauth/token";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
@@ -56,17 +57,23 @@ pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
         .expect("Unable to retrieve disk cache directory")
-        .cache_dir().to_owned()
+        .cache_dir()
+        .to_owned()
 }
 // ...whereas subdirectories are used of this one
 pub fn default_dist_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
         .expect("Unable to retrieve dist cache directory")
-        .cache_dir().to_owned()
+        .cache_dir()
+        .to_owned()
 }
 
-fn default_disk_cache_size() -> u64 { TEN_GIGS }
-fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
+fn default_disk_cache_size() -> u64 {
+    TEN_GIGS
+}
+fn default_toolchain_cache_size() -> u64 {
+    TEN_GIGS
+}
 
 pub fn parse_size(val: &str) -> Option<u64> {
     let re = Regex::new(r"^(\d+)([KMGT])$").expect("Fixed regex parse failure");
@@ -75,15 +82,12 @@ pub fn parse_size(val: &str) -> Option<u64> {
             caps.get(1)
                 .and_then(|size| u64::from_str(size.as_str()).ok())
                 .and_then(|size| Some((size, caps.get(2))))
-        })
-        .and_then(|(size, suffix)| {
-            match suffix.map(|s| s.as_str()) {
-                Some("K") => Some(1024 * size),
-                Some("M") => Some(1024 * 1024 * size),
-                Some("G") => Some(1024 * 1024 * 1024 * size),
-                Some("T") => Some(1024 * 1024 * 1024 * 1024 * size),
-                _ => None,
-            }
+        }).and_then(|(size, suffix)| match suffix.map(|s| s.as_str()) {
+            Some("K") => Some(1024 * size),
+            Some("M") => Some(1024 * 1024 * size),
+            Some("G") => Some(1024 * 1024 * 1024 * size),
+            Some("T") => Some(1024 * 1024 * 1024 * 1024 * size),
+            _ => None,
         })
 }
 
@@ -92,13 +96,19 @@ pub fn parse_size(val: &str) -> Option<u64> {
 pub struct HTTPUrl(reqwest::Url);
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 impl Serialize for HTTPUrl {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error> where S: Serializer {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         serializer.serialize_str(self.0.as_str())
     }
 }
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 impl<'a> Deserialize<'a> for HTTPUrl {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error> where D: Deserializer<'a> {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'a>,
+    {
         use serde::de::Error;
         let helper: String = Deserialize::deserialize(deserializer)?;
         let url = parse_http_url(&helper).map_err(D::Error::custom)?;
@@ -125,17 +135,19 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
 }
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 impl HTTPUrl {
-    pub fn from_url(u: reqwest::Url) -> Self { HTTPUrl(u) }
-    pub fn to_url(&self) -> reqwest::Url { self.0.clone() }
+    pub fn from_url(u: reqwest::Url) -> Self {
+        HTTPUrl(u)
+    }
+    pub fn to_url(&self) -> reqwest::Url {
+        self.0.clone()
+    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AzureCacheConfig;
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct DiskCacheConfig {
@@ -153,8 +165,7 @@ impl Default for DiskCacheConfig {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum GCSCacheRWMode {
     #[serde(rename = "READ_ONLY")]
@@ -163,8 +174,7 @@ pub enum GCSCacheRWMode {
     ReadWrite,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GCSCacheConfig {
     pub bucket: String,
@@ -172,22 +182,19 @@ pub struct GCSCacheConfig {
     pub rw_mode: GCSCacheRWMode,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     pub url: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
@@ -204,8 +211,7 @@ pub enum CacheType {
     S3(S3CacheConfig),
 }
 
-#[derive(Debug, Default)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
@@ -221,10 +227,17 @@ impl CacheConfigs {
     /// consistent ordering
     fn into_vec_and_fallback(self) -> (Vec<CacheType>, DiskCacheConfig) {
         let CacheConfigs {
-            azure, disk, gcs, memcached, redis, s3
+            azure,
+            disk,
+            gcs,
+            memcached,
+            redis,
+            s3,
         } = self;
 
-        let caches = s3.map(CacheType::S3).into_iter()
+        let caches = s3
+            .map(CacheType::S3)
+            .into_iter()
             .chain(redis.map(CacheType::Redis))
             .chain(memcached.map(CacheType::Memcached))
             .chain(gcs.map(CacheType::GCS))
@@ -238,27 +251,41 @@ impl CacheConfigs {
     /// Override self with any existing fields from other
     fn merge(&mut self, other: Self) {
         let CacheConfigs {
-            azure, disk, gcs, memcached, redis, s3
+            azure,
+            disk,
+            gcs,
+            memcached,
+            redis,
+            s3,
         } = other;
 
-        if azure.is_some()     { self.azure = azure }
-        if disk.is_some()      { self.disk = disk }
-        if gcs.is_some()       { self.gcs = gcs }
-        if memcached.is_some() { self.memcached = memcached }
-        if redis.is_some()     { self.redis = redis }
-        if s3.is_some()        { self.s3 = s3 }
+        if azure.is_some() {
+            self.azure = azure
+        }
+        if disk.is_some() {
+            self.disk = disk
+        }
+        if gcs.is_some() {
+            self.gcs = gcs
+        }
+        if memcached.is_some() {
+            self.memcached = memcached
+        }
+        if redis.is_some() {
+            self.redis = redis
+        }
+        if s3.is_some() {
+            self.s3 = s3
+        }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
 pub enum DistToolchainConfig {
     #[serde(rename = "no_dist")]
-    NoDist {
-        compiler_executable: PathBuf,
-    },
+    NoDist { compiler_executable: PathBuf },
     #[serde(rename = "path_override")]
     PathOverride {
         compiler_executable: PathBuf,
@@ -267,14 +294,17 @@ pub enum DistToolchainConfig {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "type")]
 pub enum DistAuth {
     #[serde(rename = "token")]
     Token { token: String },
     #[serde(rename = "oauth2_code_grant_pkce")]
-    Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
+    Oauth2CodeGrantPKCE {
+        client_id: String,
+        auth_url: String,
+        token_url: String,
+    },
     #[serde(rename = "oauth2_implicit")]
     Oauth2Implicit { client_id: String, auth_url: String },
 }
@@ -282,7 +312,10 @@ pub enum DistAuth {
 // Convert a type = "mozilla" immediately into an actual oauth configuration
 // https://github.com/serde-rs/serde/issues/595 could help if implemented
 impl<'a> Deserialize<'a> for DistAuth {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error> where D: Deserializer<'a> {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'a>,
+    {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         #[serde(tag = "type")]
@@ -292,7 +325,11 @@ impl<'a> Deserialize<'a> for DistAuth {
             #[serde(rename = "mozilla")]
             Mozilla,
             #[serde(rename = "oauth2_code_grant_pkce")]
-            Oauth2CodeGrantPKCE { client_id: String, auth_url: String, token_url: String },
+            Oauth2CodeGrantPKCE {
+                client_id: String,
+                auth_url: String,
+                token_url: String,
+            },
             #[serde(rename = "oauth2_implicit")]
             Oauth2Implicit { client_id: String, auth_url: String },
         }
@@ -300,30 +337,41 @@ impl<'a> Deserialize<'a> for DistAuth {
         let helper: Helper = Deserialize::deserialize(deserializer)?;
 
         Ok(match helper {
-            Helper::Token { token } =>
-                DistAuth::Token { token },
-            Helper::Mozilla =>
-                DistAuth::Oauth2CodeGrantPKCE {
-                    client_id: MOZILLA_OAUTH_PKCE_CLIENT_ID.to_owned(),
-                    auth_url: MOZILLA_OAUTH_PKCE_AUTH_URL.to_owned(),
-                    token_url: MOZILLA_OAUTH_PKCE_TOKEN_URL.to_owned(),
-                },
-            Helper::Oauth2CodeGrantPKCE { client_id, auth_url, token_url } =>
-                DistAuth::Oauth2CodeGrantPKCE { client_id, auth_url, token_url },
-            Helper::Oauth2Implicit { client_id, auth_url } =>
-                DistAuth::Oauth2Implicit { client_id, auth_url },
+            Helper::Token { token } => DistAuth::Token { token },
+            Helper::Mozilla => DistAuth::Oauth2CodeGrantPKCE {
+                client_id: MOZILLA_OAUTH_PKCE_CLIENT_ID.to_owned(),
+                auth_url: MOZILLA_OAUTH_PKCE_AUTH_URL.to_owned(),
+                token_url: MOZILLA_OAUTH_PKCE_TOKEN_URL.to_owned(),
+            },
+            Helper::Oauth2CodeGrantPKCE {
+                client_id,
+                auth_url,
+                token_url,
+            } => DistAuth::Oauth2CodeGrantPKCE {
+                client_id,
+                auth_url,
+                token_url,
+            },
+            Helper::Oauth2Implicit {
+                client_id,
+                auth_url,
+            } => DistAuth::Oauth2Implicit {
+                client_id,
+                auth_url,
+            },
         })
     }
 }
 
 impl Default for DistAuth {
     fn default() -> Self {
-        DistAuth::Token { token: INSECURE_DIST_CLIENT_TOKEN.to_owned() }
+        DistAuth::Token {
+            token: INSECURE_DIST_CLIENT_TOKEN.to_owned(),
+        }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct DistConfig {
@@ -350,8 +398,7 @@ impl Default for DistConfig {
 }
 
 // TODO: fields only pub for tests
-#[derive(Debug, Default)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
@@ -367,8 +414,8 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
         Ok(f) => f,
         Err(e) => {
             debug!("Couldn't open config file: {}", e);
-            return Ok(None)
-        },
+            return Ok(None);
+        }
     };
 
     let mut string = String::new();
@@ -376,7 +423,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
         Ok(_) => (),
         Err(e) => {
             warn!("Failed to read config file: {}", e);
-            return Ok(None)
+            return Ok(None);
         }
     }
 
@@ -397,54 +444,61 @@ pub struct EnvConfig {
 }
 
 fn config_from_env() -> EnvConfig {
-    let s3 = env::var("SCCACHE_BUCKET").ok()
-        .map(|bucket| {
-            let endpoint = match env::var("SCCACHE_ENDPOINT") {
-                Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-                _ => match env::var("SCCACHE_REGION") {
-                    Ok(ref region) if region != "us-east-1" =>
-                        format!("{}.s3-{}.amazonaws.com", bucket, region),
-                    _ => format!("{}.s3.amazonaws.com", bucket),
-                },
-            };
+    let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
+        let endpoint = match env::var("SCCACHE_ENDPOINT") {
+            Ok(endpoint) => format!("{}/{}", endpoint, bucket),
+            _ => match env::var("SCCACHE_REGION") {
+                Ok(ref region) if region != "us-east-1" => {
+                    format!("{}.s3-{}.amazonaws.com", bucket, region)
+                }
+                _ => format!("{}.s3.amazonaws.com", bucket),
+            },
+        };
 
-            let get_auth = env::var("SCCACHE_S3_GET_AUTH")
-                .ok()
-                .map_or(false, |v| v.to_lowercase() == "true");
+        let get_auth = env::var("SCCACHE_S3_GET_AUTH")
+            .ok()
+            .map_or(false, |v| v.to_lowercase() == "true");
 
-            S3CacheConfig { bucket, endpoint, get_auth }
-        });
+        S3CacheConfig {
+            bucket,
+            endpoint,
+            get_auth,
+        }
+    });
 
-    let redis = env::var("SCCACHE_REDIS").ok()
+    let redis = env::var("SCCACHE_REDIS")
+        .ok()
         .map(|url| RedisCacheConfig { url });
 
-    let memcached = env::var("SCCACHE_MEMCACHED").ok()
+    let memcached = env::var("SCCACHE_MEMCACHED")
+        .ok()
         .map(|url| MemcachedCacheConfig { url });
 
-    let gcs = env::var("SCCACHE_GCS_BUCKET").ok()
-        .map(|bucket| {
-            let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH")
-                .map(|p| PathBuf::from(p));
-            let rw_mode = match env::var("SCCACHE_GCS_RW_MODE")
-                                      .as_ref().map(String::as_str) {
-                Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
-                Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
-                // TODO: unsure if these should warn during the configuration loading
-                // or at the time when they're actually used to connect to GCS
-                Ok(_) => {
-                    warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
-                    GCSCacheRWMode::ReadOnly
-                },
-                _ => {
-                    warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
-                    GCSCacheRWMode::ReadOnly
-                }
-            };
-            GCSCacheConfig { bucket, cred_path, rw_mode }
-        });
+    let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
+        let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(|p| PathBuf::from(p));
+        let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
+            Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
+            Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
+            // TODO: unsure if these should warn during the configuration loading
+            // or at the time when they're actually used to connect to GCS
+            Ok(_) => {
+                warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
+                GCSCacheRWMode::ReadOnly
+            }
+            _ => {
+                warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
+                GCSCacheRWMode::ReadOnly
+            }
+        };
+        GCSCacheConfig {
+            bucket,
+            cred_path,
+            rw_mode,
+        }
+    });
 
-
-    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok()
+    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING")
+        .ok()
         .map(|_| AzureCacheConfig);
 
     let disk = env::var_os("SCCACHE_DIR")
@@ -504,20 +558,22 @@ impl Config {
         conf_caches.merge(cache);
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
-        Config { caches, fallback_cache, dist }
+        Config {
+            caches,
+            fallback_cache,
+            dist,
+        }
     }
 }
 
-#[derive(Clone, Debug, Default)]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct CachedDistConfig {
     pub auth_tokens: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default)]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct CachedFileConfig {
@@ -532,7 +588,8 @@ impl CachedConfig {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
 
         if cached_file_config.is_none() {
-            let cfg = Self::load_file_config().chain_err(|| "Unable to initialise cached config")?;
+            let cfg =
+                Self::load_file_config().chain_err(|| "Unable to initialise cached config")?;
             *cached_file_config = Some(cfg)
         }
         Ok(CachedConfig(()))
@@ -567,12 +624,19 @@ impl CachedConfig {
         let file_conf_path = &*CACHED_CONFIG_PATH;
 
         if !file_conf_path.exists() {
-            let file_conf_dir = file_conf_path.parent().expect("Cached conf file has no parent directory");
+            let file_conf_dir = file_conf_path
+                .parent()
+                .expect("Cached conf file has no parent directory");
             if !file_conf_dir.is_dir() {
-                fs::create_dir_all(file_conf_dir).chain_err(|| "Failed to create dir to hold cached config")?
+                fs::create_dir_all(file_conf_dir)
+                    .chain_err(|| "Failed to create dir to hold cached config")?
             }
-            Self::save_file_config(&Default::default())
-                .chain_err(|| format!("Unable to create cached config file at {}", file_conf_path.display()))?
+            Self::save_file_config(&Default::default()).chain_err(|| {
+                format!(
+                    "Unable to create cached config file at {}",
+                    file_conf_path.display()
+                )
+            })?
         }
         try_read_config_file(&file_conf_path)
             .chain_err(|| "Failed to load cached config file")?
@@ -580,8 +644,10 @@ impl CachedConfig {
     }
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
-        let mut file = File::create(file_conf_path).chain_err(|| "Could not open config for writing")?;
-        file.write_all(&toml::to_vec(c).unwrap()).map_err(Into::into)
+        let mut file =
+            File::create(file_conf_path).chain_err(|| "Could not open config for writing")?;
+        file.write_all(&toml::to_vec(c).unwrap())
+            .map_err(Into::into)
     }
 }
 
@@ -592,8 +658,7 @@ pub mod scheduler {
 
     use errors::*;
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
     pub enum ClientAuth {
@@ -602,15 +667,21 @@ pub mod scheduler {
         #[serde(rename = "token")]
         Token { token: String },
         #[serde(rename = "jwt_validate")]
-        JwtValidate { audience: String, issuer: String, jwks_url: String },
+        JwtValidate {
+            audience: String,
+            issuer: String,
+            jwks_url: String,
+        },
         #[serde(rename = "mozilla")]
         Mozilla { required_groups: Vec<String> },
         #[serde(rename = "proxy_token")]
-        ProxyToken { url: String, cache_secs: Option<u64> }
+        ProxyToken {
+            url: String,
+            cache_secs: Option<u64>,
+        },
     }
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
     pub enum ServerAuth {
@@ -622,8 +693,7 @@ pub mod scheduler {
         Token { token: String },
     }
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct Config {
         pub public_addr: SocketAddr,
@@ -638,28 +708,31 @@ pub mod scheduler {
 
 #[cfg(feature = "dist-server")]
 pub mod server {
+    use super::HTTPUrl;
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
-    use super::HTTPUrl;
 
     use errors::*;
 
     const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
-    fn default_toolchain_cache_size() -> u64 { TEN_GIGS }
+    fn default_toolchain_cache_size() -> u64 {
+        TEN_GIGS
+    }
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
     pub enum BuilderType {
         #[serde(rename = "docker")]
         Docker,
         #[serde(rename = "overlay")]
-        Overlay { build_dir: PathBuf, bwrap_path: PathBuf },
+        Overlay {
+            build_dir: PathBuf,
+            bwrap_path: PathBuf,
+        },
     }
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
     pub enum SchedulerAuth {
@@ -671,8 +744,7 @@ pub mod server {
         Token { token: String },
     }
 
-    #[derive(Debug)]
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
     pub struct Config {
         pub builder: BuilderType,
@@ -736,8 +808,12 @@ fn config_overrides() {
         Config::from_env_and_file_configs(env_conf, file_conf),
         Config {
             caches: vec![
-                CacheType::Redis(RedisCacheConfig { url: "myotherredisurl".to_owned() }),
-                CacheType::Memcached(MemcachedCacheConfig { url: "memurl".to_owned() }),
+                CacheType::Redis(RedisCacheConfig {
+                    url: "myotherredisurl".to_owned()
+                }),
+                CacheType::Memcached(MemcachedCacheConfig {
+                    url: "memurl".to_owned()
+                }),
                 CacheType::Azure(AzureCacheConfig),
             ],
             fallback_cache: DiskCacheConfig {

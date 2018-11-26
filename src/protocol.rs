@@ -1,6 +1,6 @@
 use compiler::ColorMode;
-use std::ffi::OsString;
 use server::ServerInfo;
+use std::ffi::OsString;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]

@@ -12,11 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use clap::{
-    App,
-    AppSettings,
-    Arg,
-};
+use clap::{App, AppSettings, Arg};
 use errors::*;
 use std::env;
 use std::ffi::OsString;
@@ -96,35 +92,45 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
 /// Parse the commandline into a `Command` to execute.
 pub fn parse() -> Result<Command> {
     trace!("parse");
-    let cwd = env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
+    let cwd =
+        env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",
         Err(_) => false,
     };
     let mut args: Vec<_> = env::args_os().collect();
-    if ! internal_start_server {
+    if !internal_start_server {
         if let Ok(exe) = env::current_exe() {
-            match exe.file_stem().and_then(|s| s.to_str()).map(|s| s.to_lowercase()) {
+            match exe
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase())
+            {
                 // If the executable has its standard name, do nothing.
                 Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
                 // Otherwise, if it was copied/hardlinked under a different $name, act
                 // as if it were invoked with `sccache $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
-                    if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name()) {
+                    if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
+                    {
                         match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path) if full_path.canonicalize()? == exe.canonicalize()? => {
+                            Ok(ref full_path)
+                                if full_path.canonicalize()? == exe.canonicalize()? =>
+                            {
                                 if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(env::split_paths(&path).filter(|p| p != dir)).ok();
+                                    let path = env::join_paths(
+                                        env::split_paths(&path).filter(|p| p != dir),
+                                    ).ok();
                                     match which_in(exe_filename, path, &cwd) {
                                         Ok(full_path) => args[0] = full_path.into(),
-                                        Err(_) => { }
+                                        Err(_) => {}
                                     }
                                 }
                             }
                             Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => { }
+                            Err(_) => {}
                         }
                         args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
@@ -142,7 +148,7 @@ pub fn parse() -> Result<Command> {
     let package_toolchain = matches.is_present("package-toolchain");
     let cmd = matches.values_of_os("cmd");
     // Ensure that we've only received one command to run.
-    fn is_some<T>(x : &Option<T>) -> bool {
+    fn is_some<T>(x: &Option<T>) -> bool {
         x.is_some()
     }
     if [
@@ -153,15 +159,19 @@ pub fn parse() -> Result<Command> {
         zero_stats,
         package_toolchain,
         is_some(&cmd),
-            ].iter()
-        .filter(|&&x| x).count() > 1 {
-            bail!("Too many commands specified");
-        }
+    ]
+        .iter()
+        .filter(|&&x| x)
+        .count()
+        > 1
+    {
+        bail!("Too many commands specified");
+    }
     if internal_start_server {
         Ok(Command::InternalStartServer)
     } else if show_stats {
-        let fmt = value_t!(matches.value_of("stats-format"), StatsFormat)
-            .unwrap_or_else(|e| e.exit());
+        let fmt =
+            value_t!(matches.value_of("stats-format"), StatsFormat).unwrap_or_else(|e| e.exit());
         Ok(Command::ShowStats(fmt))
     } else if start_server {
         Ok(Command::StartServer)
@@ -172,11 +182,13 @@ pub fn parse() -> Result<Command> {
     } else if dist_auth {
         Ok(Command::DistAuth)
     } else if package_toolchain {
-        let mut values = matches.values_of_os("package-toolchain").expect("Parsed package-toolchain but no values");
+        let mut values = matches
+            .values_of_os("package-toolchain")
+            .expect("Parsed package-toolchain but no values");
         assert!(values.len() == 2);
         let (executable, out) = (
             values.next().expect("package-toolchain missing value 1"),
-            values.next().expect("package-toolchain missing value 2")
+            values.next().expect("package-toolchain missing value 2"),
         );
         Ok(Command::PackageToolchain(executable.into(), out.into()))
     } else if let Some(mut args) = cmd {

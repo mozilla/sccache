@@ -91,20 +91,24 @@ impl Bucket {
                 let mut canonical_headers = String::new();
 
                 if let Some(token) = creds.token().as_ref().map(|s| s.as_str()) {
-                    request
-                        .headers_mut()
-                        .insert("x-amz-security-token", HeaderValue::from_str(token).expect("Invalid `x-amz-security-token` header"));
+                    request.headers_mut().insert(
+                        "x-amz-security-token",
+                        HeaderValue::from_str(token)
+                            .expect("Invalid `x-amz-security-token` header"),
+                    );
                     canonical_headers
                         .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
                 }
                 let date = time::now_utc().rfc822().to_string();
                 let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
-                request
-                    .headers_mut()
-                    .insert("Date", HeaderValue::from_str(&date).expect("Invalid date header"));
-                request
-                    .headers_mut()
-                    .insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid authentication"));
+                request.headers_mut().insert(
+                    "Date",
+                    HeaderValue::from_str(&date).expect("Invalid date header"),
+                );
+                request.headers_mut().insert(
+                    "Authorization",
+                    HeaderValue::from_str(&auth).expect("Invalid authentication"),
+                );
             }
             // request is fine as-is
             None => {}

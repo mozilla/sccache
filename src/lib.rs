@@ -172,4 +172,3 @@ fn init_logging() {
         }
     }
 }
-

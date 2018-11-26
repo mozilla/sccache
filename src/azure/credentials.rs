@@ -26,8 +26,12 @@ pub struct AzureCredentials {
 }
 
 impl AzureCredentials {
-    pub fn new(blob_endpoint: &str, account_name: &str, account_key: &str, container_name: Option<String>) -> AzureCredentials {
-
+    pub fn new(
+        blob_endpoint: &str,
+        account_name: &str,
+        account_key: &str,
+        container_name: Option<String>,
+    ) -> AzureCredentials {
         let endpoint = if blob_endpoint.ends_with("/") {
             blob_endpoint.to_owned()
         } else {
@@ -72,9 +76,8 @@ impl AzureCredentialsProvider for EnvironmentProvider {
 }
 
 fn credentials_from_environment() -> Result<AzureCredentials> {
-    let env_conn_str = var("SCCACHE_AZURE_CONNECTION_STRING").chain_err(|| {
-        "No SCCACHE_AZURE_CONNECTION_STRING in environment"
-    })?;
+    let env_conn_str = var("SCCACHE_AZURE_CONNECTION_STRING")
+        .chain_err(|| "No SCCACHE_AZURE_CONNECTION_STRING in environment")?;
 
     let container_name = match var("SCCACHE_AZURE_BLOB_CONTAINER") {
         Ok(text) => {
@@ -85,7 +88,7 @@ fn credentials_from_environment() -> Result<AzureCredentials> {
             }
         }
 
-        Err(_) => None
+        Err(_) => None,
     };
 
     parse_connection_string(&env_conn_str, container_name)
@@ -147,13 +150,18 @@ fn parse_connection_string(conn: &str, container_name: Option<String>) -> Result
         blob_endpoint = format!("{}://{}", default_endpoint_protocol, blob_endpoint);
     }
 
-    Ok(AzureCredentials::new(&blob_endpoint, &account_name, &account_key, container_name))
+    Ok(AzureCredentials::new(
+        &blob_endpoint,
+        &account_name,
+        &account_key,
+        container_name,
+    ))
 }
 
 fn substr(text: &str, to_skip: usize) -> &str {
     // This isn't a proper character-aware substring, but since
     // we always know that connection-strings are ASCII (we _do_ know that,
-    // right?), we can get away with assuming that one char == one byte. 
+    // right?), we can get away with assuming that one char == one byte.
     &text[to_skip..]
 }
 
@@ -166,7 +174,10 @@ mod test {
         let conn = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
 
         let creds = parse_connection_string(&conn, None).unwrap();
-        assert_eq!("http://127.0.0.1:10000/devstoreaccount1/", creds.azure_blob_endpoint());
+        assert_eq!(
+            "http://127.0.0.1:10000/devstoreaccount1/",
+            creds.azure_blob_endpoint()
+        );
         assert_eq!("devstoreaccount1", creds.azure_account_name());
         assert_eq!("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==", creds.azure_account_key());
         assert_eq!(&None, creds.blob_container_name());
@@ -177,7 +188,10 @@ mod test {
         let conn = "DefaultEndpointsProtocol=https;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
         let creds = parse_connection_string(&conn, None).unwrap();
 
-        assert_eq!("https://foo.blob.core.windows.net/", creds.azure_blob_endpoint());
+        assert_eq!(
+            "https://foo.blob.core.windows.net/",
+            creds.azure_blob_endpoint()
+        );
         assert_eq!("foo", creds.azure_account_name());
         assert_eq!("bar", creds.azure_account_key());
     }

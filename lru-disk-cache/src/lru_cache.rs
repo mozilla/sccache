@@ -52,7 +52,7 @@ extern crate linked_hash_map;
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::fmt;
-use std::hash::{Hash, BuildHasher};
+use std::hash::{BuildHasher, Hash};
 
 use linked_hash_map::LinkedHashMap;
 
@@ -69,20 +69,23 @@ pub trait Meter<K, V> {
     type Measure: Default + Copy;
     /// Calculate the size of `key` and `value`.
     fn measure<Q: ?Sized>(&self, key: &Q, value: &V) -> Self::Measure
-        where K: Borrow<Q>;
+    where
+        K: Borrow<Q>;
 }
 
 /// Size limit based on a simple count of cache items.
 pub struct Count;
 
 impl<K, V> Meter<K, V> for Count {
-   /// Don't store anything, the measurement can be derived from the map.
+    /// Don't store anything, the measurement can be derived from the map.
     type Measure = ();
 
     /// Don't actually count anything either.
     fn measure<Q: ?Sized>(&self, _: &Q, _: &V) -> ()
-        where K: Borrow<Q>
-    {}
+    where
+        K: Borrow<Q>,
+    {
+    }
 }
 
 /// A trait to allow the default `Count` measurement to not store an
@@ -101,7 +104,8 @@ pub trait CountableMeter<K, V>: Meter<K, V> {
 
 /// `Count` is all no-ops, the number of entries in the map is the size.
 impl<K, V, T: Meter<K, V>> CountableMeter<K, V> for T
-    where T: CountableMeterWithMeasure<K, V, <T as Meter<K, V>>::Measure>
+where
+    T: CountableMeterWithMeasure<K, V, <T as Meter<K, V>>::Measure>,
 {
     fn add(&self, current: Self::Measure, amount: Self::Measure) -> Self::Measure {
         CountableMeterWithMeasure::meter_add(self, current, amount)
@@ -128,7 +132,8 @@ pub trait CountableMeterWithMeasure<K, V, M> {
 
 /// For any other `Meter` with `Measure=usize`, just do the simple math.
 impl<K, V, T> CountableMeterWithMeasure<K, V, usize> for T
-    where T: Meter<K, V>
+where
+    T: Meter<K, V>,
 {
     fn meter_add(&self, current: usize, amount: usize) -> usize {
         current + amount
@@ -136,19 +141,23 @@ impl<K, V, T> CountableMeterWithMeasure<K, V, usize> for T
     fn meter_sub(&self, current: usize, amount: usize) -> usize {
         current - amount
     }
-    fn meter_size(&self, current: usize) -> Option<u64> { Some(current as u64) }
+    fn meter_size(&self, current: usize) -> Option<u64> {
+        Some(current as u64)
+    }
 }
 
 impl<K, V> CountableMeterWithMeasure<K, V, ()> for Count {
     fn meter_add(&self, _current: (), _amount: ()) {}
     fn meter_sub(&self, _current: (), _amount: ()) {}
-    fn meter_size(&self, _current: ()) -> Option<u64> { None }
+    fn meter_size(&self, _current: ()) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(feature = "heapsize")]
 mod heap_meter {
-    use std::borrow::Borrow;
     use heapsize::HeapSizeOf;
+    use std::borrow::Borrow;
 
     /// Size limit based on the heap size of each cache item.
     ///
@@ -161,7 +170,8 @@ mod heap_meter {
         type Measure = usize;
 
         fn measure<Q: ?Sized>(&self, _: &Q, item: &V) -> usize
-            where K: Borrow<Q>
+        where
+            K: Borrow<Q>,
         {
             item.heap_size_of_children() + ::std::mem::size_of::<V>()
         }
@@ -173,7 +183,8 @@ pub use heap_meter::*;
 
 /// An LRU cache.
 #[derive(Clone)]
-pub struct LruCache<K: Eq + Hash, V, S: BuildHasher = RandomState, M: CountableMeter<K, V> = Count> {
+pub struct LruCache<K: Eq + Hash, V, S: BuildHasher = RandomState, M: CountableMeter<K, V> = Count>
+{
     map: LinkedHashMap<K, V, S>,
     current_measure: M::Measure,
     max_capacity: u64,
@@ -276,8 +287,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
     /// assert_eq!(cache.get_mut(&2), Some(&mut "c"));
     /// ```
     pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
-        where K: Borrow<Q>,
-              Q: Hash + Eq
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
     {
         self.map.get_refresh(k)
     }
@@ -313,7 +325,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
     /// assert_eq!(cache.get_mut(&2), Some(&mut 200));
     /// assert_eq!(cache.get_mut(&3), Some(&mut 300));
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<K, V> { self.internal_iter_mut() }
+    pub fn iter_mut(&mut self) -> IterMut<K, V> {
+        self.internal_iter_mut()
+    }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S, M> {
@@ -355,19 +369,20 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// assert_eq!(cache.contains_key(&1), true);
     /// ```
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
-        where K: Borrow<Q>,
-              Q: Hash + Eq
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
     {
         self.map.contains_key(key)
     }
 
     pub fn get<Q: ?Sized>(&mut self, k: &Q) -> Option<&V>
-        where K: Borrow<Q>,
-              Q: Hash + Eq
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
     {
         self.map.get_refresh(k).map(|v| v as &V)
     }
-
 
     /// Inserts a key-value pair into the cache. If the key already existed, the old value is
     /// returned.
@@ -388,7 +403,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
         let new_size = self.meter.measure(&k, &v);
         self.current_measure = self.meter.add(self.current_measure, new_size);
         if let Some(old) = self.map.get(&k) {
-            self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(&k, old));
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(&k, old));
         }
         let old_val = self.map.insert(k, v);
         while self.size() > self.capacity() {
@@ -414,14 +431,16 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// assert_eq!(cache.len(), 0);
     /// ```
     pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
-        where K: Borrow<Q>,
-              Q: Hash + Eq
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
     {
-        self.map.remove(k)
-            .map(|v| {
-                self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(k, &v));
-                v
-            })
+        self.map.remove(k).map(|v| {
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(k, &v));
+            v
+        })
     }
 
     /// Sets the size of the key-value pairs the cache can hold, as measured by the `Meter` used by
@@ -459,7 +478,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// assert_eq!(cache.get_mut(&3), Some(&mut "c"));
     /// ```
     pub fn set_capacity(&mut self, capacity: u64) {
-        while self.size() > capacity  {
+        while self.size() > capacity {
             self.remove_lru();
         }
         self.max_capacity = capacity;
@@ -482,25 +501,31 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// ```
     #[inline]
     pub fn remove_lru(&mut self) -> Option<(K, V)> {
-        self.map.pop_front()
-            .map(|(k, v)| {
-                self.current_measure = self.meter.sub(self.current_measure, self.meter.measure(&k, &v));
-                (k, v)
-            })
+        self.map.pop_front().map(|(k, v)| {
+            self.current_measure = self
+                .meter
+                .sub(self.current_measure, self.meter.measure(&k, &v));
+            (k, v)
+        })
     }
 
     /// Returns the number of key-value pairs in the cache.
-    pub fn len(&self) -> usize { self.map.len() }
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
 
     /// Returns the size of all the key-value pairs in the cache, as measured by the `Meter` used
     /// by the cache.
     pub fn size(&self) -> u64 {
-        self.meter.size(self.current_measure)
+        self.meter
+            .size(self.current_measure)
             .unwrap_or_else(|| self.map.len() as u64)
     }
 
     /// Returns `true` if the cache contains no key-value pairs.
-    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 
     /// Removes all key-value pairs from the cache.
     pub fn clear(&mut self) {
@@ -526,26 +551,36 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// let kvs: Vec<_> = cache.iter().collect();
     /// assert_eq!(kvs, [(&2, &20), (&3, &30)]);
     /// ```
-    pub fn iter(&self) -> Iter<K, V> { Iter(self.map.iter()) }
+    pub fn iter(&self) -> Iter<K, V> {
+        Iter(self.map.iter())
+    }
 
-    fn internal_iter_mut(&mut self) -> IterMut<K, V> { IterMut(self.map.iter_mut()) }
+    fn internal_iter_mut(&mut self) -> IterMut<K, V> {
+        IterMut(self.map.iter_mut())
+    }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)> for LruCache<K, V, S, M> {
-    fn extend<I: IntoIterator<Item=(K, V)>>(&mut self, iter: I) {
+impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)>
+    for LruCache<K, V, S, M>
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (k, v) in iter {
             self.insert(k, v);
         }
     }
 }
 
-impl<K: fmt::Debug + Eq + Hash, V: fmt::Debug, S: BuildHasher, M: CountableMeter<K, V>> fmt::Debug for LruCache<K, V, S, M> {
+impl<K: fmt::Debug + Eq + Hash, V: fmt::Debug, S: BuildHasher, M: CountableMeter<K, V>> fmt::Debug
+    for LruCache<K, V, S, M>
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_map().entries(self.iter().rev()).finish()
     }
 }
 
-impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for LruCache<K, V, S, M> {
+impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for LruCache<K, V, S, M>
+{
     type Item = (K, V);
     type IntoIter = IntoIter<K, V>;
 
@@ -554,16 +589,24 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for 
     }
 }
 
-impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for &'a LruCache<K, V, S, M> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for &'a LruCache<K, V, S, M>
+{
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
-    fn into_iter(self) -> Iter<'a, K, V> { self.iter() }
+    fn into_iter(self) -> Iter<'a, K, V> {
+        self.iter()
+    }
 }
 
-impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator for &'a mut LruCache<K, V, S, M> {
+impl<'a, K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> IntoIterator
+    for &'a mut LruCache<K, V, S, M>
+{
     type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
-    fn into_iter(self) -> IterMut<'a, K, V> { self.internal_iter_mut() }
+    fn into_iter(self) -> IterMut<'a, K, V> {
+        self.internal_iter_mut()
+    }
 }
 
 /// An iterator over a cache's key-value pairs in least- to most-recently-used order.
@@ -622,21 +665,31 @@ impl<K, V> ExactSizeIterator for IntoIter<K, V> {
 pub struct Iter<'a, K: 'a, V: 'a>(linked_hash_map::Iter<'a, K, V>);
 
 impl<'a, K, V> Clone for Iter<'a, K, V> {
-    fn clone(&self) -> Iter<'a, K, V> { Iter(self.0.clone()) }
+    fn clone(&self) -> Iter<'a, K, V> {
+        Iter(self.0.clone())
+    }
 }
 
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
-    fn next(&mut self) -> Option<(&'a K, &'a V)> { self.0.next() }
-    fn size_hint(&self) -> (usize, Option<usize>) { self.0.size_hint() }
+    fn next(&mut self) -> Option<(&'a K, &'a V)> {
+        self.0.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
 }
 
 impl<'a, K, V> DoubleEndedIterator for Iter<'a, K, V> {
-    fn next_back(&mut self) -> Option<(&'a K, &'a V)> { self.0.next_back() }
+    fn next_back(&mut self) -> Option<(&'a K, &'a V)> {
+        self.0.next_back()
+    }
 }
 
 impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
-    fn len(&self) -> usize { self.0.len() }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// An iterator over a cache's key-value pairs in least- to most-recently-used order with mutable
@@ -647,21 +700,29 @@ pub struct IterMut<'a, K: 'a, V: 'a>(linked_hash_map::IterMut<'a, K, V>);
 
 impl<'a, K, V> Iterator for IterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
-    fn next(&mut self) -> Option<(&'a K, &'a mut V)> { self.0.next() }
-    fn size_hint(&self) -> (usize, Option<usize>) { self.0.size_hint() }
+    fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
+        self.0.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
 }
 
 impl<'a, K, V> DoubleEndedIterator for IterMut<'a, K, V> {
-    fn next_back(&mut self) -> Option<(&'a K, &'a mut V)> { self.0.next_back() }
+    fn next_back(&mut self) -> Option<(&'a K, &'a mut V)> {
+        self.0.next_back()
+    }
 }
 
 impl<'a, K, V> ExactSizeIterator for IterMut<'a, K, V> {
-    fn len(&self) -> usize { self.0.len() }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LruCache,Meter};
+    use super::{LruCache, Meter};
     use std::borrow::Borrow;
 
     #[test]
@@ -784,14 +845,22 @@ mod tests {
         cache.insert(3, 30);
         cache.insert(4, 40);
         cache.insert(5, 50);
-        assert_eq!(cache.iter().collect::<Vec<_>>(),
-                   [(&3, &30), (&4, &40), (&5, &50)]);
-        assert_eq!(cache.iter_mut().collect::<Vec<_>>(),
-                   [(&3, &mut 30), (&4, &mut 40), (&5, &mut 50)]);
-        assert_eq!(cache.iter().rev().collect::<Vec<_>>(),
-                   [(&5, &50), (&4, &40), (&3, &30)]);
-        assert_eq!(cache.iter_mut().rev().collect::<Vec<_>>(),
-                   [(&5, &mut 50), (&4, &mut 40), (&3, &mut 30)]);
+        assert_eq!(
+            cache.iter().collect::<Vec<_>>(),
+            [(&3, &30), (&4, &40), (&5, &50)]
+        );
+        assert_eq!(
+            cache.iter_mut().collect::<Vec<_>>(),
+            [(&3, &mut 30), (&4, &mut 40), (&5, &mut 50)]
+        );
+        assert_eq!(
+            cache.iter().rev().collect::<Vec<_>>(),
+            [(&5, &50), (&4, &40), (&3, &30)]
+        );
+        assert_eq!(
+            cache.iter_mut().rev().collect::<Vec<_>>(),
+            [(&5, &mut 50), (&4, &mut 40), (&3, &mut 30)]
+        );
     }
 
     struct VecLen;
@@ -799,7 +868,8 @@ mod tests {
     impl<K, T> Meter<K, Vec<T>> for VecLen {
         type Measure = usize;
         fn measure<Q: ?Sized>(&self, _: &Q, v: &Vec<T>) -> usize
-            where K: Borrow<Q>
+        where
+            K: Borrow<Q>,
         {
             v.len()
         }

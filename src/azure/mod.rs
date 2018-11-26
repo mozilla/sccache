@@ -15,5 +15,5 @@
 mod blobstore;
 mod credentials;
 
-pub use azure::credentials::*;
 pub use azure::blobstore::*;
+pub use azure::credentials::*;

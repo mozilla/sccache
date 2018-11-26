@@ -42,8 +42,8 @@ use std::env;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use errors::*;
@@ -349,7 +349,12 @@ fn run(command: Command) -> Result<i32> {
             };
 
             let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(public_addr, scheduler, check_client_auth, check_server_auth);
+            let http_scheduler = dist::http::Scheduler::new(
+                public_addr,
+                scheduler,
+                check_client_auth,
+                check_server_auth,
+            );
             void::unreachable(http_scheduler.start()?);
         }
 

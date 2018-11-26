@@ -12,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{
-    Cache,
-    CacheRead,
-    CacheWrite,
-    Storage,
-};
+use cache::{Cache, CacheRead, CacheWrite, Storage};
 use futures_cpupool::CpuPool;
-use lru_disk_cache::LruDiskCache;
 use lru_disk_cache::Error as LruError;
+use lru_disk_cache::LruDiskCache;
 use std::ffi::OsStr;
-use std::path::{Path,PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use errors::*;
 
@@ -39,12 +34,12 @@ pub struct DiskCache {
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T,
-                                max_size: u64,
-                                pool: &CpuPool) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &CpuPool) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
-            lru: Arc::new(Mutex::new(LruDiskCache::new(root, max_size).expect("Couldn't instantiate disk cache!"))),
+            lru: Arc::new(Mutex::new(
+                LruDiskCache::new(root, max_size).expect("Couldn't instantiate disk cache!"),
+            )),
             pool: pool.clone(),
         }
     }

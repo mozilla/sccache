@@ -1,12 +1,12 @@
 use error_chain::ChainedError;
-use futures::sync::oneshot;
-use futures::prelude::*;
 use futures::future;
+use futures::prelude::*;
+use futures::sync::oneshot;
 use http::StatusCode;
 use hyper;
 use hyper::body::Payload;
-use hyper::server::conn::{AddrIncoming};
-use hyper::service::{Service};
+use hyper::server::conn::AddrIncoming;
+use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
 use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
@@ -494,7 +494,7 @@ impl<F, ReqBody, Ret, ResBody> Service for ServiceFn<F, ReqBody>
 where
     F: Fn(Request<ReqBody>) -> Ret,
     ReqBody: Payload,
-    Ret: IntoFuture<Item=Response<ResBody>>,
+    Ret: IntoFuture<Item = Response<ResBody>>,
     Ret::Error: Into<Box<StdError + Send + Sync>>,
     ResBody: Payload,
 {
@@ -518,15 +518,9 @@ impl<F, R> IntoFuture for ServiceFn<F, R> {
     }
 }
 
-fn try_serve<T>(
-    serve: T,
-) -> Result<
-    Server<
-        AddrIncoming,
-        impl Fn() -> ServiceFn<T, Body>,
-    >,
->
-where T: ServeFn
+fn try_serve<T>(serve: T) -> Result<Server<AddrIncoming, impl Fn() -> ServiceFn<T, Body>>>
+where
+    T: ServeFn,
 {
     // Try all the valid ports
     for &port in VALID_PORTS {
@@ -551,9 +545,7 @@ where T: ServeFn
 
         let new_service = move || service_fn(serve);
         match Server::try_bind(&addr) {
-            Ok(s) => {
-                return Ok(s.serve(new_service))
-            }
+            Ok(s) => return Ok(s.serve(new_service)),
             Err(ref err)
                 if err
                     .cause2()

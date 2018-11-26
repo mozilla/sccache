@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod s3;
 mod credential;
+mod s3;
 
-pub use simples3::s3::*;
 pub use simples3::credential::*;
+pub use simples3::s3::*;
