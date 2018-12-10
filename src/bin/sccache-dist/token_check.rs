@@ -247,15 +247,7 @@ impl ProxyTokenCheck {
     }
 
     fn check_token_with_forwarding(&self, token: &str) -> Result<()> {
-        #[derive(Deserialize)]
-        struct Token {
-            exp: u64,
-        }
-        let unsafe_token = jwt::dangerous_unsafe_decode::<Token>(token).chain_err(|| "Unable to decode jwt")?;
         trace!("Validating token by forwarding to {}", self.url);
-        if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
-            bail!("JWT expired")
-        }
         // If the token is cached and not cache has not expired, return it
         if let Some(ref auth_cache) = self.maybe_auth_cache {
             let mut auth_cache = auth_cache.lock().unwrap();
@@ -272,7 +264,7 @@ impl ProxyTokenCheck {
         let res = self.client.get(&self.url).set_header(header).send()
             .chain_err(|| "Failed to make request to proxying url")?;
         if !res.status().is_success() {
-            bail!("JWT forwarded to {} returned {}", self.url, res.status());
+            bail!("Token forwarded to {} returned {}", self.url, res.status());
         }
         // Cache the token
         if let Some(ref auth_cache) = self.maybe_auth_cache {

@@ -4,7 +4,7 @@ sccache distributed compilation quickstart
 This is a quick start guide to getting distributed compilation working with sccache. This guide currently only covers Linux clients, although macOS and Windows clients are supported.
 
 Get sccache binaries
-====================
+--------------------
 
 Either download pre-built sccache binaries (not currently available), or build sccache locally with the `dist-client` and `dist-server` features enabled:
 ```
@@ -14,12 +14,16 @@ cargo build --release --features="dist-client dist-server"
 The `target/release/sccache` binary will be used on the client, and the `target/release/sccache-dist` binary will be used on the scheduler and build server.
 
 Configure a scheduler
-=====================
+---------------------
 
 The scheduler is a daemon that manages compile request from clients and parcels them out to build servers. You only need one of these per sccache setup. Currently only Linux is supported for running the scheduler.
 
 Create a scheduler.conf file to configure client/server authentication. A minimal example looks like:
 ```toml
+# The socket address the scheduler will listen on. It's strongly recommended to listen
+# on localhost and put a HTTPS server in front of it.
+public_addr = "127.0.0.1:10600"
+
 [client_auth]
 type = "token"
 token = "my client token"
@@ -37,7 +41,7 @@ sccache-dist scheduler --config scheduler.conf
 If the scheduler fails to start you may need to set `RUST_LOG=trace` when starting it to get useful diagnostics.
 
 Configure a build server
-========================
+------------------------
 
 A build server communicates with the scheduler and executes compiles requested by clients. Only Linux is supported for running a build server, but executing cross-compile requests from macOS/Windows clients is supported.
 
@@ -50,11 +54,11 @@ cache_dir = "/tmp/toolchains"
 # The maximum size of the toolchain cache, in bytes.
 # If unspecified the default is 10GB.
 # toolchain_cache_size = 10737418240
-# An IP address and port on which clients can connect to this builder.
-# NOTE: you must use port 10501 here!
+# A public IP address and port that clients will use to connect to this builder.
 public_addr = "192.168.1.1:10501"
-# The IP address of the scheduler.
-scheduler_addr = "192.168.1.1"
+# The URL used to connect to the scheduler (should use https, given an ideal
+# setup of a HTTPS server in front of the scheduler)
+scheduler_url = "https://192.168.1.1"
 
 [builder]
 type = "overlay"
@@ -77,7 +81,7 @@ sudo sccache-dist server --config server.conf
 As with the scheduler, if the build server fails to start you may need to set `RUST_LOG=trace` to get useful diagnostics.
 
 Configure a client
-==================
+------------------
 
 A client uses `sccache` to wrap compile commands, communicates with the scheduler to find available build servers, and communicates with build servers to execute the compiles and receive the results.
 
@@ -86,10 +90,9 @@ Clients require the `icecc-create-env` script, which is part of `icecream` for p
 Create a client config file in `~/.config/sccache/config`. A minimal example looks like:
 ```toml
 [dist]
-# The IP address of the scheduler.
-scheduler_addr = "192.168.1.1"
-# A directory in which toolchain information will be cached.
-cache_dir = "/tmp/toolchains"
+# The URL used to connect to the scheduler (should use https, given an ideal
+# setup of a HTTPS server in front of the scheduler)
+scheduler_url = "https://192.168.1.1"
 # Used for mapping local toolchains to remote cross-compile toolchains. Empty in
 # this example where the client and build server are both Linux.
 toolchains = []
@@ -101,3 +104,77 @@ type = "token"
 # This should match the `client_auth` section of the scheduler config.
 token = "my client token"
 ```
+
+Configuring for a Mozilla build servers
+---------------------------------------
+
+Mozilla build servers will typically require clients to be authenticated with the
+[Mozilla identity system](https://github.com/mozilla-iam/mozilla-iam).
+
+To configure for scheduler for this, the `client_auth` section should be as follows
+so any client tokens are validated with the Mozilla service:
+
+```
+[client_auth]
+type = "mozilla"
+```
+
+Clients should configure their `dist.auth` section as follows:
+
+```
+[dist.auth]
+type = "mozilla"
+```
+
+And retrieve a token from the Mozilla identity service by running `sccache --dist-auth`
+and following the instructions. Completing this process will retrieve and cache a token
+valid for 7 days.
+
+Using custom toolchains
+-----------------------
+
+Since Windows and OSX cannot automatically package toolchains, it is important to be
+able to manually specify toolchains for distribution. This functionality is also available
+on Linux.
+
+Using custom toolchains involves adding a `dist.toolchains` section to your client config
+file (you can add it multiple times to specify multiple toolchains).
+
+On Linux and OSX:
+
+```
+[[dist.toolchains]]
+type = "path_override"
+compiler_executable = "/usr/bin/gcc-5"
+archive = "/home/me/toolchains/gcc-5-38505675dd9514438ed26497fceb0fe0.tar.gz"
+archive_compiler_executable = "/usr/bin/gcc"
+```
+
+On Windows:
+
+```
+[[dist.toolchains]]
+type = "path_override"
+compiler_executable = "C:/clang/bin\\clang-cl.exe"
+archive = "C:/toolchains/gcc-5-38505675dd9514438ed26497fceb0fe0.tar.gz"
+archive_compiler_executable = "/usr/bin/gcc"
+```
+
+Where:
+ - `compiler_executable` identifies the path that sccache will match against to activate
+   this configuration (you need to be careful on Windows - paths can have slashes in both
+   directions, and you may need to escape backslashes, as in the example)
+ - `archive` is the compressed tar archive containing the compiler toolchain to distribute
+   when `compiler_executable` is matched
+ - `archive_compiler_executable` is the path within the archive the distributed
+   compilation should invoke
+
+A toolchain archive should be a Gzip compressed TAR archive, containing a filesystem
+sufficient to run the compiler without relying on any external files. If you have archives
+compatible with icecream (created with `icecc-create-env`, like
+[these ones](https://github.com/jyavenard/mozilla-icecream) for OSX), they should also work
+with sccache. To create a Windows toolchain, it is recommended that you download the [Clang
+binaries for Ubuntu 16.04](http://releases.llvm.org/download.html) and extract them,
+package up the toolchain using the extracted `bin/clang` file (requires
+[PR #321](https://github.com/mozilla/sccache/pull/321)) and then insert `bin/clang-cl` at
+the appropriate path as a symlink to the `bin/clang` binary.
