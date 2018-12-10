@@ -29,13 +29,16 @@ matrix:
     - rust: nightly
 
 before_script:
-  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES=unstable; fi
-  - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="dist-client dist-server"; fi
+  - export EXTRA_FEATURES=
+  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES unstable"; fi
+  - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server"; fi
 
 script:
   - cargo build --verbose --features="all ${EXTRA_FEATURES}"
   - RUST_BACKTRACE=1 cargo test --all --verbose --no-default-features --features="${EXTRA_FEATURES}"
   - RUST_BACKTRACE=1 cargo test --all --verbose --features="all ${EXTRA_FEATURES}"
+  # Requires PR #321
+  #- if [[ "${DIST_SCCACHE}" = "1" ]]; then RUST_BACKTRACE=1 cargo test --all --verbose --features="all dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1; fi
 
 before_deploy:
   - name="sccache-$TRAVIS_TAG-$TARGET"

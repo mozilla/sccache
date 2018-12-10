@@ -39,9 +39,13 @@ The HTTP implementation of sccache has the following API:
    - `POST alloc_job`
       - Called by a client to submit a compilation request.
       - Returns information on where the job is allocated it should run.
+   - `GET server_certificate`
+      - Called by a client to retrieve the (dynamically created) HTTPS
+        certificate for a server, for use in communication with that server.
+      - Returns a digest and PEM for the temporary server HTTPS certificate.
    - `POST heartbeat_server`
       - Called (repeatedly) by servers to register as available for jobs.
-   - `POST state`
+   - `POST job_state`
       - Called by servers to inform the scheduler of the state of the job.
    - `GET status`
       - Returns information about the scheduler.
@@ -55,16 +59,17 @@ The HTTP implementation of sccache has the following API:
       - Called by the client to run a job.
       - Returns the compilation stdout along with files created.
 
-There are two axes of security in this setup:
+There are three axes of security in this setup:
 
 1. Can the scheduler trust the servers?
 2. Is the client permitted to submit and run jobs?
+3. Can third parties see and/or modify traffic?
 
 ### Server Trust
 
 If a server is malicious, they can return malicious compilation output to a user.
-To protect against this, servers must be authenticated. You have three means for
-doing this, and the scheduler and all servers must use the same mechanism.
+To protect against this, servers must be authenticated to the scheduler. You have three
+means for doing this, and the scheduler and all servers must use the same mechanism.
 
 Once a server has registered itself using the selected authentication, the scheduler
 will trust the registered server address and use it for builds.
@@ -87,8 +92,8 @@ follows:
 server_auth = { type = "jwt_hs256", secret_key = "YOUR_KEY_HERE" }
 ```
 
-Now generate a token for the server, giving the IP and port the scheduler can
-connect to the server on (IP `192.168.1.10` and port `10501` here):
+Now generate a token for the server, giving the IP and port the scheduler and clients can
+connect to the server on (address `192.168.1.10:10501` here):
 
 ```
 sccache-dist auth generate-jwt-hs256-server-token \
@@ -155,10 +160,9 @@ Done!
 
 If a client is malicious, they can cause a DoS of distributed sccache servers or
 explore ways to escape the build sandbox. To protect against this, clients must
-be authenticated. You have two means for doing this, and the scheduler and all
-clients must use the same mechanism.
+be authenticated.
 
-Each client will use the authentication for the initial job allocation request
+Each client will use an authentication token for the initial job allocation request
 to the scheduler. A successful allocation will return a job token that is used
 to authorise requests to the appropriate server for that specific job.
 
@@ -167,6 +171,49 @@ The key for each server is randomly generated on server startup and given to
 the scheduler during registration. This means that the server can verify users
 without either a) adding client authentication to every server or b) needing
 secret transfer between scheduler and server on every job allocation.
+
+#### OAuth2
+
+This is a group of similar methods for achieving the same thing - the client
+retrieves a token from an OAuth2 service, and then submits it to the scheduler
+which has a few different options for performing validation on that token.
+
+*To use it*:
+
+Put one of the following settings in your scheduleer config file to determine how
+the scheduler will validate tokens from the client:
+
+```
+# Use the known settings for Mozilla OAuth2 token validation
+client_auth = { type = "mozilla" }
+
+# Will forward the valid JWT token onto another URL in the `Bearer` header, with a
+# success response indicating the token is valid. Optional `cache_secs` how long
+# to cache successful authentication for.
+client_auth = { type = "proxy_token", url = "...", cache_secs = 60 }
+```
+
+Additionally, each client should set up an OAuth2 configuration in the with one of
+the following settings (as appropriate for your OAuth service):
+
+```
+# Use the known settings for Mozilla OAuth2 authentication
+auth = { type = "mozilla" }
+
+# Use the Authorization Code with PKCE flow. This requires a client id,
+# an initial authorize URL (which may have parameters like 'audience' depending
+# on your service) and the URL for retrieving a token after the browser flow.
+auth = { type = "oauth2_code_grant_pkce", client_id = "...", auth_url = "...", token_url = "..." }
+
+# Use the Implicit flow (typically not recommended due to security issues). This requires
+# a client id and an authorize URL (which may have parameters like 'audience' depending
+# on your service).
+auth = { type = "oauth2_implicit", client_id = "...", auth_url = "..." }
+```
+
+The client should then run `sccache --dist-auth` and follow the instructions to retrieve
+a token. This will be automatically cached locally for the token expiry period (manual
+revalidatation will be necessary after expiry).
 
 #### Token
 
@@ -207,6 +254,23 @@ client_auth = { type = "DANGEROUSLY_INSECURE" }
 ```
 
 Remove any `auth =` setting under the `[dist]` heading in your client config file
-(it will default to insecure).
+(it will default to this insecure mode).
 
 Done!
+
+### Eavesdropping and Tampering Protection
+
+If third parties can see traffic to the servers, source code can be leaked. If third
+parties can modify traffic to and from the servers or the scheduler, they can cause
+the client to receive malicious compiled objects.
+
+Securing communication with the scheduler is the responsibility of the sccache cluster
+administrator - it is recommended to put a webserver with a HTTPS certificate in front
+of the scheduler and instruct clients to configure their `scheduler_url` with the
+appropriate `https://` address.
+
+Securing communication with the server is performed automatically - HTTPS certificates
+are generated dynamically on server startup and communicated to the scheduler during
+the heartbeat. If a client does not have the appropriate certificate for communicating
+securely with a server (after receiving a job allocation from the scheduler), the
+certificate will be requested from the scheduler.
