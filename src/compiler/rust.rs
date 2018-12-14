@@ -187,7 +187,7 @@ lazy_static! {
 }
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"2";
+const CACHE_VERSION: &[u8] = b"3";
 
 /// Get absolute paths for all source files listed in rustc's dep-info output.
 fn get_source_files<T>(creator: &T,
@@ -980,7 +980,18 @@ impl<T> CompilerHasher<T> for RustHasher
             // and append them to the rest of the arguments.
             let args = {
                 let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments.iter()
-                    .partition(|&&(ref arg, _)| arg == "--extern" || arg == "-L" || arg == "--cfg");
+                // We exclude a few arguments from the hash:
+                //   -L, --extern, --out-dir
+                // These contain paths which aren't relevant to the output, and the compiler inputs
+                // in those paths (rlibs and static libs used in the compilation) are used as hash
+                // inputs below.
+                    .filter(|&&(ref arg, _)| {
+                        !(arg == "--extern" || arg == "-L" || arg == "--out-dir")
+                    })
+                // A few argument types were not passed in a deterministic order
+                // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
+                // out, sort them, and append them to the rest of the arguments.
+                    .partition(|&&(ref arg, _)| arg == "--cfg");
                 sortables.sort();
                 rest.into_iter()
                     .chain(sortables)
@@ -1020,6 +1031,8 @@ impl<T> CompilerHasher<T> for RustHasher
                     val.hash(&mut HashToDigest { digest: &mut m });
                 }
             }
+            // 8. The cwd of the compile. This will wind up in the rlib.
+            cwd.hash(&mut HashToDigest { digest: &mut m });
             // Turn arguments into a simple Vec<OsString> to calculate outputs.
             let flat_os_string_arguments: Vec<OsString> = os_string_arguments.into_iter()
                 .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
@@ -2019,12 +2032,12 @@ c:/foo/bar.rs:
             parsed_args: ParsedArguments {
                 arguments: vec![
                     Argument::Raw("a".into()),
-                    Argument::WithValue("--extern".into(),
-                                        ArgData::Extern(ArgExtern::process("xyz=/xyz".into()).unwrap()),
+                    Argument::WithValue("--cfg".into(),
+                                        ArgData::PassThrough("xyz".into()),
                                         ArgDisposition::Separated),
                     Argument::Raw("b".into()),
-                    Argument::WithValue("--extern".into(),
-                                        ArgData::Extern(ArgExtern::process("abc=/abc".into()).unwrap()),
+                    Argument::WithValue("--cfg".into(),
+                                        ArgData::PassThrough("abc".into()),
                                         ArgDisposition::Separated),
                 ],
                 output_dir: "foo/".into(),
@@ -2057,8 +2070,8 @@ c:/foo/bar.rs:
         m.update(CACHE_VERSION);
         // sysroot shlibs digests.
         m.update(FAKE_DIGEST.as_bytes());
-        // Arguments, with externs sorted at the end.
-        OsStr::new("ab--externabc=/abc--externxyz=/xyz").hash(&mut HashToDigest { digest: &mut m });
+        // Arguments, with cfgs sorted at the end.
+        OsStr::new("ab--cfgabc--cfgxyz").hash(&mut HashToDigest { digest: &mut m });
         // bar.rs (source file, from dep-info)
         m.update(empty_digest.as_bytes());
         // foo.rs (source file, from dep-info)
@@ -2074,6 +2087,7 @@ c:/foo/bar.rs:
         OsStr::new("CARGO_PKG_NAME").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");
         OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
+        f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
         let mut out = res.compilation.outputs().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
@@ -2081,11 +2095,10 @@ c:/foo/bar.rs:
         assert_eq!(out, vec!["foo.a", "foo.rlib"]);
     }
 
-    fn hash_key<'a, F>(args: &[OsString], env_vars: &[(OsString, OsString)], pre_func: F)
-                   -> String
+    fn hash_key<'a, F>(f: &TestFixture, args: &[OsString], env_vars: &[(OsString, OsString)],
+                       pre_func: F) -> String
         where F: Fn(&Path) -> Result<()>
     {
-        let f = TestFixture::new();
         let parsed_args = match parse_arguments(args, &f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
@@ -2130,11 +2143,12 @@ c:/foo/bar.rs:
             create_file(tempdir, "b.rlib", |mut f| f.write_all(b"this is b.rlib"))?;
             Ok(())
         }
-        assert_eq!(hash_key(&ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
+        let f = TestFixture::new();
+        assert_eq!(hash_key(&f, &ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
                                    "out", "--crate-name", "foo", "--crate-type", "lib",
                                    "--extern", "b=b.rlib"], &vec![],
                             &mk_files),
-                   hash_key(&ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
+                   hash_key(&f, &ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
                                    "foo.rs", "--out-dir", "out", "--crate-name", "foo",
                                    "--crate-type", "lib"], &vec![],
                             &mk_files));
@@ -2142,21 +2156,36 @@ c:/foo/bar.rs:
 
     #[test]
     fn test_equal_hashes_link_paths() {
-        assert_eq!(hash_key(&ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
+        let f = TestFixture::new();
+        assert_eq!(hash_key(&f, &ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
                                    "--crate-name", "foo", "--crate-type", "lib",
                                    "-L", "y=y"], &vec![], nothing),
-                   hash_key(&ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
+                   hash_key(&f, &ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
                                    "--out-dir", "out", "--crate-name", "foo",
                                    "--crate-type", "lib"], &vec![], nothing));
     }
 
     #[test]
+    fn test_equal_hashes_ignored_args() {
+        let f = TestFixture::new();
+        assert_eq!(hash_key(&f, &ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
+                                   "--extern", "a=1", "--crate-name", "foo", "--crate-type", "lib",
+                                   "-L", "y=y"],
+                            &vec![], nothing),
+                   hash_key(&f, &ovec!["-L", "y=a", "--emit", "link", "-L", "x=b", "foo.rs",
+                                   "--extern", "a=2", "--out-dir", "out2", "--crate-name", "foo",
+                                   "--crate-type", "lib"],
+                            &vec![], nothing));
+    }
+
+    #[test]
     fn test_equal_hashes_cfg_features() {
-        assert_eq!(hash_key(&ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
+        let f = TestFixture::new();
+        assert_eq!(hash_key(&f, &ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
                                    "out", "--crate-name", "foo", "--crate-type", "lib",
                                    "--cfg", "feature=b"], &vec![],
                             nothing),
-                   hash_key(&ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
+                   hash_key(&f, &ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
                                    "foo.rs", "--out-dir", "out", "--crate-name", "foo",
                                    "--crate-type", "lib"], &vec![],
                             nothing));
