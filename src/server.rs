@@ -1156,7 +1156,9 @@ impl ServerStats {
         }
         if !self.not_cached.is_empty() {
             println!("\nNon-cacheable reasons:");
-            for (reason, count) in self.not_cached.iter() {
+            let mut counts: Vec<_> = self.not_cached.iter().collect();
+            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            for (reason, count) in counts {
                 println!(
                     "{:<name_width$} {:>stat_width$}",
                     reason,
