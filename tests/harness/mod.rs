@@ -498,7 +498,7 @@ impl Drop for DistSystem {
 }
 
 fn make_container_name(tag: &str) -> String {
-    format!("{}_{}_{}", CONTAINER_NAME_PREFIX, tag, Uuid::new_v4().hyphenated())
+    format!("{}_{}_{}", CONTAINER_NAME_PREFIX, tag, Uuid::new_v4().to_hyphenated_ref())
 }
 
 fn check_output(output: &Output) {
