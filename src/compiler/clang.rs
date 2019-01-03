@@ -94,6 +94,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
+    take_arg!("-mllvm", OsString, Separated, PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
 ]);
