@@ -76,6 +76,15 @@ pub enum CompilerKind {
     Rust,
 }
 
+impl CompilerKind {
+    pub fn lang_kind(&self) -> String {
+        match self {
+            CompilerKind::C(_) => "C/C++",
+            CompilerKind::Rust => "Rust",
+        }.to_string()
+    }
+}
+
 /// An interface to a compiler for argument parsing.
 pub trait Compiler<T>: Send + 'static
 where

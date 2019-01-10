@@ -126,7 +126,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     sccache_command()
         .args(&["--show-stats", "--stats-format=json"])
         .assert()
-        .stdout(predicates::str::contains(r#""cache_hits":1"#).from_utf8())
+        .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())
         .success();
     stop();
 }

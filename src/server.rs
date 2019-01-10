@@ -17,8 +17,8 @@
 
 use cache::{storage_from_config, Storage};
 use compiler::{
-    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    DistType, MissType,
+    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerKind,
+    CompilerArguments, CompilerHasher, DistType, MissType,
 };
 #[cfg(feature = "dist-client")]
 use config;
@@ -784,7 +784,7 @@ where
                         debug!("parse_arguments: Ok: {:?}", cmd);
                         stats.requests_executed += 1;
                         let (tx, rx) = Body::pair();
-                        self.start_compile_task(hasher, cmd, cwd, env_vars, tx);
+                        self.start_compile_task(c, hasher, cmd, cwd, env_vars, tx);
                         let res = CompileResponse::CompileStarted;
                         return Message::WithBody(Response::Compile(res), rx);
                     }
@@ -817,6 +817,7 @@ where
     /// the result in the cache.
     fn start_compile_task(
         &self,
+        compiler: Box<Compiler<C>>,
         hasher: Box<CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
@@ -844,6 +845,7 @@ where
             self.pool.clone(),
         );
         let me = self.clone();
+        let kind = compiler.kind();
         let task = result.then(move |result| {
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
@@ -853,10 +855,10 @@ where
                 Ok((compiled, out)) => {
                     match compiled {
                         CompileResult::Error => {
-                            stats.cache_errors += 1;
+                            stats.cache_errors.increment(&kind);
                         }
                         CompileResult::CacheHit(duration) => {
-                            stats.cache_hits += 1;
+                            stats.cache_hits.increment(&kind);
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
@@ -874,15 +876,15 @@ where
                                     stats.cache_timeouts += 1;
                                 }
                                 MissType::CacheReadError => {
-                                    stats.cache_errors += 1;
+                                    stats.cache_errors.increment(&kind);
                                 }
                             }
-                            stats.cache_misses += 1;
+                            stats.cache_misses.increment(&kind);
                             stats.cache_read_miss_duration += duration;
                             cache_write = Some(future);
                         }
                         CompileResult::NotCacheable => {
-                            stats.cache_misses += 1;
+                            stats.cache_misses.increment(&kind);
                             stats.non_cacheable_compilations += 1;
                         }
                         CompileResult::CompileFailed => {
@@ -923,7 +925,7 @@ where
                         error!("[{:?}] \t{}", out_pretty, e);
                         drop(writeln!(error, "sccache:  cause: {}", e));
                     }
-                    stats.cache_errors += 1;
+                    stats.cache_errors.increment(&kind);
                     //TODO: figure out a better way to communicate this?
                     res.retcode = Some(-2);
                     res.stderr = error.into_bytes();
@@ -963,6 +965,36 @@ where
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PerLanguageCount {
+    counts: HashMap<String, u64>,
+}
+
+impl PerLanguageCount {
+    fn increment(&mut self, kind: &CompilerKind) {
+        let key = kind.lang_kind().clone();
+        let count = match self.counts.get(&key) {
+            Some(v) => v + 1,
+            None => 1
+        };
+        self.counts.insert(key, count);
+    }
+
+    pub fn all(&self) -> u64 {
+        self.counts.values().sum()
+    }
+
+    pub fn get(&self, key: &str) -> Option<&u64> {
+        self.counts.get(key)
+    }
+
+    pub fn new() -> PerLanguageCount {
+        PerLanguageCount {
+            counts: HashMap::new(),
+        }
+    }
+}
+
 /// Statistics about the server.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ServerStats {
@@ -976,12 +1008,12 @@ pub struct ServerStats {
     pub requests_not_cacheable: u64,
     /// The count of client requests that were executed.
     pub requests_executed: u64,
-    /// The count of errors handling compile requests.
-    pub cache_errors: u64,
-    /// The count of cache hits for handled compile requests.
-    pub cache_hits: u64,
-    /// The count of cache misses for handled compile requests.
-    pub cache_misses: u64,
+    /// The count of errors handling compile requests (per language).
+    pub cache_errors: PerLanguageCount,
+    /// The count of cache hits for handled compile requests (per language).
+    pub cache_hits: PerLanguageCount,
+    /// The count of cache misses for handled compile requests (per language).
+    pub cache_misses: PerLanguageCount,
     /// The count of cache misses because the cache took too long to respond.
     pub cache_timeouts: u64,
     /// The count of errors reading cache entries.
@@ -1027,9 +1059,9 @@ impl Default for ServerStats {
             requests_not_compile: u64::default(),
             requests_not_cacheable: u64::default(),
             requests_executed: u64::default(),
-            cache_errors: u64::default(),
-            cache_hits: u64::default(),
-            cache_misses: u64::default(),
+            cache_errors: PerLanguageCount::new(),
+            cache_hits: PerLanguageCount::new(),
+            cache_misses: PerLanguageCount::new(),
             cache_timeouts: u64::default(),
             cache_read_errors: u64::default(),
             non_cacheable_compilations: u64::default(),
@@ -1055,7 +1087,16 @@ impl ServerStats {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 // name, value, suffix length
-                $vec.push(($name, $var.to_string(), 0));
+                $vec.push(($name.to_string(), $var.to_string(), 0));
+            }};
+        }
+
+        macro_rules! set_lang_stat {
+            ($vec:ident, $var:expr, $name:expr) => {{
+                $vec.push(($name.to_string(), $var.all().to_string(), 0));
+                for (lang, count) in $var.counts.iter() {
+                    $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
+                };
             }};
         }
 
@@ -1067,7 +1108,7 @@ impl ServerStats {
                     Default::default()
                 };
                 // name, value, suffix length
-                $vec.push(($name, util::fmt_duration_as_secs(&s), 2));
+                $vec.push(($name.to_string(), util::fmt_duration_as_secs(&s), 2));
             }};
         }
 
@@ -1079,14 +1120,14 @@ impl ServerStats {
             self.requests_executed,
             "Compile requests executed"
         );
-        set_stat!(stats_vec, self.cache_hits, "Cache hits");
-        set_stat!(stats_vec, self.cache_misses, "Cache misses");
+        set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
+        set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
-        set_stat!(stats_vec, self.cache_errors, "Cache errors");
+        set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
         set_stat!(
             stats_vec,
             self.non_cacheable_compilations,
@@ -1126,13 +1167,13 @@ impl ServerStats {
         set_duration_stat!(
             stats_vec,
             self.cache_read_miss_duration,
-            self.cache_misses,
+            self.cache_misses.all(),
             "Average cache read miss"
         );
         set_duration_stat!(
             stats_vec,
             self.cache_read_hit_duration,
-            self.cache_hits,
+            self.cache_hits.all(),
             "Average cache read hit"
         );
         let name_width = stats_vec
