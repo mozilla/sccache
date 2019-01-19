@@ -581,7 +581,7 @@ pub fn get_token_oauth2_code_grant_pkce(
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
-    let auth_state_value = Uuid::new_v4().simple().to_string();
+    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
     let (verifier, challenge) = code_grant_pkce::generate_verifier_and_challenge()?;
     code_grant_pkce::finish_url(
         client_id,
