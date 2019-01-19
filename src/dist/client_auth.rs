@@ -626,7 +626,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
-    let auth_state_value = Uuid::new_v4().simple().to_string();
+    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
     implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
