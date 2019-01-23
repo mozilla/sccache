@@ -139,7 +139,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-fplugin=libcc1plugin", TooHardFlag),
     flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
-    flag!("-fprofile-use", TooHardFlag),
+    take_arg!("-fprofile-use", OsString, Concatenated, TooHard),
     flag!("-frepo", TooHardFlag),
     flag!("-fsyntax-only", TooHardFlag),
     flag!("-ftest-coverage", TestCoverage),
@@ -984,6 +984,8 @@ mod test {
     fn test_parse_arguments_pgo() {
         assert_eq!(CompilerArguments::CannotCache("-fprofile-use", None),
                    _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"]));
+        assert_eq!(CompilerArguments::CannotCache("-fprofile-use", None),
+                   _parse_arguments(&stringvec!["-c", "foo.c", "-fprofile-use=file", "-o", "foo.o"]));
     }
 
     #[test]
