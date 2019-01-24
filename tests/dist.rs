@@ -87,8 +87,8 @@ fn test_dist_basic() {
         assert_eq!(0, info.stats.dist_errors);
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits);
-        assert_eq!(1, info.stats.cache_misses);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
     });
 }
 
@@ -120,8 +120,8 @@ fn test_dist_restartedserver() {
         assert_eq!(0, info.stats.dist_errors);
         assert_eq!(2, info.stats.compile_requests);
         assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits);
-        assert_eq!(2, info.stats.cache_misses);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
     });
 }
 
@@ -149,8 +149,8 @@ fn test_dist_nobuilder() {
         assert_eq!(1, info.stats.dist_errors);
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits);
-        assert_eq!(1, info.stats.cache_misses);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
     });
 }
 
@@ -196,7 +196,7 @@ fn test_dist_failingserver() {
         assert_eq!(1, info.stats.dist_errors);
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(0, info.stats.cache_hits);
-        assert_eq!(1, info.stats.cache_misses);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
     });
 }
