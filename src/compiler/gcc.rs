@@ -279,9 +279,12 @@ where
             Some(ProfileGenerate) |
             Some(TestCoverage) |
             Some(Coverage) |
-            Some(ExtraHashFile(_)) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(path.clone());
+                Some(&mut common_args)
+            }
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |

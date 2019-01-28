@@ -88,6 +88,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     flag!("-fcxx-modules", TooHardFlag),
     flag!("-fmodules", TooHardFlag),
+    take_arg!("-fplugin", PathBuf, CanBeConcatenated('='), ExtraHashFile),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Can be either -fprofile-instr-use or -fprofile-instr-use=path
     take_arg!("-fprofile-instr-use", OsString, Concatenated, TooHard),
@@ -194,4 +195,13 @@ mod test {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-verify");
         assert_eq!(ovec!["-Xclang", "-verify"], a.preprocessor_args);
     }
+
+    #[test]
+    fn test_parse_fplugin() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
+        println!("A {:#?}", a);
+        assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
+        assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
+    }
+
 }
