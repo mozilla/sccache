@@ -349,7 +349,7 @@ impl Rust {
         let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing sysroot")?;
-            let sysroot = PathBuf::from(outstr.trim_right());
+            let sysroot = PathBuf::from(outstr.trim_end());
             let libs_path = sysroot.join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path).chain_err(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?.filter_map(|e| {
                 e.ok().and_then(|e| {
