@@ -183,7 +183,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     // read_to_string should be safe because we're supplying all the filenames here,
     // and there are no absolute paths.
     f.read_to_string(&mut buf).expect("Failed to read dep file");
-    let lines: Vec<_> = buf.lines().map(|l| l.trim_right()).collect();
+    let lines: Vec<_> = buf.lines().map(|l| l.trim_end()).collect();
     let expected = format!("{output}: {input}\n{input}:\n", output=OUTPUT, input=INPUT);
     let expected_lines: Vec<_> = expected.lines().collect();
     assert_eq!(lines, expected_lines);
