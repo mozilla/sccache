@@ -33,7 +33,6 @@ use hyper::Method;
 use reqwest;
 use reqwest::async::{Request, Client};
 use jwt;
-use openssl;
 use serde_json;
 use url::form_urlencoded;
 use url::percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET};
@@ -224,14 +223,16 @@ impl GCSCredentialProvider {
             issued_at: chrono::offset::Utc::now().timestamp(),
         };
 
-        let binary_key = openssl::rsa::Rsa::private_key_from_pem(
-            self.sa_key.private_key.as_bytes()
-        )?.private_key_to_der()?;
+        // Could also use the pem crate, but that seems overly complicated for just the specific
+        // case of GCP keys
+        let key_string = self.sa_key.private_key.splitn(5, "-----").nth(2).ok_or_else(|| "invalid key format")?;
+        // Skip the leading `\n`
+        let key_bytes = base64::decode_config(key_string[1..].as_bytes(), base64::MIME)?;
 
         let auth_request_jwt = jwt::encode(
             &jwt::Header::new(jwt::Algorithm::RS256),
             &jwt_claims,
-            &binary_key,
+            &key_bytes,
         )?;
 
         Ok(auth_request_jwt)

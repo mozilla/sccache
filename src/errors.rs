@@ -50,6 +50,7 @@ error_chain! {
         Json(serde_json::Error);
         Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
         Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
+        Base64Decode(base64::DecodeError);
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
