@@ -91,6 +91,8 @@ void = { version = "1", optional = true }
 [patch.crates-io]
 # Waiting for https://github.com/tiny-http/tiny-http/pull/151
 tiny_http = { git = "https://github.com/aidanhs/tiny-http-sccache.git", rev = "a14fa0a" }
+# Waiting for https://github.com/Keats/jsonwebtoken/pull/74
+jsonwebtoken = { git = "https://github.com/Jake-Shadle/jsonwebtoken.git", rev = "2f469a61" }
 
 [dev-dependencies]
 assert_cmd = "0.9"
@@ -119,7 +121,7 @@ all-windows = ["redis", "s3", "memcached", "azure"]
 azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "jsonwebtoken", "openssl", "reqwest", "url"]
+gcs = ["chrono", "hyper", "jsonwebtoken", "reqwest", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
@@ -132,4 +134,3 @@ dist-tests = []
 
 [workspace]
 exclude = ["tests/test-crate"]
-
