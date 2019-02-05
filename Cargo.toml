@@ -116,8 +116,6 @@ tokio-reactor = "0.1"
 [features]
 default = ["s3"]
 all = ["redis", "s3", "memcached", "gcs", "azure"]
-# gcs requires openssl, which is a pain on Windows.
-all-windows = ["redis", "s3", "memcached", "azure"]
 azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
