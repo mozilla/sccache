@@ -20,6 +20,7 @@ use std::error;
 use std::io;
 use std::process;
 
+use base64;
 use bincode;
 use futures::Future;
 use futures::future;
