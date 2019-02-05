@@ -19,6 +19,7 @@ use std::io;
 use std::rc::Rc;
 use std::time;
 
+use base64;
 use cache::{
     Cache,
     CacheRead,
