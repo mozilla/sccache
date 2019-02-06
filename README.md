@@ -21,6 +21,12 @@ Table of Contents (ToC)
 * [Installation](#installation)
 * [Usage](#usage)
 * [Storage Options](#storage-options)
+  * [Local](#local)
+  * [S3](#s3)
+  * [Redis](#redis)
+  * [Memcached](#memcached)
+  * [Google Cloud Storage](#google-cloud-storage)
+  * [Azure](#azure)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
@@ -97,7 +103,15 @@ set OPENSSL_LIBS=libcrypto64MT:libssl64MT
 
 ## Installation
 
-> $ cargo install
+### With Rust
+
+`$ cargo install sccache`
+
+### Windows
+
+sccache can also be installed via [scoop](https://scoop.sh/)
+
+`> scoop install sccache`
 
 ---
 
@@ -127,23 +141,29 @@ Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](d
 Storage Options
 ---------------
 
+### Local
 Sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
 
+### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use. You can use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to set the S3 credentials and if you need to override the default endpoint you can set `SCCACHE_ENDPOINT`. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`.
 
+### Redis
 Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance. Redis can be configured as a LRU (least recently used) cache with a fixed maximum cache size. Set `maxmemory` and `maxmemory-policy` according to the [Redis documentation](https://redis.io/topics/lru-cache). The `allkeys-lru` policy which discards the *least recently accessed or modified* key fits well for the sccache use case.
 
+### Memcached
 Set `SCCACHE_MEMCACHED` to a [Memcached](https://memcached.org/) url in format `tcp://<hostname>:<port> ...` to store the cache in a Memcached instance.
 
+### Google Cloud Storage
 To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
 If you're using authentication, set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials.
 By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
 
+### Azure
 To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
 environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
 the container for you - you'll need to do that yourself.
 
-*Important:* The environment variables are only taken into account when the server starts, so only on the first run.
+**Important:** The environment variables are only taken into account when the server starts, so only on the first run.
 
 ---
 
