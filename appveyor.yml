@@ -61,10 +61,13 @@ for:
           Copy-Item README.md "${NAME}/"
           7z a -ttar "${NAME}.tar" "${NAME}"
           7z a "${NAME}.tar.gz" "${NAME}.tar"
-          Push-AppveyorArtifact "${NAME}.tar.gz"
+          $hash = Get-FileHash "${NAME}.tar.gz" -Algorithm SHA256
+          $hash.Hash > "${NAME}.tar.gz.sha256"
+          Push-AppveyorArtifact "${NAME}.tar.gz" -DeploymentName windep
+          Push-AppveyorArtifact "${NAME}.tar.gz.sha256" -DeploymentName windep
 
   deploy:
-    artifact: /.*\.tar.gz/
+    artifact: windep
     auth_token:
       secure: NKcPr8KYJE2osDxfO1xBDQHQRgJrhgItv2op6KKZSfLB01rq08M3243XdN3J5aaJ
     description: ''
