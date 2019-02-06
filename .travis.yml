@@ -41,11 +41,7 @@ script:
   #- if [[ "${DIST_SCCACHE}" = "1" ]]; then RUST_BACKTRACE=1 cargo test --all --verbose --features="all dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1; fi
 
 before_deploy:
-  - name="sccache-$TRAVIS_TAG-$TARGET"
-  - mkdir $name
-  - cp target/$TARGET/release/sccache $name/
-  - cp README.md LICENSE $name/
-  - tar czvf $name.tar.gz $name
+  - "./scripts/prep_deploy.sh"
 
 deploy:
   api_key:
