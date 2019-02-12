@@ -53,6 +53,9 @@ for:
     RELEASE: --release
 
   before_deploy:
+    # We need to rerun the build, due to `cargo test` overwriting the original sccache.exe
+    # with a version that only has the default features (this should be fast, just annoying)
+    - cmd: cargo build --release --verbose --features="all %EXTRA_FEATURES%"
     - ps: |
           $NAME = "sccache-${env:APPVEYOR_REPO_TAG_NAME}-${env:TARGET}"
           New-Item -Path $NAME -ItemType directory
