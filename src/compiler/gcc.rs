@@ -159,7 +159,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-iwithprefixbefore", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     flag!("-nostdinc", PreprocessorArgumentFlag),
     flag!("-nostdinc++", PreprocessorArgumentFlag),
-    take_arg!("-o", PathBuf, Separated, Output),
+    take_arg!("-o", PathBuf, CanBeSeparated, Output),
     flag!("-remap", PreprocessorArgumentFlag),
     flag!("-save-temps", TooHardFlag),
     take_arg!("-stdlib", OsString, Concatenated('='), PreprocessorArgument),
