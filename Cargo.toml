@@ -120,7 +120,7 @@ all = ["redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "jsonwebtoken", "reqwest", "url"]
+gcs = ["chrono", "hyper", "hyperx", "jsonwebtoken", "reqwest", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
