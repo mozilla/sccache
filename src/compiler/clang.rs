@@ -110,6 +110,7 @@ mod test {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use super::*;
+    use tempdir::TempDir;
     use test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
@@ -204,4 +205,83 @@ mod test {
         assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
     }
 
+    #[test]
+    fn handle_response_file_with_quotes() {
+        use pretty_assertions::assert_eq;
+
+        let td = TempDir::new("clang_response_file").unwrap();
+        let rsp_path = td.path().join("nix_response.rsp");
+
+        std::fs::copy("tests/ue_linux.rsp", &rsp_path).unwrap();
+
+        let parsed = parses!(format!("@{}", rsp_path.display()));
+        
+        assert_eq!(parsed, ParsedArguments {
+            input: PathBuf::from("/home/jake/code/unreal/Engine/Intermediate/Build/Linux/B4D820EA/UnrealHeaderTool/Development/CoreUObject/Module.CoreUObject.5_of_6.cpp"),
+            language: Language::Cxx,
+            depfile: None,
+            outputs: vec![("obj", PathBuf::from("/home/jake/code/unreal/Engine/Intermediate/Build/Linux/B4D820EA/UnrealHeaderTool/Development/CoreUObject/Module.CoreUObject.5_of_6.cpp.o"))].into_iter().collect(),
+            preprocessor_args: ovec![
+                "-nostdinc++",
+                "-IThirdParty/Linux/LibCxx/include/",
+                "-IThirdParty/Linux/LibCxx/include/c++/v1",
+                "-DPLATFORM_EXCEPTIONS_DISABLED=0",
+                "-D_LINUX64",
+                "-I/home/jake/code/unreal/Engine/Source",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/CoreUObject/Private",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/Projects/Public",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/Core/Public/Linux",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/Core/Public",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/Json/Public",
+                "-I/home/jake/code/unreal/Engine/Source/Developer",
+                "-I/home/jake/code/unreal/Engine/Source/Developer/TargetPlatform/Public",
+                "-I/home/jake/code/unreal/Engine/Intermediate/Build/Linux/B4D820EA/UnrealHeaderTool/Inc/CoreUObject",
+                "-I/home/jake/code/unreal/Engine/Source/Runtime/CoreUObject/Public",
+                "-I/home/path that shouldnt exist because spaces are the devil/but shit happens",
+                "-include",
+                "/home/jake/code/unreal/Engine/Intermediate/Build/Linux/B4D820EA/UnrealHeaderTool/Development/CoreUObject/PCH.CoreUObject.h"
+            ],
+            common_args: ovec![
+                "-pipe",
+                "-Wall",
+                "-Werror",
+                "-Wsequence-point",
+                "-Wdelete-non-virtual-dtor",
+                "-fno-math-errno",
+                "-fno-rtti",
+                "-fcolor-diagnostics",
+                "-Wno-unused-private-field",
+                "-Wno-tautological-compare",
+                "-Wno-undefined-bool-conversion",
+                "-Wno-unused-local-typedef",
+                "-Wno-inconsistent-missing-override",
+                "-Wno-undefined-var-template",
+                "-Wno-unused-lambda-capture",
+                "-Wno-unused-variable",
+                "-Wno-unused-function",
+                "-Wno-switch",
+                "-Wno-unknown-pragmas",
+                "-Wno-invalid-offsetof",
+                "-Wno-gnu-string-literal-operator-template",
+                "-Wshadow",
+                "-Wno-error=shadow",
+                "-Wundef",
+                "-gdwarf-4",
+                "-glldb",
+                "-fstandalone-debug",
+                "-O2",
+                "-fPIC",
+                "-ftls-model=local-dynamic",
+                "-fexceptions",
+                "-target",
+                "x86_64-unknown-linux-gnu",
+                "--sysroot=/home/jake/code/unreal/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v12_clang-6.0.1-centos7/x86_64-unknown-linux-gnu",
+                "-std=c++14"
+            ],
+            extra_hash_files: Vec::new(),
+            msvc_show_includes: false,
+            profile_generate: false,
+        });
+    }
 }
