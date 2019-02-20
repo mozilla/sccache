@@ -596,11 +596,24 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 debug!("failed to read @-file `{}`: {}", file.display(), e);
                 return Some(arg)
             }
+
+            // If any arguments are quoted we need to be a bit more involved than splitting
+            // on whitespace
             if contents.contains('"') || contents.contains('\'') {
-                return Some(arg)
-            }
-            let new_args = contents.split_whitespace().collect::<Vec<_>>();
-            self.stack.extend(new_args.iter().rev().map(|s| s.into()));
+                let contents = contents.trim();
+                match split_response_contents(&contents) {
+                    Ok(words) => {
+                        self.stack.extend(words.into_iter().rev().map(|s| String::from(s).into()));
+                    }
+                    Err(e) => {
+                        debug!("failed to parse @-file `{}`: {}", file.display(), e);
+                        return Some(arg)
+                    }
+                }
+            } else {
+                let new_args: Vec<_> = contents.split_whitespace().collect();
+                self.stack.extend(new_args.iter().rev().map(|s| s.into()));
+            };
         }
     }
 }
