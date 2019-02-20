@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::error::Error;
 use std::ffi::OsString;
@@ -628,6 +629,183 @@ macro_rules! take_arg {
     ($s:expr, $vtype:ident, $d:ident($x:expr), $variant:expr) => {
         ArgInfo::TakeArg($s, |arg: OsString| $vtype::process(arg).map($variant), ArgDisposition::$d(Some($x as u8)))
     };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseError(char);
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use std::error::Error;
+        write!(f, "{}: `{}`", self.description(), self.0)
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn description(&self) -> &str {
+        "missing closing quote"
+    }
+}
+
+enum State {
+    /// Within a delimiter.
+    Delimiter,
+    /// After backslash, but before starting word.
+    Backslash,
+    /// Within an unquoted word.
+    Unquoted,
+    /// After backslash in an unquoted word.
+    UnquotedBackslash,
+    /// Within a single quoted word.
+    SingleQuoted,
+    /// Within a double quoted word.
+    DoubleQuoted,
+    /// After backslash inside a double quoted word.
+    DoubleQuotedBackslash,
+}
+
+/// Given the contents of a response file, attempts to parse it as a shell would (mostly)
+/// to preserve the semantics of the arguments, namely, not splitting arguments on whitespace
+/// if that whitespace is encapsulated inside double or single quotes.
+pub fn split_response_contents(s: &str) -> Result<Vec<Cow<str>>, ParseError> {
+    use self::State::*;
+
+    let mut words = Vec::new();
+    let mut chars = s.char_indices();
+    let mut state = Delimiter;
+    let mut ranges = Vec::with_capacity(2);
+    let len = s.len();
+    let mut index = 0;
+
+    macro_rules! coalesce {
+        ($s:ident, $ind:expr, $w:ident, $r:ident) => {
+            if index < $ind {
+                ranges.push(index..$ind);
+            }
+
+            let len = $r.iter().map(|r| r.len()).sum();
+
+            let word = $r.iter().fold(String::with_capacity(len), |mut string, r| {
+                let part = &$s[r.clone()];
+                string.push_str(part);
+                string
+            });
+
+            $w.push(Cow::from(word));
+            $r.clear();
+        };
+    }
+
+    macro_rules! cut {
+        ($ind:expr, $r:ident) => {
+            if index < $ind {
+                ranges.push(index..$ind);
+            }
+
+            index = $ind + 1;
+        };
+    }
+
+    loop {
+        let (ind, c) = chars
+            .next()
+            .map(|(ind, c)| (ind, Some(c)))
+            .unwrap_or_else(|| (len, None));
+        state = match state {
+            Delimiter => match c {
+                None => break,
+                Some('\'') => {
+                    index = ind + 1;
+                    SingleQuoted
+                }
+                Some('\"') => {
+                    index = ind + 1;
+                    DoubleQuoted
+                }
+                Some('\\') => {
+                    index = ind;
+                    Backslash
+                }
+                Some(' ') | Some('\n') | Some('\r') | Some('\t') => Delimiter,
+                _ => {
+                    index = ind;
+                    Unquoted
+                }
+            },
+            Backslash => match c {
+                None => {
+                    coalesce!(s, ind, words, ranges);
+                    break;
+                }
+                Some('\n') => {
+                    coalesce!(s, ind, words, ranges);
+                    Delimiter
+                }
+                _ => Unquoted,
+            },
+            Unquoted => match c {
+                None => {
+                    coalesce!(s, ind, words, ranges);
+                    break;
+                }
+                Some('\'') => {
+                    cut!(ind, ranges);
+                    SingleQuoted
+                }
+                Some('\"') => {
+                    cut!(ind, ranges);
+                    DoubleQuoted
+                }
+                Some('\\') => {
+                    cut!(ind, ranges);
+                    UnquotedBackslash
+                }
+                Some(' ') | Some('\n') | Some('\r') | Some('\t') => {
+                    coalesce!(s, ind, words, ranges);
+                    Delimiter
+                }
+                _ => Unquoted,
+            },
+            UnquotedBackslash => match c {
+                None => {
+                    coalesce!(s, ind, words, ranges);
+                    break;
+                }
+                Some('\n') => {
+                    cut!(ind, ranges);
+                    Unquoted
+                }
+                _ => Unquoted,
+            },
+            SingleQuoted => match c {
+                None => return Err(ParseError('\'')),
+                Some('\'') => {
+                    cut!(ind, ranges);
+                    Unquoted
+                }
+                _ => SingleQuoted,
+            },
+            DoubleQuoted => match c {
+                None => return Err(ParseError('\"')),
+                Some('\"') => {
+                    cut!(ind, ranges);
+                    Unquoted
+                }
+                Some('\\') => DoubleQuotedBackslash,
+                _ => DoubleQuoted,
+            },
+            DoubleQuotedBackslash => match c {
+                None => return Err(ParseError('\"')),
+                Some('\n') => {
+                    cut!(ind, ranges);
+                    DoubleQuoted
+                }
+                _ => DoubleQuoted,
+            },
+        }
+    }
+
+    Ok(words)
 }
 
 #[cfg(test)]
