@@ -101,7 +101,7 @@ chrono = "0.4"
 escargot = "0.3"
 itertools = "0.7"
 predicates = "0.9.0"
-selenium-rs = "0.1"
+pretty_assertions = "0.5.1"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.3"

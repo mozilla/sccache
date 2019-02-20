@@ -65,6 +65,8 @@ extern crate num_cpus;
 extern crate number_prefix;
 #[cfg(feature = "openssl")]
 extern crate openssl;
+#[cfg(test)]
+extern crate pretty_assertions;
 extern crate rand;
 #[cfg(feature = "redis")]
 extern crate redis;
