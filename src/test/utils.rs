@@ -37,7 +37,7 @@ macro_rules! stringvec {
 
 /// Return a `Vec` with each listed entry converted to an owned `OsString`.
 macro_rules! ovec {
-    ( $( $x:expr ),* ) => {
+    ( $( $x:expr ),* $(,)* ) => {
         vec!($( ::std::ffi::OsString::from($x), )*)
     };
 }
