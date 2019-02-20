@@ -258,8 +258,10 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     let mut show_includes = false;
     let mut xclangs: Vec<OsString> = vec![];
 
+    let expanded = gcc::ExpandIncludeFile::new(cwd, arguments);
+
     // First convert all `/foo` arguments to `-foo` to accept both styles
-    let it = arguments.iter().map(|i| {
+    let it = expanded.map(|i| {
         if let Some(arg) = i.split_prefix("/") {
             let mut dash = OsString::from("-");
             dash.push(&arg);
