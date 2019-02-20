@@ -1,0 +1,201 @@
+/Zc:inline
+/nologo
+/Oi
+/c
+/Gy
+/Zm850
+/wd4819
+/D_CRT_STDIO_LEGACY_WIDE_SPECIFIERS=1
+/D_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS=1
+/D_WINDLL
+/source-charset:utf-8 /execution-charset:utf-8
+/Ox
+/Ot
+/Ob2
+/errorReport:prompt
+/EHsc
+/Z7
+/MD
+/bigobj
+/fp:fast
+/Zo
+/Zp8
+/wd4463
+/wd4838
+/we4668
+/I .
+/I Editor\GraphEditor\Private
+/I Editor\GraphEditor\Private\KismetNodes
+/I Editor\GraphEditor\Private\KismetPins
+/I Editor\GraphEditor\Private\MaterialNodes
+/I Editor\GraphEditor\Private\MaterialPins
+/I Runtime
+/I Runtime\AppFramework\Public
+/I Runtime\Core\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\CoreUObject
+/I Runtime\CoreUObject\Public
+/I Runtime\ApplicationCore\Public
+/I Runtime\RHI\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Slate
+/I Runtime\Slate\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\InputCore
+/I Runtime\InputCore\Classes
+/I Runtime\InputCore\Public
+/I Runtime\Json\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\SlateCore
+/I Runtime\SlateCore\Public
+/I Runtime\ImageWrapper\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Engine
+/I Runtime\Engine\Classes
+/I Runtime\Engine\Public
+/I Runtime\Messaging\Public
+/I Runtime\MessagingCommon\Public
+/I Runtime\RenderCore\Public
+/I Runtime\ShaderCore\Public
+/I Runtime\UtilityShaders\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AssetRegistry
+/I Runtime\AssetRegistry\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\EngineMessages
+/I Runtime\EngineMessages\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\EngineSettings
+/I Runtime\EngineSettings\Classes
+/I Runtime\EngineSettings\Public
+/I Runtime\SynthBenchmark\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Renderer
+/I Runtime\Renderer\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\GameplayTags
+/I Runtime\GameplayTags\Classes
+/I Runtime\GameplayTags\Public
+/I Runtime\DatabaseSupport\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\PacketHandler
+/I Runtime\PacketHandlers
+/I Runtime\PacketHandlers\PacketHandler\Classes
+/I Runtime\PacketHandlers\PacketHandler\Public
+/I Runtime\PacketHandlers\ReliabilityHandlerComponent\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AudioPlatformConfiguration
+/I Runtime\AudioPlatformConfiguration\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\MeshDescription
+/I Runtime\MeshDescription\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\UnrealEd
+/I Editor
+/I Programs\UnrealLightmass\Public
+/I Editor\UnrealEd\Classes
+/I Editor\UnrealEd\Public
+/I Editor\BspMode\Public
+/I Developer
+/I Developer\DirectoryWatcher\Public
+/I Editor\Documentation\Public
+/I Runtime\Projects\Public
+/I Runtime\SandboxFile\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\EditorStyle
+/I Editor\EditorStyle\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\SourceControl
+/I Developer\SourceControl\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\UnrealEdMessages
+/I Editor\UnrealEdMessages\Classes
+/I Editor\UnrealEdMessages\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\GameplayDebugger
+/I Developer\GameplayDebugger\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\BlueprintGraph
+/I Editor\BlueprintGraph\Classes
+/I Editor\BlueprintGraph\Public
+/I Runtime\Online
+/I Runtime\Online\HTTP\Public
+/I Runtime\UnrealAudio\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\FunctionalTesting
+/I Developer\FunctionalTesting\Classes
+/I Developer\FunctionalTesting\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AutomationController
+/I Developer\AutomationController\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Localization
+/I Developer\Localization\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AudioEditor
+/I Editor\AudioEditor\Classes
+/I Editor\AudioEditor\Public
+/I Editor\LevelEditor\Public
+/I Developer\Settings\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\IntroTutorials
+/I Editor\IntroTutorials\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\HeadMountedDisplay
+/I Runtime\HeadMountedDisplay\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\VREditor
+/I Editor\VREditor
+/I Editor\VREditor\Public
+/I Editor\CommonMenuExtensions\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Landscape
+/I Runtime\Landscape\Classes
+/I Runtime\Landscape\Public
+/I Editor\PropertyEditor\Public
+/I Editor\ActorPickerMode\Public
+/I Editor\SceneDepthPickerMode\Public
+/I Editor\DetailCustomizations\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\ClassViewer
+/I Editor\ClassViewer\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\GraphEditor
+/I Editor\GraphEditor\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\ContentBrowser
+/I Editor\ContentBrowser\Public
+/I Runtime\NetworkFileSystem\Public
+/I Runtime\Sockets\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\UMG
+/I Runtime\UMG\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\MovieScene
+/I Runtime\MovieScene\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\TimeManagement
+/I Runtime\TimeManagement\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\MovieSceneTracks
+/I Runtime\MovieSceneTracks\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AnimationCore
+/I Runtime\AnimationCore\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\PropertyPath
+/I Runtime\PropertyPath\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\NavigationSystem
+/I Runtime\NavigationSystem\Public
+/I Developer\MeshBuilder\Public
+/I Runtime\Windows
+/I Runtime\Windows\XAudio2\Public
+/I Runtime\AudioMixer\Public
+/I Developer\CollectionManager\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AddContentDialog
+/I Editor\AddContentDialog\Public
+/I ThirdParty\IntelEmbree\Embree2140\Win64\include
+/I Developer\MeshUtilities\Public
+/I Developer\MeshMergeUtilities\Public
+/I Developer\HierarchicalLODUtilities\Public
+/I Developer\MeshReductionInterface\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AssetTools
+/I Developer\AssetTools\Public
+/I Editor\KismetCompiler\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\GameplayTasks
+/I Runtime\GameplayTasks\Classes
+/I Runtime\GameplayTasks\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AIModule
+/I Runtime\AIModule\Public
+/I Runtime\AIModule\Classes
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\Kismet
+/I Editor\Kismet\Classes
+/I Editor\Kismet\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\ClothingSystemRuntimeInterface
+/I Runtime\ClothingSystemRuntimeInterface\Public
+/I Runtime\NetworkReplayStreaming
+/I Runtime\NetworkReplayStreaming\NetworkReplayStreaming\Public
+/I ..\Intermediate\Build\Win64\UE4Editor\Inc\AudioMixer
+/I Runtime\AudioMixer\Classes
+/I ThirdParty
+/I ThirdParty\libSampleRate\Public
+/I Editor\EditorWidgets\Public
+/I Editor\KismetWidgets\Public
+/I "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Tools\MSVC\14.16.27023\INCLUDE"
+/I "C:\Program Files (x86)\Windows Kits\NETFXSDK\4.6.1\include\um"
+/I "C:\Program Files (x86)\Windows Kits\10\include\10.0.17763.0\ucrt"
+/I "C:\Program Files (x86)\Windows Kits\10\include\10.0.17763.0\shared"
+/I "C:\Program Files (x86)\Windows Kits\10\include\10.0.17763.0\um"
+/I "C:\Program Files (x86)\Windows Kits\10\include\10.0.17763.0\winrt"
+/FI"C:\code\UnrealEngine\Engine\Intermediate\Build\Win64\UE4Editor\Development\UnrealEd\SharedPCH.UnrealEd.h"
+/Yu"C:\code\UnrealEngine\Engine\Intermediate\Build\Win64\UE4Editor\Development\UnrealEd\SharedPCH.UnrealEd.h"
+"C:\code\UnrealEngine\Engine\Intermediate\Build\Win64\UE4Editor\Development\GraphEditor\Module.GraphEditor.cpp"
+/FI"C:\code\UnrealEngine\Engine\Intermediate\Build\Win64\UE4Editor\Development\GraphEditor\Definitions.GraphEditor.h"
+/Fo"C:\code\UnrealEngine\Engine\Intermediate\Build\Win64\UE4Editor\Development\GraphEditor\Module.GraphEditor.cpp.obj"
+/TP
+/GR-
+/W4
