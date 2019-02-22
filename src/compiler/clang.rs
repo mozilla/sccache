@@ -223,6 +223,7 @@ mod test {
             outputs: vec![("obj", PathBuf::from("/home/jake/code/unreal/Engine/Intermediate/Build/Linux/B4D820EA/UnrealHeaderTool/Development/CoreUObject/Module.CoreUObject.5_of_6.cpp.o"))].into_iter().collect(),
             preprocessor_args: ovec![
                 "-nostdinc++",
+                r#"-DFOO=\"Bar Value\""#,
                 "-IThirdParty/Linux/LibCxx/include/",
                 "-IThirdParty/Linux/LibCxx/include/c++/v1",
                 "-DPLATFORM_EXCEPTIONS_DISABLED=0",

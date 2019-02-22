@@ -757,7 +757,7 @@ pub fn split_response_contents(s: &str) -> Result<Vec<Cow<str>>, ParseError> {
                     DoubleQuoted
                 }
                 Some('\\') => {
-                    cut!(ind, ranges);
+                    //cut!(ind, ranges);
                     UnquotedBackslash
                 }
                 Some(' ') | Some('\n') | Some('\r') | Some('\t') => {
