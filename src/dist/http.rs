@@ -278,7 +278,7 @@ mod server {
     use openssl;
     use rand::{self, RngCore};
     use reqwest;
-    use rouille;
+    use rouille::{self, accept};
     use serde;
     use serde_json;
     use std;
@@ -532,7 +532,7 @@ mod server {
         split.next()
     }
 
-    // Based on rouille::Response::json
+    /// Return `content` as a bincode-encoded `Response`.
     pub fn bincode_response<T>(content: &T) -> rouille::Response
     where
         T: serde::Serialize,
@@ -546,6 +546,18 @@ mod server {
             data: rouille::ResponseBody::from_data(data),
             upgrade: None,
         }
+    }
+
+    /// Return `content` as either a bincode or json encoded `Response`
+    /// depending on the Accept header in `request`.
+    pub fn prepare_response<T>(request: &rouille::Request, content: &T) -> rouille::Response
+    where
+        T: serde::Serialize,
+    {
+        accept!(request,
+                "application/octet-stream" => bincode_response(content),
+                "application/json" => rouille::Response::json(content),
+                )
     }
 
     // Verification of job auth in a request
@@ -732,7 +744,7 @@ mod server {
                         let alloc_job_res: AllocJobResult = try_or_500_log!(req_id, handler.handle_alloc_job(&requester, toolchain));
                         let certs = server_certificates.lock().unwrap();
                         let res = AllocJobHttpResponse::from_alloc_job_result(alloc_job_res, &certs);
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (GET) (/api/v1/scheduler/server_certificate/{server_id: ServerId}) => {
                         let certs = server_certificates.lock().unwrap();
@@ -742,7 +754,7 @@ mod server {
                             cert_digest: cert_digest.clone(),
                             cert_pem: cert_pem.clone(),
                         };
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
                         let server_id = check_server_auth_or_401!(request);
@@ -761,7 +773,7 @@ mod server {
                             num_cpus,
                             job_authorizer
                         ));
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/scheduler/job_state/{job_id: JobId}) => {
                         let server_id = check_server_auth_or_401!(request);
@@ -771,11 +783,11 @@ mod server {
                         let res: UpdateJobStateResult = try_or_500_log!(req_id, handler.handle_update_job_state(
                             job_id, server_id, job_state
                         ));
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (GET) (/api/v1/scheduler/status) => {
                         let res: SchedulerStatusResult = try_or_500_log!(req_id, handler.handle_status());
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     _ => {
                         warn!("Unknown request {:?}", request);
@@ -919,7 +931,7 @@ mod server {
                         trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
                         let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
@@ -928,7 +940,7 @@ mod server {
                         let mut body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
                         let res: SubmitToolchainResult = try_or_500_log!(req_id, handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/distserver/run_job/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
@@ -947,7 +959,7 @@ mod server {
                         let outputs = outputs.into_iter().collect();
 
                         let res: RunJobResult = try_or_500_log!(req_id, handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
-                        bincode_response(&res)
+                        prepare_response(&request, &res)
                     },
                     _ => {
                         warn!("Unknown request {:?}", request);
