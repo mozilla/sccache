@@ -21,11 +21,12 @@ extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
+extern crate syslog;
 extern crate tar;
 extern crate void;
 
 use arraydeque::ArrayDeque;
-use clap::{App, Arg, SubCommand};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::RngCore;
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
@@ -45,6 +46,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use syslog::Facility;
 
 use errors::*;
 
@@ -124,6 +126,9 @@ fn main() {
     });
 }
 
+/// These correspond to the values of `log::LevelFilter`.
+const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
+
 pub fn get_app<'a, 'b>() -> App<'a, 'b> {
     App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
@@ -150,11 +155,27 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                         ).default_value("256"),
                     ),
                 ),
-        ).subcommand(SubCommand::with_name("scheduler").arg(Arg::from_usage(
-            "--config <PATH> 'Use the scheduler config file at PATH'",
-        ))).subcommand(SubCommand::with_name("server").arg(Arg::from_usage(
-            "--config <PATH> 'Use the server config file at PATH'",
-        )))
+            )
+        .subcommand(
+            SubCommand::with_name("scheduler")
+                .arg(Arg::from_usage("--config <PATH> 'Use the scheduler config file at PATH'"))
+                .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                     .possible_values(LOG_LEVELS))
+                )
+        .subcommand(
+            SubCommand::with_name("server")
+                .arg(Arg::from_usage("--config <PATH> 'Use the server config file at PATH'"))
+                .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                     .possible_values(LOG_LEVELS))
+        )
+}
+
+fn check_init_syslog<'a>(name: &str, matches: &ArgMatches<'a>) {
+    if matches.is_present("syslog") {
+        let level = value_t!(matches, "syslog", log::LevelFilter)
+            .unwrap_or_else(|e| e.exit());
+        drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
+    }
 }
 
 fn parse() -> Result<Command> {
@@ -211,6 +232,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
+            check_init_syslog("sccache-scheduler", &matches);
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
@@ -223,6 +245,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
+            check_init_syslog("sccache-buildserver", &matches);
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
