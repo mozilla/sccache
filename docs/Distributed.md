@@ -50,12 +50,12 @@ The HTTP implementation of sccache has the following API, where all HTTP body co
    - `GET /api/v1/scheduler/status`
       - Returns information about the scheduler.
  - `server`
-   - `POST /api/v1/server/assign_job`
+   - `POST /api/v1/distserver/assign_job`
       - Called by the scheduler to inform of a new job being assigned to this server.
       - Returns whether the toolchain is already on the server or needs submitting.
-   - `POST /api/v1/server/submit_toolchain`
+   - `POST /api/v1/distserver/submit_toolchain`
       - Called by the client to submit a toolchain.
-   - `POST /api/v1/server/run_job`
+   - `POST /api/v1/distserver/run_job`
       - Called by the client to run a job.
       - Returns the compilation stdout along with files created.
 
