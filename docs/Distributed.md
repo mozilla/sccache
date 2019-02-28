@@ -33,29 +33,29 @@ need to specify a toolchain for cross-compilation ahead of time.
 
 ## Communication
 
-The HTTP implementation of sccache has the following API:
+The HTTP implementation of sccache has the following API, where all HTTP body content is encoded using [`bincode`](http://docs.rs/bincode):
 
  - scheduler
-   - `POST alloc_job`
+   - `POST /api/v1/scheduler/alloc_job`
       - Called by a client to submit a compilation request.
       - Returns information on where the job is allocated it should run.
-   - `GET server_certificate`
+   - `GET /api/v1/scheduler/server_certificate`
       - Called by a client to retrieve the (dynamically created) HTTPS
         certificate for a server, for use in communication with that server.
       - Returns a digest and PEM for the temporary server HTTPS certificate.
-   - `POST heartbeat_server`
+   - `POST /api/v1/scheduler/heartbeat_server`
       - Called (repeatedly) by servers to register as available for jobs.
-   - `POST job_state`
+   - `POST /api/v1/scheduler/job_state`
       - Called by servers to inform the scheduler of the state of the job.
-   - `GET status`
+   - `GET /api/v1/scheduler/status`
       - Returns information about the scheduler.
  - `server`
-   - `POST assign_job`
+   - `POST /api/v1/server/assign_job`
       - Called by the scheduler to inform of a new job being assigned to this server.
       - Returns whether the toolchain is already on the server or needs submitting.
-   - `POST submit_toolchain`
+   - `POST /api/v1/server/submit_toolchain`
       - Called by the client to submit a toolchain.
-   - `POST run_job`
+   - `POST /api/v1/server/run_job`
       - Called by the client to run a job.
       - Returns the compilation stdout along with files created.
 

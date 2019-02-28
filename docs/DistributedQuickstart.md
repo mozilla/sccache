@@ -117,7 +117,10 @@ so any client tokens are validated with the Mozilla service:
 ```
 [client_auth]
 type = "mozilla"
+required_groups = ["group_name"]
 ```
+
+Where `group_name` is a Mozilla LDAP group. Users will be required to belong to this group to successfully authenticate with the scheduler.
 
 Clients should configure their `dist.auth` section as follows:
 
