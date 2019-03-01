@@ -38,6 +38,7 @@ use sccache::dist::{
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
+use sccache::util::daemonize;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{self, Write};
@@ -373,6 +374,7 @@ fn run(command: Command) -> Result<i32> {
                 }
             };
 
+            daemonize()?;
             let scheduler = Scheduler::new();
             let http_scheduler = dist::http::Scheduler::new(public_addr, scheduler, check_client_auth, check_server_auth);
             void::unreachable(http_scheduler.start()?);

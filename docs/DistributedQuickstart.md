@@ -38,7 +38,7 @@ Start the scheduler by running:
 sccache-dist scheduler --config scheduler.conf
 ```
 
-If the scheduler fails to start you may need to set `RUST_LOG=trace` when starting it to get useful diagnostics.
+Like the local server, the scheduler process wil daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `RUST_LOG=trace` when starting it to get useful diagnostics.
 
 Configure a build server
 ------------------------
