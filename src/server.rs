@@ -1094,7 +1094,9 @@ impl ServerStats {
         macro_rules! set_lang_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 $vec.push(($name.to_string(), $var.all().to_string(), 0));
-                for (lang, count) in $var.counts.iter() {
+                let mut sorted_stats: Vec<_> = $var.counts.iter().collect();
+                sorted_stats.sort_by_key(|v| v.1);
+                for (lang, count) in sorted_stats.iter() {
                     $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
                 };
             }};
