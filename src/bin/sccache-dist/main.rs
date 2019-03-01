@@ -160,12 +160,14 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
             SubCommand::with_name("scheduler")
                 .arg(Arg::from_usage("--config <PATH> 'Use the scheduler config file at PATH'"))
                 .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                     .required(false)
                      .possible_values(LOG_LEVELS))
                 )
         .subcommand(
             SubCommand::with_name("server")
                 .arg(Arg::from_usage("--config <PATH> 'Use the server config file at PATH'"))
                 .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                     .required(false)
                      .possible_values(LOG_LEVELS))
         )
 }
