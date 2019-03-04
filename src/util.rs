@@ -518,7 +518,7 @@ pub fn daemonize() -> Result<()> {
 
 /// This is a no-op on Windows.
 #[cfg(windows)]
-fn daemonize() -> Result<()> {
+pub fn daemonize() -> Result<()> {
     Ok(())
 }
 
