@@ -274,3 +274,10 @@ are generated dynamically on server startup and communicated to the scheduler du
 the heartbeat. If a client does not have the appropriate certificate for communicating
 securely with a server (after receiving a job allocation from the scheduler), the
 certificate will be requested from the scheduler.
+
+# Building the Distributed Server Binaries
+
+Until these binaries [are included in releases](https://github.com/mozilla/sccache/issues/393) I've put together a Docker container that can be used to easily build a release binary:
+```
+docker run -ti --rm -v $PWD:/sccache luser/sccache-musl-build:0.1 /bin/bash -c "cd /sccache; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/sccache-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf sccache-dist.tar.gz sccache-dist"
+```
