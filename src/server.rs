@@ -1095,7 +1095,7 @@ impl ServerStats {
             ($vec:ident, $var:expr, $name:expr) => {{
                 $vec.push(($name.to_string(), $var.all().to_string(), 0));
                 let mut sorted_stats: Vec<_> = $var.counts.iter().collect();
-                sorted_stats.sort_by_key(|v| v.1);
+                sorted_stats.sort_by_key(|v| v.0);
                 for (lang, count) in sorted_stats.iter() {
                     $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
                 };
