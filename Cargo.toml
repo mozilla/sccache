@@ -115,8 +115,8 @@ tokio-named-pipes = "0.1"
 tokio-reactor = "0.1"
 
 [features]
-default = ["s3"]
-all = ["redis", "s3", "memcached", "gcs", "azure"]
+default = ["dist-client", "s3"]
+all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
 simple-s3 = []
