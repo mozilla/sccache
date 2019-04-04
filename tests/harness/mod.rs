@@ -144,11 +144,18 @@ pub fn sccache_command() -> Command {
 
 #[cfg(feature = "dist-client")]
 pub fn sccache_command() -> Command {
+    // dist-server isn't available on all platforms, so only pass it here if we
+    // compiled with it.
+    let features = if cfg!(feature = "dist-server") {
+        "dist-client dist-server"
+    } else {
+        "dist-client"
+    };
     blankslate_sccache(CargoBuild::new()
         .bin("sccache")
         // This should just inherit from the feature list we're compiling with to avoid recompilation
         // https://github.com/assert-rs/assert_cmd/issues/44#issuecomment-418485128
-        .arg("--features").arg("dist-client dist-server")
+        .arg("--features").arg(features)
         .current_release()
         .current_target()
         .run()
