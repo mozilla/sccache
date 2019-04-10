@@ -280,40 +280,39 @@ where
             Some(TestCoverage) |
             Some(Coverage) |
             Some(PassThrough(_)) |
-            Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(path.clone());
-                Some(&mut common_args)
+                &mut common_args
             }
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
-            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+            Some(NeedDepTarget) => &mut preprocessor_args,
             Some(DoCompilation) |
             Some(Language(_)) |
             Some(Output(_)) |
             Some(XClang(_)) |
-            Some(DepTarget(_)) => None,
+            Some(DepTarget(_)) => continue,
             Some(TooHardFlag) |
             Some(TooHard(_)) => unreachable!(),
             None => {
                 match arg {
-                    Argument::Raw(_) => None,
-                    Argument::UnknownFlag(_) => Some(&mut common_args),
+                    Argument::Raw(_) => continue,
+                    Argument::UnknownFlag(_) => &mut common_args,
                     _ => unreachable!(),
                 }
             }
         };
-        if let Some(args) = args {
-            // Normalize attributes such as "-I foo", "-D FOO=bar", as
-            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
-            // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.flag_str() {
-                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
-                _ => NormalizedDisposition::Separated,
-            };
-            args.extend(arg.normalize(norm).iter_os_strings());
+
+        // Normalize attributes such as "-I foo", "-D FOO=bar", as
+        // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+        // "-include foo", "-idirafter bar", etc.
+        let norm = match arg.flag_str() {
+            Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+            _ => NormalizedDisposition::Separated,
         };
+        args.extend(arg.normalize(norm).iter_os_strings());
     }
 
     let xclang_it = ExpandIncludeFile::new(cwd, &xclangs);
@@ -342,30 +341,28 @@ where
                 }
             }
             Some(PassThrough(_)) |
-            Some(PassThroughPath(_)) => Some(&mut common_args),
+            Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(path.clone());
-                Some(&mut common_args)
+                &mut common_args
             }
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
             Some(DepTarget(_)) |
-            Some(NeedDepTarget) => Some(&mut preprocessor_args),
+            Some(NeedDepTarget) => &mut preprocessor_args,
         };
 
-        if let Some(args) = args {
-            // Normalize attributes such as "-I foo", "-D FOO=bar", as
-            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
-            // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.flag_str() {
-                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
-                _ => NormalizedDisposition::Separated,
-            };
-            for arg in arg.normalize(norm).iter_os_strings() {
-                args.push("-Xclang".into());
-                args.push(arg)
-            }
+        // Normalize attributes such as "-I foo", "-D FOO=bar", as
+        // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+        // "-include foo", "-idirafter bar", etc.
+        let norm = match arg.flag_str() {
+            Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+            _ => NormalizedDisposition::Separated,
+        };
+        for arg in arg.normalize(norm).iter_os_strings() {
+            args.push("-Xclang".into());
+            args.push(arg)
         }
     }
 
