@@ -202,28 +202,26 @@ where
             },
         }
         let args = match arg.get_data() {
-            Some(PassThrough(_)) => Some(&mut common_args),
+            Some(PassThrough(_)) => &mut common_args,
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_)) => Some(&mut preprocessor_args),
-            Some(DoCompilation) | Some(Output(_)) => None,
+            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(DoCompilation) | Some(Output(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
             None => match arg {
-                Argument::Raw(_) => None,
-                Argument::UnknownFlag(_) => Some(&mut common_args),
+                Argument::Raw(_) => continue,
+                Argument::UnknownFlag(_) => &mut common_args,
                 _ => unreachable!(),
             },
         };
-        if let Some(args) = args {
-            // Normalize attributes such as "-I foo", "-D FOO=bar", as
-            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
-            // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.flag_str() {
-                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
-                _ => NormalizedDisposition::Separated,
-            };
-            args.extend(arg.normalize(norm).iter_os_strings());
+        // Normalize attributes such as "-I foo", "-D FOO=bar", as
+        // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+        // "-include foo", "-idirafter bar", etc.
+        let norm = match arg.flag_str() {
+            Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+            _ => NormalizedDisposition::Separated,
         };
+        args.extend(arg.normalize(norm).iter_os_strings());
     }
 
     // We only support compilation.
