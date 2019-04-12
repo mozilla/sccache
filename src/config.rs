@@ -441,15 +441,20 @@ fn config_from_env() -> EnvConfig {
     let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok()
         .map(|_| AzureCacheConfig);
 
-    let disk = env::var_os("SCCACHE_DIR")
-        .map(|p| PathBuf::from(p))
-        .map(|dir| {
-            let size: u64 = env::var("SCCACHE_CACHE_SIZE")
-                .ok()
-                .and_then(|v| parse_size(&v))
-                .unwrap_or(TEN_GIGS);
-            DiskCacheConfig { dir, size }
-        });
+    let disk_dir = env::var_os("SCCACHE_DIR")
+        .map(PathBuf::from);
+    let disk_sz = env::var("SCCACHE_CACHE_SIZE")
+        .ok()
+        .and_then(|v| parse_size(&v));
+
+    let disk = if disk_dir.is_some() || disk_sz.is_some() {
+        Some(DiskCacheConfig {
+            dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
+            size: disk_sz.unwrap_or_else(default_disk_cache_size),
+        })
+    } else {
+        None
+    };
 
     let cache = CacheConfigs {
         azure,
