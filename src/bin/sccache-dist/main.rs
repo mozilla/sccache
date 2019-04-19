@@ -367,7 +367,16 @@ fn run(command: Command) -> Result<i32> {
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
                     }
-                    let validation = jwt::Validation::new(jwt::Algorithm::HS256);
+                    let validation = jwt::Validation {
+                        leeway: 0,
+                        validate_exp: false,
+                        validate_iat: false,
+                        validate_nbf: false,
+                        aud: None,
+                        iss: None,
+                        sub: None,
+                        algorithms: vec![jwt::Algorithm::HS256],
+                    };
                     Box::new(move |server_token| {
                         check_jwt_server_token(server_token, &secret_key, &validation)
                     })
