@@ -667,13 +667,31 @@ mod server {
                 client: Mutex::new(reqwest::Client::new()),
             };
 
-            macro_rules! check_server_auth_or_401 {
+            macro_rules! check_server_auth_or_err {
                 ($request:ident) => {{
                     match bearer_http_auth($request).and_then(&*check_server_auth) {
-                        Some(server_id) if server_id.addr().ip() == $request.remote_addr().ip() => {
-                            server_id
-                        }
-                        Some(_) => return make_401("invalid_bearer_token_mismatched_address"),
+                        Some(server_id) => {
+                            let origin_ip = if let Some(header_val) = $request.header("X-Real-IP") {
+                                trace!("X-Real-IP: {:?}", header_val);
+                                match header_val.parse() {
+                                    Ok(ip) => ip,
+                                    Err(err) => {
+                                        warn!("X-Real-IP value {:?} could not be parsed: {:?}",
+                                              header_val, err);
+                                        return rouille::Response::empty_400()
+                                    }
+                                }
+                            } else {
+                                $request.remote_addr().ip()
+                            };
+                            if server_id.addr().ip() != origin_ip {
+                                trace!("server ip: {:?}", server_id.addr().ip());
+                                trace!("request ip: {:?}", $request.remote_addr().ip());
+                                return make_401("invalid_bearer_token_mismatched_address")
+                            } else {
+                                server_id
+                            }
+                        },
                         None => return make_401("invalid_bearer_token"),
                     }
                 }};
@@ -757,7 +775,7 @@ mod server {
                         prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
-                        let server_id = check_server_auth_or_401!(request);
+                        let server_id = check_server_auth_or_err!(request);
                         let heartbeat_server = try_or_400_log!(req_id, bincode_input(request));
                         trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
@@ -776,7 +794,7 @@ mod server {
                         prepare_response(&request, &res)
                     },
                     (POST) (/api/v1/scheduler/job_state/{job_id: JobId}) => {
-                        let server_id = check_server_auth_or_401!(request);
+                        let server_id = check_server_auth_or_err!(request);
                         let job_state = try_or_400_log!(req_id, bincode_input(request));
                         trace!("Req {}: job state: {:?}", req_id, job_state);
 
