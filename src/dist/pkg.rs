@@ -146,7 +146,6 @@ mod toolchain_imp {
         }
 
         pub fn into_compressed_tar<W: Write>(self, writer: W) -> Result<()> {
-            use flate2;
             use flate2::write::GzEncoder;
             let ToolchainPackageBuilder { dir_set, file_set } = self;
 
@@ -312,7 +311,7 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
 
     // tar-rs imposes that `set_path` takes a relative path
     assert!(dest.starts_with("/"));
-    let dest = dest.trim_left_matches("/");
+    let dest = dest.trim_start_matches("/");
     assert!(!dest.starts_with("/"));
     // `set_path` converts its argument to a Path and back to bytes on Windows, so this is
     // a bit of an inefficient round-trip. Windows path separators will also be normalised

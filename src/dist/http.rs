@@ -1179,7 +1179,7 @@ mod client {
             match self.tc_cache.get_toolchain(&tc) {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
-                    let mut req = self.client.lock().unwrap().post(url);
+                    let req = self.client.lock().unwrap().post(url);
 
                     Box::new(self.pool.spawn_fn(move || {
                         let req = req.bearer_auth(job_alloc.auth.clone()).body(toolchain_file);
