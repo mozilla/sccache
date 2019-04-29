@@ -348,8 +348,6 @@ struct CInputsPackager {
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for CInputsPackager {
     fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
-        use tar;
-
         let CInputsPackager { input_path, mut path_transformer, preprocessed_input } = *{self};
 
         let input_path = pkg::simplify_path(&input_path)?;

@@ -1286,9 +1286,6 @@ struct RustInputsPackager {
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
-        use ar;
-        use tar;
-
         debug!("Packaging compile inputs for compile");
         let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, env_vars } = *{self};
 
@@ -1485,7 +1482,7 @@ impl OutputsRewriter for RustOutputsRewriter {
                 if dep_info == *dep_info_local_path {
                     info!("Replacing using the transformer {:?}", path_transformer);
                     // Found the dep info file, read it in
-                    let mut f = fs::File::open(&dep_info).chain_err(|| "Failed to open dep info file")?;
+                    let f = fs::File::open(&dep_info).chain_err(|| "Failed to open dep info file")?;
                     let mut deps = String::new();
                     {f}.read_to_string(&mut deps)?;
                     // Replace all the output paths, at the beginning of lines
@@ -1498,7 +1495,7 @@ impl OutputsRewriter for RustOutputsRewriter {
                         deps = re.replace_all(&deps, local_path_str).into_owned();
                     }
                     // Write the depinfo file
-                    let mut f = fs::File::create(&dep_info).chain_err(|| "Failed to recreate dep info file")?;
+                    let f = fs::File::create(&dep_info).chain_err(|| "Failed to recreate dep info file")?;
                     {f}.write_all(deps.as_bytes())?;
                     return Ok(())
                 }

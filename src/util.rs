@@ -436,7 +436,6 @@ mod http_extension {
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
     use daemonize::Daemonize;
-    use libc;
     use std::mem;
 
     match env::var("SCCACHE_NO_DAEMON") {
