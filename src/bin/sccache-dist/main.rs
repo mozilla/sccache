@@ -565,7 +565,14 @@ impl SchedulerIncoming for Scheduler {
                         "Non-terminated job {} was cleaned up in server pruning",
                         job_id
                     );
-                    assert!(jobs.remove(&job_id).is_some())
+                    // A job may be missing here if it failed to allocate
+                    // initially, so just warn if it's not present.
+                    if jobs.remove(&job_id).is_none() {
+                        warn!(
+                            "Non-terminated job {} assignment originally failed.",
+                            job_id
+                        );
+                    }
                 }
             }
 
