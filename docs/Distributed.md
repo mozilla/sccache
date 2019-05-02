@@ -97,6 +97,14 @@ connect to the server on (address `192.168.1.10:10501` here):
 
 ```
 sccache-dist auth generate-jwt-hs256-server-token \
+    --secret-key YOUR_KEY_HERE \
+    --server 192.168.1.10:10501
+```
+
+*or:*
+
+```
+sccache-dist auth generate-jwt-hs256-server-token \
     --config /path/to/scheduler-config.toml \
     --server 192.168.1.10:10501
 ```
@@ -180,7 +188,7 @@ which has a few different options for performing validation on that token.
 
 *To use it*:
 
-Put one of the following settings in your scheduleer config file to determine how
+Put one of the following settings in your scheduler config file to determine how
 the scheduler will validate tokens from the client:
 
 ```
@@ -267,7 +275,9 @@ the client to receive malicious compiled objects.
 Securing communication with the scheduler is the responsibility of the sccache cluster
 administrator - it is recommended to put a webserver with a HTTPS certificate in front
 of the scheduler and instruct clients to configure their `scheduler_url` with the
-appropriate `https://` address.
+appropriate `https://` address. The scheduler will verify the server's IP in this
+configuration by inspecting the `X-Real-IP` header's value, if present. The webserver
+used in this case should be configured to set this header to the appropriate value.
 
 Securing communication with the server is performed automatically - HTTPS certificates
 are generated dynamically on server startup and communicated to the scheduler during
