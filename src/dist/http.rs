@@ -344,6 +344,16 @@ mod server {
             .set_pubkey(privkey.as_ref())
             .chain_err(|| "failed to set pubkey for x509")?;
 
+        let mut name = openssl::x509::X509Name::builder()?;
+        name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME,
+                                 "sccache-internal")?;
+        let name = name.build();
+
+        builder.set_subject_name(&name)
+            .chain_err(|| "failed to set subject name")?;
+        builder.set_issuer_name(&name)
+            .chain_err(|| "failed to set issuer name")?;
+
         // Add the SubjectAlternativeName
         let extension = openssl::x509::extension::SubjectAlternativeName::new()
             .ip(&addr.ip().to_string())
