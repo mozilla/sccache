@@ -1202,6 +1202,10 @@ impl Compilation for RustCompilation {
                         }
                         *v = dist_out_dir
                     }
+                    "TMPDIR" => {
+                        // The server will need to find its own tempdir.
+                        *v = "".to_string();
+                    }
                     "CARGO" |
                     "CARGO_MANIFEST_DIR" => {
                         *v = path_transformer.to_dist(Path::new(v))?
