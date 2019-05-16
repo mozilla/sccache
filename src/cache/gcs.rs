@@ -150,8 +150,15 @@ impl Bucket {
 /// calls to GCS APIs don't need to request new tokens.
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
-    sa_key: ServiceAccountKey,
+    sa_info: ServiceAccountInfo,
     cached_credentials: RefCell<Option<Shared<SFuture<GCSCredential>>>>,
+}
+
+/// ServiceAccountInfo either contains a URL to fetch the oauth token
+/// or the service account key
+pub enum ServiceAccountInfo {
+    URL(String),
+    AccountKey(ServiceAccountKey),
 }
 
 /// ServiceAccountKey is a subset of the information in the JSON service account credentials.
@@ -187,6 +194,15 @@ struct TokenMsg {
     access_token: String,
 }
 
+/// AuthResponse represents the json response body from taskcluster-auth.gcsCredentials endpoint
+#[derive(Deserialize)]
+struct AuthResponse {
+    #[serde(rename = "accessToken")]
+    access_token: String,
+    #[serde(rename = "expireTime")]
+    expire_time: String,
+}
+
 /// RWMode describes whether or not to attempt cache writes.
 #[derive(Copy, Clone)]
 pub enum RWMode {
@@ -202,22 +218,22 @@ pub struct GCSCredential {
 }
 
 impl GCSCredentialProvider {
-    pub fn new(rw_mode: RWMode, sa_key: ServiceAccountKey) -> Self {
+    pub fn new(rw_mode: RWMode, sa_info: ServiceAccountInfo) -> Self {
         GCSCredentialProvider {
             rw_mode,
-            sa_key,
+            sa_info,
             cached_credentials: RefCell::new(None),
         }
     }
 
-    fn auth_request_jwt(&self, expire_at: &chrono::DateTime<chrono::offset::Utc>) -> Result<String> {
+    fn auth_request_jwt(&self, sa_key: &ServiceAccountKey, expire_at: &chrono::DateTime<chrono::offset::Utc>) -> Result<String> {
         let scope = (match self.rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         }).to_owned();
 
         let jwt_claims = JwtClaims {
-            issuer: self.sa_key.client_email.clone(),
+            issuer: sa_key.client_email.clone(),
             scope: scope,
             audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
             expiration: expire_at.timestamp(),
@@ -226,7 +242,7 @@ impl GCSCredentialProvider {
 
         // Could also use the pem crate, but that seems overly complicated for just the specific
         // case of GCP keys
-        let key_string = self.sa_key.private_key.splitn(5, "-----").nth(2).ok_or_else(|| "invalid key format")?;
+        let key_string = sa_key.private_key.splitn(5, "-----").nth(2).ok_or_else(|| "invalid key format")?;
         // Skip the leading `\n`
         let key_bytes = base64::decode_config(key_string[1..].as_bytes(), base64::MIME)?;
 
@@ -239,10 +255,11 @@ impl GCSCredentialProvider {
         Ok(auth_request_jwt)
     }
 
-    fn request_new_token(&self, client: &Client) -> SFuture<GCSCredential> {
+
+    fn request_new_token(&self, sa_key: &ServiceAccountKey, client: &Client) -> SFuture<GCSCredential> {
         let client = client.clone();
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
-        let auth_jwt = self.auth_request_jwt(&expires_at);
+        let auth_jwt = self.auth_request_jwt(sa_key, &expires_at);
 
         // Request credentials
         Box::new(future::result(auth_jwt).and_then(move |auth_jwt| {
@@ -286,6 +303,35 @@ impl GCSCredentialProvider {
         }))
     }
 
+    fn request_new_token_from_tcauth(&self, url: &str, client: &Client) -> SFuture<GCSCredential> {
+        Box::new(client
+            .get(url)
+            .send()
+            .map_err(Into::into)
+            .and_then(move |res| {
+                if res.status().is_success() {
+                    Ok(res.into_body())
+                } else {
+                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                }
+            }).and_then(move |body| {
+                body.fold(Vec::new(), |mut body, chunk| {
+                    body.extend_from_slice(&chunk);
+                    Ok::<_, reqwest::Error>(body)
+                }).chain_err(|| {
+                    "failed to read HTTP body"
+                })
+            }).and_then(move |body| {
+                let body_str = String::from_utf8(body)?;
+                let resp: AuthResponse = serde_json::from_str(&body_str)?;
+                Ok(GCSCredential{
+                    token: resp.access_token,
+                    expiration_time: resp.expire_time.parse()?,
+                })
+            })
+        )
+    }
+
     pub fn credentials(&self, client: &Client) -> SFuture<GCSCredential> {
         let mut future_opt = self.cached_credentials.borrow_mut();
 
@@ -296,7 +342,10 @@ impl GCSCredentialProvider {
         };
 
         if needs_refresh {
-            let credentials = self.request_new_token(client);
+            let credentials = match self.sa_info {
+                ServiceAccountInfo::AccountKey(ref sa_key) => self.request_new_token(sa_key, client),
+                ServiceAccountInfo::URL(ref url) => self.request_new_token_from_tcauth(url, client),
+            };
             *future_opt = Some(credentials.shared());
         };
 
@@ -373,4 +422,39 @@ impl Storage for GCSCache {
 
     fn current_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
     fn max_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
+}
+
+#[test]
+fn test_gcs_credential_provider() {
+    const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
+    let addr = ([127, 0, 0, 1], 3000).into();
+    let make_service = || {
+        hyper::service::service_fn_ok(|_| {
+            let token = serde_json::json!({
+                "accessToken": "1234567890",
+                "expireTime": EXPIRE_TIME,
+            });
+            hyper::Response::new(hyper::Body::from(token.to_string()))
+        })
+    };
+
+    let server = hyper::Server::bind(&addr).serve(make_service);
+
+    let credential_provider = GCSCredentialProvider::new(
+        RWMode::ReadWrite,
+        ServiceAccountInfo::URL("http://127.0.0.1:3000/".to_string())
+    );
+
+    let client = Client::new();
+    let cred_fut = credential_provider.credentials(&client)
+        .map(move |credential| {
+            assert_eq!(credential.token, "1234567890");
+            assert_eq!(
+                credential.expiration_time.timestamp(),
+                EXPIRE_TIME.parse::<chrono::DateTime<chrono::offset::Utc>>().unwrap().timestamp(),
+            );
+        })
+        .map_err(move |err| panic!(err.to_string()));
+
+    server.with_graceful_shutdown(cred_fut);
 }

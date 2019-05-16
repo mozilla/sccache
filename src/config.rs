@@ -169,6 +169,7 @@ pub enum GCSCacheRWMode {
 pub struct GCSCacheConfig {
     pub bucket: String,
     pub cred_path: Option<PathBuf>,
+    pub url: Option<String>,
     pub rw_mode: GCSCacheRWMode,
 }
 
@@ -417,8 +418,16 @@ fn config_from_env() -> EnvConfig {
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok()
         .map(|bucket| {
+            let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
             let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH")
                 .map(|p| PathBuf::from(p));
+
+            if url.is_some() && cred_path.is_some() {
+                warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
+                warn!("You should set only one of them!");
+                warn!("SCCACHE_GCS_KEY_PATH will take precedence");
+            }
+
             let rw_mode = match env::var("SCCACHE_GCS_RW_MODE")
                                       .as_ref().map(String::as_str) {
                 Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
@@ -434,7 +443,7 @@ fn config_from_env() -> EnvConfig {
                     GCSCacheRWMode::ReadOnly
                 }
             };
-            GCSCacheConfig { bucket, cred_path, rw_mode }
+            GCSCacheConfig { bucket, cred_path, url, rw_mode }
         });
 
 
@@ -746,4 +755,24 @@ fn config_overrides() {
             dist: Default::default(),
         }
     );
+}
+
+#[test]
+fn test_gcs_credentials_url() {
+    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
+    env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
+    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+
+    let env_cfg = config_from_env();
+    match env_cfg.cache.gcs {
+        Some(GCSCacheConfig{ref bucket, cred_path: _, ref url, rw_mode}) => {
+            assert_eq!(bucket, "my-bucket");
+            match url {
+                Some(ref url) => assert_eq!(url, "http://localhost/"),
+                None => panic!("URL can't be none"),
+            };
+            assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
+        },
+        None => assert!(false),
+    };
 }
