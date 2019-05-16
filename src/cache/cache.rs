@@ -16,7 +16,7 @@
 use cache::azure::AzureBlobCache;
 use cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode};
+use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
 #[cfg(feature = "memcached")]
 use cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
@@ -181,15 +181,16 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
             CacheType::GCS(config::GCSCacheConfig {
                 ref bucket,
                 ref cred_path,
+                ref url,
                 rw_mode,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {:?}, {:?})",
-                    bucket, cred_path, rw_mode
+                    "Trying GCS bucket({}, {:?}, {:?}, {:?})",
+                    bucket, cred_path, url, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
-                    let service_account_key_opt: Option<gcs::ServiceAccountKey> =
+                    let service_account_info_opt: Option<gcs::ServiceAccountInfo> =
                         if let Some(ref cred_path) = *cred_path {
                             // Attempt to read the service account key from file
                             let service_account_key_res: Result<
@@ -210,7 +211,9 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
                                 );
                             }
 
-                            service_account_key_res.ok()
+                            service_account_key_res.ok().map(|account_key| ServiceAccountInfo::AccountKey(account_key))
+                        } else if let Some(ref url) = *url {
+                            Some(ServiceAccountInfo::URL(url.clone()))
                         } else {
                             warn!(
                             "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."
@@ -223,8 +226,8 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
                         config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
                     };
 
-                    let gcs_cred_provider = service_account_key_opt
-                        .map(|path| GCSCredentialProvider::new(gcs_read_write_mode, path));
+                    let gcs_cred_provider = service_account_info_opt
+                        .map(|info| GCSCredentialProvider::new(gcs_read_write_mode, info));
 
                     match GCSCache::new(bucket.to_owned(), gcs_cred_provider, gcs_read_write_mode) {
                         Ok(s) => {

@@ -42,6 +42,8 @@ use tempfile;
 use tokio_timer;
 use walkdir;
 use which;
+#[cfg(feature = "gcs")]
+use chrono;
 
 error_chain! {
     foreign_links {
@@ -78,6 +80,13 @@ error_chain! {
 impl From<which::Error> for Error {
     fn from(err: which::Error) -> Self {
         Error::from(ErrorKind::Which(err))
+    }
+}
+
+#[cfg(feature = "gcs")]
+impl From<chrono::ParseError> for Error {
+    fn from(err: chrono::ParseError) -> Self {
+       Error::from(err.to_string())
     }
 }
 
