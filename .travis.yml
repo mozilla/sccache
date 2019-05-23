@@ -15,7 +15,7 @@ matrix:
     - rust: nightly
 
     # deployments
-    - env: DEPLOY=1 TARGET=x86_64-apple-darwin
+    - env: DEPLOY=1 TARGET=x86_64-apple-darwin OPENSSL_STATIC=yes
       script: cargo build --release --target $TARGET --features=all
       os: osx
     - env: DEPLOY=1 TARGET=x86_64-unknown-linux-musl OPENSSL_DIR=$HOME/openssl-musl
