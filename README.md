@@ -3,7 +3,7 @@
 sccache - Shared Compilation Cache
 ==================================
 
-Sccache is a [ccache](https://ccache.samba.org/)-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the Amazon Simple Cloud Storage Service (S3) API, the Google Cloud Storage (GCS) API, or Redis.
+Sccache is a [ccache](https://ccache.dev/)-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the Amazon Simple Cloud Storage Service (S3) API, the Google Cloud Storage (GCS) API, or Redis.
 
 Sccache now includes [experimental Rust support](docs/Rust.md).
 
