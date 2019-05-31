@@ -37,7 +37,7 @@ use std::collections::hash_map::RandomState;
 #[cfg(feature = "dist-client")]
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::env::consts::DLL_EXTENSION;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::hash::Hash;
@@ -133,7 +133,7 @@ pub struct ParsedArguments {
     dep_info: Option<PathBuf>,
     /// rustc says that emits .rlib for --emit=metadata
     /// https://github.com/rust-lang/rust/issues/54852
-    rename_rlib_to_rmeta: bool,
+    emit: HashSet<String>,
     /// The value of any `--color` option passed on the commandline.
     color_mode: ColorMode,
 }
@@ -317,6 +317,9 @@ fn get_compiler_outputs<T>(creator: &T,
     let outputs = run_input_output(cmd, None);
     Box::new(outputs.and_then(move |output| -> Result<_> {
         let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing rustc output")?;
+        if log_enabled!(Trace) {
+            trace!("get_compiler_outputs: {:?}", outstr);
+        }
         Ok(outstr.lines().map(|l| l.to_owned()).collect())
     }))
 }
@@ -873,8 +876,6 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         cannot_cache!("unsupported --emit");
     }
 
-    let rename_rlib_to_rmeta = emit.contains("metadata") && !emit.contains("link");
-
     // Figure out the dep-info filename, if emitting dep-info.
     let dep_info = if emit.contains("dep-info") {
         let mut dep_info = crate_name.clone();
@@ -915,7 +916,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         staticlibs: staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
-        rename_rlib_to_rmeta,
+        emit,
         color_mode,
     })
 }
@@ -948,7 +949,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     crate_name,
                     crate_types,
                     dep_info,
-                    rename_rlib_to_rmeta,
+                    emit,
                     color_mode: _,
                 },
         } = me;
@@ -1064,7 +1065,26 @@ impl<T> CompilerHasher<T> for RustHasher
             let flat_os_string_arguments: Vec<OsString> = os_string_arguments.into_iter()
                 .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
                 .collect();
-            Box::new(get_compiler_outputs(&creator, &executable, &flat_os_string_arguments, &cwd, &env_vars).map(move |outputs| {
+            Box::new(get_compiler_outputs(&creator, &executable, &flat_os_string_arguments, &cwd, &env_vars).map(move |mut outputs| {
+                if emit.contains("metadata") {
+                    // rustc currently does not report rmeta outputs with --print file-names
+                    // --emit metadata the rlib is printed, and with --emit metadata,link
+                    // only the rlib is printed.
+                    let rlibs: HashSet<_> = outputs.iter().cloned().filter(|p| {
+                        p.ends_with(".rlib")
+                    }).collect();
+                    for lib in rlibs {
+                        let rmeta = lib.replacen(".rlib", ".rmeta", 1);
+                        // Do this defensively for future versions of rustc that may
+                        // be fixed.
+                        if !outputs.contains(&rmeta) {
+                            outputs.push(rmeta);
+                        }
+                        if !emit.contains("link") {
+                            outputs.retain(|p| *p != lib);
+                        }
+                    }
+                }
                 let output_dir = PathBuf::from(output_dir);
                 // Convert output files into a map of basename -> full path.
                 let mut outputs = outputs.into_iter()
@@ -1084,14 +1104,6 @@ impl<T> CompilerHasher<T> for RustHasher
                 // Always request color output, the client will strip colors if needed.
                 arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
                 let inputs = source_files.into_iter().chain(abs_externs).chain(abs_staticlibs).collect();
-
-                if rename_rlib_to_rmeta {
-                    for output in outputs.values_mut() {
-                        if output.extension() == Some(OsStr::new("rlib")) {
-                            output.set_extension("rmeta");
-                        }
-                    }
-                }
 
                 HashResult {
                     key: m.finish(),
@@ -2038,6 +2050,9 @@ c:/foo/bar.rs:
         for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
             f.touch(s).unwrap();
         }
+        let mut emit = HashSet::new();
+        emit.insert("link".to_string());
+        emit.insert("metadata".to_string());
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
@@ -2063,7 +2078,7 @@ c:/foo/bar.rs:
                 crate_name: "foo".into(),
                 crate_types: CrateTypes { rlib: true, staticlib: false },
                 dep_info: None,
-                rename_rlib_to_rmeta: false,
+                emit: emit,
                 color_mode: ColorMode::Auto,
             }
         });
@@ -2108,7 +2123,7 @@ c:/foo/bar.rs:
         assert_eq!(res.key, digest);
         let mut out = res.compilation.outputs().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
         out.sort();
-        assert_eq!(out, vec!["foo.a", "foo.rlib"]);
+        assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
 
     fn hash_key<'a, F>(f: &TestFixture, args: &[OsString], env_vars: &[(OsString, OsString)],
