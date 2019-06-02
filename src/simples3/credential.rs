@@ -7,7 +7,7 @@ use directories::UserDirs;
 use futures::future::{self, Shared};
 use futures::{Async, Future, Stream};
 use hyper::client::HttpConnector;
-use hyper::{self, Client, Request};
+use hyper::{Client, Request};
 use hyperx::header::Connection;
 use regex::Regex;
 use serde_json::{from_str, Value};

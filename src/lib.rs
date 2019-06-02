@@ -12,101 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![deny(rust_2018_idioms)]
 #![recursion_limit = "128"]
 
-#[cfg(feature = "ar")]
-extern crate ar;
-extern crate atty;
-extern crate base64;
-extern crate bincode;
-extern crate byteorder;
-extern crate bytes;
-#[cfg(feature = "chrono")]
-extern crate chrono;
 #[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate counted_array;
-#[cfg(feature = "rust-crypto")]
-extern crate crypto;
-#[cfg(unix)]
-extern crate daemonize;
-extern crate directories;
-extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
-extern crate filetime;
-#[cfg(feature = "flate2")]
-extern crate flate2;
 #[macro_use]
 extern crate futures;
-extern crate futures_cpupool;
-extern crate http;
-#[cfg(feature = "hyper")]
-extern crate hyper;
-#[cfg(feature = "hyperx")]
-extern crate hyperx;
-#[cfg(test)]
-extern crate itertools;
 #[cfg(feature = "jsonwebtoken")]
-extern crate jsonwebtoken as jwt;
-#[cfg(windows)]
-extern crate kernel32;
+use jsonwebtoken as jwt;
 #[macro_use]
 extern crate lazy_static;
-extern crate local_encoding;
 #[macro_use]
 extern crate log;
-extern crate libc;
-extern crate lru_disk_cache;
-#[cfg(feature = "memcached")]
-extern crate memcached;
-extern crate num_cpus;
-extern crate number_prefix;
-#[cfg(feature = "openssl")]
-extern crate openssl;
-extern crate rand;
-#[cfg(feature = "redis")]
-extern crate redis;
-extern crate regex;
-#[cfg(feature = "reqwest")]
-extern crate reqwest;
-extern crate retry;
-extern crate ring;
-#[cfg(windows)]
-extern crate tokio_named_pipes;
 #[cfg(feature = "rouille")]
 #[macro_use(router)]
 extern crate rouille;
-extern crate serde;
-extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
-extern crate strip_ansi_escapes;
-extern crate tar;
-extern crate tempdir;
-extern crate tempfile;
-extern crate time;
-extern crate tokio;
-extern crate tokio_io;
-extern crate tokio_process;
-#[cfg(windows)]
-extern crate tokio_reactor;
-extern crate tokio_serde_bincode;
-extern crate tokio_service;
-extern crate tokio_tcp;
-extern crate tokio_timer;
-extern crate toml;
-#[cfg(any(feature = "azure", feature = "gcs", feature = "dist-client"))]
-extern crate url;
-extern crate uuid;
-#[cfg(feature = "void")]
-extern crate void;
-extern crate walkdir;
-extern crate which;
-#[cfg(windows)]
-extern crate winapi;
-extern crate zip;
 
 // To get macros in scope, this has to be first.
 #[cfg(test)]

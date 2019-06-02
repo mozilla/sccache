@@ -17,7 +17,6 @@ use std::io;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::str;
-use tar;
 
 use crate::errors::*;
 
@@ -28,11 +27,11 @@ pub trait ToolchainPackager: Send {
 }
 
 pub trait InputsPackager: Send {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer>;
+    fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer>;
 }
 
 pub trait OutputsRepackager {
-    fn repackage_outputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer>;
+    fn repackage_outputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer>;
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -60,7 +59,6 @@ mod toolchain_imp {
     use std::process;
     use std::str;
     use super::tarify_path;
-    use tar;
     use walkdir::WalkDir;
 
     use crate::errors::*;

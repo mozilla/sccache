@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use atty::{self, Stream};
-use bincode;
+use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
@@ -24,7 +23,6 @@ use crate::jobserver::Client;
 use log::Level::Trace;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
-use serde_json;
 use crate::server::{self, ServerInfo, ServerStartup};
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -77,8 +75,6 @@ fn read_server_startup_status<R: AsyncRead>(
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    extern crate tokio_uds;
-
     use futures::Stream;
     use std::time::Duration;
     use tempdir::TempDir;
@@ -151,7 +147,6 @@ fn redirect_error_log() -> Result<()> {
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
     use futures::future;
-    use kernel32;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -368,13 +363,13 @@ fn status_signal(_status: process::ExitStatus) -> Option<i32> {
 /// Return the compiler exit status.
 fn handle_compile_finished(
     response: CompileFinished,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32> {
     trace!("handle_compile_finished");
     fn write_output(
         stream: Stream,
-        writer: &mut Write,
+        writer: &mut dyn Write,
         data: &[u8],
         color_mode: ColorMode,
     ) -> Result<()> {
@@ -438,8 +433,8 @@ fn handle_compile_response<T>(
     exe: &Path,
     cmdline: Vec<OsString>,
     cwd: &Path,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
@@ -513,8 +508,8 @@ pub fn do_compile<T>(
     cwd: &Path,
     path: Option<OsString>,
     env_vars: Vec<(OsString, OsString)>,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32>
 where
     T: CommandCreatorSync,

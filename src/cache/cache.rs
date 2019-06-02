@@ -25,8 +25,6 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 use futures_cpupool::CpuPool;
-#[cfg(feature = "gcs")]
-use serde_json;
 use std::fmt;
 #[cfg(feature = "gcs")]
 use std::fs::File;
@@ -49,7 +47,7 @@ pub enum Cache {
 }
 
 impl fmt::Debug for Cache {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
@@ -65,7 +63,7 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 
 /// Data stored in the compiler cache.
 pub struct CacheRead {
-    zip: ZipArchive<Box<ReadSeek>>,
+    zip: ZipArchive<Box<dyn ReadSeek>>,
 }
 
 impl CacheRead {
@@ -74,7 +72,7 @@ impl CacheRead {
     where
         R: ReadSeek + 'static,
     {
-        let z = ZipArchive::new(Box::new(reader) as Box<ReadSeek>)
+        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
             .chain_err(|| "Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
@@ -164,7 +162,7 @@ pub trait Storage {
 }
 
 /// Get a suitable `Storage` implementation from configuration.
-pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
+pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

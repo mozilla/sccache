@@ -1,11 +1,6 @@
-use base64;
-use hyperx;
 use crate::jwt;
-use openssl;
-use reqwest;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::RequestExt;
-use serde_json;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;

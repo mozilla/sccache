@@ -1,16 +1,11 @@
-extern crate filetime;
+#![deny(rust_2018_idioms)]
+
 #[macro_use]
 extern crate log;
 //extern crate lru_cache;
-extern crate linked_hash_map;
 pub mod lru_cache;
-extern crate walkdir;
-
-#[cfg(test)]
-extern crate tempdir;
 
 use std::io::prelude::*;
-
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
@@ -41,7 +36,7 @@ impl<K> Meter<K, u64> for FileSize {
 
 /// Return an iterator of `(path, size)` of files under `path` sorted by ascending last-modified
 /// time, such that the oldest modified file is returned first.
-fn get_all_files<P: AsRef<Path>>(path: P) -> Box<Iterator<Item=(PathBuf, u64)>> {
+fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item=(PathBuf, u64)>> {
     let mut files: Vec<_> = WalkDir::new(path.as_ref())
         .into_iter()
         .filter_map(|e| e.ok()
@@ -78,7 +73,7 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.description())
     }
 }
@@ -92,7 +87,7 @@ impl StdError for Error {
         }
     }
 
-    fn cause(&self) -> Option<&StdError> {
+    fn cause(&self) -> Option<&dyn StdError> {
         match self {
             &Error::Io(ref e) => Some(e),
             _ => None,
@@ -174,7 +169,7 @@ impl LruDiskCache {
     }
 
     /// Add the file at `path` of size `size` to the cache.
-    fn add_file(&mut self, addfile_path: AddFile, size: u64) -> Result<()> {
+    fn add_file(&mut self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
         if !self.can_store(size) {
             return Err(Error::FileTooLarge);
         }
@@ -266,8 +261,8 @@ impl LruDiskCache {
 
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
-    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<ReadSeek>> {
-        self.get_file(key).map(|f| Box::new(f) as Box<ReadSeek>)
+    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
+        self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
 }
 

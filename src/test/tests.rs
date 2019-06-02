@@ -15,7 +15,6 @@
 use crate::cache::disk::DiskCache;
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
-use env_logger;
 use futures::sync::oneshot::{self, Sender};
 use futures_cpupool::CpuPool;
 use crate::jobserver::Client;

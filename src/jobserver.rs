@@ -1,4 +1,3 @@
-extern crate jobserver;
 
 use std::io;
 use std::process::Command;
@@ -8,7 +7,6 @@ use futures::prelude::*;
 use futures::future;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
-use num_cpus;
 
 use crate::errors::*;
 

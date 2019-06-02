@@ -1,19 +1,3 @@
-extern crate assert_cmd;
-extern crate bincode;
-extern crate env_logger;
-extern crate escargot;
-#[cfg(feature = "dist-server")]
-extern crate nix;
-extern crate predicates;
-#[cfg(feature = "dist-server")]
-extern crate reqwest;
-extern crate sccache;
-extern crate serde;
-extern crate serde_json;
-extern crate uuid;
-#[cfg(feature = "dist-server")]
-extern crate void;
-
 #[cfg(feature = "dist-server")]
 use std::env;
 use std::fs;
@@ -29,19 +13,19 @@ use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 
-use self::assert_cmd::prelude::*;
-use self::escargot::CargoBuild;
+use assert_cmd::prelude::*;
+use escargot::CargoBuild;
 #[cfg(feature = "dist-server")]
-use self::nix::{
+use nix::{
     sys::{
         signal::Signal,
         wait::{WaitPidFlag, WaitStatus},
     },
     unistd::{ForkResult, Pid},
 };
-use self::predicates::prelude::*;
-use self::serde::Serialize;
-use self::uuid::Uuid;
+use predicates::prelude::*;
+use serde::Serialize;
+use uuid::Uuid;
 
 #[cfg(feature = "dist-server")]
 macro_rules! matches {

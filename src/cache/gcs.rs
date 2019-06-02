@@ -19,22 +19,18 @@ use std::io;
 use std::rc::Rc;
 use std::time;
 
-use base64;
 use crate::cache::{
     Cache,
     CacheRead,
     CacheWrite,
     Storage,
 };
-use chrono;
 use futures::future::Shared;
 use futures::{future, Async, Future, Stream};
 use hyperx::header::{Authorization, Bearer, ContentType, ContentLength};
 use hyper::Method;
-use reqwest;
 use reqwest::r#async::{Request, Client};
 use crate::jwt;
-use serde_json;
 use url::form_urlencoded;
 use url::percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET};
 
@@ -48,7 +44,7 @@ struct Bucket {
 }
 
 impl fmt::Display for Bucket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Bucket(name={})", self.name)
     }
 }

@@ -15,11 +15,9 @@
 use directories::ProjectDirs;
 use regex::Regex;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-use reqwest;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
-use serde_json;
 use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
@@ -28,7 +26,6 @@ use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
-use toml;
 
 use crate::errors::*;
 
