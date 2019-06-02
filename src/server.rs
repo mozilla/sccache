@@ -51,7 +51,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
-use tokio;
 use tokio::runtime::current_thread::Runtime;
 use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
@@ -152,7 +151,7 @@ struct DistClientConfig {
 #[cfg(feature = "dist-client")]
 enum DistClientState {
     #[cfg(feature = "dist-client")]
-    Some(Arc<dist::Client>),
+    Some(Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
     RetryCreateAt(DistClientConfig, Instant),
     Disabled,
@@ -172,7 +171,7 @@ impl DistClientContainer {
         Self {}
     }
 
-    fn get_client(&self) -> Option<Arc<dist::Client>> {
+    fn get_client(&self) -> Option<Arc<dyn dist::Client>> {
         None
     }
 }
@@ -201,7 +200,7 @@ impl DistClientContainer {
         }
     }
 
-    fn get_client(&self) -> Option<Arc<dist::Client>> {
+    fn get_client(&self) -> Option<Arc<dyn dist::Client>> {
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
@@ -351,7 +350,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = TcpListener::bind(&SocketAddr::V4(addr))?;
@@ -380,7 +379,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Set the storage this server will use.
     #[allow(dead_code)]
-    pub fn set_storage(&mut self, storage: Arc<Storage>) {
+    pub fn set_storage(&mut self, storage: Arc<dyn Storage>) {
         self.service.storage = storage;
     }
 
@@ -414,7 +413,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         self._run(Box::new(shutdown.then(|_| Ok(()))))
     }
 
-    fn _run<'a>(self, shutdown: Box<Future<Item = (), Error = ()> + 'a>) -> io::Result<()> {
+    fn _run<'a>(self, shutdown: Box<dyn Future<Item = (), Error = ()> + 'a>) -> io::Result<()> {
         let SccacheServer {
             mut runtime,
             listener,
@@ -453,7 +452,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         });
 
         let mut futures = vec![
-            Box::new(server) as Box<Future<Item = _, Error = _>>,
+            Box::new(server) as Box<dyn Future<Item = _, Error = _>>,
             Box::new(
                 shutdown
                     .map_err(|()| io::Error::new(io::ErrorKind::Other, "shutdown signal failed")),
@@ -515,10 +514,10 @@ struct SccacheService<C: CommandCreatorSync> {
     dist_client: Rc<DistClientContainer>,
 
     /// Cache storage.
-    storage: Arc<Storage>,
+    storage: Arc<dyn Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<HashMap<PathBuf, Option<(Box<Compiler<C>>, FileTime)>>>>,
+    compilers: Rc<RefCell<HashMap<PathBuf, Option<(Box<dyn Compiler<C>>, FileTime)>>>>,
 
     /// Thread pool to execute work in
     pool: CpuPool,
@@ -613,7 +612,7 @@ where
 {
     pub fn new(
         dist_client: DistClientContainer,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
         client: &Client,
         pool: CpuPool,
         tx: mpsc::Sender<ServerMessage>,
@@ -654,7 +653,7 @@ where
             .from_err::<Error>()
             .and_then(move |input| self.call(input))
             .and_then(|message| {
-                let f: Box<Stream<Item = _, Error = _>> = match message {
+                let f: Box<dyn Stream<Item = _, Error = _>> = match message {
                     Message::WithoutBody(message) => Box::new(stream::once(Ok(Frame::Message {
                         message,
                         body: false,
@@ -718,7 +717,7 @@ where
         &self,
         path: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> SFuture<Option<Box<Compiler<C>>>> {
+    ) -> SFuture<Option<Box<dyn Compiler<C>>>> {
         trace!("compiler_info");
         let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
         //TODO: properly handle rustup overrides. Currently this will
@@ -761,7 +760,7 @@ where
     /// If so, run `start_compile_task` to execute it.
     fn check_compiler(
         &self,
-        compiler: Option<Box<Compiler<C>>>,
+        compiler: Option<Box<dyn Compiler<C>>>,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -817,8 +816,8 @@ where
     /// the result in the cache.
     fn start_compile_task(
         &self,
-        compiler: Box<Compiler<C>>,
-        hasher: Box<CompilerHasher<C>>,
+        compiler: Box<dyn Compiler<C>>,
+        hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,

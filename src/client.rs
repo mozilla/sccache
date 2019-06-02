@@ -15,7 +15,6 @@
 use byteorder::{ByteOrder, BigEndian};
 use crate::protocol::{Request, Response};
 use retry::retry;
-use bincode;
 use crate::errors::*;
 use std::io::{
     self,

@@ -180,7 +180,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T,
 }
 
 #[cfg(unix)]
-fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
+fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
     use std::os::unix::prelude::*;
 
     let bytes = path.as_os_str().as_bytes();
@@ -428,7 +428,6 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
 
 #[cfg(windows)]
 fn normpath(path: &str) -> String {
-    use kernel32;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use std::ptr;
@@ -629,7 +628,6 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 mod test {
     use crate::compiler::*;
     use crate::env;
-    use env_logger;
     use futures::Future;
     use futures_cpupool::CpuPool;
     use crate::mock_command::*;

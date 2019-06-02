@@ -47,7 +47,6 @@
 
 #[cfg(feature = "heapsize")]
 extern crate heapsize;
-extern crate linked_hash_map;
 
 use std::borrow::Borrow;
 use std::collections::hash_map::RandomState;
@@ -313,7 +312,7 @@ impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
     /// assert_eq!(cache.get_mut(&2), Some(&mut 200));
     /// assert_eq!(cache.get_mut(&3), Some(&mut 300));
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<K, V> { self.internal_iter_mut() }
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> { self.internal_iter_mut() }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S, M> {
@@ -526,9 +525,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// let kvs: Vec<_> = cache.iter().collect();
     /// assert_eq!(kvs, [(&2, &20), (&3, &30)]);
     /// ```
-    pub fn iter(&self) -> Iter<K, V> { Iter(self.map.iter()) }
+    pub fn iter(&self) -> Iter<'_, K, V> { Iter(self.map.iter()) }
 
-    fn internal_iter_mut(&mut self) -> IterMut<K, V> { IterMut(self.map.iter_mut()) }
+    fn internal_iter_mut(&mut self) -> IterMut<'_, K, V> { IterMut(self.map.iter_mut()) }
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)> for LruCache<K, V, S, M> {
@@ -540,7 +539,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> Extend<(K, V)> fo
 }
 
 impl<K: fmt::Debug + Eq + Hash, V: fmt::Debug, S: BuildHasher, M: CountableMeter<K, V>> fmt::Debug for LruCache<K, V, S, M> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter().rev()).finish()
     }
 }
@@ -619,7 +618,7 @@ impl<K, V> ExactSizeIterator for IntoIter<K, V> {
 /// An iterator over a cache's key-value pairs in least- to most-recently-used order.
 ///
 /// Accessing a cache through the iterator does _not_ affect the cache's LRU state.
-pub struct Iter<'a, K: 'a, V: 'a>(linked_hash_map::Iter<'a, K, V>);
+pub struct Iter<'a, K, V>(linked_hash_map::Iter<'a, K, V>);
 
 impl<'a, K, V> Clone for Iter<'a, K, V> {
     fn clone(&self) -> Iter<'a, K, V> { Iter(self.0.clone()) }
@@ -643,7 +642,7 @@ impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> {
 /// references to the values.
 ///
 /// Accessing a cache through the iterator does _not_ affect the cache's LRU state.
-pub struct IterMut<'a, K: 'a, V: 'a>(linked_hash_map::IterMut<'a, K, V>);
+pub struct IterMut<'a, K, V>(linked_hash_map::IterMut<'a, K, V>);
 
 impl<'a, K, V> Iterator for IterMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);

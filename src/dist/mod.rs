@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::compiler;
-use rand::{self, RngCore};
+use rand::RngCore;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -305,7 +305,7 @@ pub struct Toolchain {
 #[serde(deny_unknown_fields)]
 pub struct JobId(pub u64);
 impl fmt::Display for JobId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
@@ -354,7 +354,7 @@ pub enum JobState {
     Complete,
 }
 impl fmt::Display for JobState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::JobState::*;
         match *self {
             Pending => "pending",
@@ -449,7 +449,7 @@ pub struct OutputDataLens {
     pub compressed: u64,
 }
 impl fmt::Display for OutputDataLens {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Size: {}->{}", self.actual, self.compressed)
     }
 }
@@ -549,12 +549,12 @@ pub struct BuildResult {
 // http implementation) they need to be public, which has knock-on effects for private
 // structs
 
-pub struct ToolchainReader<'a>(Box<Read + 'a>);
+pub struct ToolchainReader<'a>(Box<dyn Read + 'a>);
 impl<'a> Read for ToolchainReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
 
-pub struct InputsReader<'a>(Box<Read + Send + 'a>);
+pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
 impl<'a> Read for InputsReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 }
@@ -585,9 +585,9 @@ pub trait JobAuthorizer: Send {
 pub trait SchedulerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Client
-    fn handle_alloc_job(&self, requester: &SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
+    fn handle_alloc_job(&self, requester: &dyn SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
-    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<JobAuthorizer>) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<dyn JobAuthorizer>) -> ExtResult<HeartbeatServerResult, Self::Error>;
     // From Server
     fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> ExtResult<UpdateJobStateResult, Self::Error>;
     // From anyone
@@ -600,16 +600,16 @@ pub trait ServerIncoming: Send + Sync {
     // From Scheduler
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
-    fn handle_submit_toolchain(&self, requester: &ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader) -> ExtResult<SubmitToolchainResult, Self::Error>;
+    fn handle_submit_toolchain(&self, requester: &dyn ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader<'_>) -> ExtResult<SubmitToolchainResult, Self::Error>;
     // From Client
-    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader) -> ExtResult<RunJobResult, Self::Error>;
+    fn handle_run_job(&self, requester: &dyn ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader<'_>) -> ExtResult<RunJobResult, Self::Error>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait BuilderIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Server
-    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
+    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader<'_>, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
 }
 
 /////////
@@ -620,6 +620,6 @@ pub trait Client {
     // To Server
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)>;
-    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)>;
+    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<dyn pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)>;
+    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<dyn pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)>;
 }

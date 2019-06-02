@@ -1,13 +1,5 @@
+#![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
-extern crate assert_cmd;
-extern crate chrono;
-extern crate escargot;
-extern crate predicates;
-extern crate sccache;
-extern crate selenium_rs;
-extern crate serde_json;
-extern crate tempdir;
-extern crate toml;
 
 use escargot::CargoBuild;
 use selenium_rs::webdriver::{Browser, WebDriver, Selector};

@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(unix)]
-use libc;
 use crate::mock_command::*;
 use std::collections::HashMap;
 use std::env;

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bincode;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
 use futures_cpupool::CpuPool;
@@ -92,7 +91,7 @@ pub fn hex(bytes: &[u8]) -> String {
 
     fn hex(byte: u8) -> char {
         match byte {
-            0...9 => (b'0' + byte) as char,
+            0..=9 => (b'0' + byte) as char,
             _ => (b'a' + byte - 10) as char,
         }
     }
@@ -338,9 +337,7 @@ pub use self::http_extension::{HeadersExt, RequestExt};
 
 #[cfg(feature = "hyperx")]
 mod http_extension {
-    use http;
     use http::header::HeaderValue;
-    use hyperx;
     use std::fmt;
 
     pub trait HeadersExt {

@@ -27,7 +27,6 @@ use log::Level::Trace;
 use lru_disk_cache::lru_cache;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 #[cfg(feature = "dist-client")]
-use regex;
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
@@ -416,7 +415,7 @@ impl<T> Compiler<T> for Rust
 {
     fn kind(&self) -> CompilerKind { CompilerKind::Rust }
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
+    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
         Box::new(RustToolchainPackager { sysroot: self.sysroot.clone() })
     }
     /// Parse `arguments` as rustc command-line arguments, determine if
@@ -432,7 +431,7 @@ impl<T> Compiler<T> for Rust
     /// * We don't support `-o file`.
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>>
+                       cwd: &Path) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>
     {
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => {
@@ -452,7 +451,7 @@ impl<T> Compiler<T> for Rust
     }
 
 
-    fn box_clone(&self) -> Box<Compiler<T>> {
+    fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
     }
 }
@@ -504,7 +503,7 @@ impl IntoArg for ArgCrateTypes {
         let types_string = types.join(",");
         types_string.into()
     }
-    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgCrateTypes { rlib, staticlib, others } = self;
         let mut types: Vec<_> = others.iter().map(String::as_str)
             .chain(if rlib { Some("rlib") } else { None })
@@ -535,7 +534,7 @@ impl IntoArg for ArgLinkLibrary {
         let ArgLinkLibrary { kind, name } = self;
         make_os_string!(kind, "=", name)
     }
-    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkLibrary { kind, name } = self;
         Ok(format!("{}={}", kind, name))
     }
@@ -561,7 +560,7 @@ impl IntoArg for ArgLinkPath {
         let ArgLinkPath { kind, path } = self;
         make_os_string!(kind, "=", path)
     }
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgLinkPath { kind, path } = self;
         Ok(format!("{}={}", kind, path.into_arg_string(transformer)?))
     }
@@ -587,7 +586,7 @@ impl IntoArg for ArgCodegen {
             make_os_string!(opt)
         }
     }
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgCodegen { opt, value } = self;
         Ok(if let Some(value) = value {
             format!("{}={}", opt, value.into_arg_string(transformer)?)
@@ -616,7 +615,7 @@ impl IntoArg for ArgExtern {
         let ArgExtern { name, path } = self;
         make_os_string!(name, "=", path)
     }
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         let ArgExtern { name, path } = self;
         Ok(format!("{}={}", name, path.into_arg_string(transformer)?))
     }
@@ -656,7 +655,7 @@ impl IntoArg for ArgTarget {
             ArgTarget::Unsure(s) => s.into(),
         }
     }
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         Ok(match self {
             ArgTarget::Name(s) => s,
             ArgTarget::Path(p) => p.into_arg_string(transformer)?,
@@ -1133,11 +1132,11 @@ impl<T> CompilerHasher<T> for RustHasher
         self.parsed_args.color_mode
     }
 
-    fn output_pretty(&self) -> Cow<str> {
+    fn output_pretty(&self) -> Cow<'_, str> {
         Cow::Borrowed(&self.parsed_args.crate_name)
     }
 
-    fn box_clone(&self) -> Box<CompilerHasher<T>> {
+    fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }
 }
@@ -1264,7 +1263,7 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<dyn pkg::InputsPackager>, Box<dyn pkg::ToolchainPackager>, Box<dyn OutputsRewriter>)> {
 
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, dep_info, rlib_dep_reader, env_vars, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
@@ -1276,7 +1275,7 @@ impl Compilation for RustCompilation {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
     }
 }
@@ -1301,7 +1300,7 @@ struct RustInputsPackager {
 
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
+    fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
         debug!("Packaging compile inputs for compile");
         let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, env_vars } = *{self};
 
@@ -2042,7 +2041,6 @@ c:/foo/bar.rs:
 
     #[test]
     fn test_generate_hash_key() {
-        use env_logger;
         drop(env_logger::try_init());
         let f = TestFixture::new();
         const FAKE_DIGEST: &'static str = "abcd1234";

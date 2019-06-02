@@ -14,7 +14,6 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use base64;
 use crypto::digest::Digest;
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
@@ -25,11 +24,9 @@ use hyper::Method;
 use hyper::header::HeaderValue;
 use hyperx::header;
 use url::Url;
-use reqwest;
 use reqwest::r#async::{Request, Client};
 use std::fmt;
 use std::str::FromStr;
-use time;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
@@ -63,7 +60,7 @@ pub struct BlobContainer {
 }
 
 impl fmt::Display for BlobContainer {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BlobContainer(url={})", self.url)
     }
 }

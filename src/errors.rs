@@ -20,30 +20,10 @@ use std::error;
 use std::io;
 use std::process;
 
-use base64;
-use bincode;
 use futures::Future;
 use futures::future;
-#[cfg(feature = "hyper")]
-use hyper;
 #[cfg(feature = "jsonwebtoken")]
 use crate::jwt;
-use lru_disk_cache;
-#[cfg(feature = "memcached")]
-use memcached;
-#[cfg(feature = "openssl")]
-use openssl;
-use serde_json;
-#[cfg(feature = "redis")]
-use redis;
-#[cfg(feature = "reqwest")]
-use reqwest;
-use tempfile;
-use tokio_timer;
-use walkdir;
-use which;
-#[cfg(feature = "gcs")]
-use chrono;
 
 error_chain! {
     foreign_links {
@@ -90,8 +70,8 @@ impl From<chrono::ParseError> for Error {
     }
 }
 
-pub type SFuture<T> = Box<Future<Item = T, Error = Error>>;
-pub type SFutureSend<T> = Box<Future<Item = T, Error = Error> + Send>;
+pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error>>;
+pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
 
 pub trait FutureChainErr<T> {
     fn chain_err<F, E>(self, callback: F) -> SFuture<T>

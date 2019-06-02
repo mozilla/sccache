@@ -3,15 +3,11 @@
 //! Any copyright is dedicated to the Public Domain.
 //! http://creativecommons.org/publicdomain/zero/1.0/
 
-extern crate assert_cmd;
-extern crate chrono;
-extern crate env_logger;
-extern crate escargot;
+#![deny(rust_2018_idioms)]
+
 #[cfg(not(target_os="macos"))]
 #[macro_use]
 extern crate log;
-extern crate predicates;
-extern crate tempdir;
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.

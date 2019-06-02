@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crossbeam_utils;
 use flate2::read::GzDecoder;
 use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
-use nix;
 use sccache::dist::{
     BuildResult, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache, Toolchain,
     BuilderIncoming,
@@ -28,13 +26,12 @@ use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::{Mutex};
-use tar;
 
 use crate::errors::*;
 
 trait CommandExt {
     fn check_stdout_trim(&mut self) -> Result<String>;
-    fn check_piped(&mut self, pipe: &mut FnMut(&mut ChildStdin) -> Result<()>) -> Result<()>;
+    fn check_piped(&mut self, pipe: &mut dyn FnMut(&mut ChildStdin) -> Result<()>) -> Result<()>;
     fn check_run(&mut self) -> Result<()>;
 }
 
@@ -46,7 +43,7 @@ impl CommandExt for Command {
         Ok(stdout.trim().to_owned())
     }
     // Should really take a FnOnce/FnBox
-    fn check_piped(&mut self, pipe: &mut FnMut(&mut ChildStdin) -> Result<()>) -> Result<()> {
+    fn check_piped(&mut self, pipe: &mut dyn FnMut(&mut ChildStdin) -> Result<()>) -> Result<()> {
         let mut process = self.stdin(Stdio::piped()).spawn().chain_err(|| "Failed to start command")?;
         let mut stdin = process.stdin.take().expect("Requested piped stdin but not present");
         pipe(&mut stdin).chain_err(|| "Failed to pipe input to process")?;
@@ -248,7 +245,7 @@ impl OverlayBuilder {
             for path in output_paths {
                 let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
                 match fs::File::open(abspath) {
-                    Ok(mut file) => {
+                    Ok(file) => {
                         let output = OutputData::try_from_reader(file)
                             .chain_err(|| "Failed to read output file")?;
                         outputs.push((path, output))

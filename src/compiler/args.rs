@@ -9,7 +9,7 @@ use std::str;
 
 pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
 pub type ArgToStringResult = StdResult<String, ArgToStringError>;
-pub type PathTransformerFn<'a> = &'a mut FnMut(&Path) -> Option<String>;
+pub type PathTransformerFn<'a> = &'a mut dyn FnMut(&Path) -> Option<String>;
 
 #[derive(Debug, PartialEq)]
 pub enum ArgParseError {
@@ -19,7 +19,7 @@ pub enum ArgParseError {
 }
 
 impl Display for ArgParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             ArgParseError::UnexpectedEndOfArgs => "Unexpected end of args".into(),
             ArgParseError::InvalidUnicode(s) => format!("String {:?} contained invalid unicode", s),
@@ -30,7 +30,7 @@ impl Display for ArgParseError {
 }
 
 impl Error for ArgParseError {
-    fn cause(&self) -> Option<&Error> { None }
+    fn cause(&self) -> Option<&dyn Error> { None }
 }
 
 #[derive(Debug, PartialEq)]
@@ -40,7 +40,7 @@ pub enum ArgToStringError {
 }
 
 impl Display for ArgToStringError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             ArgToStringError::FailedPathTransform(p) => format!("Path {:?} could not be transformed", p),
             ArgToStringError::InvalidUnicode(s) => format!("String {:?} contained invalid unicode", s),
@@ -50,7 +50,7 @@ impl Display for ArgToStringError {
 }
 
 impl Error for ArgToStringError {
-    fn cause(&self) -> Option<&Error> { None }
+    fn cause(&self) -> Option<&dyn Error> { None }
 }
 
 pub type Delimiter = Option<u8>;
@@ -138,7 +138,7 @@ impl<T: ArgumentValue> Argument<T> {
     }
 
     /// Transforms a parsed argument into an iterator.
-    pub fn iter_os_strings(&self) -> Iter<T> {
+    pub fn iter_os_strings(&self) -> Iter<'_, T> {
         Iter {
             arg: self,
             emitted: 0,
@@ -147,7 +147,7 @@ impl<T: ArgumentValue> Argument<T> {
 
     /// Transforms a parsed argument into an iterator over strings, with transformed paths.
     #[cfg(feature = "dist-client")]
-    pub fn iter_strings<F: FnMut(&Path) -> Option<String>>(&self, path_transformer: F) -> IterStrings<T, F> {
+    pub fn iter_strings<F: FnMut(&Path) -> Option<String>>(&self, path_transformer: F) -> IterStrings<'_, T, F> {
         IterStrings {
             arg: self,
             emitted: 0,
@@ -156,7 +156,7 @@ impl<T: ArgumentValue> Argument<T> {
     }
 }
 
-pub struct Iter<'a, T: 'a> {
+pub struct Iter<'a, T> {
     arg: &'a Argument<T>,
     emitted: usize,
 }
@@ -208,7 +208,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
 }
 
 #[cfg(feature = "dist-client")]
-pub struct IterStrings<'a, T: 'a, F> {
+pub struct IterStrings<'a, T, F> {
     arg: &'a Argument<T>,
     emitted: usize,
     path_transformer: F,
@@ -293,7 +293,7 @@ macro_rules! ArgData {
             fn into_arg_os_string(self) -> OsString {
                 ArgData!{ __matchify self into_arg_os_string () () $($tok)+ }
             }
-            fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+            fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
                 ArgData!{ __matchify self into_arg_string (transformer) () $($tok)+ }
             }
         }
@@ -327,7 +327,7 @@ pub trait FromArg: Sized {
 
 pub trait IntoArg: Sized {
     fn into_arg_os_string(self) -> OsString;
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult;
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult;
 }
 
 impl FromArg for OsString {
@@ -342,23 +342,23 @@ impl FromArg for String {
 
 impl IntoArg for OsString {
     fn into_arg_os_string(self) -> OsString { self }
-    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         self.into_string().map_err(ArgToStringError::InvalidUnicode)
     }
 }
 impl IntoArg for PathBuf {
     fn into_arg_os_string(self) -> OsString { self.into() }
-    fn into_arg_string(self, transformer: PathTransformerFn) -> ArgToStringResult {
+    fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
         transformer(&self).ok_or_else(|| ArgToStringError::FailedPathTransform(self))
     }
 }
 impl IntoArg for String {
     fn into_arg_os_string(self) -> OsString { self.into() }
-    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult { Ok(self) }
+    fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult { Ok(self) }
 }
 impl IntoArg for () {
     fn into_arg_os_string(self) -> OsString { OsString::new() }
-    fn into_arg_string(self, _transformer: PathTransformerFn) -> ArgToStringResult { Ok(String::new()) }
+    fn into_arg_string(self, _transformer: PathTransformerFn<'_>) -> ArgToStringResult { Ok(String::new()) }
 }
 
 pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String, Option<String>)> {
