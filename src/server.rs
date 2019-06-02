@@ -116,7 +116,7 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
         Some(ref s) => s,
         None => return Ok(()),
     };
-    let pipe = r#try!(OpenOptions::new().write(true).read(true).open(name));
+    let pipe = OpenOptions::new().write(true).read(true).open(name)?;
     notify_server_startup_internal(pipe, status)
 }
 
