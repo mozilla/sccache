@@ -11,7 +11,7 @@ extern crate tempdir;
 
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
-use harness::{
+use crate::harness::{
     sccache_command,
     start_local_daemon, stop_local_daemon,
     get_stats,

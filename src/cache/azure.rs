@@ -13,15 +13,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use azure::BlobContainer;
-use azure::*;
-use cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::azure::BlobContainer;
+use crate::azure::*;
+use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use futures::future::Future;
 use std::io;
 use std::rc::Rc;
 use std::time::{Instant, Duration};
 
-use errors::*;
+use crate::errors::*;
 
 pub struct AzureBlobCache {
     container: Rc<BlobContainer>,

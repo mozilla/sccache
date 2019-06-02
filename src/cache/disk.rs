@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{
+use crate::cache::{
     Cache,
     CacheRead,
     CacheWrite,
@@ -26,7 +26,7 @@ use std::path::{Path,PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, Duration};
 
-use errors::*;
+use crate::errors::*;
 
 /// A cache that stores entries at local disk paths.
 #[derive(Clone)]

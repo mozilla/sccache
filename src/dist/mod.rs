@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler;
+use crate::compiler;
 use rand::{self, RngCore};
 use std::fmt;
 use std::io::{self, Read};
@@ -24,7 +24,7 @@ use std::str::FromStr;
 #[cfg(feature = "dist-server")]
 use std::sync::Mutex;
 
-use errors::*;
+use crate::errors::*;
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 mod cache;
@@ -36,7 +36,7 @@ pub mod http;
 mod test;
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-pub use dist::cache::TcCache;
+pub use crate::dist::cache::TcCache;
 
 // TODO: paths (particularly outputs, which are accessed by an unsandboxed program)
 // should be some pre-sanitised AbsPath type

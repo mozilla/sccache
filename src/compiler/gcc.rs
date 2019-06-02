@@ -12,29 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::compiler::{
+use crate::compiler::{
     clang,
     Cacheable,
     CompilerArguments,
     CompileCommand,
 };
-use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::args::*;
+use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use log::Level::Trace;
-use mock_command::{
+use crate::mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
 use std::collections::HashMap;
-use dist;
+use crate::dist;
 use std::io::Read;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{run_input_output, OsStrExt};
+use crate::util::{run_input_output, OsStrExt};
 
-use errors::*;
+use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -608,10 +608,10 @@ mod test {
     use std::io::Write;
 
     use super::*;
-    use compiler::*;
+    use crate::compiler::*;
     use futures::Future;
-    use mock_command::*;
-    use test::utils::*;
+    use crate::mock_command::*;
+    use crate::test::utils::*;
     use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {

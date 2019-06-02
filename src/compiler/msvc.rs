@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::compiler::{
+use crate::compiler::{
     clang,
     gcc,
     Cacheable,
@@ -20,14 +20,14 @@ use ::compiler::{
     CompileCommand,
     write_temp_file,
 };
-use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use dist;
+use crate::compiler::args::*;
+use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::dist;
 use local_encoding::{Encoding, Encoder};
 use log::Level::Debug;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
-use mock_command::{
+use crate::mock_command::{
     CommandCreatorSync,
     RunCommand,
 };
@@ -41,9 +41,9 @@ use std::io::{
 };
 use std::path::{Path, PathBuf};
 use std::process::{self,Stdio};
-use util::{run_input_output, OsStrExt};
+use crate::util::{run_input_output, OsStrExt};
 
-use errors::*;
+use crate::errors::*;
 
 /// A struct on which to implement `CCompilerImpl`.
 ///
@@ -327,7 +327,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
     for arg in ArgsIter::new(xclang_it, (&gcc::ARGS[..], &clang::ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         // Eagerly bail if it looks like we need to do more complicated work
-        use compiler::gcc::ArgData::*;
+        use crate::compiler::gcc::ArgData::*;
         let args = match arg.get_data() {
             Some(SplitDwarf) |
             Some(ProfileGenerate) |
@@ -627,14 +627,14 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 
 #[cfg(test)]
 mod test {
-    use ::compiler::*;
-    use env;
+    use crate::compiler::*;
+    use crate::env;
     use env_logger;
     use futures::Future;
     use futures_cpupool::CpuPool;
-    use mock_command::*;
+    use crate::mock_command::*;
     use super::*;
-    use test::utils::*;
+    use crate::test::utils::*;
 
     fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(arguments, &env::current_dir().unwrap(), false)

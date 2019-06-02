@@ -1,22 +1,22 @@
-use dist::Toolchain;
+use crate::dist::Toolchain;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use lru_disk_cache::Result as LruResult;
 use ring::digest::{SHA512, Context};
 use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
-use util;
+use crate::util;
 
-use errors::*;
+use crate::errors::*;
 
 #[cfg(feature = "dist-client")]
 pub use self::client::ClientToolchains;
 
 #[cfg(feature = "dist-client")]
 mod client {
-    use config;
-    use dist::Toolchain;
-    use dist::pkg::ToolchainPackager;
+    use crate::config;
+    use crate::dist::Toolchain;
+    use crate::dist::pkg::ToolchainPackager;
     use lru_disk_cache::Error as LruError;
     use serde_json;
     use std::collections::{HashMap, HashSet};
@@ -27,7 +27,7 @@ mod client {
     use tempfile;
 
     use super::{TcCache, path_key};
-    use errors::*;
+    use crate::errors::*;
 
     #[derive(Clone, Debug)]
     pub struct CustomToolchain {
@@ -207,10 +207,10 @@ mod client {
 
     #[cfg(test)]
     mod test {
-        use config;
+        use crate::config;
         use std::io::Write;
         use tempdir::TempDir;
-        use test::utils::create_file;
+        use crate::test::utils::create_file;
 
         use super::ClientToolchains;
 
@@ -219,8 +219,8 @@ mod client {
             fn new() -> Box<Self> { Box::new(PanicToolchainPackager) }
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        impl ::dist::pkg::ToolchainPackager for PanicToolchainPackager {
-            fn write_pkg(self: Box<Self>, _f: ::std::fs::File) -> ::errors::Result<()> {
+        impl crate::dist::pkg::ToolchainPackager for PanicToolchainPackager {
+            fn write_pkg(self: Box<Self>, _f: ::std::fs::File) -> crate::errors::Result<()> {
                 panic!("should not have called packager")
             }
         }

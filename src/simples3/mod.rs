@@ -15,5 +15,5 @@
 mod s3;
 mod credential;
 
-pub use simples3::s3::*;
-pub use simples3::credential::*;
+pub use crate::simples3::s3::*;
+pub use crate::simples3::credential::*;

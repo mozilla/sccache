@@ -15,7 +15,7 @@
 
 use std::env::*;
 
-use errors::*;
+use crate::errors::*;
 
 #[derive(Clone, Debug)]
 pub struct AzureCredentials {

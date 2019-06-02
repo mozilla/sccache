@@ -27,7 +27,7 @@ use futures::future;
 #[cfg(feature = "hyper")]
 use hyper;
 #[cfg(feature = "jsonwebtoken")]
-use jwt;
+use crate::jwt;
 use lru_disk_cache;
 #[cfg(feature = "memcached")]
 use memcached;

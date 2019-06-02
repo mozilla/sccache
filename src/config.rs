@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use toml;
 
-use errors::*;
+use crate::errors::*;
 
 lazy_static! {
     static ref CACHED_CONFIG_PATH: PathBuf = CachedConfig::file_config_path();
@@ -598,7 +598,7 @@ pub mod scheduler {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use errors::*;
+    use crate::errors::*;
 
     #[derive(Debug)]
     #[derive(Serialize, Deserialize)]
@@ -650,7 +650,7 @@ pub mod server {
     use std::path::{Path, PathBuf};
     use super::HTTPUrl;
 
-    use errors::*;
+    use crate::errors::*;
 
     const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
     fn default_toolchain_cache_size() -> u64 { TEN_GIGS }

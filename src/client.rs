@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use byteorder::{ByteOrder, BigEndian};
-use protocol::{Request, Response};
+use crate::protocol::{Request, Response};
 use retry::retry;
 use bincode;
-use errors::*;
+use crate::errors::*;
 use std::io::{
     self,
     BufReader,
@@ -24,7 +24,7 @@ use std::io::{
     Read,
 };
 use std::net::TcpStream;
-use util;
+use crate::util;
 
 /// A connection to an sccache server.
 pub struct ServerConnection {

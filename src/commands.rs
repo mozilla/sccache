@@ -15,17 +15,17 @@
 use atty::{self, Stream};
 use bincode;
 use byteorder::{BigEndian, ByteOrder};
-use client::{connect_to_server, connect_with_retry, ServerConnection};
-use cmdline::{Command, StatsFormat};
-use compiler::ColorMode;
-use config::Config;
+use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
+use crate::cmdline::{Command, StatsFormat};
+use crate::compiler::ColorMode;
+use crate::config::Config;
 use futures::Future;
-use jobserver::Client;
+use crate::jobserver::Client;
 use log::Level::Trace;
-use mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
-use protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
+use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use serde_json;
-use server::{self, ServerInfo, ServerStartup};
+use crate::server::{self, ServerInfo, ServerStartup};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -39,10 +39,10 @@ use tokio::runtime::current_thread::Runtime;
 use tokio_io::io::read_exact;
 use tokio_io::AsyncRead;
 use tokio_timer::Timeout;
-use util::daemonize;
+use crate::util::daemonize;
 use which::which_in;
 
-use errors::*;
+use crate::errors::*;
 
 /// The default sccache server port.
 pub const DEFAULT_PORT: u16 = 4226;
@@ -580,8 +580,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         #[cfg(feature = "dist-client")]
         Command::DistAuth => {
-            use config;
-            use dist;
+            use crate::config;
+            use crate::dist;
             use url::Url;
 
             match &config.dist.auth {
@@ -634,7 +634,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         ),
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
-            use compiler;
+            use crate::compiler;
             use futures_cpupool::CpuPool;
 
             trace!("Command::PackageToolchain({})", executable.display());

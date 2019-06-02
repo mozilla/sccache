@@ -13,17 +13,17 @@
 // limitations under the License.
 
 #[cfg(feature = "azure")]
-use cache::azure::AzureBlobCache;
-use cache::disk::DiskCache;
+use crate::cache::azure::AzureBlobCache;
+use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
 #[cfg(feature = "memcached")]
-use cache::memcached::MemcachedCache;
+use crate::cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
-use cache::redis::RedisCache;
+use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
-use cache::s3::S3Cache;
-use config::{self, CacheType, Config};
+use crate::cache::s3::S3Cache;
+use crate::config::{self, CacheType, Config};
 use futures_cpupool::CpuPool;
 #[cfg(feature = "gcs")]
 use serde_json;
@@ -36,7 +36,7 @@ use std::time::Duration;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use errors::*;
+use crate::errors::*;
 
 /// Result of a cache lookup.
 pub enum Cache {

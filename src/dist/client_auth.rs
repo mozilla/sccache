@@ -22,9 +22,9 @@ use tokio::runtime::current_thread::Runtime;
 use url::Url;
 use uuid::Uuid;
 
-use util::RequestExt;
+use crate::util::RequestExt;
 
-use errors::*;
+use crate::errors::*;
 
 // These (arbitrary) ports need to be registered as valid redirect urls in the oauth provider you're using
 pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
@@ -143,7 +143,7 @@ mod code_grant_pkce {
     use std::time::{Duration, Instant};
     use url::Url;
 
-    use errors::*;
+    use crate::errors::*;
 
     // Code request - https://tools.ietf.org/html/rfc7636#section-4.3
     const CLIENT_ID_PARAM: &str = "client_id";
@@ -339,7 +339,7 @@ mod implicit {
     use std::time::{Duration, Instant};
     use url::Url;
 
-    use errors::*;
+    use crate::errors::*;
 
     // Request - https://tools.ietf.org/html/rfc6749#section-4.2.1
     const CLIENT_ID_PARAM: &str = "client_id";

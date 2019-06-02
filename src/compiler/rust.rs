@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
+use crate::compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 #[cfg(feature = "dist-client")]
-use compiler::OutputsRewriter;
-use compiler::args::*;
-use dist;
+use crate::compiler::OutputsRewriter;
+use crate::compiler::args::*;
+use crate::dist;
 #[cfg(feature = "dist-client")]
-use dist::pkg;
+use crate::dist::pkg;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::lru_cache;
-use mock_command::{CommandCreatorSync, RunCommand};
+use crate::mock_command::{CommandCreatorSync, RunCommand};
 #[cfg(feature = "dist-client")]
 use regex;
 #[cfg(feature = "dist-client")]
@@ -51,10 +51,10 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 use tempdir::TempDir;
-use util::{fmt_duration_as_secs, run_input_output, Digest, hash_all};
-use util::{HashToDigest, OsStrExt, ref_env};
+use crate::util::{fmt_duration_as_secs, run_input_output, Digest, hash_all};
+use crate::util::{HashToDigest, OsStrExt, ref_env};
 
-use errors::*;
+use crate::errors::*;
 
 /// Can dylibs (like proc macros) be distributed on this platform?
 #[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
@@ -1761,14 +1761,14 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
 mod test {
     use super::*;
 
-    use compiler::*;
+    use crate::compiler::*;
     use itertools::Itertools;
-    use mock_command::*;
+    use crate::mock_command::*;
     use std::ffi::OsStr;
     use std::fs::File;
     use std::io::Write;
     use std::sync::{Arc,Mutex};
-    use test::utils::*;
+    use crate::test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments>
     {

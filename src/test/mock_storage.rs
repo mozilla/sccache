@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{Cache, CacheWrite, Storage};
-use errors::*;
+use crate::cache::{Cache, CacheWrite, Storage};
+use crate::errors::*;
 use futures::future;
 use std::cell::RefCell;
 use std::time::Duration;

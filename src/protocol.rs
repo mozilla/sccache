@@ -1,6 +1,6 @@
-use compiler::ColorMode;
+use crate::compiler::ColorMode;
 use std::ffi::OsString;
-use server::ServerInfo;
+use crate::server::ServerInfo;
 
 /// A client request.
 #[derive(Serialize, Deserialize, Debug)]

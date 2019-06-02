@@ -15,12 +15,12 @@ use hyperx::header;
 use hyper::header::HeaderValue;
 use hyper::Method;
 use reqwest;
-use reqwest::async::{Client, Request};
-use simples3::credential::*;
+use reqwest::r#async::{Client, Request};
+use crate::simples3::credential::*;
 use time;
 
-use errors::*;
-use util::HeadersExt;
+use crate::errors::*;
+use crate::util::HeadersExt;
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
