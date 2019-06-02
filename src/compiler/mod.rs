@@ -23,4 +23,4 @@ mod gcc;
 mod msvc;
 mod rust;
 
-pub use compiler::compiler::*;
+pub use crate::compiler::compiler::*;

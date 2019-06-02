@@ -1,6 +1,6 @@
 use base64;
 use hyperx;
-use jwt;
+use crate::jwt;
 use openssl;
 use reqwest;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
@@ -11,7 +11,7 @@ use std::result::Result as StdResult;
 use std::sync::Mutex;
 use std::time::{UNIX_EPOCH, Duration, Instant, SystemTime};
 
-use errors::*;
+use crate::errors::*;
 
 // https://auth0.com/docs/jwks
 #[derive(Debug)]

@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::time;
 
 use base64;
-use cache::{
+use crate::cache::{
     Cache,
     CacheRead,
     CacheWrite,
@@ -32,14 +32,14 @@ use futures::{future, Async, Future, Stream};
 use hyperx::header::{Authorization, Bearer, ContentType, ContentLength};
 use hyper::Method;
 use reqwest;
-use reqwest::async::{Request, Client};
-use jwt;
+use reqwest::r#async::{Request, Client};
+use crate::jwt;
 use serde_json;
 use url::form_urlencoded;
 use url::percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET};
 
-use errors::*;
-use util::HeadersExt;
+use crate::errors::*;
+use crate::util::HeadersExt;
 
 /// GCS bucket
 struct Bucket {

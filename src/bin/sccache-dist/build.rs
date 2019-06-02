@@ -30,7 +30,7 @@ use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::{Mutex};
 use tar;
 
-use errors::*;
+use crate::errors::*;
 
 trait CommandExt {
     fn check_stdout_trim(&mut self) -> Result<String>;

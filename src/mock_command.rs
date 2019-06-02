@@ -45,9 +45,9 @@
 //! then create an `Arc<Mutex<MockCommandCreator>>` and safely provide
 //! `MockChild` outputs.
 
-use errors::*;
+use crate::errors::*;
 use futures::future::{self, Future};
-use jobserver::{Acquired, Client};
+use crate::jobserver::{Acquired, Client};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -527,7 +527,7 @@ mod test {
     use super::*;
     use std::ffi::OsStr;
     use std::io;
-    use jobserver::Client;
+    use crate::jobserver::Client;
     use futures::Future;
     use std::process::{
         ExitStatus,
@@ -535,7 +535,7 @@ mod test {
     };
     use std::sync::{Arc,Mutex};
     use std::thread;
-    use test::utils::*;
+    use crate::test::utils::*;
 
     fn spawn_command<T : CommandCreator, S: AsRef<OsStr>>(creator : &mut T, program: S) -> Result<<<T as CommandCreator>::Cmd as RunCommand>::C> {
         creator.new_command(program).spawn().wait()

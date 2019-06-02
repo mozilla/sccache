@@ -10,7 +10,7 @@ use futures::sync::mpsc;
 use futures::sync::oneshot;
 use num_cpus;
 
-use errors::*;
+use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Client {

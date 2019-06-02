@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration as StdDuration;
 use tokio_timer::Timeout;
 
-use errors::*;
-use util::RequestExt;
+use crate::errors::*;
+use crate::util::RequestExt;
 
 /// AWS API access credentials, including access key, secret key, token (for IAM profiles), and
 /// expiration timestamp.

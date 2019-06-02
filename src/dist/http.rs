@@ -31,10 +31,10 @@ mod common {
     use std::collections::HashMap;
     use std::fmt;
 
-    use dist;
+    use crate::dist;
 
-    use errors::*;
-    use util::RequestExt;
+    use crate::errors::*;
+    use crate::util::RequestExt;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
     pub trait ReqwestRequestBuilderExt: Sized {
@@ -57,7 +57,7 @@ mod common {
             self.set_header(header::Authorization(header::Bearer { token }))
         }
     }
-    impl ReqwestRequestBuilderExt for reqwest::async::RequestBuilder {
+    impl ReqwestRequestBuilderExt for reqwest::r#async::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
             let bytes =
                 bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
@@ -94,7 +94,7 @@ mod common {
     }
     #[cfg(feature = "dist-client")]
     pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
-        req: reqwest::async::RequestBuilder,
+        req: reqwest::r#async::RequestBuilder,
     ) -> SFuture<T> {
         Box::new(
             req.send()
@@ -208,7 +208,7 @@ mod common {
 }
 
 pub mod urls {
-    use dist::{JobId, ServerId};
+    use crate::dist::{JobId, ServerId};
     use reqwest;
 
     pub fn scheduler_alloc_job(scheduler_url: &reqwest::Url) -> reqwest::Url {
@@ -273,7 +273,7 @@ mod server {
     use bincode;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use jwt;
+    use crate::jwt;
     use num_cpus;
     use openssl;
     use rand::{self, RngCore};
@@ -297,12 +297,12 @@ mod server {
         ReqwestRequestBuilderExt, RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
-    use dist::{
+    use crate::dist::{
         self, AllocJobResult, AssignJobResult, HeartbeatServerResult, InputsReader, JobAuthorizer,
         JobId, JobState, RunJobResult, SchedulerStatusResult, ServerId, ServerNonce,
         SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
     };
-    use errors::*;
+    use crate::errors::*;
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
@@ -1031,9 +1031,9 @@ mod client {
     use super::super::cache;
     use bincode;
     use byteorder::{BigEndian, WriteBytesExt};
-    use config;
-    use dist::pkg::{InputsPackager, ToolchainPackager};
-    use dist::{
+    use crate::config;
+    use crate::dist::pkg::{InputsPackager, ToolchainPackager};
+    use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SubmitToolchainResult, Toolchain,
     };
@@ -1053,7 +1053,7 @@ mod client {
         RunJobHttpRequest, ServerCertificateHttpResponse,
     };
     use super::urls;
-    use errors::*;
+    use crate::errors::*;
 
     const REQUEST_TIMEOUT_SECS: u64 = 600;
 
@@ -1065,7 +1065,7 @@ mod client {
         // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
         // and only support owned bytes, which means the whole toolchain would end up in memory
         client: Arc<Mutex<reqwest::Client>>,
-        client_async: Arc<Mutex<reqwest::async::Client>>,
+        client_async: Arc<Mutex<reqwest::r#async::Client>>,
         pool: CpuPool,
         tc_cache: Arc<cache::ClientToolchains>,
     }
@@ -1084,7 +1084,7 @@ mod client {
                 .timeout(timeout)
                 .build()
                 .chain_err(|| "failed to create a HTTP client")?;
-            let client_async = reqwest::async::ClientBuilder::new()
+            let client_async = reqwest::r#async::ClientBuilder::new()
                 .timeout(timeout)
                 .build()
                 .chain_err(|| "failed to create an async HTTP client")?;
@@ -1104,13 +1104,13 @@ mod client {
 
         fn update_certs(
             client: &mut reqwest::Client,
-            client_async: &mut reqwest::async::Client,
+            client_async: &mut reqwest::r#async::Client,
             certs: &mut HashMap<Vec<u8>, Vec<u8>>,
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
             let mut client_builder = reqwest::ClientBuilder::new();
-            let mut client_async_builder = reqwest::async::ClientBuilder::new();
+            let mut client_async_builder = reqwest::r#async::ClientBuilder::new();
             // Add all the certificates we know about
             client_builder = client_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)

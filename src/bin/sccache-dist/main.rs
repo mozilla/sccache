@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use syslog::Facility;
 
-use errors::*;
+use crate::errors::*;
 
 mod errors {
     #![allow(renamed_and_removed_lints)]
@@ -57,7 +57,7 @@ mod errors {
     use std::io;
 
     use base64;
-    use jwt;
+    use crate::jwt;
     use lru_disk_cache;
     use openssl;
     use sccache;

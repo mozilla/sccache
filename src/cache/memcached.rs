@@ -13,13 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{
+use crate::cache::{
     Cache,
     CacheRead,
     CacheWrite,
     Storage,
 };
-use errors::*;
+use crate::errors::*;
 use futures_cpupool::CpuPool;
 use memcached::client::Client;
 use memcached::proto::Operation;

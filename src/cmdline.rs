@@ -17,7 +17,7 @@ use clap::{
     AppSettings,
     Arg,
 };
-use errors::*;
+use crate::errors::*;
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;

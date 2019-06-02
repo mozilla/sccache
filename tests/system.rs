@@ -30,7 +30,7 @@ extern crate which;
 
 use assert_cmd::prelude::*;
 use escargot::CargoBuild;
-use harness::{
+use crate::harness::{
     sccache_command,
     sccache_client_cfg,
     start_local_daemon, stop_local_daemon,

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use azure::credentials::*;
+use crate::azure::credentials::*;
 use base64;
 use crypto::digest::Digest;
 use crypto::hmac::Hmac;
@@ -26,13 +26,13 @@ use hyper::header::HeaderValue;
 use hyperx::header;
 use url::Url;
 use reqwest;
-use reqwest::async::{Request, Client};
+use reqwest::r#async::{Request, Client};
 use std::fmt;
 use std::str::FromStr;
 use time;
 
-use errors::*;
-use util::HeadersExt;
+use crate::errors::*;
+use crate::util::HeadersExt;
 
 const BLOB_API_VERSION: &str = "2017-04-17";
 

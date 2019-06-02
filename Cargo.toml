@@ -8,6 +8,7 @@ repository = "https://github.com/mozilla/sccache/"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 keywords = ["ccache"]
+edition = "2018"
 
 [badges]
 travis-ci = { repository = "mozilla/sccache" }

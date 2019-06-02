@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{Cache, CacheWrite, Storage};
-use compiler::c::{CCompiler, CCompilerKind};
-use compiler::clang::Clang;
-use compiler::diab::Diab;
-use compiler::gcc::GCC;
-use compiler::msvc;
-use compiler::msvc::MSVC;
-use compiler::rust::Rust;
-use dist;
+use crate::cache::{Cache, CacheWrite, Storage};
+use crate::compiler::c::{CCompiler, CCompilerKind};
+use crate::compiler::clang::Clang;
+use crate::compiler::diab::Diab;
+use crate::compiler::gcc::GCC;
+use crate::compiler::msvc;
+use crate::compiler::msvc::MSVC;
+use crate::compiler::rust::Rust;
+use crate::dist;
 #[cfg(feature = "dist-client")]
-use dist::pkg;
+use crate::dist::pkg;
 use futures::Future;
 use futures_cpupool::CpuPool;
-use mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
+use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -42,9 +42,9 @@ use std::time::{Duration, Instant};
 use tempdir::TempDir;
 use tempfile::NamedTempFile;
 use tokio_timer::Timeout;
-use util::{fmt_duration_as_secs, ref_env, run_input_output};
+use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 
-use errors::*;
+use crate::errors::*;
 
 #[derive(Clone, Debug)]
 pub struct CompileCommand {
@@ -995,18 +995,18 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use cache::disk::DiskCache;
-    use cache::Storage;
+    use crate::cache::disk::DiskCache;
+    use crate::cache::Storage;
     use futures::{future, Future};
     use futures_cpupool::CpuPool;
-    use mock_command::*;
+    use crate::mock_command::*;
     use std::fs::{self, File};
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
-    use test::mock_storage::MockStorage;
-    use test::utils::*;
+    use crate::test::mock_storage::MockStorage;
+    use crate::test::utils::*;
     use tokio::runtime::current_thread::Runtime;
 
     #[test]
@@ -1687,8 +1687,8 @@ LLVM version: 6.0",
 #[cfg(test)]
 #[cfg(feature = "dist-client")]
 mod test_dist {
-    use dist::pkg;
-    use dist::{
+    use crate::dist::pkg;
+    use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
         PathTransformer, ProcessOutput, RunJobResult, ServerId, SubmitToolchainResult, Toolchain,
     };
@@ -1696,7 +1696,7 @@ mod test_dist {
     use std::path::Path;
     use std::sync::Arc;
 
-    use errors::*;
+    use crate::errors::*;
 
     pub struct ErrorPutToolchainClient;
     impl ErrorPutToolchainClient {

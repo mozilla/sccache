@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
+use crate::compiler::{Cacheable, ColorMode, Compiler, CompilerArguments, CompileCommand, CompilerHasher, CompilerKind,
                Compilation, HashResult};
 #[cfg(feature = "dist-client")]
-use compiler::{NoopOutputsRewriter, OutputsRewriter};
-use dist;
+use crate::compiler::{NoopOutputsRewriter, OutputsRewriter};
+use crate::dist;
 #[cfg(feature = "dist-client")]
-use dist::pkg;
+use crate::dist::pkg;
 use futures::Future;
 use futures_cpupool::CpuPool;
-use mock_command::CommandCreatorSync;
+use crate::mock_command::CommandCreatorSync;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -34,9 +34,9 @@ use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{HashToDigest, Digest, hash_all};
+use crate::util::{HashToDigest, Digest, hash_all};
 
-use errors::*;
+use crate::errors::*;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]

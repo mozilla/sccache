@@ -15,24 +15,24 @@
 // For tokio_io::codec::length_delimited::Framed;
 #![allow(deprecated)]
 
-use cache::{storage_from_config, Storage};
-use compiler::{
+use crate::cache::{storage_from_config, Storage};
+use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerKind,
     CompilerArguments, CompilerHasher, DistType, MissType,
 };
 #[cfg(feature = "dist-client")]
-use config;
-use config::Config;
-use dist;
+use crate::config;
+use crate::config::Config;
+use crate::dist;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::task::{self, Task};
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures_cpupool::CpuPool;
-use jobserver::Client;
-use mock_command::{CommandCreatorSync, ProcessCommandCreator};
+use crate::jobserver::Client;
+use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use number_prefix::{binary_prefix, Prefixed, Standalone};
-use protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -60,9 +60,9 @@ use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
 use tokio_tcp::TcpListener;
 use tokio_timer::{Delay, Timeout};
-use util; //::fmt_duration_as_secs;
+use crate::util; //::fmt_duration_as_secs;
 
-use errors::*;
+use crate::errors::*;
 
 /// If the server is idle for this many seconds, shut down.
 const DEFAULT_IDLE_TIMEOUT: u64 = 600;
@@ -116,7 +116,7 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
         Some(ref s) => s,
         None => return Ok(()),
     };
-    let pipe = try!(OpenOptions::new().write(true).read(true).open(name));
+    let pipe = r#try!(OpenOptions::new().write(true).read(true).open(name));
     notify_server_startup_internal(pipe, status)
 }
 

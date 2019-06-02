@@ -13,23 +13,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use compiler::args::{
+use crate::compiler::args::{
     ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
     NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
 };
-use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use compiler::{Cacheable, CompileCommand, CompilerArguments};
-use dist;
-use errors::*;
+use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::{Cacheable, CompileCommand, CompilerArguments};
+use crate::dist;
+use crate::errors::*;
 use log::Level::Trace;
-use mock_command::{CommandCreatorSync, RunCommand};
+use crate::mock_command::{CommandCreatorSync, RunCommand};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{run_input_output, OsStrExt};
+use crate::util::{run_input_output, OsStrExt};
 
 #[derive(Clone, Debug)]
 pub struct Diab;
@@ -396,13 +396,13 @@ mod test {
         dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
         PathBuf, ARGS,
     };
-    use compiler::*;
+    use crate::compiler::*;
     use futures::Future;
-    use mock_command::*;
+    use crate::mock_command::*;
     use std::fs::File;
     use std::io::Write;
     use tempdir::TempDir;
-    use test::utils::*;
+    use crate::test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();

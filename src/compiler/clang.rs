@@ -14,20 +14,20 @@
 
 #![allow(unused_imports,dead_code,unused_variables)]
 
-use ::compiler::{
+use crate::compiler::{
     gcc,
     Cacheable,
     CompilerArguments,
     CompileCommand,
     write_temp_file,
 };
-use dist;
-use compiler::args::*;
-use compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use compiler::gcc::ArgData::*;
+use crate::dist;
+use crate::compiler::args::*;
+use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::gcc::ArgData::*;
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
-use mock_command::{
+use crate::mock_command::{
     CommandCreator,
     CommandCreatorSync,
     RunCommand,
@@ -40,9 +40,9 @@ use std::io::{
 };
 use std::path::{Path, PathBuf};
 use std::process;
-use util::{run_input_output, OsStrExt};
+use crate::util::{run_input_output, OsStrExt};
 
-use errors::*;
+use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
@@ -103,15 +103,15 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 
 #[cfg(test)]
 mod test {
-    use compiler::*;
-    use compiler::gcc;
+    use crate::compiler::*;
+    use crate::compiler::gcc;
     use futures::Future;
     use futures_cpupool::CpuPool;
-    use mock_command::*;
+    use crate::mock_command::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use super::*;
-    use test::utils::*;
+    use crate::test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();

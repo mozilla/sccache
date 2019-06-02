@@ -16,7 +16,7 @@ use bincode;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
 use futures_cpupool::CpuPool;
-use mock_command::{CommandChild, RunCommand};
+use crate::mock_command::{CommandChild, RunCommand};
 use ring::digest::{Context, SHA512};
 use serde::Serialize;
 use std::env;
@@ -30,7 +30,7 @@ use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
 
-use errors::*;
+use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Digest {
@@ -406,7 +406,7 @@ mod http_extension {
     }
 
     #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::async::RequestBuilder {
+    impl RequestExt for ::reqwest::r#async::RequestBuilder {
         fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,

@@ -25,4 +25,4 @@ pub mod s3;
 #[cfg(feature = "gcs")]
 pub mod gcs;
 
-pub use cache::cache::*;
+pub use crate::cache::cache::*;

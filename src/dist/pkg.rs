@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use dist;
+use crate::dist;
 use std::io;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 use tar;
 
-use errors::*;
+use crate::errors::*;
 
 pub use self::toolchain_imp::*;
 
@@ -40,7 +40,7 @@ mod toolchain_imp {
     use std::fs;
     use super::ToolchainPackager;
 
-    use errors::*;
+    use crate::errors::*;
 
     // Distributed client, but an unsupported platform for toolchain packaging so
     // create a failing implementation that will conflict with any others.
@@ -63,7 +63,7 @@ mod toolchain_imp {
     use tar;
     use walkdir::WalkDir;
 
-    use errors::*;
+    use crate::errors::*;
 
     pub struct ToolchainPackageBuilder {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)

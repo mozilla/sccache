@@ -24,7 +24,7 @@ use std::path::{Path,PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use filetime::{FileTime, set_file_times};
-use lru_cache::{LruCache,Meter};
+use crate::lru_cache::{LruCache,Meter};
 use walkdir::WalkDir;
 
 struct FileSize;
@@ -288,9 +288,9 @@ mod tests {
 
     fn create_file<T: AsRef<Path>, F: FnOnce(File) -> io::Result<()>>(dir: &Path, path: T, fill_contents: F) -> io::Result<PathBuf> {
         let b = dir.join(path);
-        try!(fs::create_dir_all(b.parent().unwrap()));
-        let f = try!(fs::File::create(&b));
-        try!(fill_contents(f));
+        r#try!(fs::create_dir_all(b.parent().unwrap()));
+        let f = r#try!(fs::File::create(&b));
+        r#try!(fill_contents(f));
         b.canonicalize()
     }
 
@@ -304,7 +304,7 @@ mod tests {
 
     fn read_all<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
         let mut v = vec!();
-        try!(r.read_to_end(&mut v));
+        r#try!(r.read_to_end(&mut v));
         Ok(v)
     }
 

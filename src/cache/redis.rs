@@ -13,20 +13,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use cache::{
+use crate::cache::{
     Cache,
     CacheRead,
     CacheWrite,
     Storage,
 };
-use errors::*;
+use crate::errors::*;
 use futures::{future, Future};
 use redis::{
     cmd,
     Client,
     InfoDict,
 };
-use redis::async::Connection;
+use redis::r#async::Connection;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{
