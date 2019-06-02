@@ -462,7 +462,7 @@ mod server {
 
     impl<'a> ErrJson<'a> {
         fn from_err<E: ?Sized + std::error::Error>(err: &'a E) -> ErrJson<'a> {
-            let cause = err.cause().map(ErrJson::from_err).map(Box::new);
+            let cause = err.source().map(ErrJson::from_err).map(Box::new);
             ErrJson {
                 description: err.description(),
                 cause,
@@ -480,11 +480,11 @@ mod server {
                     // TODO: would ideally just use error_chain
                     use std::error::Error;
                     let mut err_msg = err.to_string();
-                    let mut maybe_cause = err.cause();
+                    let mut maybe_cause = err.source();
                     while let Some(cause) = maybe_cause {
                         err_msg.push_str(", caused by: ");
                         err_msg.push_str(cause.description());
-                        maybe_cause = cause.cause()
+                        maybe_cause = cause.source();
                     }
 
                     warn!("Res {} error: {}", $reqid, err_msg);
