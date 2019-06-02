@@ -85,9 +85,9 @@ pub trait CommandChild {
     /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
     /// Wait for the process to complete and return its exit status.
-    fn wait(self) -> Box<Future<Item = ExitStatus, Error = io::Error>>;
+    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>>;
     /// Wait for the process to complete and return its output.
-    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>>;
+    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
@@ -162,7 +162,7 @@ impl CommandChild for Child {
     fn take_stdout(&mut self) -> Option<ChildStdout> { self.inner.stdout().take() }
     fn take_stderr(&mut self) -> Option<ChildStderr> { self.inner.stderr().take() }
 
-    fn wait(self) -> Box<Future<Item = ExitStatus, Error = io::Error>> {
+    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
         let Child { inner, token } = self;
         Box::new(inner.map(|ret| {
             drop(token);
@@ -170,7 +170,7 @@ impl CommandChild for Child {
         }))
     }
 
-    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>> {
+    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
         let Child { inner, token } = self;
         Box::new(inner.wait_with_output().map(|ret| {
             drop(token);
@@ -377,12 +377,12 @@ impl CommandChild for MockChild {
     fn take_stdout(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stdout.take() }
     fn take_stderr(&mut self) -> Option<io::Cursor<Vec<u8>>> { self.stderr.take() }
 
-    fn wait(mut self) -> Box<Future<Item = ExitStatus, Error = io::Error>> {
+    fn wait(mut self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
         Box::new(future::result(self.wait_result.take().unwrap()))
     }
 
 
-    fn wait_with_output(self) -> Box<Future<Item = Output, Error = io::Error>> {
+    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
         let MockChild { stdout, stderr, wait_result, .. } = self;
         let result = wait_result.unwrap().and_then(|status| {
             Ok(Output {
@@ -397,7 +397,7 @@ impl CommandChild for MockChild {
 
 pub enum ChildOrCall {
     Child(Result<MockChild>),
-    Call(Box<Fn(&[OsString]) -> Result<MockChild> + Send>),
+    Call(Box<dyn Fn(&[OsString]) -> Result<MockChild> + Send>),
 }
 
 impl fmt::Debug for ChildOrCall {

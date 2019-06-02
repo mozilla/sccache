@@ -416,7 +416,7 @@ impl<T> Compiler<T> for Rust
 {
     fn kind(&self) -> CompilerKind { CompilerKind::Rust }
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
+    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
         Box::new(RustToolchainPackager { sysroot: self.sysroot.clone() })
     }
     /// Parse `arguments` as rustc command-line arguments, determine if
@@ -432,7 +432,7 @@ impl<T> Compiler<T> for Rust
     /// * We don't support `-o file`.
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>>
+                       cwd: &Path) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>
     {
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => {
@@ -452,7 +452,7 @@ impl<T> Compiler<T> for Rust
     }
 
 
-    fn box_clone(&self) -> Box<Compiler<T>> {
+    fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
     }
 }
@@ -1137,7 +1137,7 @@ impl<T> CompilerHasher<T> for RustHasher
         Cow::Borrowed(&self.parsed_args.crate_name)
     }
 
-    fn box_clone(&self) -> Box<CompilerHasher<T>> {
+    fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }
 }
@@ -1264,7 +1264,7 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<dyn pkg::InputsPackager>, Box<dyn pkg::ToolchainPackager>, Box<dyn OutputsRewriter>)> {
 
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, dep_info, rlib_dep_reader, env_vars, .. } = *{self};
         trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
@@ -1276,7 +1276,7 @@ impl Compilation for RustCompilation {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a> {
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item=(&'a str, &'a Path)> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
     }
 }
@@ -1301,7 +1301,7 @@ struct RustInputsPackager {
 
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
+    fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
         debug!("Packaging compile inputs for compile");
         let RustInputsPackager { crate_link_paths, crate_types, inputs, mut path_transformer, rlib_dep_reader, env_vars } = *{self};
 

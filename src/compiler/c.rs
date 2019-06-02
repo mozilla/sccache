@@ -194,7 +194,7 @@ impl <I> CCompiler<I>
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     fn kind(&self) -> CompilerKind { CompilerKind::C(self.compiler.kind()) }
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager> {
+    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
         Box::new(CToolchainPackager {
             executable: self.executable.clone(),
             kind: self.compiler.kind(),
@@ -202,7 +202,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
     fn parse_arguments(&self,
                        arguments: &[OsString],
-                       cwd: &Path) -> CompilerArguments<Box<CompilerHasher<T> + 'static>> {
+                       cwd: &Path) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match self.compiler.parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => {
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
@@ -217,7 +217,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         }
     }
 
-    fn box_clone(&self) -> Box<Compiler<T>> {
+    fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
     }
 }
@@ -306,7 +306,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
         self.parsed_args.output_pretty()
     }
 
-    fn box_clone(&self) -> Box<CompilerHasher<T>>
+    fn box_clone(&self) -> Box<dyn CompilerHasher<T>>
     {
         Box::new((*self).clone())
     }
@@ -321,7 +321,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 
     #[cfg(feature = "dist-client")]
-    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<pkg::InputsPackager>, Box<pkg::ToolchainPackager>, Box<OutputsRewriter>)> {
+    fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<dyn pkg::InputsPackager>, Box<dyn pkg::ToolchainPackager>, Box<dyn OutputsRewriter>)> {
         let CCompilation { parsed_args, cwd, preprocessed_input, executable, compiler, .. } = *{self};
         trace!("Dist inputs: {:?}", parsed_args.input);
 
@@ -332,7 +332,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item=(&'a str, &'a Path)> + 'a>
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item=(&'a str, &'a Path)> + 'a>
     {
         Box::new(self.parsed_args.outputs.iter().map(|(k, v)| (*k, &**v)))
     }
@@ -347,7 +347,7 @@ struct CInputsPackager {
 
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for CInputsPackager {
-    fn write_inputs(self: Box<Self>, wtr: &mut io::Write) -> Result<dist::PathTransformer> {
+    fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
         let CInputsPackager { input_path, mut path_transformer, preprocessed_input } = *{self};
 
         let input_path = pkg::simplify_path(&input_path)?;

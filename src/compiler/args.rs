@@ -9,7 +9,7 @@ use std::str;
 
 pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
 pub type ArgToStringResult = StdResult<String, ArgToStringError>;
-pub type PathTransformerFn<'a> = &'a mut FnMut(&Path) -> Option<String>;
+pub type PathTransformerFn<'a> = &'a mut dyn FnMut(&Path) -> Option<String>;
 
 #[derive(Debug, PartialEq)]
 pub enum ArgParseError {
@@ -30,7 +30,7 @@ impl Display for ArgParseError {
 }
 
 impl Error for ArgParseError {
-    fn cause(&self) -> Option<&Error> { None }
+    fn cause(&self) -> Option<&dyn Error> { None }
 }
 
 #[derive(Debug, PartialEq)]
@@ -50,7 +50,7 @@ impl Display for ArgToStringError {
 }
 
 impl Error for ArgToStringError {
-    fn cause(&self) -> Option<&Error> { None }
+    fn cause(&self) -> Option<&dyn Error> { None }
 }
 
 pub type Delimiter = Option<u8>;

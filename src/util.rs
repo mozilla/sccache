@@ -92,7 +92,7 @@ pub fn hex(bytes: &[u8]) -> String {
 
     fn hex(byte: u8) -> char {
         match byte {
-            0...9 => (b'0' + byte) as char,
+            0..=9 => (b'0' + byte) as char,
             _ => (b'a' + byte - 10) as char,
         }
     }

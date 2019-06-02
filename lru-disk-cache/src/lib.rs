@@ -41,7 +41,7 @@ impl<K> Meter<K, u64> for FileSize {
 
 /// Return an iterator of `(path, size)` of files under `path` sorted by ascending last-modified
 /// time, such that the oldest modified file is returned first.
-fn get_all_files<P: AsRef<Path>>(path: P) -> Box<Iterator<Item=(PathBuf, u64)>> {
+fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item=(PathBuf, u64)>> {
     let mut files: Vec<_> = WalkDir::new(path.as_ref())
         .into_iter()
         .filter_map(|e| e.ok()
@@ -92,7 +92,7 @@ impl StdError for Error {
         }
     }
 
-    fn cause(&self) -> Option<&StdError> {
+    fn cause(&self) -> Option<&dyn StdError> {
         match self {
             &Error::Io(ref e) => Some(e),
             _ => None,
@@ -266,8 +266,8 @@ impl LruDiskCache {
 
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
-    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<ReadSeek>> {
-        self.get_file(key).map(|f| Box::new(f) as Box<ReadSeek>)
+    pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
+        self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
 }
 

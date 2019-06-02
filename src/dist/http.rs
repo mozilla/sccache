@@ -392,7 +392,7 @@ mod server {
     pub trait ClientAuthCheck: Send + Sync {
         fn check(&self, token: &str) -> StdResult<(), ClientVisibleMsg>;
     }
-    pub type ServerAuthCheck = Box<Fn(&str) -> Option<ServerId> + Send + Sync>;
+    pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
     lazy_static! {
@@ -433,7 +433,7 @@ mod server {
                 RouilleBincodeError::ParseError(_) => "error while parsing the bincode body",
             }
         }
-        fn cause(&self) -> Option<&std::error::Error> {
+        fn cause(&self) -> Option<&dyn std::error::Error> {
             match *self {
                 RouilleBincodeError::ParseError(ref e) => Some(e),
                 _ => None,
@@ -646,7 +646,7 @@ mod server {
         public_addr: SocketAddr,
         handler: S,
         // Is this client permitted to use the scheduler?
-        check_client_auth: Box<ClientAuthCheck>,
+        check_client_auth: Box<dyn ClientAuthCheck>,
         // Do we believe the server is who they appear to be?
         check_server_auth: ServerAuthCheck,
     }
@@ -655,7 +655,7 @@ mod server {
         pub fn new(
             public_addr: SocketAddr,
             handler: S,
-            check_client_auth: Box<ClientAuthCheck>,
+            check_client_auth: Box<dyn ClientAuthCheck>,
             check_server_auth: ServerAuthCheck,
         ) -> Self {
             Self {
@@ -965,7 +965,7 @@ mod server {
                         job_auth_or_401!(request, &job_authorizer, job_id);
                         trace!("Req {}: submit_toolchain({})", req_id, job_id);
 
-                        let mut body = request.data().expect("body was already read in submit_toolchain");
+                        let body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
                         let res: SubmitToolchainResult = try_or_500_log!(req_id, handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
                         prepare_response(&request, &res)
@@ -1223,7 +1223,7 @@ mod client {
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
-            inputs_packager: Box<InputsPackager>,
+            inputs_packager: Box<dyn InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
@@ -1266,7 +1266,7 @@ mod client {
             &self,
             compiler_path: &Path,
             weak_key: &str,
-            toolchain_packager: Box<ToolchainPackager>,
+            toolchain_packager: Box<dyn ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();

@@ -144,7 +144,7 @@ mod client {
             Ok(Some(file))
         }
         // If the toolchain doesn't already exist, create it and insert into the cache
-        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
+        pub fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<dyn ToolchainPackager>) -> Result<(Toolchain, Option<String>)> {
             if self.disabled_toolchains.contains(compiler_path) {
                 bail!("Toolchain distribution for {} is disabled", compiler_path.display())
             }
@@ -332,7 +332,7 @@ impl TcCache {
         self.inner.get_file(make_lru_key_path(&tc.archive_id))
     }
 
-    pub fn get(&mut self, tc: &Toolchain) -> LruResult<Box<ReadSeek>> {
+    pub fn get(&mut self, tc: &Toolchain) -> LruResult<Box<dyn ReadSeek>> {
         self.inner.get(make_lru_key_path(&tc.archive_id))
     }
 

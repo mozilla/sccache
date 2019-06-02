@@ -95,18 +95,18 @@ where
     fn kind(&self) -> CompilerKind;
     /// Retrieve a packager
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<pkg::ToolchainPackager>;
+    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
-    ) -> CompilerArguments<Box<CompilerHasher<T> + 'static>>;
-    fn box_clone(&self) -> Box<Compiler<T>>;
+    ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
+    fn box_clone(&self) -> Box<dyn Compiler<T>>;
 }
 
-impl<T: CommandCreatorSync> Clone for Box<Compiler<T>> {
-    fn clone(&self) -> Box<Compiler<T>> {
+impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
+    fn clone(&self) -> Box<dyn Compiler<T>> {
         self.box_clone()
     }
 }
@@ -136,9 +136,9 @@ where
     /// compile and store the result.
     fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Option<Arc<dist::Client>>,
+        dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
-        storage: Arc<Storage>,
+        storage: Arc<dyn Storage>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -364,7 +364,7 @@ where
     /// artifact generation.
     fn output_pretty(&self) -> Cow<str>;
 
-    fn box_clone(&self) -> Box<CompilerHasher<T>>;
+    fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
 }
 
 #[cfg(not(feature = "dist-client"))]
@@ -398,10 +398,10 @@ where
 
 #[cfg(feature = "dist-client")]
 fn dist_or_local_compile<T>(
-    dist_client: Option<Arc<dist::Client>>,
+    dist_client: Option<Arc<dyn dist::Client>>,
     creator: T,
     cwd: PathBuf,
-    compilation: Box<Compilation>,
+    compilation: Box<dyn Compilation>,
     weak_toolchain_key: String,
     out_pretty: String,
 ) -> SFuture<(Cacheable, DistType, process::Output)>
@@ -554,8 +554,8 @@ where
     )
 }
 
-impl<T: CommandCreatorSync> Clone for Box<CompilerHasher<T>> {
-    fn clone(&self) -> Box<CompilerHasher<T>> {
+impl<T: CommandCreatorSync> Clone for Box<dyn CompilerHasher<T>> {
+    fn clone(&self) -> Box<dyn CompilerHasher<T>> {
         self.box_clone()
     }
 }
@@ -575,9 +575,9 @@ pub trait Compilation {
         self: Box<Self>,
         _path_transformer: dist::PathTransformer,
     ) -> Result<(
-        Box<pkg::InputsPackager>,
-        Box<pkg::ToolchainPackager>,
-        Box<OutputsRewriter>,
+        Box<dyn pkg::InputsPackager>,
+        Box<dyn pkg::ToolchainPackager>,
+        Box<dyn OutputsRewriter>,
     )> {
         bail!("distributed compilation not implemented")
     }
@@ -586,7 +586,7 @@ pub trait Compilation {
     ///
     /// Each item is a descriptive (and unique) name of the output paired with
     /// the path where it'll show up.
-    fn outputs<'a>(&'a self) -> Box<Iterator<Item = (&'a str, &'a Path)> + 'a>;
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a>;
 }
 
 #[cfg(feature = "dist-client")]
@@ -617,7 +617,7 @@ pub struct HashResult {
     /// The hash key of the inputs.
     pub key: String,
     /// An object to use for the actual compilation, if necessary.
-    pub compilation: Box<Compilation + 'static>,
+    pub compilation: Box<dyn Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
 }
@@ -815,7 +815,7 @@ fn detect_compiler<T>(
     executable: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
-) -> SFuture<Option<Box<Compiler<T>>>>
+) -> SFuture<Option<Box<dyn Compiler<T>>>>
 where
     T: CommandCreatorSync,
 {
@@ -866,7 +866,7 @@ where
             debug!("Found rustc");
             Box::new(
                 Rust::new(creator, executable, &env, &rustc_verbose_version, pool)
-                    .map(|c| Some(Box::new(c) as Box<Compiler<T>>)),
+                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)),
             )
         } else {
             detect_c_compiler(creator, executable, env, pool)
@@ -879,7 +879,7 @@ fn detect_c_compiler<T>(
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
     pool: CpuPool,
-) -> SFuture<Option<Box<Compiler<T>>>>
+) -> SFuture<Option<Box<dyn Compiler<T>>>>
 where
     T: CommandCreatorSync,
 {
@@ -928,18 +928,18 @@ diab
                 "clang" => {
                     debug!("Found clang");
                     return Box::new(CCompiler::new(Clang, executable, &pool)
-                                    .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+                                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
                 }
                 "diab" => {
                     debug!("Found diab");
                     return Box::new(CCompiler::new(Diab, executable, &pool)
-                                    .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+                                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
 
                 }
                 "gcc" => {
                     debug!("Found GCC");
                     return Box::new(CCompiler::new(GCC, executable, &pool)
-                                .map(|c| Some(Box::new(c) as Box<Compiler<T>>)));
+                                .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
                 }
                 "msvc" | "msvc-clang" => {
                     let is_clang = line == "msvc-clang";
@@ -955,7 +955,7 @@ diab
                             includes_prefix: prefix,
                             is_clang,
                         }, executable, &pool)
-                            .map(|c| Some(Box::new(c) as Box<Compiler<T>>))
+                            .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>))
                     }))
                 }
                 _ => (),
@@ -978,7 +978,7 @@ pub fn get_compiler_info<T>(
     executable: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
-) -> SFuture<Box<Compiler<T>>>
+) -> SFuture<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
@@ -1170,7 +1170,7 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<Storage> = Arc::new(storage);
+        let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
@@ -1273,7 +1273,7 @@ LLVM version: 6.0",
         let pool = CpuPool::new(1);
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<Storage> = Arc::new(storage);
+        let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
@@ -1448,7 +1448,7 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<Storage> = Arc::new(storage);
+        let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
@@ -1554,7 +1554,7 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<Storage> = Arc::new(storage);
+        let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
@@ -1611,7 +1611,7 @@ LLVM version: 6.0",
             test_dist::ErrorRunJobClient::new(),
         ];
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<Storage> = Arc::new(storage);
+        let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
@@ -1700,7 +1700,7 @@ mod test_dist {
 
     pub struct ErrorPutToolchainClient;
     impl ErrorPutToolchainClient {
-        pub fn new() -> Arc<dist::Client> {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(ErrorPutToolchainClient)
         }
     }
@@ -1716,7 +1716,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<pkg::InputsPackager>,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1724,7 +1724,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<pkg::ToolchainPackager>,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_err("put toolchain failure")
         }
@@ -1734,7 +1734,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorAllocJobClient {
-        pub fn new() -> Arc<dist::Client> {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
@@ -1755,7 +1755,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<pkg::InputsPackager>,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1763,7 +1763,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<pkg::ToolchainPackager>,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), None))
         }
@@ -1774,7 +1774,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorSubmitToolchainClient {
-        pub fn new() -> Arc<dist::Client> {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {
@@ -1810,7 +1810,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<pkg::InputsPackager>,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1818,7 +1818,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<pkg::ToolchainPackager>,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), None))
         }
@@ -1829,7 +1829,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorRunJobClient {
-        pub fn new() -> Arc<dist::Client> {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {
@@ -1865,7 +1865,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             _: Vec<String>,
-            _: Box<pkg::InputsPackager>,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
@@ -1875,7 +1875,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<pkg::ToolchainPackager>,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
         }
@@ -1888,7 +1888,7 @@ mod test_dist {
     }
 
     impl OneshotClient {
-        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dist::Client> {
+        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {
@@ -1928,7 +1928,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
-            inputs_packager: Box<pkg::InputsPackager>,
+            inputs_packager: Box<dyn pkg::InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
@@ -1952,7 +1952,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<pkg::ToolchainPackager>,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
         }

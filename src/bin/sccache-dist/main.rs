@@ -326,7 +326,7 @@ fn run(command: Command) -> Result<i32> {
             client_auth,
             server_auth,
         }) => {
-            let check_client_auth: Box<dist::http::ClientAuthCheck> = match client_auth {
+            let check_client_auth: Box<dyn dist::http::ClientAuthCheck> = match client_auth {
                 scheduler_config::ClientAuth::Insecure => Box::new(token_check::EqCheck::new(
                     INSECURE_DIST_CLIENT_TOKEN.to_owned(),
                 )),
@@ -397,7 +397,7 @@ fn run(command: Command) -> Result<i32> {
             scheduler_auth,
             toolchain_cache_size,
         }) => {
-            let builder: Box<dist::BuilderIncoming<Error = Error>> = match builder {
+            let builder: Box<dyn dist::BuilderIncoming<Error = Error>> = match builder {
                 server_config::BuilderType::Docker => Box::new(
                     build::DockerBuilder::new().chain_err(|| "Docker builder failed to start")?,
                 ),
@@ -483,7 +483,7 @@ struct ServerDetails {
     last_seen: Instant,
     num_cpus: usize,
     server_nonce: ServerNonce,
-    job_authorizer: Box<JobAuthorizer>,
+    job_authorizer: Box<dyn JobAuthorizer>,
 }
 
 impl Scheduler {
@@ -501,7 +501,7 @@ impl SchedulerIncoming for Scheduler {
     type Error = Error;
     fn handle_alloc_job(
         &self,
-        requester: &SchedulerOutgoing,
+        requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
     ) -> Result<AllocJobResult> {
         let (job_id, server_id, auth) = {
@@ -621,7 +621,7 @@ impl SchedulerIncoming for Scheduler {
         server_id: ServerId,
         server_nonce: ServerNonce,
         num_cpus: usize,
-        job_authorizer: Box<JobAuthorizer>,
+        job_authorizer: Box<dyn JobAuthorizer>,
     ) -> Result<HeartbeatServerResult> {
         if num_cpus == 0 {
             bail!("Invalid number of CPUs (0) specified in heartbeat")
@@ -704,14 +704,14 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<BuilderIncoming<Error = Error>>,
+    builder: Box<dyn BuilderIncoming<Error = Error>>,
     cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
     pub fn new(
-        builder: Box<BuilderIncoming<Error = Error>>,
+        builder: Box<dyn BuilderIncoming<Error = Error>>,
         cache_dir: &Path,
         toolchain_cache_size: u64,
     ) -> Result<Server> {
@@ -749,7 +749,7 @@ impl ServerIncoming for Server {
     }
     fn handle_submit_toolchain(
         &self,
-        requester: &ServerOutgoing,
+        requester: &dyn ServerOutgoing,
         job_id: JobId,
         tc_rdr: ToolchainReader,
     ) -> Result<SubmitToolchainResult> {
@@ -775,7 +775,7 @@ impl ServerIncoming for Server {
     }
     fn handle_run_job(
         &self,
-        requester: &ServerOutgoing,
+        requester: &dyn ServerOutgoing,
         job_id: JobId,
         command: CompileCommand,
         outputs: Vec<String>,

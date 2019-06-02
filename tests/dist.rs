@@ -162,10 +162,10 @@ impl ServerIncoming for FailingServer {
         let state = JobState::Ready;
         Ok(AssignJobResult { need_toolchain, state })
     }
-    fn handle_submit_toolchain(&self, _requester: &ServerOutgoing, _job_id: JobId, _tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
+    fn handle_submit_toolchain(&self, _requester: &dyn ServerOutgoing, _job_id: JobId, _tc_rdr: ToolchainReader) -> Result<SubmitToolchainResult> {
         panic!("should not have submitted toolchain")
     }
-    fn handle_run_job(&self, requester: &ServerOutgoing, job_id: JobId, _command: CompileCommand, _outputs: Vec<String>, _inputs_rdr: InputsReader) -> Result<RunJobResult> {
+    fn handle_run_job(&self, requester: &dyn ServerOutgoing, job_id: JobId, _command: CompileCommand, _outputs: Vec<String>, _inputs_rdr: InputsReader) -> Result<RunJobResult> {
         requester.do_update_job_state(job_id, JobState::Started).chain_err(|| "Updating job state failed")?;
         bail!("internal build failure")
     }

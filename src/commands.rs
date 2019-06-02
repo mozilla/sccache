@@ -368,13 +368,13 @@ fn status_signal(_status: process::ExitStatus) -> Option<i32> {
 /// Return the compiler exit status.
 fn handle_compile_finished(
     response: CompileFinished,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32> {
     trace!("handle_compile_finished");
     fn write_output(
         stream: Stream,
-        writer: &mut Write,
+        writer: &mut dyn Write,
         data: &[u8],
         color_mode: ColorMode,
     ) -> Result<()> {
@@ -438,8 +438,8 @@ fn handle_compile_response<T>(
     exe: &Path,
     cmdline: Vec<OsString>,
     cwd: &Path,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
@@ -513,8 +513,8 @@ pub fn do_compile<T>(
     cwd: &Path,
     path: Option<OsString>,
     env_vars: Vec<(OsString, OsString)>,
-    stdout: &mut Write,
-    stderr: &mut Write,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
 ) -> Result<i32>
 where
     T: CommandCreatorSync,

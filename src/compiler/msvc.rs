@@ -180,7 +180,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T,
 }
 
 #[cfg(unix)]
-fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
+fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
     use std::os::unix::prelude::*;
 
     let bytes = path.as_os_str().as_bytes();

@@ -90,8 +90,8 @@ impl From<chrono::ParseError> for Error {
     }
 }
 
-pub type SFuture<T> = Box<Future<Item = T, Error = Error>>;
-pub type SFutureSend<T> = Box<Future<Item = T, Error = Error> + Send>;
+pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error>>;
+pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
 
 pub trait FutureChainErr<T> {
     fn chain_err<F, E>(self, callback: F) -> SFuture<T>

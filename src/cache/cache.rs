@@ -65,7 +65,7 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 
 /// Data stored in the compiler cache.
 pub struct CacheRead {
-    zip: ZipArchive<Box<ReadSeek>>,
+    zip: ZipArchive<Box<dyn ReadSeek>>,
 }
 
 impl CacheRead {
@@ -74,7 +74,7 @@ impl CacheRead {
     where
         R: ReadSeek + 'static,
     {
-        let z = ZipArchive::new(Box::new(reader) as Box<ReadSeek>)
+        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
             .chain_err(|| "Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
@@ -164,7 +164,7 @@ pub trait Storage {
 }
 
 /// Get a suitable `Storage` implementation from configuration.
-pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<Storage> {
+pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

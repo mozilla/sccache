@@ -34,7 +34,7 @@ use errors::*;
 
 trait CommandExt {
     fn check_stdout_trim(&mut self) -> Result<String>;
-    fn check_piped(&mut self, pipe: &mut FnMut(&mut ChildStdin) -> Result<()>) -> Result<()>;
+    fn check_piped(&mut self, pipe: &mut dyn FnMut(&mut ChildStdin) -> Result<()>) -> Result<()>;
     fn check_run(&mut self) -> Result<()>;
 }
 
@@ -46,7 +46,7 @@ impl CommandExt for Command {
         Ok(stdout.trim().to_owned())
     }
     // Should really take a FnOnce/FnBox
-    fn check_piped(&mut self, pipe: &mut FnMut(&mut ChildStdin) -> Result<()>) -> Result<()> {
+    fn check_piped(&mut self, pipe: &mut dyn FnMut(&mut ChildStdin) -> Result<()>) -> Result<()> {
         let mut process = self.stdin(Stdio::piped()).spawn().chain_err(|| "Failed to start command")?;
         let mut stdin = process.stdin.take().expect("Requested piped stdin but not present");
         pipe(&mut stdin).chain_err(|| "Failed to pipe input to process")?;
@@ -248,7 +248,7 @@ impl OverlayBuilder {
             for path in output_paths {
                 let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
                 match fs::File::open(abspath) {
-                    Ok(mut file) => {
+                    Ok(file) => {
                         let output = OutputData::try_from_reader(file)
                             .chain_err(|| "Failed to read output file")?;
                         outputs.push((path, output))
