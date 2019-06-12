@@ -43,7 +43,7 @@ const MOZILLA_OAUTH_PKCE_CLIENT_ID: &str = "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo";
 // The sccache audience is an API set up in auth0 for sccache to allow 7 day expiry,
 // the openid scope allows us to query the auth0 /userinfo endpoint which contains
 // group information due to Mozilla rules.
-const MOZILLA_OAUTH_PKCE_AUTH_URL: &str = "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid";
+const MOZILLA_OAUTH_PKCE_AUTH_URL: &str = "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid%20profile";
 const MOZILLA_OAUTH_PKCE_TOKEN_URL: &str = "https://auth.mozilla.auth0.com/oauth/token";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
