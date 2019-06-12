@@ -521,6 +521,7 @@ pub struct JobComplete {
 #[serde(deny_unknown_fields)]
 pub struct SchedulerStatusResult {
     pub num_servers: usize,
+    pub num_cpus: usize,
 }
 
 // SubmitToolchain
