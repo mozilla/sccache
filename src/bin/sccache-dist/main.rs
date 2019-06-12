@@ -695,6 +695,7 @@ impl SchedulerIncoming for Scheduler {
 
         Ok(SchedulerStatusResult {
             num_servers: servers.len(),
+            num_cpus: servers.values().map(|v| v.num_cpus).sum(),
         })
     }
 }
