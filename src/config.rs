@@ -397,7 +397,7 @@ fn config_from_env() -> EnvConfig {
     let s3 = env::var("SCCACHE_BUCKET").ok()
         .map(|bucket| {
             let endpoint = match env::var("SCCACHE_ENDPOINT") {
-                Ok(endpoint) => format!("{}/{}", endpoint, bucket),
+                Ok(endpoint) => endpoint,
                 _ => match env::var("SCCACHE_REGION") {
                     Ok(ref region) if region != "us-east-1" =>
                         format!("{}.s3-{}.amazonaws.com", bucket, region),

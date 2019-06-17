@@ -90,6 +90,7 @@ rouille = { version = "2.2", optional = true, default-features = false, features
 syslog = { version = "4.0.1", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.8", optional = true }
+rusoto_core = "0.39.0"
 
 [patch.crates-io]
 # Waiting for https://github.com/tiny-http/tiny-http/pull/151

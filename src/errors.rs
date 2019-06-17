@@ -42,6 +42,9 @@ error_chain! {
         TempfilePersist(tempfile::PersistError);
         WalkDir(walkdir::Error);
         Timer(tokio_timer::Error);
+        RusotoDispatch(rusoto_core::request::HttpDispatchError);
+        RusotoTls(rusoto_core::request::TlsError);
+        RusotoCredentials(rusoto_core::credential::CredentialsError);
     }
 
     errors {

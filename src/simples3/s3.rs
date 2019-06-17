@@ -1,65 +1,21 @@
-// Originally from https://github.com/rust-lang/crates.io/blob/master/src/s3/lib.rs
 //#![deny(warnings)]
 
 #[allow(unused_imports, deprecated)]
 use std::ascii::AsciiExt;
 use std::fmt;
 
-use crypto::digest::Digest;
-use crypto::hmac::Hmac;
-use crypto::mac::Mac;
-use crypto::sha1::Sha1;
-use futures::{Future, Stream};
-use hyperx::header;
-use hyper::header::HeaderValue;
-use hyper::Method;
-use reqwest::r#async::{Client, Request};
-use crate::simples3::credential::*;
+use rusoto_core::HttpClient;
+use rusoto_core::credential::AwsCredentials;
+use futures::Future as _;
+use rusoto_core::request::DispatchSignedRequest as _;
 
 use crate::errors::*;
-use crate::util::HeadersExt;
-
-#[derive(Debug, Copy, Clone)]
-#[allow(dead_code)]
-/// Whether or not to use SSL.
-pub enum Ssl {
-    /// Use SSL.
-    Yes,
-    /// Do not use SSL.
-    No,
-}
-
-fn base_url(endpoint: &str, ssl: Ssl) -> String {
-    format!(
-        "{}://{}/",
-        match ssl {
-            Ssl::Yes => "https",
-            Ssl::No => "http",
-        },
-        endpoint
-    )
-}
-
-fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::new(d, key);
-    hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
-}
-
-fn signature(string_to_sign: &str, signing_key: &str) -> String {
-    let s = hmac(
-        Sha1::new(),
-        signing_key.as_bytes(),
-        string_to_sign.as_bytes(),
-    );
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
-}
 
 /// An S3 bucket.
 pub struct Bucket {
     name: String,
     base_url: String,
-    client: Client,
+    client: HttpClient,
 }
 
 impl fmt::Display for Bucket {
@@ -69,172 +25,69 @@ impl fmt::Display for Bucket {
 }
 
 impl Bucket {
-    pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Result<Bucket> {
-        let base_url = base_url(&endpoint, ssl);
+    pub fn new(name: &str, endpoint: &str) -> Result<Bucket> {
         Ok(Bucket {
             name: name.to_owned(),
-            base_url: base_url,
-            client: Client::new(),
+            base_url: endpoint.to_string(),
+            client: HttpClient::new()?,
         })
     }
 
-    pub fn get(&self, key: &str, creds: Option<&AwsCredentials>) -> SFuture<Vec<u8>> {
-        let url = format!("{}{}", self.base_url, key);
-        debug!("GET {}", url);
-        let url2 = url.clone();
-        let mut request = Request::new(Method::GET, url.parse().unwrap()); 
-        match creds {
-            Some(creds) => {
-                let mut canonical_headers = String::new();
-
-                if let Some(token) = creds.token().as_ref().map(|s| s.as_str()) {
-                    request.headers_mut().insert(
-                        "x-amz-security-token",
-                        HeaderValue::from_str(token)
-                            .expect("Invalid `x-amz-security-token` header"),
-                    );
-                    canonical_headers
-                        .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
-                }
-                let date = time::now_utc().rfc822().to_string();
-                let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
-                request.headers_mut().insert(
-                    "Date",
-                    HeaderValue::from_str(&date).expect("Invalid date header"),
-                );
-                request.headers_mut().insert(
-                    "Authorization",
-                    HeaderValue::from_str(&auth).expect("Invalid authentication"),
-                );
-            }
-            // request is fine as-is
-            None => {}
+    pub fn get(&self, key: &str, creds: &Option<AwsCredentials>) -> SFuture<Vec<u8>> {
+        let key = format!("/{}/{}", self.name, key);
+        let mut request = rusoto_core::signature::SignedRequest::new(
+            "GET",
+            "s3",
+            &rusoto_core::region::Region::UsEast1,
+            &key,
+        );
+        request.set_hostname(Some(self.base_url.clone()));
+        if let Some(creds) = creds {
+            request.sign(creds);
         }
-
 
         Box::new(
             self.client
-                .execute(request)
-                .chain_err(move || format!("failed GET: {}", url))
+                .dispatch(request, None)
+                .map_err(crate::errors::Error::from)
+                .and_then(|res| res.buffer().map_err(crate::errors::Error::from))
                 .and_then(|res| {
-                    if res.status().is_success() {
-                        let content_length = res
-                            .headers()
-                            .get_hyperx::<header::ContentLength>()
-                            .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
+                    if res.status.is_success() {
+                        Ok(res.body.to_vec())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        warn!("{}", String::from_utf8_lossy(&res.body));
+                        Err(ErrorKind::BadHTTPStatus(res.status.into()).into())
                     }
-                }).and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    }).chain_err(|| "failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), url2);
-                            }
-                        }
-                        Ok(bytes)
-                    })
-                }),
+                })
         )
     }
 
-    pub fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials) -> SFuture<()> {
-        let url = format!("{}{}", self.base_url, key);
-        debug!("PUT {}", url);
-        let mut request = Request::new(Method::PUT, url.parse().unwrap());
-
-        let content_type = "application/octet-stream";
-        let date = time::now_utc().rfc822().to_string();
-        let mut canonical_headers = String::new();
-        let token = creds.token().as_ref().map(|s| s.as_str());
-        // Keep the list of header values sorted!
-        for (header, maybe_value) in vec![("x-amz-security-token", token)] {
-            if let Some(ref value) = maybe_value {
-                request
-                    .headers_mut()
-                    .insert(
-                        header,
-                        HeaderValue::from_str(value)
-                            .unwrap_or_else(|_| panic!("Invalid `{}` header", header))
-                    );
-                canonical_headers
-                    .push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
-            }
-        }
-        let auth = self.auth(
+    pub fn put(&self, key: &str, content: Vec<u8>, creds: &Option<AwsCredentials>) -> SFuture<()> {
+        let key = format!("/{}/{}", self.name, key);
+        let mut request = rusoto_core::signature::SignedRequest::new(
             "PUT",
-            &date,
-            key,
-            "",
-            &canonical_headers,
-            content_type,
-            creds,
+            "s3",
+            &rusoto_core::region::Region::UsEast1,
+            &key,
         );
-        request.headers_mut().insert("Date", HeaderValue::from_str(&date).expect("Invalid date header"));
-        request
-            .headers_mut()
-            .set(header::ContentType(content_type.parse().unwrap()));
-        request
-            .headers_mut()
-            .set(header::ContentLength(content.len() as u64));
-        request.headers_mut().set(header::CacheControl(vec![
-            // Two weeks
-            header::CacheDirective::MaxAge(1296000),
-        ]));
-        request
-            .headers_mut()
-            .insert("Authorization", HeaderValue::from_str(&auth).expect("Invalid authentication"));
-        *request.body_mut() = Some(content.into());
+        request.set_hostname(Some(self.base_url.clone()));
+        request.set_payload(Some(content));
+        if let Some(creds) = creds {
+            request.sign(creds);
+        }
 
-        Box::new(self.client.execute(request).then(|result| match result {
-            Ok(res) => {
-                if res.status().is_success() {
-                    trace!("PUT succeeded");
-                    Ok(())
-                } else {
-                    trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
-                }
-            }
-            Err(e) => {
-                trace!("PUT failed with error: {:?}", e);
-                Err(e.into())
-            }
+        Box::new(
+            self.client
+                .dispatch(request, None)
+                .map_err(crate::errors::Error::from)
+                .and_then(|res| res.buffer().map_err(crate::errors::Error::from))
+                .and_then(|res| {
+                    if res.status.is_success() {
+                        Ok(())
+                    } else {
+                        warn!("{}", String::from_utf8_lossy(&res.body));
+                        Err(ErrorKind::BadHTTPStatus(res.status.into()).into())
+                    }
         }))
-    }
-
-    // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
-    fn auth(
-        &self,
-        verb: &str,
-        date: &str,
-        path: &str,
-        md5: &str,
-        headers: &str,
-        content_type: &str,
-        creds: &AwsCredentials,
-    ) -> String {
-        let string = format!(
-            "{verb}\n{md5}\n{ty}\n{date}\n{headers}{resource}",
-            verb = verb,
-            md5 = md5,
-            ty = content_type,
-            date = date,
-            headers = headers,
-            resource = format!("/{}/{}", self.name, path)
-        );
-        let signature = signature(&string, creds.aws_secret_access_key());
-        format!("AWS {}:{}", creds.aws_access_key_id(), signature)
     }
 }
