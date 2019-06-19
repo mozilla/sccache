@@ -42,6 +42,7 @@ impl Bucket {
             &key,
         );
         request.set_hostname(Some(self.base_url.clone()));
+        request.scheme = Some("http".to_string());
         if let Some(creds) = creds {
             request.sign(creds);
         }
@@ -72,6 +73,7 @@ impl Bucket {
         );
         request.set_hostname(Some(self.base_url.clone()));
         request.set_payload(Some(content));
+        request.scheme = Some("http".to_string());
         if let Some(creds) = creds {
             request.sign(creds);
         }
