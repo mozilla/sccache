@@ -429,25 +429,22 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
 #[cfg(windows)]
 fn normpath(path: &str) -> String {
     use std::os::windows::ffi::OsStringExt;
-    use std::ptr;
     use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use winapi::um::fileapi::GetFinalPathNameByHandleW;
     File::open(path)
         .and_then(|f| {
             let handle = f.as_raw_handle();
-            let size = unsafe { kernel32::GetFinalPathNameByHandleW(handle,
-                                                         ptr::null_mut(),
-                                                         0,
-                                                         0)
-            };
+            let size = unsafe { GetFinalPathNameByHandleW(handle, ptr::null_mut(), 0, 0) };
             if size == 0 {
                 return Err(io::Error::last_os_error());
             }
             let mut wchars = Vec::with_capacity(size as usize);
             wchars.resize(size as usize, 0);
-            if unsafe { kernel32::GetFinalPathNameByHandleW(handle,
-                                                            wchars.as_mut_ptr(),
-                                                            wchars.len() as u32,
-                                                            0) } == 0 {
+            if unsafe {
+                GetFinalPathNameByHandleW(handle, wchars.as_mut_ptr(), wchars.len() as u32, 0)
+            } == 0
+            {
                 return Err(io::Error::last_os_error());
             }
             // The return value of GetFinalPathNameByHandleW uses the

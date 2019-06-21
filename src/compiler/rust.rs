@@ -1525,9 +1525,9 @@ impl OutputsRewriter for RustOutputsRewriter {
 #[test]
 #[cfg(all(feature = "dist-client", target_os = "windows"))]
 fn test_rust_outputs_rewriter() {
-    use compiler::compiler::OutputsRewriter;
+    use crate::compiler::compiler::OutputsRewriter;
     use std::io::Write;
-    use test::utils::create_file;
+    use crate::test::utils::create_file;
 
     let mut pt = dist::PathTransformer::new();
     pt.to_dist(Path::new("c:\\")).unwrap();
