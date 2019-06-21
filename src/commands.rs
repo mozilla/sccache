@@ -159,6 +159,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use winapi::um::winbase::{
         CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS,
     };
+    use winapi::um::handleapi::CloseHandle;
 
     trace!("run_server_process");
 
@@ -231,8 +232,8 @@ fn run_server_process() -> Result<ServerStartup> {
         ) == TRUE
     } {
         unsafe {
-            kernel32::CloseHandle(pi.hProcess);
-            kernel32::CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
         }
     } else {
         return Err(io::Error::last_os_error().into());
