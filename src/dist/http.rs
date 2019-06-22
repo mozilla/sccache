@@ -387,14 +387,8 @@ mod server {
     lazy_static! {
         static ref JWT_HEADER: jwt::Header = jwt::Header::new(jwt::Algorithm::HS256);
         static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
-            leeway: 0,
             validate_exp: false,
-            validate_iat: false,
-            validate_nbf: false,
-            aud: None,
-            iss: None,
-            sub: None,
-            algorithms: vec![jwt::Algorithm::HS256],
+            ..Default::default()
         };
     }
 
