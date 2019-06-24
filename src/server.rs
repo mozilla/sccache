@@ -917,7 +917,7 @@ where
 
                     error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                    let mut error = format!("sccache: encountered fatal error\n");
+                    let mut error = "sccache: encountered fatal error\n".to_string();
                     drop(writeln!(error, "sccache: error : {}", err));
                     for e in err.iter() {
                         error!("[{:?}] \t{}", out_pretty, e);
