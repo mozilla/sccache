@@ -183,9 +183,9 @@ impl <I> CCompiler<I>
     {
         Box::new(Digest::file(executable.clone(), &pool).map(move |digest| {
             CCompiler {
-                executable: executable,
+                executable,
                 executable_digest: digest,
-                compiler: compiler,
+                compiler,
             }
         }))
     }
@@ -280,13 +280,13 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                 // executable path to try and prevent this
                 let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
                 Ok(HashResult {
-                    key: key,
+                    key,
                     compilation: Box::new(CCompilation {
-                        parsed_args: parsed_args,
+                        parsed_args,
                         #[cfg(feature = "dist-client")]
                         preprocessed_input: preprocessor_result.stdout,
-                        executable: executable,
-                        compiler: compiler,
+                        executable,
+                        compiler,
                         cwd,
                         env_vars,
                     }),

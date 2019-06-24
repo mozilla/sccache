@@ -362,12 +362,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 
         Ok(SccacheServer {
-            runtime: runtime,
-            listener: listener,
-            rx: rx,
-            service: service,
+            runtime,
+            listener,
+            rx,
+            service,
             timeout: Duration::from_secs(get_idle_timeout()),
-            wait: wait,
+            wait,
         })
     }
 
@@ -460,7 +460,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         ];
 
         let shutdown_idle = ShutdownOrInactive {
-            rx: rx,
+            rx,
             timeout: if timeout != Duration::new(0, 0) {
                 Some(Delay::new(Instant::now() + timeout))
             } else {
@@ -621,12 +621,12 @@ where
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
             dist_client: Rc::new(dist_client),
-            storage: storage,
+            storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
-            pool: pool,
+            pool,
             creator: C::new(client),
-            tx: tx,
-            info: info,
+            tx,
+            info,
         }
     }
 
@@ -1331,8 +1331,8 @@ impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
             Frame::Message { message, body } => match self.inner.start_send(message)? {
                 AsyncSink::Ready => Ok(AsyncSink::Ready),
                 AsyncSink::NotReady(message) => Ok(AsyncSink::NotReady(Frame::Message {
-                    message: message,
-                    body: body,
+                    message,
+                    body,
                 })),
             },
             Frame::Body { chunk: Some(chunk) } => match self.inner.start_send(chunk)? {
@@ -1412,7 +1412,7 @@ impl WaitUntilZero {
 
         (
             WaitUntilZero { info: info.clone() },
-            ActiveInfo { info: info },
+            ActiveInfo { info,},
         )
     }
 }

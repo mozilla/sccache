@@ -387,7 +387,7 @@ impl Rust {
             };
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
-                    executable: executable,
+                    executable,
                     host,
                     sysroot,
                     compiler_shlibs_digests: digests,
@@ -400,7 +400,7 @@ impl Rust {
         return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
-                    executable: executable,
+                    executable,
                     host,
                     sysroot,
                     compiler_shlibs_digests: digests,
@@ -910,9 +910,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         arguments: args,
         output_dir: output_dir.into(),
         crate_types,
-        externs: externs,
+        externs,
         crate_link_paths,
-        staticlibs: staticlibs,
+        staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
         emit,
@@ -1107,12 +1107,12 @@ impl<T> CompilerHasher<T> for RustHasher
                 HashResult {
                     key: m.finish(),
                     compilation: Box::new(RustCompilation {
-                        executable: executable,
+                        executable,
                         host,
-                        sysroot: sysroot,
-                        arguments: arguments,
-                        inputs: inputs,
-                        outputs: outputs,
+                        sysroot,
+                        arguments,
+                        inputs,
+                        outputs,
                         crate_link_paths,
                         crate_name,
                         crate_types,
@@ -1266,7 +1266,7 @@ impl Compilation for RustCompilation {
     fn into_dist_packagers(self: Box<Self>, path_transformer: dist::PathTransformer) -> Result<(Box<dyn pkg::InputsPackager>, Box<dyn pkg::ToolchainPackager>, Box<dyn OutputsRewriter>)> {
 
         let RustCompilation { inputs, crate_link_paths, sysroot, crate_types, dep_info, rlib_dep_reader, env_vars, .. } = *{self};
-        trace!("Dist inputs: inputs={:?} crate_link_paths={:?}", inputs, crate_link_paths);
+        trace!("Dist inputs,{:?} crate_link_paths={:?}", inputs, crate_link_paths);
 
         let inputs_packager = Box::new(RustInputsPackager { env_vars, crate_link_paths, crate_types, inputs, path_transformer, rlib_dep_reader });
         let toolchain_packager = Box::new(RustToolchainPackager { sysroot });
@@ -2076,7 +2076,7 @@ c:/foo/bar.rs:
                 crate_name: "foo".into(),
                 crate_types: CrateTypes { rlib: true, staticlib: false },
                 dep_info: None,
-                emit: emit,
+                emit,
                 color_mode: ColorMode::Auto,
             }
         });
@@ -2150,7 +2150,7 @@ c:/foo/bar.rs:
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
-            parsed_args: parsed_args,
+            parsed_args,
         });
 
         let creator = new_creator();

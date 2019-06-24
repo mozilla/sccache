@@ -52,8 +52,8 @@ impl AwsCredentials {
         AwsCredentials {
             key: key.into(),
             secret: secret.into(),
-            token: token,
-            expires_at: expires_at,
+            token,
+            expires_at,
         }
     }
 
@@ -531,7 +531,7 @@ impl ChainProvider {
     /// Create a new `ChainProvider` using the provided `ProfileProvider`s.
     pub fn with_profile_providers(profile_providers: Vec<ProfileProvider>) -> ChainProvider {
         ChainProvider {
-            profile_providers: profile_providers,
+            profile_providers,
         }
     }
 }

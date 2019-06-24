@@ -237,7 +237,7 @@ impl<K: Eq + Hash, V, M: CountableMeter<K, V>> LruCache<K, V, RandomState, M> {
             map: LinkedHashMap::new(),
             current_measure: Default::default(),
             max_capacity: capacity,
-            meter: meter,
+            meter,
         }
     }
 }
@@ -323,7 +323,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
             map: LinkedHashMap::with_hasher(hash_builder),
             current_measure: Default::default(),
             max_capacity: capacity,
-            meter: meter,
+            meter,
         }
     }
 

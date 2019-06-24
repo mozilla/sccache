@@ -184,8 +184,8 @@ pub fn parse() -> Result<Command> {
             let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
             Ok(Command::Compile {
                 exe: exe.to_owned(),
-                cmdline: cmdline,
-                cwd: cwd,
+                cmdline,
+                cwd,
                 env_vars: env::vars_os().collect(),
             })
         } else {

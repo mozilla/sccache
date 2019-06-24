@@ -331,7 +331,7 @@ where
         exe: exe.as_ref().to_owned().into(),
         cwd: cwd.as_ref().to_owned().into(),
         args: args.iter().map(|a| a.as_ref().to_owned()).collect(),
-        env_vars: env_vars,
+        env_vars,
     });
     trace!("request_compile: {:?}", req);
     //TODO: better error mapping?

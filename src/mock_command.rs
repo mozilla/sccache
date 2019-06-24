@@ -189,7 +189,7 @@ impl AsyncCommand {
                                 jobserver: Client) -> AsyncCommand {
         AsyncCommand {
             inner: Some(Command::new(program)),
-            jobserver: jobserver,
+            jobserver,
         }
     }
 
@@ -267,7 +267,7 @@ impl RunCommand for AsyncCommand {
             let child = inner.spawn_async().chain_err(|| {
                 format!("failed to spawn {:?}", inner)
             })?;
-            Ok(Child { inner: child, token: token })
+            Ok(Child { inner: child, token,})
         }))
     }
 }
@@ -386,7 +386,7 @@ impl CommandChild for MockChild {
         let MockChild { stdout, stderr, wait_result, .. } = self;
         let result = wait_result.unwrap().and_then(|status| {
             Ok(Output {
-                status: status,
+                status,
                 stdout: stdout.map(|c| c.into_inner()).unwrap_or(vec!()),
                 stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec!()),
             })

@@ -225,8 +225,8 @@ where
                         });
                         let output = process::Output {
                             status: exit_status(0),
-                            stdout: stdout,
-                            stderr: stderr,
+                            stdout,
+                            stderr,
                         };
                         let result = CompileResult::CacheHit(duration);
                         return Box::new(write.map(|_| (result, output))) as SFuture<_>;
@@ -340,7 +340,7 @@ where
                                         }
                                         res.map(|duration| CacheWriteInfo {
                                             object_file_pretty: out_pretty,
-                                            duration: duration,
+                                            duration,
                                         })
                                     });
                                     let future = Box::new(future);

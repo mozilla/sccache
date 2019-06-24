@@ -569,8 +569,8 @@ where
         #[cfg(debug_assertions)]
         debug_assert!(arg_info.check());
         ArgsIter {
-            arguments: arguments,
-            arg_info: arg_info,
+            arguments,
+            arg_info,
             phantom: PhantomData,
         }
     }

@@ -230,7 +230,7 @@ impl GCSCredentialProvider {
 
         let jwt_claims = JwtClaims {
             issuer: sa_key.client_email.clone(),
-            scope: scope,
+            scope,
             audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
             expiration: expire_at.timestamp(),
             issued_at: chrono::offset::Utc::now().timestamp(),
@@ -372,8 +372,8 @@ impl GCSCache {
     {
         Ok(GCSCache {
             bucket: Rc::new(Bucket::new(bucket)?),
-            rw_mode: rw_mode,
-            credential_provider: credential_provider,
+            rw_mode,
+            credential_provider,
         })
     }
 }

@@ -38,7 +38,7 @@ impl AzureCredentials {
             blob_endpoint: endpoint,
             account_name: account_name.to_owned(),
             account_key: account_key.to_owned(),
-            container_name: container_name,
+            container_name,
         }
     }
 

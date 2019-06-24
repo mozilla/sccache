@@ -73,7 +73,7 @@ impl Bucket {
         let base_url = base_url(&endpoint, ssl);
         Ok(Bucket {
             name: name.to_owned(),
-            base_url: base_url,
+            base_url,
             client: Client::new(),
         })
     }

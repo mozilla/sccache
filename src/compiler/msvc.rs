@@ -415,12 +415,12 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
-        language: language,
-        depfile: depfile,
-        outputs: outputs,
-        preprocessor_args: preprocessor_args,
-        common_args: common_args,
-        extra_hash_files: extra_hash_files,
+        language,
+        depfile,
+        outputs,
+        preprocessor_args,
+        common_args,
+        extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate: false,
     })
@@ -533,7 +533,7 @@ pub fn preprocess<T>(creator: &T,
                     writeln!(f, "{}:", dep)?;
                 }
             }
-            Ok(process::Output { status: status, stdout: stdout, stderr: stderr_bytes })
+            Ok(process::Output { status, stdout, stderr: stderr_bytes })
         } else {
             Ok(output)
         }
@@ -583,7 +583,7 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 
     let command = CompileCommand {
         executable: executable.to_owned(),
-        arguments: arguments,
+        arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
     };
@@ -610,7 +610,7 @@ fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
 
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
-            arguments: arguments,
+            arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.to_dist(cwd)?,
         })

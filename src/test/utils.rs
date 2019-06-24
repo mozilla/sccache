@@ -175,9 +175,9 @@ impl TestFixture {
             paths.push(p);
         }
         TestFixture {
-            tempdir: tempdir,
+            tempdir,
             paths: env::join_paths(paths).unwrap(),
-            bins: bins,
+            bins,
         }
     }
 

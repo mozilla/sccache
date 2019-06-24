@@ -159,7 +159,7 @@ where
         let stdout = out.map(|p| p.1);
         let stderr = err.map(|p| p.1);
         process::Output {
-            status: status,
+            status,
             stdout: stdout.unwrap_or_default(),
             stderr: stderr.unwrap_or_default(),
         }
