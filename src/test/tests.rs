@@ -218,10 +218,10 @@ fn test_server_compile() {
     let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
-    const PREPROCESSOR_STDOUT: &'static [u8] = b"preprocessor stdout";
-    const PREPROCESSOR_STDERR: &'static [u8] = b"preprocessor stderr";
-    const STDOUT: &'static [u8] = b"some stdout";
-    const STDERR: &'static [u8] = b"some stderr";
+    const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
+    const PREPROCESSOR_STDERR: &[u8] = b"preprocessor stderr";
+    const STDOUT: &[u8] = b"some stdout";
+    const STDERR: &[u8] = b"some stderr";
     let conn = connect_to_server(port).unwrap();
     {
         let mut c = server_creator.lock().unwrap();

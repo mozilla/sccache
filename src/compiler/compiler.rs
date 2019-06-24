@@ -1180,8 +1180,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
@@ -1282,8 +1282,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         // Dist client will do the compilation
         let dist_client = Some(test_dist::OneshotClient::new(
@@ -1381,8 +1381,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
@@ -1449,8 +1449,8 @@ LLVM version: 6.0",
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
             .wait()
             .unwrap();
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
         // recaching.
         let obj = f.tempdir.path().join("foo.o");
@@ -1555,7 +1555,7 @@ LLVM version: 6.0",
             .wait()
             .unwrap();
         // The preprocessor invocation.
-        const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
+        const PREPROCESSOR_STDERR: &[u8] = b"something went wrong";
         next_command(
             &creator,
             Ok(MockChild::new(
@@ -1610,8 +1610,8 @@ LLVM version: 6.0",
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
             .wait()
             .unwrap();
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
         // recaching.
         let obj = f.tempdir.path().join("foo.o");

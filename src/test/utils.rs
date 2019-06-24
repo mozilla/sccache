@@ -112,8 +112,8 @@ pub struct TestFixture {
     pub bins: Vec<PathBuf>,
 }
 
-pub const SUBDIRS: &'static [&'static str] = &["a", "b", "c"];
-pub const BIN_NAME: &'static str = "bin";
+pub const SUBDIRS: &[&str] = &["a", "b", "c"];
+pub const BIN_NAME: &str = "bin";
 
 pub fn create_file<F>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf>
     where F: FnOnce(File) -> io::Result<()>

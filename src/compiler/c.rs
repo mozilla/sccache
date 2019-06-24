@@ -517,7 +517,7 @@ mod test {
     #[test]
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED : &'static [u8] = b"hello world";
+        const PREPROCESSED : &[u8] = b"hello world";
         assert_neq!(hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED),
                     hash_key("wxyz", Language::C, &args, &[], &[], &PREPROCESSED));
     }
@@ -529,7 +529,7 @@ mod test {
         let xyz = ovec!["x", "y", "z"];
         let ab = ovec!["a", "b"];
         let a = ovec!["a"];
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED),
                     hash_key(digest, Language::C, &xyz, &[], &[], &PREPROCESSED));
 
@@ -551,7 +551,7 @@ mod test {
     fn test_hash_key_env_var_differs() {
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
             let h1 = hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
@@ -567,7 +567,7 @@ mod test {
     fn test_extra_hash_data() {
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         let extra_data = stringvec!["hello", "world"];
 
         assert_neq!(hash_key(digest, Language::C, &args, &extra_data, &[], &PREPROCESSED),

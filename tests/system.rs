@@ -57,11 +57,11 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os="macos")))]
-const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os="macos")]
-const COMPILERS: &'static [&'static str] = &["clang"];
+const COMPILERS: &[&str] = &["clang"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -79,9 +79,9 @@ fn compile_cmdline<T: AsRef<OsStr>>(compiler: &str, exe: T, input: &str, output:
     }
 }
 
-const INPUT: &'static str = "test.c";
-const INPUT_ERR: &'static str = "test_err.c";
-const OUTPUT: &'static str = "test.o";
+const INPUT: &str = "test.c";
+const INPUT_ERR: &str = "test_err.c";
+const OUTPUT: &str = "test.o";
 
 fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let Compiler { name, exe, env_vars } = compiler;

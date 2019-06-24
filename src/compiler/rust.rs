@@ -2043,7 +2043,7 @@ c:/foo/bar.rs:
     fn test_generate_hash_key() {
         drop(env_logger::try_init());
         let f = TestFixture::new();
-        const FAKE_DIGEST: &'static str = "abcd1234";
+        const FAKE_DIGEST: &str = "abcd1234";
         // We'll just use empty files for each of these.
         for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
             f.touch(s).unwrap();
