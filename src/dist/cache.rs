@@ -85,7 +85,7 @@ mod client {
             // Load in toolchain configuration
             let mut custom_toolchain_paths = HashMap::new();
             let mut disabled_toolchains = HashSet::new();
-            for ct in toolchain_configs.into_iter() {
+            for ct in toolchain_configs.iter() {
                 match ct {
                     config::DistToolchainConfig::PathOverride { compiler_executable, archive, archive_compiler_executable } => {
                         debug!("Registering custom toolchain for {}", compiler_executable.display());

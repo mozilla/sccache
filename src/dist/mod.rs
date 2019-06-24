@@ -264,10 +264,10 @@ mod path_transform {
 }
 
 pub fn osstrings_to_strings(osstrings: &[OsString]) -> Option<Vec<String>> {
-    osstrings.into_iter().map(|arg| arg.clone().into_string().ok()).collect::<Option<_>>()
+    osstrings.iter().map(|arg| arg.clone().into_string().ok()).collect::<Option<_>>()
 }
 pub fn osstring_tuples_to_strings(osstring_tuples: &[(OsString, OsString)]) -> Option<Vec<(String, String)>> {
-    osstring_tuples.into_iter()
+    osstring_tuples.iter()
         .map(|(k, v)| Some((k.clone().into_string().ok()?, v.clone().into_string().ok()?)))
         .collect::<Option<_>>()
 }

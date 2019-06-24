@@ -111,7 +111,7 @@ pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
     Box::new(
         future::join_all(
             files
-                .into_iter()
+                .iter()
                 .map(move |f| Digest::file(f, &pool))
                 .collect::<Vec<_>>(),
         ).map(move |hashes| {
