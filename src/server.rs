@@ -24,6 +24,7 @@ use crate::compiler::{
 use crate::config;
 use crate::config::Config;
 use crate::dist;
+use crate::dist::Client as DistClient;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::task::{self, Task};
@@ -274,8 +275,19 @@ impl DistClientContainer {
                 let dist_client = try_or_retry_later!(
                     dist_client.chain_err(|| "failure during dist client creation")
                 );
-                info!("Successfully created dist client");
-                DistClientState::Some(Arc::new(dist_client))
+                match dist_client.do_get_status().wait() {
+                    Ok(res) => {
+                        info!("Successfully created dist client with {:?} cores across {:?} servers", res.num_cpus, res.num_servers);
+                        DistClientState::Some(Arc::new(dist_client))
+                    },
+                    Err(_) => {
+                        warn!("Scheduler address configured, but could not communicate with scheduler");
+                        DistClientState::RetryCreateAt(
+                            config,
+                            Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
+                        )
+                    }
+                }
             }
             None => {
                 info!("No scheduler address configured, disabling distributed sccache");

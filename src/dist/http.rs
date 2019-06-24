@@ -1023,7 +1023,7 @@ mod client {
     use crate::dist::pkg::{InputsPackager, ToolchainPackager};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
-        SubmitToolchainResult, Toolchain,
+        SubmitToolchainResult, Toolchain, SchedulerStatusResult,
     };
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
@@ -1185,6 +1185,14 @@ mod client {
                         AllocJobHttpResponse::Fail { msg } => f_ok(AllocJobResult::Fail { msg }),
                     }),
             )
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+            let scheduler_url = self.scheduler_url.clone();
+            let url = urls::scheduler_status(&scheduler_url);
+            let req = self.client.lock().unwrap().get(url);
+            Box::new(self.pool.spawn_fn(move || {
+                bincode_req(req)
+            }))
         }
         fn do_submit_toolchain(
             &self,
