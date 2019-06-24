@@ -167,7 +167,7 @@ mod client {
         }
 
         fn get_custom_toolchain(&self, compiler_path: &Path) -> Option<Result<(Toolchain, String)>> {
-            return match self.custom_toolchain_paths.lock().unwrap().get_mut(compiler_path) {
+            match self.custom_toolchain_paths.lock().unwrap().get_mut(compiler_path) {
                 Some((custom_tc, Some(tc))) => Some(Ok((tc.clone(), custom_tc.compiler_executable.clone()))),
                 Some((custom_tc, maybe_tc @ None)) => {
                     let archive_id = match path_key(&custom_tc.archive) {
