@@ -438,8 +438,7 @@ mod http_extension {
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
     use daemonize::Daemonize;
-    use std::env;
-    use std::mem;
+    use std::{env, mem, ptr};
 
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
@@ -450,9 +449,9 @@ pub fn daemonize() -> Result<()> {
         }
     }
 
-    static mut PREV_SIGSEGV: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGBUS: *mut libc::sigaction = 0 as *mut _;
-    static mut PREV_SIGILL: *mut libc::sigaction = 0 as *mut _;
+    static mut PREV_SIGSEGV: *mut libc::sigaction = ptr::null_mut();
+    static mut PREV_SIGBUS: *mut libc::sigaction = ptr::null_mut();
+    static mut PREV_SIGILL: *mut libc::sigaction = ptr::null_mut();
 
     // We don't have a parent process any more once we've reached this point,
     // which means that no one's probably listening for our exit status.
@@ -510,9 +509,9 @@ pub fn daemonize() -> Result<()> {
             // likely go on to create a runtime dump if one's configured to be
             // created.
             match signum {
-                libc::SIGBUS => libc::sigaction(signum, &*PREV_SIGBUS, 0 as *mut _),
-                libc::SIGILL => libc::sigaction(signum, &*PREV_SIGILL, 0 as *mut _),
-                _ => libc::sigaction(signum, &*PREV_SIGSEGV, 0 as *mut _),
+                libc::SIGBUS => libc::sigaction(signum, &*PREV_SIGBUS, ptr::null_mut()),
+                libc::SIGILL => libc::sigaction(signum, &*PREV_SIGILL, ptr::null_mut()),
+                _ => libc::sigaction(signum, &*PREV_SIGSEGV, ptr::null_mut()),
             };
         }
     }
