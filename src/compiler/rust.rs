@@ -1779,7 +1779,7 @@ mod test {
         ( $( $s:expr ),* ) => {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
-                o @ _ => panic!("Got unexpected parse result: {:?}", o),
+                o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
     }
@@ -1789,7 +1789,7 @@ mod test {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(_) => panic!("Should not have parsed ok: `{}`", stringify!($( $s, )*)),
 
-                o @ _ => o,
+                o => o,
             }
         }
     }
@@ -2130,7 +2130,7 @@ c:/foo/bar.rs:
     {
         let parsed_args = match parse_arguments(args, &f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         // Just use empty files for sources.
         for src in ["foo.rs"].iter() {

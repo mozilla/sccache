@@ -259,7 +259,7 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
                         .. output
                     }))
                 }
-                e @ _ => Err(e),
+                e => Err(e),
             }
         }).and_then(move |preprocessor_result| {
             trace!("[{}]: Preprocessor output is {} bytes",

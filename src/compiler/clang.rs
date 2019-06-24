@@ -122,7 +122,7 @@ mod test {
         ( $( $s:expr ),* ) => {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
-                o @ _ => panic!("Got unexpected parse result: {:?}", o),
+                o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
     }

@@ -1198,7 +1198,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1295,7 +1295,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1399,7 +1399,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
         storage.next_get(f_err("Some Error"));
@@ -1477,7 +1477,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1568,7 +1568,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
@@ -1638,7 +1638,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // All these dist clients will fail, but should still result in successful compiles
         for dist_client in dist_clients {

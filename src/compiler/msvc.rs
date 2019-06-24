@@ -666,7 +666,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -693,7 +693,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -720,7 +720,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -747,7 +747,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -774,7 +774,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -801,7 +801,7 @@ mod test {
             ..
         } = match parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());

@@ -440,7 +440,7 @@ mod tests {
         let mut c = LruDiskCache::new(f.tmp(), 1).unwrap();
         match c.insert_bytes("a/b/c", &vec![0; 2]) {
             Err(Error::FileTooLarge) => assert!(true),
-            x @ _ => panic!("Unexpected result: {:?}", x),
+            x => panic!("Unexpected result: {:?}", x),
         }
     }
 
