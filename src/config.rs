@@ -417,7 +417,7 @@ fn config_from_env() -> EnvConfig {
         .map(|bucket| {
             let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
             let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH")
-                .map(|p| PathBuf::from(p));
+                .map(PathBuf::from);
 
             if url.is_some() && cred_path.is_some() {
                 warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
@@ -486,7 +486,7 @@ impl Config {
         let env_conf = config_from_env();
 
         let file_conf_path = env::var_os("SCCACHE_CONF")
-            .map(|p| PathBuf::from(p))
+            .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
                     .expect("Unable to get config directory");

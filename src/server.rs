@@ -1317,7 +1317,7 @@ impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
             error!("SccacheTransport::poll failed: {}", e);
             io::Error::new(io::ErrorKind::Other, e)
         }));
-        Ok(msg.map(|m| Message::WithoutBody(m)).into())
+        Ok(msg.map(Message::WithoutBody).into())
     }
 }
 

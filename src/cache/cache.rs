@@ -209,7 +209,7 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> 
                                 );
                             }
 
-                            service_account_key_res.ok().map(|account_key| ServiceAccountInfo::AccountKey(account_key))
+                            service_account_key_res.ok().map(ServiceAccountInfo::AccountKey)
                         } else if let Some(ref url) = *url {
                             Some(ServiceAccountInfo::URL(url.clone()))
                         } else {
