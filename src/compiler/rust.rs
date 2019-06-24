@@ -2175,11 +2175,11 @@ c:/foo/bar.rs:
         let f = TestFixture::new();
         assert_eq!(hash_key(&f, &ovec!["--emit", "link", "foo.rs", "--extern", "a=a.rlib", "--out-dir",
                                    "out", "--crate-name", "foo", "--crate-type", "lib",
-                                   "--extern", "b=b.rlib"], &vec![],
+                                   "--extern", "b=b.rlib"], &[],
                             &mk_files),
                    hash_key(&f, &ovec!["--extern", "b=b.rlib", "--emit", "link", "--extern", "a=a.rlib",
                                    "foo.rs", "--out-dir", "out", "--crate-name", "foo",
-                                   "--crate-type", "lib"], &vec![],
+                                   "--crate-type", "lib"], &[],
                             &mk_files));
     }
 
@@ -2188,10 +2188,10 @@ c:/foo/bar.rs:
         let f = TestFixture::new();
         assert_eq!(hash_key(&f, &ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
                                    "--crate-name", "foo", "--crate-type", "lib",
-                                   "-L", "y=y"], &vec![], nothing),
+                                   "-L", "y=y"], &[], nothing),
                    hash_key(&f, &ovec!["-L", "y=y", "--emit", "link", "-L", "x=x", "foo.rs",
                                    "--out-dir", "out", "--crate-name", "foo",
-                                   "--crate-type", "lib"], &vec![], nothing));
+                                   "--crate-type", "lib"], &[], nothing));
     }
 
     #[test]
@@ -2200,11 +2200,11 @@ c:/foo/bar.rs:
         assert_eq!(hash_key(&f, &ovec!["--emit", "link", "-L", "x=x", "foo.rs", "--out-dir", "out",
                                    "--extern", "a=1", "--crate-name", "foo", "--crate-type", "lib",
                                    "-L", "y=y"],
-                            &vec![], nothing),
+                            &[], nothing),
                    hash_key(&f, &ovec!["-L", "y=a", "--emit", "link", "-L", "x=b", "foo.rs",
                                    "--extern", "a=2", "--out-dir", "out2", "--crate-name", "foo",
                                    "--crate-type", "lib"],
-                            &vec![], nothing));
+                            &[], nothing));
     }
 
     #[test]
@@ -2212,11 +2212,11 @@ c:/foo/bar.rs:
         let f = TestFixture::new();
         assert_eq!(hash_key(&f, &ovec!["--emit", "link", "--cfg", "feature=a", "foo.rs", "--out-dir",
                                    "out", "--crate-name", "foo", "--crate-type", "lib",
-                                   "--cfg", "feature=b"], &vec![],
+                                   "--cfg", "feature=b"], &[],
                             nothing),
                    hash_key(&f, &ovec!["--cfg", "feature=b", "--emit", "link", "--cfg", "feature=a",
                                    "foo.rs", "--out-dir", "out", "--crate-name", "foo",
-                                   "--crate-type", "lib"], &vec![],
+                                   "--crate-type", "lib"], &[],
                             nothing));
     }
 }

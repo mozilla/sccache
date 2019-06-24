@@ -561,7 +561,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_empty_args() {
-        assert_eq!(CompilerArguments::NotCompilation, _parse_arguments(&vec![]));
+        assert_eq!(CompilerArguments::NotCompilation, _parse_arguments(&[]));
     }
 
     #[test]
