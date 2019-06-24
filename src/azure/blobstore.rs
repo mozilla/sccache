@@ -289,12 +289,12 @@ mod test {
 
         let container = BlobContainer::new(creds.azure_blob_endpoint(), &container_name).unwrap();
 
-        let put_future = container.put("foo", "barbell".as_bytes().to_vec(), &creds);
+        let put_future = container.put("foo", b"barbell".to_vec(), &creds);
         runtime.block_on(put_future).unwrap();
 
         let get_future = container.get("foo", &creds);
         let result = runtime.block_on(get_future).unwrap();
 
-        assert_eq!("barbell".as_bytes().to_vec(), result);
+        assert_eq!(b"barbell".to_vec(), result);
     }
 }
