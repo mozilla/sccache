@@ -166,7 +166,7 @@ pub fn detect_showincludes_prefix<T>(creator: &T,
                 if path.exists() {
                     // Everything from the beginning of the line
                     // to this index is the prefix.
-                    return Ok(line[..i+1].to_owned());
+                    return Ok(line[..=i].to_owned());
                 }
             }
         }
