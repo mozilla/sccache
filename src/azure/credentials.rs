@@ -28,7 +28,7 @@ pub struct AzureCredentials {
 impl AzureCredentials {
     pub fn new(blob_endpoint: &str, account_name: &str, account_key: &str, container_name: Option<String>) -> AzureCredentials {
 
-        let endpoint = if blob_endpoint.ends_with("/") {
+        let endpoint = if blob_endpoint.ends_with('/') {
             blob_endpoint.to_owned()
         } else {
             blob_endpoint.to_owned() + "/"
@@ -98,7 +98,7 @@ fn parse_connection_string(conn: &str, container_name: Option<String>) -> Result
     let mut account_key = String::default();
     let mut endpoint_suffix = String::default();
 
-    let split = conn.split(";");
+    let split = conn.split(';');
     for part in split {
         if part.starts_with("BlobEndpoint=") {
             blob_endpoint = substr(part, "BlobEndpoint=".len()).to_owned();
@@ -153,7 +153,7 @@ fn parse_connection_string(conn: &str, container_name: Option<String>) -> Result
 fn substr(text: &str, to_skip: usize) -> &str {
     // This isn't a proper character-aware substring, but since
     // we always know that connection-strings are ASCII (we _do_ know that,
-    // right?), we can get away with assuming that one char == one byte. 
+    // right?), we can get away with assuming that one char == one byte.
     &text[to_skip..]
 }
 

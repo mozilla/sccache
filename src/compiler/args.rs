@@ -593,7 +593,7 @@ where
                     i.clone().process(&s[..], || arguments.next())
                 }
                 None => {
-                    Ok(if s.starts_with("-") {
+                    Ok(if s.starts_with('-') {
                         Argument::UnknownFlag(arg.clone())
                     } else {
                         Argument::Raw(arg.clone())

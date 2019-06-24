@@ -480,7 +480,7 @@ impl FromArg for ArgCrateTypes {
             staticlib: false,
             others: HashSet::new(),
         };
-        for ty in arg.split(",") {
+        for ty in arg.split(',') {
             match ty {
                 // It is assumed that "lib" always refers to "rlib", which
                 // is true right now but may not be in the future
@@ -771,7 +771,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = Some(value.split(",").map(str::to_owned).collect())
+                emit = Some(value.split(',').map(str::to_owned).collect())
             }
             Some(CrateType(ArgCrateTypes { rlib, staticlib, others })) => {
                 // We can't cache non-rlib/staticlib crates, because rustc invokes the

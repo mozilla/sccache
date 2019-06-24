@@ -228,7 +228,7 @@ impl OverlayBuilder {
                 .arg("--chdir").arg(cwd);
 
             for (k, v) in env_vars {
-                if k.contains("=") {
+                if k.contains('=') {
                     warn!("Skipping environment variable: {:?}", k);
                     continue
                 }
@@ -540,7 +540,7 @@ impl DockerBuilder {
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
         for (k, v) in env_vars {
-            if k.contains("=") {
+            if k.contains('=') {
                 warn!("Skipping environment variable: {:?}", k);
                 continue
             }
