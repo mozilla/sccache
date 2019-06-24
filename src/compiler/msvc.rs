@@ -668,7 +668,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
@@ -695,7 +695,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
@@ -722,7 +722,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
@@ -749,7 +749,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
@@ -776,7 +776,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
@@ -803,7 +803,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(true, "Parsed ok");
+        eprintln!("Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs,

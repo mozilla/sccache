@@ -1224,7 +1224,7 @@ LLVM version: 6.0",
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
-            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1321,7 +1321,7 @@ LLVM version: 6.0",
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
-            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1426,7 +1426,7 @@ LLVM version: 6.0",
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
-            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
 
         assert_eq!(exit_status(0), res.status);
@@ -1503,7 +1503,7 @@ LLVM version: 6.0",
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
-            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1532,7 +1532,7 @@ LLVM version: 6.0",
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
-            _ => assert!(false, "Unexpected compile result: {:?}", cached),
+            _ => panic!("Unexpected compile result: {:?}", cached),
         }
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1668,7 +1668,7 @@ LLVM version: 6.0",
                     // wait on cache write future so we don't race with it!
                     f.wait().unwrap();
                 }
-                _ => assert!(false, "Unexpected compile result: {:?}", cached),
+                _ => panic!("Unexpected compile result: {:?}", cached),
             }
             assert_eq!(exit_status(0), res.status);
             assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());

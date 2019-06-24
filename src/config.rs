@@ -770,6 +770,6 @@ fn test_gcs_credentials_url() {
             };
             assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
         },
-        None => assert!(false),
+        None => unreachable!(),
     };
 }
