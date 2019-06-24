@@ -161,7 +161,7 @@ impl Bucket {
             .set(header::ContentLength(content.len() as u64));
         request.headers_mut().set(header::CacheControl(vec![
             // Two weeks
-            header::CacheDirective::MaxAge(1296000),
+            header::CacheDirective::MaxAge(1_296_000),
         ]));
         request
             .headers_mut()
