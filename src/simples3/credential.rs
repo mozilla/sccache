@@ -203,7 +203,7 @@ impl ProvideAwsCredentials for ProfileProvider {
         let result = result.and_then(|mut profiles| {
             profiles
                 .remove(self.profile())
-                .ok_or("profile not found".into())
+                .ok_or_else(|| "profile not found".into())
         });
         Box::new(future::result(result))
     }

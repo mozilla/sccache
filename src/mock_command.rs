@@ -387,8 +387,8 @@ impl CommandChild for MockChild {
         let result = wait_result.unwrap().and_then(|status| {
             Ok(Output {
                 status,
-                stdout: stdout.map(|c| c.into_inner()).unwrap_or(vec!()),
-                stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec!()),
+                stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
+                stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
             })
         });
         Box::new(future::result(result))
