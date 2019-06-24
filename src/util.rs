@@ -130,7 +130,7 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
     format!(
         "{}.{:03} s",
         duration.as_secs(),
-        duration.subsec_nanos() / 1000_000
+        duration.subsec_millis()
     )
 }
 
