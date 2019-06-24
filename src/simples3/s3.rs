@@ -95,7 +95,7 @@ impl Bucket {
                             .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 }).and_then(|(body, content_length)| {
                     body.fold(Vec::new(), |mut body, chunk| {
@@ -175,7 +175,7 @@ impl Bucket {
                     Ok(())
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }
             Err(e) => {

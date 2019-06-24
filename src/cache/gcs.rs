@@ -81,7 +81,7 @@ impl Bucket {
                 if res.status().is_success() {
                     Ok(res.into_body())
                 } else {
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }).and_then(|body| {
                 body.fold(Vec::new(), |mut body, chunk| {
@@ -127,7 +127,7 @@ impl Bucket {
                             Ok(())
                         } else {
                             trace!("PUT failed with HTTP status: {}", res.status());
-                            Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                            Err(ErrorKind::BadHTTPStatus(res.status()).into())
                         }
                     }
                     Err(e) => {
@@ -278,7 +278,7 @@ impl GCSCredentialProvider {
             if res.status().is_success() {
                 Ok(res.into_body())
             } else {
-                Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                Err(ErrorKind::BadHTTPStatus(res.status()).into())
             }
         }).and_then(move |body| {
             // Concatenate body chunks into a single Vec<u8>
@@ -308,7 +308,7 @@ impl GCSCredentialProvider {
                 if res.status().is_success() {
                     Ok(res.into_body())
                 } else {
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }).and_then(move |body| {
                 body.fold(Vec::new(), |mut body, chunk| {
