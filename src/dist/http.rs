@@ -1223,7 +1223,7 @@ mod client {
                 let mut body = vec![];
                 body.write_u32::<BigEndian>(bincode_length as u32)
                     .expect("Infallible write of bincode length to vec failed");
-                body.write(&bincode)
+                body.write_all(&bincode)
                     .expect("Infallible write of bincode body to vec failed");
                 let path_transformer;
                 {
