@@ -200,7 +200,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
                 }
             }
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
@@ -257,7 +257,7 @@ impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterS
                 }
             }
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
