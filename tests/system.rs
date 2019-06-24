@@ -320,10 +320,7 @@ fn find_compilers() -> Vec<Compiler> {
 #[test]
 #[cfg(any(unix, target_env="msvc"))]
 fn test_sccache_command() {
-    match env_logger::try_init() {
-        Ok(_) => {},
-        Err(_) => {},
-    }
+    let _ = env_logger::try_init();
     let tempdir = TempDir::new("sccache_system_test").unwrap();
     let compilers = find_compilers();
     if compilers.is_empty() {
