@@ -1562,7 +1562,7 @@ src/bin/sccache-dist/token_check.rs:
     let ror = Box::new(RustOutputsRewriter {
         dep_info: Some(depinfo_file.clone()),
     });
-    let () = ror.handle_outputs(&pt, &[depinfo_file.clone()]).unwrap();
+    ror.handle_outputs(&pt, &[depinfo_file.clone()]).unwrap();
 
     let mut s = String::new();
     fs::File::open(depinfo_file).unwrap().read_to_string(&mut s).unwrap();

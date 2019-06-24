@@ -147,7 +147,7 @@ impl MozillaCheck {
         }
 
         // The API didn't return a HTTP error code, let's check the response
-        let () = check_mozilla_profile(&user, &self.required_groups, &res_text)
+        check_mozilla_profile(&user, &self.required_groups, &res_text)
             .chain_err(|| format!("Validation of the user profile failed for {}", user))?;
 
         // Validation success, cache the token
