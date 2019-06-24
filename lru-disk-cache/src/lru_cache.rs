@@ -79,7 +79,7 @@ impl<K, V> Meter<K, V> for Count {
     type Measure = ();
 
     /// Don't actually count anything either.
-    fn measure<Q: ?Sized>(&self, _: &Q, _: &V) -> ()
+    fn measure<Q: ?Sized>(&self, _: &Q, _: &V)
         where K: Borrow<Q>
     {}
 }
