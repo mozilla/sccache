@@ -182,7 +182,7 @@ lazy_static! {
         "link",
         "metadata",
         "dep-info",
-    ].iter().map(|s| *s).collect();
+    ].iter().cloned().collect();
 }
 
 /// Version number for cache key.
@@ -739,7 +739,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
 
-    for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
+    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) |
@@ -968,7 +968,7 @@ impl<T> CompilerHasher<T> for RustHasher
                 }
             })
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
-            .map(|a| a.clone())
+            .cloned()
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();

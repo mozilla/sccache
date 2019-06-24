@@ -69,7 +69,7 @@ where
     let cache_size = options
         .as_ref()
         .and_then(|o| o.cache_size.as_ref())
-        .map(|s| *s)
+        .cloned()
         .unwrap_or(u64::MAX);
     // Create a server on a background thread, get some useful bits from it.
     let (tx, rx) = mpsc::channel();
