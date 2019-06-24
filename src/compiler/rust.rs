@@ -2124,7 +2124,7 @@ c:/foo/bar.rs:
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
 
-    fn hash_key<'a, F>(f: &TestFixture, args: &[OsString], env_vars: &[(OsString, OsString)],
+    fn hash_key<F>(f: &TestFixture, args: &[OsString], env_vars: &[(OsString, OsString)],
                        pre_func: F) -> String
         where F: Fn(&Path) -> Result<()>
     {
