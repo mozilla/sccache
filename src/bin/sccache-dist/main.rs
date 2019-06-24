@@ -195,7 +195,7 @@ fn parse() -> Result<Command> {
                             match config.server_auth {
                                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
                                 scheduler_config::ServerAuth::Insecure
-                                | scheduler_config::ServerAuth::Token { token: _ } => {
+                                | scheduler_config::ServerAuth::Token { .. } => {
                                     bail!("Scheduler not configured with JWT HS256")
                                 }
                             }

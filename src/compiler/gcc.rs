@@ -625,7 +625,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -652,7 +651,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -679,7 +677,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -708,13 +705,12 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
             common_args,
-            extra_hash_files: _,
             profile_generate,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -739,13 +735,12 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
             common_args,
-            extra_hash_files: _,
             profile_generate,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -770,13 +765,12 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
             common_args,
-            extra_hash_files: _,
             profile_generate,
+            ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -800,7 +794,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -827,7 +820,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -854,7 +846,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -881,7 +872,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -908,7 +898,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -935,7 +924,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -1006,7 +994,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,

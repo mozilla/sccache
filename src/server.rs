@@ -250,13 +250,12 @@ impl DistClientContainer {
                 let auth_token = match &config.auth {
                     config::DistAuth::Token { token } => Ok(token.to_owned()),
                     config::DistAuth::Oauth2CodeGrantPKCE {
-                        client_id: _,
                         auth_url,
-                        token_url: _,
+                        ..
                     }
                     | config::DistAuth::Oauth2Implicit {
-                        client_id: _,
                         auth_url,
+                        ..
                     } => Self::get_cached_config_auth_token(auth_url),
                 };
                 // TODO: NLL would let us move this inside the previous match

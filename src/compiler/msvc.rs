@@ -658,7 +658,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -685,7 +684,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -712,7 +710,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -739,7 +736,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -766,7 +762,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -793,7 +788,6 @@ mod test {
         let ParsedArguments {
             input,
             language,
-            depfile: _,
             outputs,
             preprocessor_args,
             msvc_show_includes,

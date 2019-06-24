@@ -272,7 +272,7 @@ impl OverlayBuilder {
     fn finish_overlay(&self, _tc: &Toolchain, overlay: OverlaySpec) {
         // TODO: collect toolchain directories
 
-        let OverlaySpec { build_dir, toolchain_dir: _ } = overlay;
+        let OverlaySpec { build_dir, .. } = overlay;
         if let Err(e) = fs::remove_dir_all(&build_dir) {
             error!("Failed to remove build directory {}: {}", build_dir.display(), e);
         }

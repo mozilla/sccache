@@ -762,7 +762,7 @@ fn test_gcs_credentials_url() {
 
     let env_cfg = config_from_env();
     match env_cfg.cache.gcs {
-        Some(GCSCacheConfig{ref bucket, cred_path: _, ref url, rw_mode}) => {
+        Some(GCSCacheConfig{ref bucket, ref url, rw_mode, ..}) => {
             assert_eq!(bucket, "my-bucket");
             match url {
                 Some(ref url) => assert_eq!(url, "http://localhost/"),

@@ -786,7 +786,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(CrateName(value)) => crate_name = Some(value.clone()),
             Some(OutDir(value)) => output_dir = Some(value.clone()),
-            Some(Extern(ArgExtern { name: _, path })) => externs.push(path.clone()),
+            Some(Extern(ArgExtern { path, .. })) => externs.push(path.clone()),
             Some(CodeGen(ArgCodegen { opt, value })) => {
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
@@ -949,7 +949,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     crate_types,
                     dep_info,
                     emit,
-                    color_mode: _,
+                    ..
                 },
         } = me;
         trace!("[{}]: generate_hash_key", crate_name);
