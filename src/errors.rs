@@ -111,7 +111,7 @@ macro_rules! ftry_send {
     }
 }
 
-pub fn f_res<T, E: convert::Into<Error>>(t: ::std::result::Result<T, E>) -> SFuture<T>
+pub fn f_res<T, E: convert::Into<Error>>(t: std::result::Result<T, E>) -> SFuture<T>
     where T: 'static,
 {
     Box::new(future::result(t.map_err(Into::into)))

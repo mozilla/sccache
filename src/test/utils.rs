@@ -36,14 +36,14 @@ macro_rules! stringvec {
 /// Return a `Vec` with each listed entry converted to an owned `OsString`.
 macro_rules! ovec {
     ( $( $x:expr ),* ) => {
-        vec!($( ::std::ffi::OsString::from($x), )*)
+        vec!($( std::ffi::OsString::from($x), )*)
     };
 }
 
 /// Return a `Vec` with each listed entry converted to an owned `PathBuf`.
 macro_rules! pathvec {
     ( $( $x:expr ),* ) => {
-        vec!($( ::std::path::PathBuf::from($x), )*)
+        vec!($( std::path::PathBuf::from($x), )*)
     };
 }
 

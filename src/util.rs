@@ -408,7 +408,7 @@ mod http_extension {
     }
 
     #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::r#async::RequestBuilder {
+    impl RequestExt for reqwest::r#async::RequestBuilder {
         fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,
@@ -421,7 +421,7 @@ mod http_extension {
     }
 
     #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::RequestBuilder {
+    impl RequestExt for reqwest::RequestBuilder {
         fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,

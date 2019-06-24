@@ -162,7 +162,7 @@ mod heap_meter {
         fn measure<Q: ?Sized>(&self, _: &Q, item: &V) -> usize
             where K: Borrow<Q>
         {
-            item.heap_size_of_children() + ::std::mem::size_of::<V>()
+            item.heap_size_of_children() + std::mem::size_of::<V>()
         }
     }
 }

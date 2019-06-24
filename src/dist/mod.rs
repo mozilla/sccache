@@ -311,7 +311,7 @@ impl fmt::Display for JobId {
 }
 impl FromStr for JobId {
     type Err = <u64 as FromStr>::Err;
-    fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         u64::from_str(s).map(JobId)
     }
 }
@@ -329,7 +329,7 @@ impl ServerId {
 }
 impl FromStr for ServerId {
     type Err = <SocketAddr as FromStr>::Err;
-    fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         SocketAddr::from_str(s).map(ServerId)
     }
 }
@@ -560,7 +560,7 @@ impl<'a> Read for InputsReader<'a> {
 }
 
 #[cfg(feature = "dist-server")]
-type ExtResult<T, E> = ::std::result::Result<T, E>;
+type ExtResult<T, E> = std::result::Result<T, E>;
 
 #[cfg(feature = "dist-server")]
 pub trait SchedulerOutgoing {
@@ -583,7 +583,7 @@ pub trait JobAuthorizer: Send {
 
 #[cfg(feature = "dist-server")]
 pub trait SchedulerIncoming: Send + Sync {
-    type Error: ::std::error::Error;
+    type Error: std::error::Error;
     // From Client
     fn handle_alloc_job(&self, requester: &dyn SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
@@ -596,7 +596,7 @@ pub trait SchedulerIncoming: Send + Sync {
 
 #[cfg(feature = "dist-server")]
 pub trait ServerIncoming: Send + Sync {
-    type Error: ::std::error::Error;
+    type Error: std::error::Error;
     // From Scheduler
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
@@ -607,7 +607,7 @@ pub trait ServerIncoming: Send + Sync {
 
 #[cfg(feature = "dist-server")]
 pub trait BuilderIncoming: Send + Sync {
-    type Error: ::std::error::Error;
+    type Error: std::error::Error;
     // From Server
     fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader<'_>, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
 }
