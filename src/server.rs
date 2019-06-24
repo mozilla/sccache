@@ -1209,7 +1209,7 @@ impl ServerStats {
                     stat_width = stat_width
                 );
             }
-            println!("");
+            println!();
         }
         (name_width, stat_width)
     }

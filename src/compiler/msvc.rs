@@ -521,7 +521,7 @@ pub fn preprocess<T>(creator: &T,
                 stderr_bytes.extend_from_slice(line.as_bytes());
                 stderr_bytes.push(b'\n');
             }
-            writeln!(f, "")?;
+            writeln!(f)?;
             // Write extra rules for each dependency to handle
             // removed files.
             encode_path(&mut f, &parsed_args.input).chain_err(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
