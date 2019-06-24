@@ -8,8 +8,8 @@ matrix:
     - os: osx
 
     # rustc version compat
-    - rust: 1.31.1 # oldest supported version, keep in sync with README.md
-    - rust: 1.31.1
+    - rust: 1.34.0 # oldest supported version, keep in sync with README.md
+    - rust: 1.34.0
       env: DIST_SCCACHE=1
     - rust: beta
     - rust: nightly
