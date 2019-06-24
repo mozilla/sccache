@@ -1747,8 +1747,8 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         dep_names.push(libname);
     }
 
-    while let Some(line) = lines.next() {
-        if line != "" {
+    for line in lines {
+        if !line.is_empty() {
             bail!("Trailing non-blank lines in rustc -Z ls output")
         }
     }
