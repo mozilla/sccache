@@ -318,7 +318,7 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
 fn request_compile<W, X, Y>(
     conn: &mut ServerConnection,
     exe: W,
-    args: &Vec<X>,
+    args: &[X],
     cwd: Y,
     env_vars: Vec<(OsString, OsString)>,
 ) -> Result<CompileResponse>

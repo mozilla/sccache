@@ -88,7 +88,7 @@ impl CCompilerImpl for MSVC {
     }
 }
 
-fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
+fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
 }
 
