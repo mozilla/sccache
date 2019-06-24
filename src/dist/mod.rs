@@ -618,6 +618,8 @@ pub trait BuilderIncoming: Send + Sync {
 pub trait Client {
     // To Scheduler
     fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult>;
+    // To Scheduler
+    fn do_get_status(&self) -> SFuture<SchedulerStatusResult>;
     // To Server
     fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
     // To Server

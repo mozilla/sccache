@@ -1682,8 +1682,9 @@ LLVM version: 6.0",
 mod test_dist {
     use crate::dist::pkg;
     use crate::dist::{
-        self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
-        PathTransformer, ProcessOutput, RunJobResult, ServerId, SubmitToolchainResult, Toolchain,
+        self, AllocJobResult, SchedulerStatusResult, CompileCommand, JobAlloc, JobComplete,
+        JobId, OutputData, PathTransformer, ProcessOutput, RunJobResult, ServerId,
+        SubmitToolchainResult, Toolchain,
     };
     use std::cell::Cell;
     use std::path::Path;
@@ -1699,6 +1700,9 @@ mod test_dist {
     }
     impl dist::Client for ErrorPutToolchainClient {
         fn do_alloc_job(&self, _: Toolchain) -> SFuture<AllocJobResult> {
+            unreachable!()
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             unreachable!()
         }
         fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
@@ -1739,6 +1743,9 @@ mod test_dist {
         fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
             assert_eq!(self.tc, tc);
             f_err("alloc job failure")
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+            unreachable!()
         }
         fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
             unreachable!()
@@ -1788,6 +1795,9 @@ mod test_dist {
                 },
                 need_toolchain: true,
             })
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+            unreachable!()
         }
         fn do_submit_toolchain(
             &self,
@@ -1843,6 +1853,9 @@ mod test_dist {
                 },
                 need_toolchain: true,
             })
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+            unreachable!()
         }
         fn do_submit_toolchain(
             &self,
@@ -1905,6 +1918,9 @@ mod test_dist {
                 },
                 need_toolchain: true,
             })
+        }
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+            unreachable!()
         }
         fn do_submit_toolchain(
             &self,
