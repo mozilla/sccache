@@ -440,8 +440,7 @@ impl OutputData {
     #[cfg(feature = "dist-client")]
     pub fn into_reader(self) -> impl Read {
         use flate2::read::ZlibDecoder as ZlibReadDecoder;
-        let decompressor = ZlibReadDecoder::new(io::Cursor::new(self.0));
-        decompressor
+        ZlibReadDecoder::new(io::Cursor::new(self.0))
     }
 }
 pub struct OutputDataLens {
