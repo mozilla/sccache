@@ -390,7 +390,7 @@ where
     let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
         None => Path::new(&input).with_extension("o"),
-        Some(o) =>  PathBuf::from(o),
+        Some(o) => o,
     };
     if split_dwarf {
         let dwo = output.with_extension("dwo");

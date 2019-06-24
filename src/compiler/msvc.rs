@@ -396,7 +396,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
             outputs.insert("obj", Path::new(&input).with_extension("obj"));
         },
         Some(o) => {
-            outputs.insert("obj", PathBuf::from(o));
+            outputs.insert("obj", o);
         },
     }
     // -Fd is not taken into account unless -Zi is given
@@ -896,7 +896,7 @@ mod test {
             language: Language::C,
             depfile: None,
             outputs: vec![("obj", "foo.obj".into()),
-                          ("pdb", pdb.into())].into_iter().collect(),
+                          ("pdb", pdb)].into_iter().collect(),
             preprocessor_args: vec!(),
             common_args: vec!(),
             extra_hash_files: vec!(),

@@ -117,9 +117,8 @@ pub fn parse() -> Result<Command> {
                             Ok(ref full_path) if full_path.canonicalize()? == exe.canonicalize()? => {
                                 if let Some(dir) = full_path.parent() {
                                     let path = env::join_paths(env::split_paths(&path).filter(|p| p != dir)).ok();
-                                    match which_in(exe_filename, path, &cwd) {
-                                        Ok(full_path) => args[0] = full_path.into(),
-                                        Err(_) => { }
+                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
+                                        args[0] = full_path.into();
                                     }
                                 }
                             }

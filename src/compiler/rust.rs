@@ -652,7 +652,7 @@ impl IntoArg for ArgTarget {
         match self {
             ArgTarget::Name(s) => s.into(),
             ArgTarget::Path(p) => p.into(),
-            ArgTarget::Unsure(s) => s.into(),
+            ArgTarget::Unsure(s) => s,
         }
     }
     fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
@@ -908,7 +908,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     externs.sort();
     CompilerArguments::Ok(ParsedArguments {
         arguments: args,
-        output_dir: output_dir.into(),
+        output_dir,
         crate_types,
         externs,
         crate_link_paths,
@@ -1062,7 +1062,7 @@ impl<T> CompilerHasher<T> for RustHasher
             cwd.hash(&mut HashToDigest { digest: &mut m });
             // Turn arguments into a simple Vec<OsString> to calculate outputs.
             let flat_os_string_arguments: Vec<OsString> = os_string_arguments.into_iter()
-                .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
+                .flat_map(|(arg, val)| iter::once(arg).chain(val))
                 .collect();
             Box::new(get_compiler_outputs(&creator, &executable, &flat_os_string_arguments, &cwd, &env_vars).map(move |mut outputs| {
                 if emit.contains("metadata") {
@@ -1084,7 +1084,7 @@ impl<T> CompilerHasher<T> for RustHasher
                         }
                     }
                 }
-                let output_dir = PathBuf::from(output_dir);
+
                 // Convert output files into a map of basename -> full path.
                 let mut outputs = outputs.into_iter()
                     .map(|o| {
@@ -2061,11 +2061,11 @@ c:/foo/bar.rs:
             parsed_args: ParsedArguments {
                 arguments: vec![
                     Argument::Raw("a".into()),
-                    Argument::WithValue("--cfg".into(),
+                    Argument::WithValue("--cfg",
                                         ArgData::PassThrough("xyz".into()),
                                         ArgDisposition::Separated),
                     Argument::Raw("b".into()),
-                    Argument::WithValue("--cfg".into(),
+                    Argument::WithValue("--cfg",
                                         ArgData::PassThrough("abc".into()),
                                         ArgDisposition::Separated),
                 ],

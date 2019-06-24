@@ -402,7 +402,7 @@ impl Storage for GCSCache {
         let start = time::Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,
-            Err(e) => return Box::new(future::err(e.into())),
+            Err(e) => return Box::new(future::err(e)),
         };
         let bucket = self.bucket.clone();
         let response = bucket.put(&key, data, &self.credential_provider).chain_err(|| {
