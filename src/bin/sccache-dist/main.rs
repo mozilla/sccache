@@ -462,6 +462,7 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
+#[derive(Default)]
 pub struct Scheduler {
     job_count: AtomicUsize,
 

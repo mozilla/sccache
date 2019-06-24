@@ -963,7 +963,7 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct PerLanguageCount {
     counts: HashMap<String, u64>,
 }

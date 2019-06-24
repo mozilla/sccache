@@ -35,6 +35,12 @@ pub struct Digest {
     inner: Context,
 }
 
+impl Default for Digest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Digest {
     pub fn new() -> Digest {
         Digest {

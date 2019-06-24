@@ -97,6 +97,12 @@ pub struct CacheWrite {
     zip: ZipWriter<io::Cursor<Vec<u8>>>,
 }
 
+impl Default for CacheWrite {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CacheWrite {
     /// Create a new, empty cache entry.
     pub fn new() -> CacheWrite {

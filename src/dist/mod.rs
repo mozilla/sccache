@@ -242,7 +242,7 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug)]
+    #[derive(Default, Debug)]
     pub struct PathTransformer;
 
     impl PathTransformer {
