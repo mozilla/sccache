@@ -449,11 +449,7 @@ where
                 }
                 Ok(_) => bail!("unexpected response from server"),
                 Err(Error(ErrorKind::Io(ref e), _)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    writeln!(
-                        io::stderr(),
-                        "warning: sccache server looks like it shut down \
-                         unexpectedly, compiling locally instead"
-                    ).unwrap();
+                    eprintln!("warning: sccache server looks like it shut down unexpectedly, compiling locally instead");
                 }
                 Err(e) => {
                     return Err(e).chain_err(|| {
