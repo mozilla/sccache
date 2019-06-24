@@ -436,7 +436,7 @@ impl DockerBuilder {
                         continue
                     }
                 }
-                lastpath = Some(changepath.clone());
+                lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker").args(&["exec", &cid, "/busybox", "rm", "-rf", changepath]).check_run() {
                     // We do a final check anyway, so just continue
                     warn!("Failed to remove added path in a container: {}", e)
