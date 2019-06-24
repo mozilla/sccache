@@ -43,7 +43,7 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
 fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::new(d, key);
     hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
+    hmac.result().code().to_vec()
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {

@@ -36,7 +36,7 @@ const BLOB_API_VERSION: &str = "2017-04-17";
 fn hmac<D: Digest>(digest: D, data: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::new(digest, secret);
     hmac.input(data);
-    hmac.result().code().iter().cloned().collect::<Vec<u8>>()
+    hmac.result().code().to_vec()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
