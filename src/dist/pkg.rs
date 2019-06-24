@@ -182,9 +182,8 @@ mod toolchain_imp {
     //   "ldd: a.out: Not a valid dynamic program" and exits with code 1
     //
     fn find_ldd_libraries(executable: &Path) -> Result<Vec<PathBuf>> {
-
+        use std::convert::TryInto;
         let process::Output { status, stdout, stderr } = process::Command::new("ldd").arg(executable).output()?;
-
         // Not a file ldd can handle. This can be a non-executable, or a static non-PIE
         if !status.success() {
             // Best-effort detection of static non-PIE
@@ -199,10 +198,11 @@ mod toolchain_imp {
                 2 => false,
                 _ => bail!("Invalid endianness in elf header"),
             };
+            let e_type = elf_bytes[0x10 .. 0x12].try_into().unwrap_or_else(|_| unreachable!());
             let e_type = if little_endian {
-                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+                u16::from_le_bytes(e_type)
             } else {
-                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+                u16::from_be_bytes(e_type)
             };
             if e_type != 0x02 {
                 bail!("ldd failed on a non-ET_EXEC elf")
