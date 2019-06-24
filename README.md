@@ -107,6 +107,8 @@ set OPENSSL_LIBS=libcrypto64MT:libssl64MT
 
 `$ cargo install sccache`
 
+<sub>_use `--features=all` for non-local caching, see [build requirements](#build-requirements)_</sub>
+
 ### Windows
 
 sccache can also be installed via [scoop](https://scoop.sh/)
