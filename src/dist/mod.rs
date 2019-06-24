@@ -57,7 +57,7 @@ mod path_transform {
     use std::path::{Component, Components, Path, PathBuf, Prefix, PrefixComponent};
     use std::str;
 
-    fn take_prefix<'a>(components: &'a mut Components) -> Option<PrefixComponent<'a>> {
+    fn take_prefix<'a>(components: &'a mut Components<'_>) -> Option<PrefixComponent<'a>> {
         let prefix = components.next()?;
         let pc = match prefix {
             Component::Prefix(pc) => pc,
@@ -70,7 +70,7 @@ mod path_transform {
         Some(pc)
     }
 
-    fn transform_prefix_component(pc: PrefixComponent) -> Option<String> {
+    fn transform_prefix_component(pc: PrefixComponent<'_>) -> Option<String> {
         match pc.kind() {
             // Transforming these to the same place means these may flip-flop
             // in the tracking map, but they're equivalent so not really an
@@ -156,7 +156,7 @@ mod path_transform {
                     continue
                 }
                 let mut components = local_path.components();
-                let mut local_prefix = take_prefix(&mut components)
+                let local_prefix = take_prefix(&mut components)
                     .expect("could not take prefix from absolute path");
                 let local_prefix_component = Component::Prefix(local_prefix);
                 let local_prefix_path: &Path = local_prefix_component.as_ref();

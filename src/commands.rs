@@ -152,7 +152,6 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::ptr;
     use std::time::Duration;
     use tokio::reactor::Handle;
-    use tokio::runtime::current_thread::Runtime;
     use tokio_named_pipes::NamedPipe;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};

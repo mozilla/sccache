@@ -188,7 +188,7 @@ fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn encode_path(dst: &mut Write, path: &Path) -> io::Result<()> {
+fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
     use std::os::windows::prelude::*;
     use local_encoding::windows::wide_char_to_multi_byte;
     use winapi::um::winnls::CP_OEMCP;
@@ -428,7 +428,6 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
 
 #[cfg(windows)]
 fn normpath(path: &str) -> String {
-    use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use std::ptr;
     use std::os::windows::io::AsRawHandle;
