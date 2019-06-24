@@ -1229,7 +1229,7 @@ impl ServerInfo {
             ("Cache size", &self.cache_size),
             ("Max cache size", &self.max_cache_size),
         ] {
-            if let &Some(val) = val {
+            if let Some(val) = *val {
                 let (val, suffix) = match binary_prefix(val as f64) {
                     Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
                     Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),

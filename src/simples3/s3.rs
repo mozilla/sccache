@@ -130,7 +130,7 @@ impl Bucket {
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
-        for (header, maybe_value) in [("x-amz-security-token", token)].iter() {
+        for &(header, maybe_value) in [("x-amz-security-token", token)].iter() {
             if let Some(ref value) = maybe_value {
                 request
                     .headers_mut()

@@ -446,12 +446,12 @@ impl<T: ArgumentValue> ArgInfo<T> {
     /// how it differs.
     fn cmp(&self, arg: &str) -> Ordering {
         match self {
-            &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None)) |
-            &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None)) if arg.starts_with(s) => {
+            ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None)) |
+            ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None)) if arg.starts_with(s) => {
                 Ordering::Equal
             }
-            &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d))) |
-            &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
+            ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d))) |
+            ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) => arg.as_bytes()[s.len()].cmp(&d),
             _ => self.flag_str().cmp(arg),
         }
@@ -459,8 +459,8 @@ impl<T: ArgumentValue> ArgInfo<T> {
 
     fn flag_str(&self) -> &'static str {
         match self {
-            &ArgInfo::Flag(s, _) |
-            &ArgInfo::TakeArg(s, _, _) => s,
+            ArgInfo::Flag(s, _) |
+            ArgInfo::TakeArg(s, _, _) => s,
         }
     }
 }

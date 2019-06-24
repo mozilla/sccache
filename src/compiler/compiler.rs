@@ -716,13 +716,13 @@ impl Default for ColorMode {
 impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            &CompileResult::Error => write!(f, "CompileResult::Error"),
-            &CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
-            &CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
+            CompileResult::Error => write!(f, "CompileResult::Error"),
+            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
-            &CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
-            &CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
+            CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
+            CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
         }
     }
 }

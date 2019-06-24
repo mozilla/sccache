@@ -68,8 +68,8 @@ impl fmt::Display for BlobContainer {
 impl BlobContainer {
     pub fn new(base_url: &str, container_name: &Option<String>) -> Result<BlobContainer> {
         let container_url = match container_name {
-            &Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
-            &None           => base_url.to_owned()
+            Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
+            None           => base_url.to_owned()
         };
 
         Ok(BlobContainer {

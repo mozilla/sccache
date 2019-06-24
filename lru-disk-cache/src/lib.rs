@@ -81,15 +81,15 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn description(&self) -> &str {
         match self {
-            &Error::FileTooLarge => "File too large",
-            &Error::FileNotInCache => "File not in cache",
-            &Error::Io(ref e) => e.description(),
+            Error::FileTooLarge => "File too large",
+            Error::FileNotInCache => "File not in cache",
+            Error::Io(ref e) => e.description(),
         }
     }
 
     fn cause(&self) -> Option<&dyn StdError> {
         match self {
-            &Error::Io(ref e) => Some(e),
+            Error::Io(ref e) => Some(e),
             _ => None,
         }
     }

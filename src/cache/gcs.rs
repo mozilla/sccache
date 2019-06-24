@@ -63,7 +63,7 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+        let creds_opt_future = if let Some(ref cred_provider) = cred_provider {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
@@ -101,7 +101,7 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+        let creds_opt_future = if let Some(ref cred_provider) = cred_provider {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
