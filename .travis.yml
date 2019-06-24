@@ -6,13 +6,13 @@ cache:
 before_cache:
   - rm -rf "$HOME/.cargo/registry"
   - |
-    SRC_DIR=""
-    if [[ -z $TARGET ]]; then
-      SRC_DIR=target/debug
-    else
-      SRC_DIR="target/$TARGET/release"
+    CARGO_BINDIR="$HOME/.cargo/bin"
+    rm "$CARGO_BINDIR"/sccache
+    if [[ -x target/$TARGET/release/sccache ]]; then
+      cp target/$TARGET/release/sccache "$CARGO_BINDIR"
+    elif [[ -x target/release/sccache ]]
+      SRC_DIR=target/release/sccache" "$CARGO_BINDIR"
     fi
-    cp "$SRC_DIR/sccache" "$HOME/.cargo/bin"
 
 matrix:
   include:
