@@ -1,5 +1,18 @@
 language: rust
-cache: cargo
+cache:
+  directories:
+    - "$HOME/.cargo"
+    - "$HOME/.cache/sccache"
+before_cache:
+  - rm -rf "$HOME/.cargo/registry"
+  - |
+    SRC_DIR=""
+    if [[ -z $TARGET ]]; then
+      SRC_DIR=target/debug
+    else
+      SRC_DIR="target/$TARGET/release"
+    fi
+    cp "$SRC_DIR/sccache" "$HOME/.cargo/bin"
 
 matrix:
   include:
@@ -27,6 +40,12 @@ matrix:
           - musl-tools
   allow_failures:
     - rust: nightly
+
+before_install:
+  - |
+    if command -v sccache > /dev/null; then
+      export RUSTC_WRAPPER=sccache
+    fi
 
 before_script:
   - export EXTRA_FEATURES=
