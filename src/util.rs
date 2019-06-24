@@ -503,7 +503,7 @@ pub fn daemonize() -> Result<()> {
         }
 
         unsafe {
-            drop(writeln!(Stderr, "signal {} received", signum));
+            let _ = writeln!(Stderr, "signal {} received", signum);
 
             // Configure the old handler and then resume the program. This'll
             // likely go on to create a runtime dump if one's configured to be
