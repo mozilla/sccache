@@ -24,7 +24,7 @@ use futures::Future;
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
-use lru_disk_cache::lru_cache;
+use lru_disk_cache::{LruCache,Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
@@ -1580,7 +1580,7 @@ struct RlibDepsDetail {
 #[cfg(feature = "dist-client")]
 struct DepsSize;
 #[cfg(feature = "dist-client")]
-impl lru_cache::Meter<PathBuf, RlibDepsDetail> for DepsSize {
+impl Meter<PathBuf, RlibDepsDetail> for DepsSize {
     type Measure = usize;
     fn measure<Q: ?Sized>(&self, _k: &Q, v: &RlibDepsDetail) -> usize where PathBuf: Borrow<Q>
     {
@@ -1604,7 +1604,7 @@ impl lru_cache::Meter<PathBuf, RlibDepsDetail> for DepsSize {
 #[cfg(feature = "dist-client")]
 #[derive(Debug)]
 struct RlibDepReader {
-    cache: Mutex<lru_cache::LruCache<PathBuf, RlibDepsDetail, RandomState, DepsSize>>,
+    cache: Mutex<LruCache<PathBuf, RlibDepsDetail, RandomState, DepsSize>>,
     executable: PathBuf,
 }
 
@@ -1643,7 +1643,7 @@ impl RlibDepReader {
         // Allowing for possible overhead of up to double (for unused space in allocated memory), this means we
         // can cache information from about 570 rlibs - easily enough for a single project.
         const CACHE_SIZE: u64 = 3*1024*1024;
-        let cache = lru_cache::LruCache::with_meter(CACHE_SIZE, DepsSize);
+        let cache = LruCache::with_meter(CACHE_SIZE, DepsSize);
 
         let rlib_dep_reader = RlibDepReader { cache: Mutex::new(cache), executable };
         if let Err(e) = rlib_dep_reader.discover_rlib_deps(env_vars, &temp_rlib) {
