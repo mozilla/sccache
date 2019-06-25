@@ -19,7 +19,7 @@ use std::path::{Path,PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use filetime::{FileTime, set_file_times};
-use crate::lru_cache::{LruCache,Meter};
+pub use crate::lru_cache::{LruCache,Meter};
 use walkdir::WalkDir;
 
 struct FileSize;
