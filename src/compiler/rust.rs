@@ -186,7 +186,7 @@ lazy_static! {
 }
 
 /// Version number for cache key.
-const CACHE_VERSION: &[u8] = b"3";
+const CACHE_VERSION: &[u8] = b"4";
 
 /// Get absolute paths for all source files listed in rustc's dep-info output.
 fn get_source_files<T>(creator: &T,
