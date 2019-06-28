@@ -22,7 +22,7 @@ name = "sccache-dist"
 required-features = ["dist-server"]
 
 [dependencies]
-ar = { version = "0.6", optional = true }
+ar = { version = "0.7", optional = true }
 atty = "0.2.6"
 base64 = "0.9.0"
 bincode = "1"
