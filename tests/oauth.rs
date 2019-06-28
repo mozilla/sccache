@@ -96,7 +96,7 @@ trait DriverExt {
 impl DriverExt for WebDriver {
     fn wait_for_element(&self, selector: &str) -> Result<(), ()> {
         retry(BROWSER_RETRY_WAIT, BROWSER_MAX_WAIT, || {
-            self.query_element(Selector::CSS, selector).ok()
+            self.find_element(Selector::CSS, selector).ok()
         })
         .map(|_| ())
         .ok_or(())
@@ -118,17 +118,17 @@ fn auth0_login(driver: &WebDriver, email: &str, password: &str) {
     driver.wait_for_element(USERNAME_SELECTOR).unwrap();
     thread::sleep(Duration::from_secs(1)); // Give the element time to get ready
     driver
-        .query_element(Selector::CSS, USERNAME_SELECTOR)
+        .find_element(Selector::CSS, USERNAME_SELECTOR)
         .unwrap()
         .type_text(email)
         .unwrap();
     driver
-        .query_element(Selector::CSS, PASSWORD_SELECTOR)
+        .find_element(Selector::CSS, PASSWORD_SELECTOR)
         .unwrap()
         .type_text(password)
         .unwrap();
     driver
-        .query_element(Selector::CSS, LOGIN_SELECTOR)
+        .find_element(Selector::CSS, LOGIN_SELECTOR)
         .unwrap()
         .click()
         .unwrap();
