@@ -74,7 +74,7 @@ tokio-serde-bincode = "0.1"
 tokio-service = "0.1"
 tokio-tcp = "0.1"
 tokio-timer = "0.2"
-toml = "0.4"
+toml = "0.5"
 uuid = { version = "0.7", features = ["v4"] }
 url = { version = "1.0", optional = true }
 walkdir = "2"
