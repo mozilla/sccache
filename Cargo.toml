@@ -95,6 +95,8 @@ void = { version = "1", optional = true }
 tiny_http = { git = "https://github.com/aidanhs/tiny-http-sccache.git", rev = "a14fa0a" }
 # Waiting for https://github.com/Keats/jsonwebtoken/pull/74
 jsonwebtoken = { git = "https://github.com/Jake-Shadle/jsonwebtoken.git", rev = "2f469a61" }
+# Waiting for https://github.com/saresend/selenium-rs/pull/15
+selenium-rs = { git = "https://github.com/saresend/selenium-rs", rev = "0314a24" }
 
 [dev-dependencies]
 assert_cmd = "0.9"

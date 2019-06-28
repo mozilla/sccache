@@ -2,7 +2,7 @@
 #![cfg(all(feature = "dist-client"))]
 
 use escargot::CargoBuild;
-use selenium_rs::webdriver::{Browser, WebDriver, Selector};
+use selenium_rs::webdriver::{Browser, Selector, WebDriver};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -32,18 +32,25 @@ const TEST_PASSWORD: &str = "test1234";
 fn generate_code_grant_pkce_auth_config() -> sccache::config::DistAuth {
     sccache::config::DistAuth::Oauth2CodeGrantPKCE {
         client_id: "Xmbl6zRW1o1tJ5LQOz0p65NwY47aMO7A".to_owned(),
-        auth_url: "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/".to_owned(),
+        auth_url:
+            "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
+                .to_owned(),
         token_url: "https://sccache-test.auth0.com/oauth/token".to_owned(),
     }
 }
 fn generate_implicit_auth_config() -> sccache::config::DistAuth {
     sccache::config::DistAuth::Oauth2Implicit {
         client_id: "TTborSAyjBnSi1W11201ZzNu9gSg63bq".to_owned(),
-        auth_url: "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/".to_owned(),
+        auth_url:
+            "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
+                .to_owned(),
     }
 }
 
-fn config_with_dist_auth(tmpdir: &Path, auth_config: sccache::config::DistAuth) -> sccache::config::FileConfig {
+fn config_with_dist_auth(
+    tmpdir: &Path,
+    auth_config: sccache::config::DistAuth,
+) -> sccache::config::FileConfig {
     sccache::config::FileConfig {
         cache: Default::default(),
         dist: sccache::config::DistConfig {
@@ -61,7 +68,8 @@ fn sccache_command() -> Command {
         .bin("sccache")
         // This should just inherit from the feature list we're compiling with to avoid recompilation
         // https://github.com/assert-rs/assert_cmd/issues/44#issuecomment-418485128
-        .arg("--features").arg("dist-client dist-server")
+        .arg("--features")
+        .arg("dist-client dist-server")
         .current_release()
         .current_target()
         .run()
@@ -73,7 +81,7 @@ fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f:
     let start = Instant::now();
     while start.elapsed() < until {
         if let Some(res) = f() {
-            return Some(res)
+            return Some(res);
         } else {
             thread::sleep(interval)
         }
@@ -87,16 +95,18 @@ trait DriverExt {
 }
 impl DriverExt for WebDriver {
     fn wait_for_element(&self, selector: &str) -> Result<(), ()> {
-        retry(BROWSER_RETRY_WAIT, BROWSER_MAX_WAIT, || self.query_element(Selector::CSS, selector).ok())
-            .map(|_| ()).ok_or(())
+        retry(BROWSER_RETRY_WAIT, BROWSER_MAX_WAIT, || {
+            self.query_element(Selector::CSS, selector).ok()
+        })
+        .map(|_| ())
+        .ok_or(())
     }
     fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> Result<(), ()> {
         let start = Instant::now();
         while start.elapsed() < BROWSER_MAX_WAIT {
             match self.get_current_url() {
                 Ok(ref url) if condition(&url) => return Ok(()),
-                Ok(_) |
-                Err(_) => thread::sleep(BROWSER_RETRY_WAIT),
+                Ok(_) | Err(_) => thread::sleep(BROWSER_RETRY_WAIT),
             }
         }
         Err(())
@@ -107,9 +117,21 @@ impl DriverExt for WebDriver {
 fn auth0_login(driver: &WebDriver, email: &str, password: &str) {
     driver.wait_for_element(USERNAME_SELECTOR).unwrap();
     thread::sleep(Duration::from_secs(1)); // Give the element time to get ready
-    driver.query_element(Selector::CSS, USERNAME_SELECTOR).unwrap().type_text(email).unwrap();
-    driver.query_element(Selector::CSS, PASSWORD_SELECTOR).unwrap().type_text(password).unwrap();
-    driver.query_element(Selector::CSS, LOGIN_SELECTOR).unwrap().click().unwrap();
+    driver
+        .query_element(Selector::CSS, USERNAME_SELECTOR)
+        .unwrap()
+        .type_text(email)
+        .unwrap();
+    driver
+        .query_element(Selector::CSS, PASSWORD_SELECTOR)
+        .unwrap()
+        .type_text(password)
+        .unwrap();
+    driver
+        .query_element(Selector::CSS, LOGIN_SELECTOR)
+        .unwrap()
+        .click()
+        .unwrap();
 }
 
 struct SeleniumContainer {
@@ -118,8 +140,11 @@ struct SeleniumContainer {
 
 fn check_output(output: &Output) {
     if !output.status.success() {
-        println!("===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        println!(
+            "===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n\n\n",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         panic!()
     }
 }
@@ -130,7 +155,15 @@ impl SeleniumContainer {
         let cid = {
             // It's important to use net=host so that selenium can see pages hosted on localhost
             let args = &[
-                "run", "--rm", "-d", "-v", "/dev/shm:/dev/shm", "--net", "host", "-e", "SE_OPTS=-debug",
+                "run",
+                "--rm",
+                "-d",
+                "-v",
+                "/dev/shm:/dev/shm",
+                "--net",
+                "host",
+                "-e",
+                "SE_OPTS=-debug",
                 "selenium/standalone-chrome-debug:3.14.0",
             ];
             let output = Command::new("docker").args(args).output().unwrap();
@@ -144,26 +177,50 @@ impl SeleniumContainer {
 
 impl Drop for SeleniumContainer {
     fn drop(&mut self) {
-        let Output { status: _, stdout, stderr } = Command::new("docker").args(&["logs", &self.cid]).output().unwrap();
-        let output = Command::new("docker").args(&["kill", &self.cid]).output().unwrap();
+        let Output {
+            status: _,
+            stdout,
+            stderr,
+        } = Command::new("docker")
+            .args(&["logs", &self.cid])
+            .output()
+            .unwrap();
+        let output = Command::new("docker")
+            .args(&["kill", &self.cid])
+            .output()
+            .unwrap();
 
-        println!("====\n> selenium container <:\n## STDOUT\n{}\n\n## STDERR\n{}\n====",
-            String::from_utf8_lossy(&stdout), String::from_utf8_lossy(&stderr));
+        println!(
+            "====\n> selenium container <:\n## STDOUT\n{}\n\n## STDERR\n{}\n====",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
         check_output(&output)
     }
 }
 
 #[test]
-#[cfg_attr(not(all(target_os = "linux", target_arch = "x86_64", feature = "dist-tests")), ignore)]
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64", feature = "dist-tests")),
+    ignore
+)]
 fn test_auth() {
     // Make sure the client auth port isn't in use, as sccache will gracefully fall back
     let client_auth_port = sccache::dist::client_auth::VALID_PORTS[0];
-    assert_eq!(TcpStream::connect(("localhost", client_auth_port)).unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
+    assert_eq!(
+        TcpStream::connect(("localhost", client_auth_port))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::ConnectionRefused
+    );
 
     // NOTE: if you want to debug selenium, you can comment out the three lines below and just use a local
     // selenium instance (download the standalone server and the chrome driver, running the former and putting the
     // latter on the PATH). Alternatively, because we use the '-debug' image you can use vnc with the password 'secret'.
-    assert_eq!(TcpStream::connect(("localhost", 4444)).unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
+    assert_eq!(
+        TcpStream::connect(("localhost", 4444)).unwrap_err().kind(),
+        io::ErrorKind::ConnectionRefused
+    );
     let _selenium = SeleniumContainer::new();
     thread::sleep(Duration::from_secs(3));
 
@@ -180,31 +237,48 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     let conf_dir = TempDir::new("sccache-test-conf").unwrap();
     let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
     let sccache_config_path = conf_dir.path().join("sccache-config.json");
-    fs::File::create(&sccache_config_path).unwrap().write_all(&serde_json::to_vec(&sccache_config).unwrap()).unwrap();
+    fs::File::create(&sccache_config_path)
+        .unwrap()
+        .write_all(&serde_json::to_vec(&sccache_config).unwrap())
+        .unwrap();
     let sccache_cached_config_path = conf_dir.path().join("sccache-cached-config");
     let envs = vec![
         ("RUST_LOG", "sccache=trace".into()),
         ("SCCACHE_CONF", sccache_config_path.into_os_string()),
-        ("SCCACHE_CACHED_CONF", sccache_cached_config_path.clone().into_os_string()),
+        (
+            "SCCACHE_CACHED_CONF",
+            sccache_cached_config_path.clone().into_os_string(),
+        ),
     ];
 
     println!("Starting sccache --dist-auth");
-    let mut sccache_process = sccache_command().arg("--dist-auth").envs(envs).stdin(Stdio::null()).spawn().unwrap();
+    let mut sccache_process = sccache_command()
+        .arg("--dist-auth")
+        .envs(envs)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
     thread::sleep(Duration::from_secs(1)); // let the http server start up
     println!("Beginning in-browser auth");
     login();
-    let status = retry(Duration::from_secs(1), Duration::from_secs(10), || sccache_process.try_wait().unwrap());
+    let status = retry(Duration::from_secs(1), Duration::from_secs(10), || {
+        sccache_process.try_wait().unwrap()
+    });
     match status {
         Some(s) => assert!(s.success()),
         None => {
             sccache_process.kill().unwrap();
             panic!("Waited too long for process to exit")
-        },
+        }
     }
     println!("Validating cached config");
     let mut cached_config_bytes = vec![];
-    fs::File::open(sccache_cached_config_path).unwrap().read_to_end(&mut cached_config_bytes).unwrap();
-    let cached_config: sccache::config::CachedFileConfig = toml::from_slice(&cached_config_bytes).unwrap();
+    fs::File::open(sccache_cached_config_path)
+        .unwrap()
+        .read_to_end(&mut cached_config_bytes)
+        .unwrap();
+    let cached_config: sccache::config::CachedFileConfig =
+        toml::from_slice(&cached_config_bytes).unwrap();
     assert_eq!(cached_config.dist.auth_tokens.len(), 1);
 }
 
@@ -214,11 +288,13 @@ fn login() {
     println!("Started browser session");
 
     driver.navigate(LOCAL_AUTH_BASE_URL).unwrap();
-    driver.wait_on_url(|url| url != LOCAL_AUTH_BASE_URL).unwrap();
+    driver
+        .wait_on_url(|url| url != LOCAL_AUTH_BASE_URL)
+        .unwrap();
     auth0_login(&driver, TEST_USERNAME, TEST_PASSWORD);
-    driver.wait_on_url(|url| url.starts_with(LOCAL_AUTH_BASE_URL)).unwrap();
+    driver
+        .wait_on_url(|url| url.starts_with(LOCAL_AUTH_BASE_URL))
+        .unwrap();
     // Let any final JS complete
     thread::sleep(Duration::from_secs(1));
-
-    driver.delete_session();
 }
