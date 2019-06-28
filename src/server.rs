@@ -55,7 +55,6 @@ use std::time::Instant;
 use std::u64;
 use tokio::runtime::current_thread::Runtime;
 use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
@@ -739,19 +738,16 @@ where
                 warn!("Content of SCCACHE_MAX_FRAME_LENGTH is  not a valid number, using default");
             }
         }
-        let io = builder.new_framed(socket);
-
-        let (sink, stream) = SccacheTransport {
-            inner: WriteBincode::new(ReadBincode::new(io)),
-        }
-        .split();
-        let sink = sink.sink_from_err::<Error>();
-
-        stream
+        let io = builder
+            .new_framed(socket)
             .from_err::<Error>()
+            .sink_from_err::<Error>();
+
+        let (sink, stream) = SccacheTransport::new(WriteBincode::new(ReadBincode::new(io))).split();
+        let stream = stream
             .and_then(move |input| self.call(input))
-            .and_then(|message| {
-                let f: Box<dyn Stream<Item = _, Error = _>> = match message {
+            .map(|message| {
+                let f: Box<dyn Stream<Item = _, Error = Error>> = match message {
                     Message::WithoutBody(message) => Box::new(stream::once(Ok(Frame::Message {
                         message,
                         body: false,
@@ -765,11 +761,13 @@ where
                         .chain(stream::once(Ok(Frame::Body { chunk: None }))),
                     ),
                 };
-                Ok(f.from_err::<Error>())
+                f
             })
-            .flatten()
+            .flatten();
+
+        stream
             .forward(sink)
-            .map(|_| ())
+            .map(|(_, _): (futures::stream::Flatten<_>, _)| ())
     }
 
     /// Get dist status.
@@ -1424,28 +1422,34 @@ impl<R, B> Message<R, B> {
 ///   `Sink` implementation to switch from `BytesMut` to `Response` meaning that
 ///   all `Response` types pushed in will be converted to `BytesMut` and pushed
 ///   below.
-struct SccacheTransport<I: AsyncRead + AsyncWrite> {
-    inner: WriteBincode<ReadBincode<Framed<I>, Request>, Response>,
+struct SccacheTransport<S> {
+    inner: S,
 }
 
-impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
+impl<S> Stream for SccacheTransport<S>
+where
+    S: Stream<Item = Request, Error = Error>,
+{
     type Item = Message<Request, Body<()>>;
-    type Error = io::Error;
+    type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
         let msg = try_ready!(self.inner.poll().map_err(|e| {
             error!("SccacheTransport::poll failed: {}", e);
-            io::Error::new(io::ErrorKind::Other, e)
+            e
         }));
         Ok(msg.map(|m| Message::WithoutBody(m)).into())
     }
 }
 
-impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
+impl<S> Sink for SccacheTransport<S>
+where
+    S: Sink<SinkItem = Response, SinkError = Error>,
+{
     type SinkItem = Frame<Response, Response>;
-    type SinkError = io::Error;
+    type SinkError = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
+    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Error> {
         match item {
             Frame::Message { message, body } => match self.inner.start_send(message)? {
                 AsyncSink::Ready => Ok(AsyncSink::Ready),
@@ -1464,12 +1468,22 @@ impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
         }
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+    fn poll_complete(&mut self) -> Poll<(), Error> {
         self.inner.poll_complete()
     }
 
-    fn close(&mut self) -> Poll<(), io::Error> {
+    fn close(&mut self) -> Poll<(), Error> {
         self.inner.close()
+    }
+}
+
+impl<S> SccacheTransport<S>
+where
+    S: Stream<Item = Request, Error = Error>,
+    S: Sink<SinkItem = Response, SinkError = Error>,
+{
+    fn new(inner: S) -> Self {
+        SccacheTransport { inner }
     }
 }
 
