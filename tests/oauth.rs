@@ -297,6 +297,4 @@ fn login() {
         .unwrap();
     // Let any final JS complete
     thread::sleep(Duration::from_secs(1));
-
-    driver.delete_session();
 }

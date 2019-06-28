@@ -543,7 +543,7 @@ where
             Ok(s) => return Ok(s.serve(new_service)),
             Err(ref err)
                 if err
-                    .cause2()
+                    .source()
                     .and_then(|err| err.downcast_ref::<io::Error>())
                     .map(|err| err.kind() == io::ErrorKind::AddrInUse)
                     .unwrap_or(false) =>
