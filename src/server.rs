@@ -154,6 +154,8 @@ enum DistClientState {
     #[cfg(feature = "dist-client")]
     Some(Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
+    FailWithMessage(DistClientConfig, String),
+    #[cfg(feature = "dist-client")]
     RetryCreateAt(DistClientConfig, Instant),
     Disabled,
 }
@@ -172,8 +174,8 @@ impl DistClientContainer {
         Self {}
     }
 
-    fn get_client(&self) -> Option<Arc<dyn dist::Client>> {
-        None
+    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+        Ok(None)
     }
 }
 
@@ -201,15 +203,34 @@ impl DistClientContainer {
         }
     }
 
-    fn get_client(&self) -> Option<Arc<dyn dist::Client>> {
+    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
         Self::maybe_recreate_state(state);
-        match state {
-            DistClientState::Some(dc) => Some(dc.clone()),
-            DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => None,
-        }
+        let res = match state {
+            DistClientState::Some(dc) => Ok(Some(dc.clone())),
+            DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => {
+                Ok(None)
+            },
+            DistClientState::FailWithMessage(_, msg) => {
+                Err(Error::from(msg.clone()))
+            },
+        };
+        match res {
+            Err(_) => {
+                let config = match mem::replace(state, DistClientState::Disabled) {
+                    DistClientState::FailWithMessage(config, _) => config,
+                    _ => unreachable!(),
+                };
+                // The client is most likely mis-configured, make sure we
+                // re-create on our next attempt.
+                *state = DistClientState::RetryCreateAt(config,
+                                                        Instant::now() - Duration::from_secs(1));
+            },
+            _ => (),
+        };
+        res
     }
 
     fn maybe_recreate_state(state: &mut DistClientState) {
@@ -243,6 +264,23 @@ impl DistClientContainer {
                 }
             }};
         }
+
+        macro_rules! try_or_fail_with_message {
+            ($v:expr) => {{
+                match $v {
+                    Ok(v) => v,
+                    Err(e) => {
+                        use error_chain::ChainedError;
+                        let errmsg = e.display_chain();
+                        error!("{}", errmsg);
+                        return DistClientState::FailWithMessage(
+                            config,
+                            errmsg.to_string()
+                        );
+                    }
+                }
+            }};
+        }
         // TODO: NLL would avoid this clone
         match config.scheduler_url.clone() {
             Some(addr) => {
@@ -260,10 +298,12 @@ impl DistClientContainer {
                         auth_url,
                     } => Self::get_cached_config_auth_token(auth_url),
                 };
-                // TODO: NLL would let us move this inside the previous match
-                let auth_token = try_or_retry_later!(
-                    auth_token.chain_err(|| "could not load client auth token")
+                let auth_token = try_or_fail_with_message!(
+                    auth_token.chain_err(|| {
+                        "could not load client auth token, run |sccache --dist-auth|"
+                    })
                 );
+                // TODO: NLL would let us move this inside the previous match
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,
@@ -297,7 +337,7 @@ impl DistClientContainer {
     }
 
     fn get_cached_config_auth_token(auth_url: &str) -> Result<String> {
-        let cached_config = config::CachedConfig::load()?;
+        let cached_config = config::CachedConfig::reload()?;
         cached_config
             .with(|c| c.dist.auth_tokens.get(auth_url).map(String::to_owned))
             .ok_or_else(|| {
