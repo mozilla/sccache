@@ -542,6 +542,13 @@ impl CachedConfig {
         }
         Ok(CachedConfig(()))
     }
+    pub fn reload() -> Result<Self> {
+        {
+            let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
+            *cached_file_config = None;
+        };
+        Self::load()
+    }
     pub fn with<F: FnOnce(&CachedFileConfig) -> T, T>(&self, f: F) -> T {
         let cached_file_config = CACHED_CONFIG.lock().unwrap();
         let cached_file_config = cached_file_config.as_ref().unwrap();

@@ -136,7 +136,7 @@ where
     /// compile and store the result.
     fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Option<Arc<dyn dist::Client>>,
+        dist_client: Result<Option<Arc<dyn dist::Client>>>,
         creator: T,
         storage: Arc<dyn Storage>,
         arguments: Vec<OsString>,
@@ -148,11 +148,15 @@ where
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
+        let may_dist = match dist_client {
+            Ok(Some(_)) => true,
+            _ => false
+        };
         let result = self.generate_hash_key(
             &creator,
             cwd.clone(),
             env_vars,
-            dist_client.is_some(),
+            may_dist,
             &pool,
         );
         Box::new(result.then(move |res| -> SFuture<_> {
@@ -369,7 +373,7 @@ where
 
 #[cfg(not(feature = "dist-client"))]
 fn dist_or_local_compile<T>(
-    _dist_client: Option<Arc<dyn dist::Client>>,
+    _dist_client: Result<Option<Arc<dyn dist::Client>>>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -398,7 +402,7 @@ where
 
 #[cfg(feature = "dist-client")]
 fn dist_or_local_compile<T>(
-    dist_client: Option<Arc<dyn dist::Client>>,
+    dist_client: Result<Option<Arc<dyn dist::Client>>>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -421,14 +425,17 @@ where
     };
 
     let dist_client = match dist_client {
-        Some(dc) => dc,
-        None => {
+        Ok(Some(dc)) => dc,
+        Ok(None) => {
             debug!("[{}]: Compiling locally", out_pretty);
             return Box::new(
                 compile_cmd
                     .execute(&creator)
                     .map(move |o| (cacheable, DistType::NoDist, o)),
             );
+        },
+        Err(e) => {
+            return f_err(e);
         }
     };
 
@@ -1166,7 +1173,6 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
         let mut runtime = Runtime::new().unwrap();
-        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1204,7 +1210,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(None),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1240,7 +1246,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(None),
                     creator.clone(),
                     storage.clone(),
                     arguments,
@@ -1301,7 +1307,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(dist_client.clone()),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1337,7 +1343,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(dist_client.clone()),
                     creator,
                     storage,
                     arguments,
@@ -1367,7 +1373,6 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
         let mut runtime = Runtime::new().unwrap();
-        let dist_client = None;
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1406,7 +1411,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(None),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1441,7 +1446,6 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
         let mut runtime = Runtime::new().unwrap();
-        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1483,7 +1487,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(None),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1512,7 +1516,7 @@ LLVM version: 6.0",
         fs::remove_file(&obj).unwrap();
         let (cached, res) = hasher2
             .get_cached_or_compile(
-                dist_client.clone(),
+                Ok(None),
                 creator,
                 storage,
                 arguments,
@@ -1546,7 +1550,6 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let pool = CpuPool::new(1);
         let mut runtime = Runtime::new().unwrap();
-        let dist_client = None;
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1573,7 +1576,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    dist_client.clone(),
+                    Ok(None),
                     creator,
                     storage,
                     arguments,
@@ -1648,7 +1651,7 @@ LLVM version: 6.0",
             let hasher = hasher.clone();
             let (cached, res) = hasher
                 .get_cached_or_compile(
-                    Some(dist_client.clone()),
+                    Ok(Some(dist_client.clone())),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
