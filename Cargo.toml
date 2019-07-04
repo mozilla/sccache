@@ -50,7 +50,7 @@ log = "0.4"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.3.0" }
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
-number_prefix = "0.2.5"
+number_prefix = "0.3"
 openssl = { version = "0.10", optional = true }
 rand = "0.7"
 redis = { version = "0.10", optional = true }
