@@ -97,12 +97,12 @@ tiny_http = { git = "https://github.com/aidanhs/tiny-http-sccache.git", rev = "a
 selenium-rs = { git = "https://github.com/saresend/selenium-rs", rev = "0314a24" }
 
 [dev-dependencies]
-assert_cmd = "0.9"
+assert_cmd = "0.11"
 cc = "1.0"
 chrono = "0.4"
 escargot = "0.3"
 itertools = "0.7"
-predicates = "0.9.0"
+predicates = "1"
 selenium-rs = "0.1"
 
 [target.'cfg(unix)'.dependencies]

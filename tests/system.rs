@@ -142,7 +142,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     fs::copy(&original_source_file, &source_file).unwrap();
 
     trace!("compile");
-    Command::main_binary().unwrap()
+    Command::cargo_bin("sccache").unwrap()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
