@@ -107,7 +107,7 @@ predicates = "1"
 selenium-rs = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-daemonize = "0.3"
+daemonize = "0.4"
 tokio-uds = "0.2"
 
 [target.'cfg(windows)'.dependencies]
