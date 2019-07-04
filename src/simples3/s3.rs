@@ -5,211 +5,71 @@
 use std::ascii::AsciiExt;
 use std::fmt;
 
-use crate::simples3::credential::*;
-use crypto::digest::Digest;
-use crypto::hmac::Hmac;
-use crypto::mac::Mac;
-use crypto::sha1::Sha1;
 use futures::{Future, Stream};
-use hyper::header::HeaderValue;
-use hyper::Method;
-use hyperx::header;
-use reqwest::r#async::{Client, Request};
+use rusoto_core::Region;
+use rusoto_s3::S3;
 
 use crate::errors::*;
-use crate::util::HeadersExt;
-
-#[derive(Debug, Copy, Clone)]
-#[allow(dead_code)]
-/// Whether or not to use SSL.
-pub enum Ssl {
-    /// Use SSL.
-    Yes,
-    /// Do not use SSL.
-    No,
-}
-
-fn base_url(endpoint: &str, ssl: Ssl) -> String {
-    format!(
-        "{}://{}/",
-        match ssl {
-            Ssl::Yes => "https",
-            Ssl::No => "http",
-        },
-        endpoint
-    )
-}
-
-fn hmac<D: Digest>(d: D, key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::new(d, key);
-    hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
-}
-
-fn signature(string_to_sign: &str, signing_key: &str) -> String {
-    let s = hmac(
-        Sha1::new(),
-        signing_key.as_bytes(),
-        string_to_sign.as_bytes(),
-    );
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
-}
 
 /// An S3 bucket.
 pub struct Bucket {
-    name: String,
-    base_url: String,
-    client: Client,
+    bucket_name: String,
+    client: rusoto_s3::S3Client,
 }
 
 impl fmt::Display for Bucket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Bucket(name={}, base_url={})", self.name, self.base_url)
+        write!(f, "Bucket(name={})", self.bucket_name)
     }
 }
 
 impl Bucket {
-    pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Result<Bucket> {
-        let base_url = base_url(&endpoint, ssl);
+    pub fn new(bucket_name: &str, endpoint: &str) -> Result<Bucket> {
         Ok(Bucket {
-            name: name.to_owned(),
-            base_url: base_url,
-            client: Client::new(),
+            bucket_name: bucket_name.to_owned(),
+            client: rusoto_s3::S3Client::new(rusoto_core::Region::Custom {
+                name: Region::default().name().into(),
+                endpoint: endpoint.into(),
+            }),
         })
     }
 
     pub fn get(&self, key: &str) -> SFuture<Vec<u8>> {
-        let url = format!("{}{}", self.base_url, key);
-        debug!("GET {}", url);
-        let url2 = url.clone();
         Box::new(
             self.client
-                .get(&url[..])
-                .send()
-                .chain_err(move || format!("failed GET: {}", url))
-                .and_then(|res| {
-                    if res.status().is_success() {
-                        let content_length = res
-                            .headers()
-                            .get_hyperx::<header::ContentLength>()
-                            .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
-                    } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
-                    }
+                .get_object(rusoto_s3::GetObjectRequest {
+                    bucket: self.bucket_name.clone(),
+                    key: key.into(),
+                    ..Default::default()
                 })
-                .and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .chain_err(|| "failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), url2);
-                            }
-                        }
-                        Ok(bytes)
-                    })
+                .map_err(|err| err.to_string().into())
+                .and_then(|response| {
+                    response
+                        .body
+                        .expect("Missing body when fetching from S3")
+                        .map_err(|err| err.to_string().into())
+                        .fold(Vec::new(), |mut out, item| -> Result<_> {
+                            out.extend(item);
+                            Ok(out)
+                        })
                 }),
         )
     }
 
-    pub fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials) -> SFuture<()> {
-        let url = format!("{}{}", self.base_url, key);
-        debug!("PUT {}", url);
-        let mut request = Request::new(Method::PUT, url.parse().unwrap());
-
-        let content_type = "application/octet-stream";
-        let date = time::now_utc().rfc822().to_string();
-        let mut canonical_headers = String::new();
-        let token = creds.token().as_ref().map(|s| s.as_str());
-        // Keep the list of header values sorted!
-        for (header, maybe_value) in vec![("x-amz-security-token", token)] {
-            if let Some(ref value) = maybe_value {
-                request.headers_mut().insert(
-                    header,
-                    HeaderValue::from_str(value)
-                        .unwrap_or_else(|_| panic!("Invalid `{}` header", header)),
-                );
-                canonical_headers
-                    .push_str(format!("{}:{}\n", header.to_ascii_lowercase(), value).as_ref());
-            }
-        }
-        let auth = self.auth(
-            "PUT",
-            &date,
-            key,
-            "",
-            &canonical_headers,
-            content_type,
-            creds,
-        );
-        request.headers_mut().insert(
-            "Date",
-            HeaderValue::from_str(&date).expect("Invalid date header"),
-        );
-        request
-            .headers_mut()
-            .set(header::ContentType(content_type.parse().unwrap()));
-        request
-            .headers_mut()
-            .set(header::ContentLength(content.len() as u64));
-        request.headers_mut().set(header::CacheControl(vec![
-            // Two weeks
-            header::CacheDirective::MaxAge(1296000),
-        ]));
-        request.headers_mut().insert(
-            "Authorization",
-            HeaderValue::from_str(&auth).expect("Invalid authentication"),
-        );
-        *request.body_mut() = Some(content.into());
-
-        Box::new(self.client.execute(request).then(|result| match result {
-            Ok(res) => {
-                if res.status().is_success() {
-                    trace!("PUT succeeded");
-                    Ok(())
-                } else {
-                    trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
-                }
-            }
-            Err(e) => {
-                trace!("PUT failed with error: {:?}", e);
-                Err(e.into())
-            }
-        }))
-    }
-
-    // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
-    fn auth(
-        &self,
-        verb: &str,
-        date: &str,
-        path: &str,
-        md5: &str,
-        headers: &str,
-        content_type: &str,
-        creds: &AwsCredentials,
-    ) -> String {
-        let string = format!(
-            "{verb}\n{md5}\n{ty}\n{date}\n{headers}{resource}",
-            verb = verb,
-            md5 = md5,
-            ty = content_type,
-            date = date,
-            headers = headers,
-            resource = format!("/{}/{}", self.name, path)
-        );
-        let signature = signature(&string, creds.aws_secret_access_key());
-        format!("AWS {}:{}", creds.aws_access_key_id(), signature)
+    pub fn put(&self, key: &str, content: Vec<u8>) -> SFuture<()> {
+        Box::new(
+            self.client
+                .put_object(rusoto_s3::PutObjectRequest {
+                    bucket: self.bucket_name.clone(),
+                    key: key.into(),
+                    content_length: Some(content.len() as i64),
+                    content_type: Some("application/octet-stream".into()),
+                    cache_control: Some("max-age=1296000".into()),
+                    body: Some(content.into()),
+                    ..Default::default()
+                })
+                .map_err(|err| err.to_string().into())
+                .map(|_| ()),
+        )
     }
 }

@@ -13,10 +13,7 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::simples3::{
-    AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
-};
-use directories::UserDirs;
+use crate::simples3::Bucket;
 use futures::future;
 use futures::future::Future;
 use std::io;
@@ -29,31 +26,13 @@ use crate::errors::*;
 pub struct S3Cache {
     /// The S3 bucket.
     bucket: Rc<Bucket>,
-    /// Credentials provider.
-    provider: AutoRefreshingProvider<ChainProvider>,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     pub fn new(bucket: &str, endpoint: &str) -> Result<S3Cache> {
-        let user_dirs = UserDirs::new().ok_or("Couldn't get user directories")?;
-        let home = user_dirs.home_dir();
-
-        let profile_providers = vec![
-            ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
-            //TODO: this is hacky, this is where our mac builders store their
-            // credentials. We should either match what boto does more directly
-            // or make those builders put their credentials in ~/.aws/credentials
-            ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
-        ];
-        let provider =
-            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
-        //TODO: configurable SSL
-        let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No)?);
-        Ok(S3Cache {
-            bucket: bucket,
-            provider: provider,
-        })
+        let bucket = Rc::new(Bucket::new(bucket, endpoint)?);
+        Ok(S3Cache { bucket })
     }
 }
 
@@ -83,17 +62,11 @@ impl Storage for S3Cache {
             Ok(data) => data,
             Err(e) => return f_err(e),
         };
-        let credentials = self
-            .provider
-            .credentials()
-            .chain_err(|| "failed to get AWS credentials");
 
         let bucket = self.bucket.clone();
-        let response = credentials.and_then(move |credentials| {
-            bucket
-                .put(&key, data, &credentials)
-                .chain_err(|| "failed to put cache entry in s3")
-        });
+        let response = bucket
+            .put(&key, data)
+            .chain_err(|| "failed to put cache entry in s3");
 
         Box::new(response.map(move |_| start.elapsed()))
     }

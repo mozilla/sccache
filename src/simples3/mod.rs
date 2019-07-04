@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod credential;
 mod s3;
 
-pub use crate::simples3::credential::*;
 pub use crate::simples3::s3::*;

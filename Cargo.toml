@@ -58,6 +58,8 @@ regex = "1"
 reqwest = { version = "0.9", optional = true }
 retry = "0.5.0"
 ring = "0.14"
+rusoto_core = "0.40"
+rusoto_s3 = "0.40"
 rust-crypto = { version = "0.2.36", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
