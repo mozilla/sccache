@@ -228,7 +228,7 @@ impl OverlayBuilder {
 
         crossbeam_utils::thread::scope(|scope| {
             scope
-                .spawn(|| {
+                .spawn(|_| {
                     // Now mounted filesystems will be automatically unmounted when this thread dies
                     // (and tmpfs filesystems will be completely destroyed)
                     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
@@ -379,6 +379,7 @@ impl OverlayBuilder {
                 .join()
                 .unwrap_or_else(|_e| Err(Error::from("Build thread exited unsuccessfully")))
         })
+        .unwrap_or_else(|_e| Err(Error::from("Build thread exited unsuccessfully")))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
