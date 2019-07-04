@@ -69,7 +69,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
     #[allow(deprecated)]
-    let sccache = assert_cmd::cargo::main_binary_path().unwrap();
+    let sccache = assert_cmd::cargo::cargo_bin("sccache");
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.
