@@ -33,7 +33,7 @@ use futures::sync::mpsc;
 use futures::task::{self, Task};
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures_cpupool::CpuPool;
-use number_prefix::{binary_prefix, Prefixed, Standalone};
+use number_prefix::{NumberPrefix, Prefixed, Standalone};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -1232,7 +1232,7 @@ impl ServerInfo {
             ("Max cache size", &self.max_cache_size),
         ] {
             if let &Some(val) = val {
-                let (val, suffix) = match binary_prefix(val as f64) {
+                let (val, suffix) = match NumberPrefix::binary(val as f64) {
                     Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
                     Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
                 };
