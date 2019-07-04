@@ -24,7 +24,7 @@ required-features = ["dist-server"]
 [dependencies]
 ar = { version = "0.7", optional = true }
 atty = "0.2.6"
-base64 = "0.9.0"
+base64 = "0.10"
 bincode = "1"
 byteorder = "1.0"
 bytes = "0.4"
