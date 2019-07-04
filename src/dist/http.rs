@@ -394,7 +394,6 @@ mod server {
         static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
             leeway: 0,
             validate_exp: false,
-            validate_iat: false,
             validate_nbf: false,
             aud: None,
             iss: None,
