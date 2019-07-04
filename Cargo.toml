@@ -40,7 +40,7 @@ futures = "0.1.11"
 futures-cpupool = "0.1"
 http = "0.1"
 hyper = { version = "0.12", optional = true }
-hyperx = { version = "0.12", optional = true }
+hyperx = { version = "0.15", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "6.0", optional = true }
 lazy_static = "1.0.0"
