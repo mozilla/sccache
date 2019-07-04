@@ -174,7 +174,7 @@ impl OverlayBuilder {
         trace!("Compile environment: {:?}", compile_command.env_vars);
         trace!("Compile command: {:?} {:?}", compile_command.executable, compile_command.arguments);
 
-        crossbeam_utils::thread::scope(|scope| { scope.spawn(|| {
+        crossbeam_utils::thread::scope(|scope| { scope.spawn(|_| {
 
             // Now mounted filesystems will be automatically unmounted when this thread dies
             // (and tmpfs filesystems will be completely destroyed)
@@ -286,6 +286,7 @@ impl OverlayBuilder {
 
         // Bizarrely there's no way to actually get any information from a thread::Result::Err
         }).join().unwrap_or_else(|_e| Err(Error::from("Build thread exited unsuccessfully"))) })
+            .unwrap_or_else(|_e| Err(Error::from("Build thread exited unsuccessfully")))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
