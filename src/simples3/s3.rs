@@ -6,7 +6,6 @@ use std::ascii::AsciiExt;
 use std::fmt;
 
 use futures::{Future, Stream};
-use rusoto_core::Region;
 use rusoto_s3::S3;
 
 use crate::errors::*;
@@ -24,13 +23,10 @@ impl fmt::Display for Bucket {
 }
 
 impl Bucket {
-    pub fn new(bucket_name: &str, endpoint: &str) -> Result<Bucket> {
+    pub fn new(bucket_name: &str, region: &rusoto_core::Region) -> Result<Bucket> {
         Ok(Bucket {
             bucket_name: bucket_name.to_owned(),
-            client: rusoto_s3::S3Client::new(rusoto_core::Region::Custom {
-                name: Region::default().name().into(),
-                endpoint: endpoint.into(),
-            }),
+            client: rusoto_s3::S3Client::new(region.clone()),
         })
     }
 

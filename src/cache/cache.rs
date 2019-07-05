@@ -261,11 +261,11 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> 
             }
             CacheType::S3(config::S3CacheConfig {
                 ref bucket,
-                ref endpoint,
+                ref region,
             }) => {
-                debug!("Trying S3Cache({}, {})", bucket, endpoint);
+                debug!("Trying S3Cache({}, {:?})", bucket, region);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&bucket, &endpoint) {
+                match S3Cache::new(&bucket, region) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);

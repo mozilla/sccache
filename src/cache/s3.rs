@@ -30,8 +30,8 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str) -> Result<S3Cache> {
-        let bucket = Rc::new(Bucket::new(bucket, endpoint)?);
+    pub fn new(bucket: &str, region: &rusoto_core::Region) -> Result<S3Cache> {
+        let bucket = Rc::new(Bucket::new(bucket, region)?);
         Ok(S3Cache { bucket })
     }
 }
