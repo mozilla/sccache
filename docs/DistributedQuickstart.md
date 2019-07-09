@@ -102,9 +102,9 @@ Configure a client
 
 A client uses `sccache` to wrap compile commands, communicates with the scheduler to find available build servers, and communicates with build servers to execute the compiles and receive the results.
 
-Clients that are not targeting linux64 require the `icecc-create-env` script, which is part of `icecream` for packaging toolchains. You can install icecream to get this script (`apt install icecc` on Ubuntu), or download it from the git repository and place it in your `PATH`: `curl https://raw.githubusercontent.com/icecc/icecream/master/client/icecc-create-env.in > icecc-create-env && chmod +x icecc-create-env`. See [using custom toolchains](#using-custom-toolchains).
+Clients that are not targeting linux64 require the `icecc-create-env` script or should be provided with an archive. `icecc-create-env` is part of `icecream` for packaging toolchains. You can install icecream to get this script (`apt install icecc` on Ubuntu), or download it from the git repository and place it in your `PATH`: `curl https://raw.githubusercontent.com/icecc/icecream/master/client/icecc-create-env.in > icecc-create-env && chmod +x icecc-create-env`. See [using custom toolchains](#using-custom-toolchains).
 
-Create a client config file in `~/.config/sccache/config`. A minimal example looks like:
+Create a client config file in `~/.config/sccache/config` (on Linux) or `~/Library/Preferences/Mozilla.sccache/config` (on macOS). A minimal example looks like:
 ```toml
 [dist]
 # The URL used to connect to the scheduler (should use https, given an ideal
@@ -148,9 +148,9 @@ On Linux and OSX:
 ```
 [[dist.toolchains]]
 type = "path_override"
-compiler_executable = "/usr/bin/gcc-5"
-archive = "/home/me/toolchains/gcc-5-38505675dd9514438ed26497fceb0fe0.tar.gz"
-archive_compiler_executable = "/usr/bin/gcc"
+compiler_executable = "/home/me/.mozbuild/clang/bin/clang"
+archive = "/home/me/.mozbuild/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
+archive_compiler_executable = "/builds/worker/workspace/build/src/clang/bin/clang"
 ```
 
 On Windows:
@@ -159,8 +159,8 @@ On Windows:
 [[dist.toolchains]]
 type = "path_override"
 compiler_executable = "C:/clang/bin\\clang-cl.exe"
-archive = "C:/toolchains/gcc-5-38505675dd9514438ed26497fceb0fe0.tar.gz"
-archive_compiler_executable = "/usr/bin/gcc"
+archive = "C:/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
+archive_compiler_executable = "/builds/worker/workspace/build/src/clang/bin/clang"
 ```
 
 Where:
@@ -181,3 +181,19 @@ binaries for Ubuntu 16.04](http://releases.llvm.org/download.html) and extract t
 package up the toolchain using the extracted `bin/clang` file (requires
 [PR #321](https://github.com/mozilla/sccache/pull/321)) and then insert `bin/clang-cl` at
 the appropriate path as a symlink to the `bin/clang` binary.
+
+Considerations when distributing from macOS
+-------------------------------------------
+
+When distributing from a macOS client, additional flags and configuration considerations
+may be required:
+
+- An explicit target should be passed to the compiler, for instance by adding
+  `--target=x86_64-apple-darwin16.0.0` to your build system's `CFLAGS`.
+- An explicit toolchain archive will need to be configured, as described above.
+  In case rust is being cached, the same version of `rustc` will need to be used
+  for local compiles as is found in the distributed archive.
+- The client config will be read from `~/Library/Preferences/Mozilla.sccache/config`,
+  not `~/.config/sccache/config`.
+- Some cross compilers may not understand some intrinsics used in more recent macOS
+  SDKs. The 10.11 SDK is known to work.
