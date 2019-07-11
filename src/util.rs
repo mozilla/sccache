@@ -48,15 +48,12 @@ impl Digest {
     where
         T: AsRef<Path>,
     {
-        let path = path.as_ref();
-        let f = ftry!(
-            File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))
-        );
-        Self::reader(f, pool)
+        Self::reader(path.as_ref().to_owned(), pool)
     }
 
-    pub fn reader<R: Read + Send + 'static>(rdr: R, pool: &CpuPool) -> SFuture<String> {
+    pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
+            let rdr = File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
             let mut m = Digest::new();
             let mut reader = BufReader::new(rdr);
             loop {
