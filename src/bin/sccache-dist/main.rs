@@ -585,9 +585,20 @@ impl SchedulerIncoming for Scheduler {
         let AssignJobResult {
             state,
             need_toolchain,
-        } = requester
-            .do_assign_job(server_id, job_id, tc, auth.clone())
-            .chain_err(|| "assign job failed")?;
+        } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
+            .chain_err(|| {
+                // LOCKS
+                let mut servers = self.servers.lock().unwrap();
+                if let Some(entry) = servers.get_mut(&server_id) {
+                    if !entry.jobs_assigned.remove(&job_id) {
+                        "assign job failed and job not known to the server"
+                    } else {
+                        "assign job failed, job un-assigned from the server"
+                    }
+                } else {
+                    "assign job failed and server not known"
+                }
+            })?;
         {
             // LOCKS
             let mut jobs = self.jobs.lock().unwrap();
