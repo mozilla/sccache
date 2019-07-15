@@ -49,7 +49,10 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     let obj_file = "x.o";
     write_source(tmpdir, source_file, "int x() { return 5; }");
     sccache_command()
-        .args(&["gcc", "-c"]).arg(tmpdir.join(source_file)).arg("-o").arg(tmpdir.join(obj_file))
+        .args(&[std::env::var("CC").unwrap_or("gcc".to_string()).as_str(), "-c"])
+        .arg(tmpdir.join(source_file))
+        .arg("-o")
+        .arg(tmpdir.join(obj_file))
         .envs(envs)
         .assert()
         .success();
