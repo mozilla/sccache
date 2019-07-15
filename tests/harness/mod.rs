@@ -275,6 +275,7 @@ impl DistSystem {
             .args(&[
                 "run",
                 "--name", &scheduler_name,
+                "-e", "SCCACHE_NO_DAEMON=1",
                 "-e", "RUST_LOG=sccache=trace",
                 "-e", "RUST_BACKTRACE=1",
                 "-v", &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
@@ -310,7 +311,7 @@ impl DistSystem {
                 // Important for the bubblewrap builder
                 "--privileged",
                 "--name", &server_name,
-                "-e", "RUST_LOG=sccache=debug",
+                "-e", "RUST_LOG=sccache=trace",
                 "-e", "RUST_BACKTRACE=1",
                 "-v", &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
                 "-v", &format!("{}:{}", self.tmpdir.to_str().unwrap(), CONFIGS_CONTAINER_PATH),
