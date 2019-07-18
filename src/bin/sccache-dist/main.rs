@@ -792,20 +792,21 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Started)
             .chain_err(|| "Updating job state failed")?;
-        let tc = match self.job_toolchains.lock().unwrap().remove(&job_id) {
-            Some(tc) => tc,
-            None => return Ok(RunJobResult::JobNotFound),
+        let res = match self.job_toolchains.lock().unwrap().remove(&job_id) {
+            None => Ok(RunJobResult::JobNotFound),
+            Some(tc) => {
+                match self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache) {
+                    Err(e) => Err(e.chain_err(|| "run build failed")),
+                    Ok(res) => Ok(RunJobResult::Complete(JobComplete {
+                        output: res.output,
+                        outputs: res.outputs,
+                    })),
+                }
+            },
         };
-        let res = self
-            .builder
-            .run_build(tc, command, outputs, inputs_rdr, &self.cache)
-            .chain_err(|| "run build failed")?;
         requester
             .do_update_job_state(job_id, JobState::Complete)
             .chain_err(|| "Updating job state failed")?;
-        Ok(RunJobResult::Complete(JobComplete {
-            output: res.output,
-            outputs: res.outputs,
-        }))
+        return res;
     }
 }
