@@ -89,6 +89,7 @@ nix = { version = "0.11.0", optional = true }
 rouille = { version = "2.2", optional = true, default-features = false, features = ["ssl"] }
 syslog = { version = "4.0.1", optional = true }
 void = { version = "1", optional = true }
+version-compare = { version = "0.0.8", optional = true }
 
 [patch.crates-io]
 # Waiting for https://github.com/tiny-http/tiny-http/pull/151
@@ -134,7 +135,7 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "rust-crypto", "url"]
 # Enables the sccache-dist binary
-dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void"]
+dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = []
 
