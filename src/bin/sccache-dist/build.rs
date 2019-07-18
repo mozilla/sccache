@@ -26,6 +26,7 @@ use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::{Mutex};
+use version_compare::Version;
 
 use crate::errors::*;
 
@@ -93,6 +94,26 @@ impl OverlayBuilder {
         if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
             // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
             bail!("not running as root")
+        }
+
+        let out = Command::new(&bubblewrap).arg("--version").check_stdout_trim()
+            .chain_err(|| "Failed to execute bwrap for version check")?;
+        if let Some(s) = out.split_whitespace().nth(1) {
+            match (Version::from("0.3.0"), Version::from(s)) {
+                (Some(min), Some(seen)) => {
+                    if seen < min {
+                        bail!("bubblewrap 0.3.0 or later is required, got {:?} for {:?}",
+                              out, bubblewrap);
+                    }
+                },
+                (_, _) => {
+                    bail!("Unexpected version format running {:?}: got {:?}, expected \"bubblewrap x.x.x\"",
+                          bubblewrap, out);
+                }
+            }
+        } else {
+            bail!("Unexpected version format running {:?}: got {:?}, expected \"bubblewrap x.x.x\"",
+                  bubblewrap, out);
         }
 
         // TODO: pidfile
