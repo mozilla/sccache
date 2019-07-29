@@ -46,7 +46,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use syslog::Facility;
 
 use crate::errors::*;
@@ -453,6 +453,7 @@ fn init_logging() {
 }
 
 const MAX_PER_CORE_LOAD: f64 = 10f64;
+const SERVER_REMEMBER_ERROR_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Copy, Clone)]
 struct JobDetail {
@@ -477,6 +478,7 @@ pub struct Scheduler {
 struct ServerDetails {
     jobs_assigned: HashSet<JobId>,
     last_seen: Instant,
+    last_error: Option<Instant>,
     num_cpus: usize,
     server_nonce: ServerNonce,
     job_authorizer: Box<dyn JobAuthorizer>,
@@ -509,6 +511,7 @@ impl SchedulerIncoming for Scheduler {
             let mut dead_servers = vec![];
             let res = {
                 let mut best = None;
+                let mut best_err = None;
                 let mut best_load: f64 = MAX_PER_CORE_LOAD;
                 let now = Instant::now();
                 for (&server_id, details) in servers.iter_mut() {
@@ -517,8 +520,34 @@ impl SchedulerIncoming for Scheduler {
                         continue;
                     }
                     let load = details.jobs_assigned.len() as f64 / details.num_cpus as f64;
-                    if load < best_load {
+
+                    if let Some(last_error) = details.last_error {
+                        if load < MAX_PER_CORE_LOAD {
+                            if now.duration_since(last_error) > SERVER_REMEMBER_ERROR_TIMEOUT {
+                                details.last_error = None;
+                            }
+                            match best_err {
+                                Some((_, &mut ServerDetails {
+                                    last_error: Some(best_last_err),
+                                    ..
+                                })) => {
+                                    if last_error < best_last_err {
+                                        trace!("Selected {:?}, its most recent error is {:?} ago",
+                                               server_id, now - last_error);
+                                        best_err = Some((server_id, details));
+                                    }
+                                },
+                                _ => {
+                                    trace!("Selected {:?}, its most recent error is {:?} ago",
+                                           server_id, now - last_error);
+                                    best_err = Some((server_id, details));
+                                },
+                            }
+                        }
+                    } else if load < best_load {
                         best = Some((server_id, details));
+                        trace!("Selected {:?} as the server with the best load",
+                               server_id);
                         best_load = load;
                         if load == 0f64 {
                             break;
@@ -527,7 +556,7 @@ impl SchedulerIncoming for Scheduler {
                 }
 
                 // Assign the job to our best choice
-                if let Some((server_id, server_details)) = best {
+                if let Some((server_id, server_details)) = best.or(best_err) {
                     let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
                     let job_id = JobId(job_count);
                     assert!(server_details.jobs_assigned.insert(job_id));
@@ -590,6 +619,7 @@ impl SchedulerIncoming for Scheduler {
                 // LOCKS
                 let mut servers = self.servers.lock().unwrap();
                 if let Some(entry) = servers.get_mut(&server_id) {
+                    entry.last_error = Some(Instant::now());
                     if !entry.jobs_assigned.remove(&job_id) {
                         "assign job failed and job not known to the server"
                     } else {
@@ -649,6 +679,7 @@ impl SchedulerIncoming for Scheduler {
             server_id,
             ServerDetails {
                 last_seen: Instant::now(),
+                last_error: None,
                 jobs_assigned: HashSet::new(),
                 num_cpus,
                 server_nonce,
