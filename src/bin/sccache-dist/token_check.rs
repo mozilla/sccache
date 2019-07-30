@@ -82,7 +82,7 @@ impl ClientAuthCheck for MozillaCheck {
         self.check_mozilla(token)
             .map_err(|e| {
                 warn!("Mozilla token validation failed: {}", e);
-                ClientVisibleMsg::from_nonsensitive("Failed to validate Mozilla OAuth token".to_owned())
+                ClientVisibleMsg::from_nonsensitive("Failed to validate Mozilla OAuth token, run sccache --dist-auth".to_owned())
             })
     }
 }
