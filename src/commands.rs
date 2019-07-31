@@ -476,9 +476,9 @@ where
                 }
             }
         }
-        CompileResponse::UnsupportedCompiler => {
-            debug!("Server sent UnsupportedCompiler");
-            bail!("Compiler not supported");
+        CompileResponse::UnsupportedCompiler(s) => {
+            debug!("Server sent UnsupportedCompiler: {:?}", s);
+            bail!("Compiler not supported: {:?}", s);
         }
         CompileResponse::UnhandledCompile => {
             debug!("Server sent UnhandledCompile");

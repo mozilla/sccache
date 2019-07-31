@@ -53,7 +53,9 @@ error_chain! {
         HttpClientError(msg: String) {
             display("didn't get a successful HTTP status, got `{}`", msg)
         }
-        ProcessError(output: process::Output)
+        ProcessError(output: process::Output) {
+            display("{}", String::from_utf8_lossy(&output.stderr))
+        }
         Which(err: which::Error) {
             display("{}", err)
         }
