@@ -40,7 +40,7 @@ pub enum CompileResponse {
     /// The server could not handle this compilation request.
     UnhandledCompile,
     /// The compiler was not supported.
-    UnsupportedCompiler,
+    UnsupportedCompiler(OsString),
 }
 
 /// Information about a finished compile, either from cache or executed locally.

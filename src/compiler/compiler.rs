@@ -827,7 +827,7 @@ fn detect_compiler<T>(
     executable: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
-) -> SFuture<Option<Box<dyn Compiler<T>>>>
+) -> SFuture<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
@@ -841,29 +841,20 @@ where
     let rustc_vv = if filename.to_string_lossy().to_lowercase() == "rustc" {
         // Sanity check that it's really rustc.
         let executable = executable.to_path_buf();
-        let child = creator
+        let mut child = creator
             .clone()
-            .new_command_sync(&executable)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .env_clear()
+            .new_command_sync(executable);
+        child.env_clear()
             .envs(ref_env(env))
-            .args(&["-vV"])
-            .spawn();
-        let output = child.and_then(move |child| {
-            child
-                .wait_with_output()
-                .chain_err(|| "failed to read child output")
-        });
-        Box::new(output.map(|output| {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    if stdout.starts_with("rustc ") {
-                        return Some(stdout);
-                    }
+            .args(&["-vV"]);
+
+        Box::new(run_input_output(child, None).map(|output| {
+            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+                if stdout.starts_with("rustc ") {
+                    return Some(Ok(stdout));
                 }
             }
-            None
+            Some(Err(ErrorKind::ProcessError(output)))
         }))
     } else {
         f_ok(None)
@@ -874,14 +865,13 @@ where
     let env = env.to_owned();
     let pool = pool.clone();
     Box::new(rustc_vv.and_then(move |rustc_vv| {
-        if let Some(rustc_verbose_version) = rustc_vv {
-            debug!("Found rustc");
-            Box::new(
-                Rust::new(creator, executable, &env, &rustc_verbose_version, pool)
-                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)),
-            )
-        } else {
-            detect_c_compiler(creator, executable, env, pool)
+        match rustc_vv {
+            Some(Ok(rustc_verbose_version)) => {
+                debug!("Found rustc");
+                Box::new(Rust::new(creator, executable, &env, &rustc_verbose_version, pool).map(|c| Box::new(c) as Box<dyn Compiler<T>>))
+            },
+            Some(Err(e)) => f_err(e),
+            None => detect_c_compiler(creator, executable, env, pool)
         }
     }))
 }
@@ -891,7 +881,7 @@ fn detect_c_compiler<T>(
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
     pool: CpuPool,
-) -> SFuture<Option<Box<dyn Compiler<T>>>>
+) -> SFuture<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
@@ -913,7 +903,7 @@ diab
 
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
     let output = write.and_then(move |(tempdir, src)| {
         cmd.arg("-E").arg(src);
@@ -940,18 +930,18 @@ diab
                 "clang" => {
                     debug!("Found clang");
                     return Box::new(CCompiler::new(Clang, executable, &pool)
-                                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
+                                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
                 }
                 "diab" => {
                     debug!("Found diab");
                     return Box::new(CCompiler::new(Diab, executable, &pool)
-                                    .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
+                                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
 
                 }
                 "gcc" => {
                     debug!("Found GCC");
                     return Box::new(CCompiler::new(GCC, executable, &pool)
-                                .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>)));
+                                .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
                 }
                 "msvc" | "msvc-clang" => {
                     let is_clang = line == "msvc-clang";
@@ -967,20 +957,19 @@ diab
                             includes_prefix: prefix,
                             is_clang,
                         }, executable, &pool)
-                            .map(|c| Some(Box::new(c) as Box<dyn Compiler<T>>))
+                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
                     }))
                 }
                 _ => (),
             }
         }
 
+        let stderr = String::from_utf8_lossy(&output.stderr);
         debug!("nothing useful in detection output {:?}", stdout);
         debug!("compiler status: {}", output.status);
-        debug!(
-            "compiler stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        f_ok(None)
+        debug!("compiler stderr:\n{}", stderr);
+
+        f_err(stderr.into_owned())
     }))
 }
 
@@ -995,13 +984,7 @@ where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    let detect = detect_compiler(creator, executable, env, &pool);
-    Box::new(detect.and_then(move |compiler| -> Result<_> {
-        match compiler {
-            Some(compiler) => Ok(compiler),
-            None => bail!("could not determine compiler kind"),
-        }
-    }))
+    detect_compiler(creator, executable, env, &pool)
 }
 
 #[cfg(test)]
@@ -1032,7 +1015,6 @@ mod test {
         );
         let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
             .wait()
-            .unwrap()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
@@ -1048,7 +1030,6 @@ mod test {
         );
         let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
             .wait()
-            .unwrap()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
     }
@@ -1078,7 +1059,6 @@ mod test {
         );
         let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
             .wait()
-            .unwrap()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
     }
@@ -1113,7 +1093,6 @@ LLVM version: 6.0",
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
         let c = detect_compiler(&creator, &rustc, &[], &pool)
             .wait()
-            .unwrap()
             .unwrap();
         assert_eq!(CompilerKind::Rust, c.kind());
     }
@@ -1124,7 +1103,7 @@ LLVM version: 6.0",
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")));
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap().unwrap();
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
     }
 
@@ -1139,8 +1118,7 @@ LLVM version: 6.0",
         assert!(
             detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
                 .wait()
-                .unwrap()
-                .is_none()
+                .is_err()
         );
     }
 
@@ -1152,8 +1130,7 @@ LLVM version: 6.0",
         assert!(
             detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
                 .wait()
-                .unwrap()
-                .is_none()
+                .is_err()
         );
     }
 

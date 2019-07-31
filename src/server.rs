@@ -833,7 +833,7 @@ where
         &self,
         path: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> SFuture<Option<Box<dyn Compiler<C>>>> {
+    ) -> SFuture<Result<Box<dyn Compiler<C>>>> {
         trace!("compiler_info");
         let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
         //TODO: properly handle rustup overrides. Currently this will
@@ -842,16 +842,14 @@ where
         let result = match self.compilers.borrow().get(&path) {
             // It's a hit only if the mtime matches.
             Some(&Some((ref c, ref cached_mtime))) if *cached_mtime == mtime => {
-                Some(Some(c.clone()))
+                Some(c.clone())
             }
-            // We cache non-results.
-            Some(&None) => Some(None),
             _ => None,
         };
         match result {
             Some(info) => {
                 trace!("compiler_info cache hit");
-                f_ok(info)
+                f_ok(Ok(info))
             }
             None => {
                 trace!("compiler_info cache miss");
@@ -862,10 +860,12 @@ where
 
                 let info = get_compiler_info(&self.creator, &path, env, &self.pool);
                 Box::new(info.then(move |info| {
-                    let info = info.ok();
-                    me.compilers
-                        .borrow_mut()
-                        .insert(path, info.clone().map(|i| (i, mtime)));
+                    let map_info = match info {
+                        Ok(ref c) => Some((c.clone(), mtime)),
+                        Err(_) => None,
+                    };
+                    me.compilers.borrow_mut()
+                        .insert(path, map_info);
                     Ok(info)
                 }))
             }
@@ -876,21 +876,21 @@ where
     /// If so, run `start_compile_task` to execute it.
     fn check_compiler(
         &self,
-        compiler: Option<Box<dyn Compiler<C>>>,
+        compiler: Result<Box<dyn Compiler<C>>>,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
     ) -> SccacheResponse {
         let mut stats = self.stats.borrow_mut();
         match compiler {
-            None => {
-                debug!("check_compiler: Unsupported compiler");
+            Err(e) => {
+                debug!("check_compiler: Unsupported compiler: {}", e.to_string());
                 stats.requests_unsupported_compiler += 1;
                 return Message::WithoutBody(Response::Compile(
-                    CompileResponse::UnsupportedCompiler,
+                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
                 ));
             }
-            Some(c) => {
+            Ok(c) => {
                 debug!("check_compiler: Supported compiler");
                 // Now check that we can handle this compiler with
                 // the provided commandline.
