@@ -468,7 +468,7 @@ where
         })
         .and_then(move |(dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths)| {
             debug!("[{}]: Requesting allocation", compile_out_pretty3);
-            dist_client.do_alloc_job(dist_toolchain.clone()).chain_err(|| "failed to allocate job")
+            dist_client.do_alloc_job(dist_toolchain.clone())
                 .and_then(move |jares| {
                     let alloc = match jares {
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
@@ -547,15 +547,20 @@ where
                     Ok((DistType::Ok, jc.output.into()))
                 })
         })
-        // Something failed, do a local compilation
         .or_else(move |e| {
             let mut errmsg = e.to_string();
             for cause in e.iter() {
                 errmsg.push_str(": ");
                 errmsg.push_str(&cause.to_string());
             }
-            warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
-            compile_cmd.execute(&creator).map(|o| (DistType::Error, o))
+            // Client errors are considered fatal.
+            match e {
+                Error(ErrorKind::HttpClientError(_), _) => f_err(e),
+                _ => {
+                    warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
+                    Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
+                }
+            }
         })
         .map(move |(dt, o)| (cacheable, dt, o))
     )

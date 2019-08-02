@@ -50,6 +50,9 @@ error_chain! {
             description("failed to get a successful HTTP status")
             display("didn't get a successful HTTP status, got `{}`", status)
         }
+        HttpClientError(msg: String) {
+            display("didn't get a successful HTTP status, got `{}`", msg)
+        }
         ProcessError(output: process::Output)
         Which(err: which::Error) {
             display("{}", err)

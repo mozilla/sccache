@@ -152,7 +152,7 @@ struct DistClientConfig {
 #[cfg(feature = "dist-client")]
 enum DistClientState {
     #[cfg(feature = "dist-client")]
-    Some(Arc<dyn dist::Client>),
+    Some(DistClientConfig, Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
     FailWithMessage(DistClientConfig, String),
     #[cfg(feature = "dist-client")]
@@ -173,6 +173,8 @@ impl DistClientContainer {
     pub fn new_disabled() -> Self {
         Self {}
     }
+
+    pub fn reset_state(&self) { }
 
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
@@ -203,13 +205,31 @@ impl DistClientContainer {
         }
     }
 
+    pub fn reset_state(&self) {
+        let mut guard = self.state.lock();
+        let state = guard.as_mut().unwrap();
+        let state: &mut DistClientState = &mut **state;
+        match mem::replace(state, DistClientState::Disabled) {
+            DistClientState::Some(cfg, _) |
+            DistClientState::FailWithMessage(cfg, _) |
+            DistClientState::RetryCreateAt(cfg, _) => {
+                warn!("State reset. Will recreate");
+                *state = DistClientState::RetryCreateAt(
+                    cfg,
+                    Instant::now() - Duration::from_secs(1)
+                );
+            },
+            DistClientState::Disabled => (),
+        }
+    }
+
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
         Self::maybe_recreate_state(state);
         let res = match state {
-            DistClientState::Some(dc) => Ok(Some(dc.clone())),
+            DistClientState::Some(_, dc) => Ok(Some(dc.clone())),
             DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => {
                 Ok(None)
             },
@@ -318,7 +338,7 @@ impl DistClientContainer {
                 match dist_client.do_get_status().wait() {
                     Ok(res) => {
                         info!("Successfully created dist client with {:?} cores across {:?} servers", res.num_cpus, res.num_servers);
-                        DistClientState::Some(Arc::new(dist_client))
+                        DistClientState::Some(config, Arc::new(dist_client))
                     },
                     Err(_) => {
                         warn!("Scheduler address configured, but could not communicate with scheduler");
@@ -964,6 +984,13 @@ where
                     };
                     res.stdout = output.stdout;
                     res.stderr = output.stderr;
+                }
+                Err(Error(ErrorKind::HttpClientError(msg), _)) => {
+                    me.dist_client.reset_state();
+                    let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
+                    error!("{}", errmsg);
+                    res.retcode = Some(1);
+                    res.stderr = errmsg.as_bytes().to_vec();
                 }
                 Err(err) => {
                     use std::fmt::Write;
