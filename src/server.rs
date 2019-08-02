@@ -176,6 +176,12 @@ impl DistClientContainer {
 
     pub fn reset_state(&self) { }
 
+    pub fn get_status(&self) -> DistInfo {
+        DistInfo::Disabled(
+            "dist-client feature not selected".to_string()
+        )
+    }
+
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
     }
@@ -220,6 +226,35 @@ impl DistClientContainer {
                 );
             },
             DistClientState::Disabled => (),
+        }
+    }
+
+    pub fn get_status(&self) -> DistInfo {
+        let mut guard = self.state.lock();
+        let state = guard.as_mut().unwrap();
+        let state: &mut DistClientState = &mut **state;
+        match state {
+            DistClientState::Disabled => DistInfo::Disabled(
+                "disabled".to_string(),
+            ),
+            DistClientState::FailWithMessage(cfg, _) => DistInfo::NotConnected(
+                cfg.scheduler_url.clone(),
+                "enabled, auth not configured".to_string(),
+            ),
+            DistClientState::RetryCreateAt(cfg, _) => DistInfo::NotConnected(
+                cfg.scheduler_url.clone(),
+                "enabled, not connected, will retry".to_string(),
+            ),
+            DistClientState::Some(cfg, client) => {
+                match client.do_get_status().wait() {
+                    Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(),
+                                                         res),
+                    Err(_) => DistInfo::NotConnected(
+                        cfg.scheduler_url.clone(),
+                        "could not communicate with scheduler".to_string(),
+                    ),
+                }
+            },
         }
     }
 
@@ -653,6 +688,10 @@ where
                 debug!("handle_client: get_stats");
                 Box::new(self.get_info().map(Response::Stats))
             }
+            Request::DistStatus => {
+                debug!("handle_client: dist_status");
+                Box::new(self.get_dist_status().map(Response::DistStatus))
+            }
             Request::ZeroStats => {
                 debug!("handle_client: zero_stats");
                 self.zero_stats();
@@ -742,6 +781,11 @@ where
             }).flatten()
             .forward(sink)
             .map(|_| ())
+    }
+
+    /// Get dist status.
+    fn get_dist_status(&self) -> SFuture<DistInfo> {
+        f_ok(self.dist_client.get_status())
     }
 
     /// Get info and stats about the cache.
@@ -1127,6 +1171,16 @@ pub struct ServerInfo {
     pub cache_location: String,
     pub cache_size: Option<u64>,
     pub max_cache_size: Option<u64>,
+}
+
+/// Status of the dist client.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum DistInfo {
+    Disabled(String),
+    #[cfg(feature = "dist-client")]
+    NotConnected(Option<config::HTTPUrl>, String),
+    #[cfg(feature = "dist-client")]
+    SchedulerStatus(Option<config::HTTPUrl>, dist::SchedulerStatusResult),
 }
 
 impl Default for ServerStats {
