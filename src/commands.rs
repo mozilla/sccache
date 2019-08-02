@@ -23,7 +23,7 @@ use crate::jobserver::Client;
 use log::Level::Trace;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
-use crate::server::{self, ServerInfo, ServerStartup};
+use crate::server::{self, ServerInfo, DistInfo, ServerStartup};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -295,6 +295,19 @@ pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
         .chain_err(|| "Failed to send data to or receive data from server")?;
     if let Response::Stats(stats) = response {
         Ok(stats)
+    } else {
+        bail!("Unexpected server response!")
+    }
+}
+
+/// Send a `DistStatus` request to the server, and return `DistStatus` if successful.
+pub fn request_dist_status(mut conn: ServerConnection) -> Result<DistInfo> {
+    debug!("request_dist_status");
+    let response = conn
+        .request(Request::DistStatus)
+        .chain_err(|| "Failed to send data to or receive data from server")?;
+    if let Response::DistStatus(info) = response {
+        Ok(info)
     } else {
         bail!("Unexpected server response!")
     }
@@ -627,6 +640,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::DistAuth => bail!(
             "Distributed compilation not compiled in, please rebuild with the dist-client feature"
         ),
+        Command::DistStatus => {
+            trace!("Command::DistStatus");
+            let srv = connect_or_start_server(get_port())?;
+            let status = request_dist_status(srv).chain_err(|| "failed to get dist-status from server")?;
+            serde_json::to_writer(&mut io::stdout(), &status)?;
+        },
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;

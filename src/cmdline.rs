@@ -44,6 +44,8 @@ pub enum Command {
     StopServer,
     /// Zero cache statistics and exit.
     ZeroStats,
+    /// Show the status of the distributed client.
+    DistStatus,
     /// Perform a login to authenticate for distributed compilation.
     DistAuth,
     /// Package a toolchain for distributed compilation (executable, out)
@@ -79,7 +81,8 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
              --start-server   'start background server'
              --stop-server    'stop background server'
              -z, --zero-stats 'zero statistics counters'
-             --dist-auth      'authenticate for distributed compilation'"
+             --dist-auth      'authenticate for distributed compilation'
+             --dist-status    'show status of the distributed client'"
                 )
         .arg(Arg::from_usage("--package-toolchain <executable> <out> 'package toolchain for distributed compilation'")
              .required(false))
@@ -139,6 +142,7 @@ pub fn parse() -> Result<Command> {
     let stop_server = matches.is_present("stop-server");
     let zero_stats = matches.is_present("zero-stats");
     let dist_auth = matches.is_present("dist-auth");
+    let dist_status = matches.is_present("dist-status");
     let package_toolchain = matches.is_present("package-toolchain");
     let cmd = matches.values_of_os("cmd");
     // Ensure that we've only received one command to run.
@@ -171,6 +175,8 @@ pub fn parse() -> Result<Command> {
         Ok(Command::ZeroStats)
     } else if dist_auth {
         Ok(Command::DistAuth)
+    } else if dist_status {
+        Ok(Command::DistStatus)
     } else if package_toolchain {
         let mut values = matches.values_of_os("package-toolchain").expect("Parsed package-toolchain but no values");
         assert!(values.len() == 2);
