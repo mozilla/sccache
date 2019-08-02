@@ -104,11 +104,16 @@ mod common {
                         .map_err(Into::into)
                 }).and_then(|(status, body)| {
                     if !status.is_success() {
-                        return f_err(format!(
+                        let errmsg = format!(
                             "Error {}: {}",
                             status.as_u16(),
                             String::from_utf8_lossy(&body)
-                        ));
+                        );
+                        if status.is_client_error() {
+                            return f_err(ErrorKind::HttpClientError(errmsg));
+                        } else {
+                            return f_err(errmsg);
+                        }
                     }
                     match bincode::deserialize(&body) {
                         Ok(r) => f_ok(r),
@@ -1145,7 +1150,6 @@ mod client {
             let server_certs = self.server_certs.clone();
             Box::new(
                 bincode_req_fut(req)
-                    .map_err(|e| e.chain_err(|| "POST to scheduler alloc_job failed"))
                     .and_then(move |res| match res {
                         AllocJobHttpResponse::Success {
                             job_alloc,
