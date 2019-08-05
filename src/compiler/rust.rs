@@ -135,6 +135,8 @@ pub struct ParsedArguments {
     emit: HashSet<String>,
     /// The value of any `--color` option passed on the commandline.
     color_mode: ColorMode,
+    /// Whether `--json` was passed to this invocation.
+    has_json: bool,
 }
 
 /// A struct on which to hang a `Compilation` impl.
@@ -675,6 +677,7 @@ ArgData!{
     Emit(String),
     Extern(ArgExtern),
     Color(String),
+    Json(String),
     CrateName(String),
     CrateType(ArgCrateTypes),
     OutDir(PathBuf),
@@ -702,6 +705,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--extern", ArgExtern, CanBeSeparated('='), Extern),
     take_arg!("--forbid", OsString, CanBeSeparated('='), PassThrough),
     flag!("--help", NotCompilationFlag),
+    take_arg!("--json", String, CanBeSeparated('='), Json),
     take_arg!("--out-dir", PathBuf, CanBeSeparated('='), OutDir),
     take_arg!("--pretty", OsString, CanBeSeparated('='), NotCompilation),
     take_arg!("--print", OsString, CanBeSeparated('='), NotCompilation),
@@ -738,6 +742,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut static_lib_names = vec![];
     let mut static_link_paths: Vec<PathBuf> = vec![];
     let mut color_mode = ColorMode::Auto;
+    let mut has_json = false;
 
     for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
@@ -810,6 +815,9 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     "never" => ColorMode::Off,
                     _ => ColorMode::Auto,
                 };
+            }
+            Some(Json(_)) => {
+                has_json = true;
             }
             Some(PassThrough(_)) => (),
             Some(Target(target)) => {
@@ -917,6 +925,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         dep_info: dep_info.map(|s| s.into()),
         emit,
         color_mode,
+        has_json,
     })
 }
 
@@ -950,6 +959,7 @@ impl<T> CompilerHasher<T> for RustHasher
                     dep_info,
                     emit,
                     color_mode: _,
+                    has_json,
                 },
         } = me;
         trace!("[{}]: generate_hash_key", crate_name);
@@ -1100,8 +1110,12 @@ impl<T> CompilerHasher<T> for RustHasher
                     None
                 };
                 let mut arguments = arguments;
-                // Always request color output, the client will strip colors if needed.
-                arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()), ArgDisposition::Separated));
+                // Request color output unless json was requested. The client will strip colors if needed.
+                if !has_json {
+                    arguments.push(Argument::WithValue("--color", ArgData::Color("always".into()),
+                                                       ArgDisposition::Separated));
+                }
+
                 let inputs = source_files.into_iter().chain(abs_externs).chain(abs_staticlibs).collect();
 
                 HashResult {
@@ -2078,6 +2092,7 @@ c:/foo/bar.rs:
                 dep_info: None,
                 emit: emit,
                 color_mode: ColorMode::Auto,
+                has_json: false,
             }
         });
         let creator = new_creator();
