@@ -73,18 +73,33 @@ fn normalize_key(key: &str) -> String {
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = normalize_key(key);
-        Box::new(self.bucket.get(&key).then(|result| {
-            match result {
-                Ok(data) => {
-                    let hit = CacheRead::from(io::Cursor::new(data))?;
-                    Ok(Cache::Hit(hit))
-                }
-                Err(e) => {
-                    warn!("Got AWS error: {:?}", e);
-                    Ok(Cache::Miss)
-                }
+
+        let result_cb = |result| match result {
+            Ok(data) => {
+                let hit = CacheRead::from(io::Cursor::new(data))?;
+                Ok(Cache::Hit(hit))
             }
-        }))
+            Err(e) => {
+                warn!("Got AWS error: {:?}", e);
+                Ok(Cache::Miss)
+            }
+        };
+
+        let bucket = self.bucket.clone();
+        let response = self
+            .provider
+            .credentials()
+            .then(move |credentials| {
+                match credentials {
+                    Ok(creds) => bucket.get(&key, Some(&creds)),
+                    Err(e) => {
+                        debug!("Could not load AWS creds: {}", e);
+                        bucket.get(&key, None)
+                    },
+                }
+            })
+            .then(result_cb);
+        Box::new(response)
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
