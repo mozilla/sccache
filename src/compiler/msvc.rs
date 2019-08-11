@@ -350,6 +350,7 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path, is_clang: bool) -> Co
                     _ => unreachable!(),
                 }
             }
+            Some(PassThroughFlag) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {

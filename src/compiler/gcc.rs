@@ -76,6 +76,9 @@ impl CCompilerImpl for GCC {
 ArgData!{ pub
     TooHardFlag,
     TooHard(OsString),
+    // Should only be necessary for -Xclang flags - unknown flags not hidden behind
+    // that are assumed to not affect compilation
+    PassThroughFlag,
     PassThrough(OsString),
     PassThroughPath(PathBuf),
     PreprocessorArgumentFlag,
@@ -249,6 +252,7 @@ where
             Some(PreprocessorArgumentFlag) |
             Some(PreprocessorArgument(_)) |
             Some(PreprocessorArgumentPath(_)) |
+            Some(PassThroughFlag) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => {}
             Some(Language(lang)) => {
@@ -279,6 +283,7 @@ where
             Some(ProfileGenerate) |
             Some(TestCoverage) |
             Some(Coverage) |
+            Some(PassThroughFlag) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
@@ -340,6 +345,7 @@ where
                     _ => unreachable!(),
                 }
             }
+            Some(PassThroughFlag) |
             Some(PassThrough(_)) |
             Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
