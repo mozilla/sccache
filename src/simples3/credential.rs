@@ -359,7 +359,7 @@ impl ProvideAwsCredentials for IamProvider {
                 }).chain_err(|| "failed to read http body")
         });
         let body = body
-            .map_err(|_e| "Didn't get a parseable response body from instance role details".into())
+            .map_err(|e| format!("Failed to get IAM credentials: {}", e).into())
             .and_then(|body| {
                 String::from_utf8(body).chain_err(|| "failed to read iam role response")
             });
