@@ -1,11 +1,11 @@
 use error_chain::ChainedError;
-use futures::sync::oneshot;
-use futures::prelude::*;
 use futures::future;
+use futures::prelude::*;
+use futures::sync::oneshot;
 use http::StatusCode;
 use hyper::body::Payload;
-use hyper::server::conn::{AddrIncoming};
-use hyper::service::{Service};
+use hyper::server::conn::AddrIncoming;
+use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
 use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
@@ -42,7 +42,8 @@ impl<T> ServeFn for T where
         + Copy
         + Send
         + 'static
-{}
+{
+}
 
 fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> impl ServeFn {
     move |req: Request<Body>| {
@@ -254,10 +255,8 @@ mod code_grant_pkce {
             (&Method::GET, "/auth_detail.json") => ftry_send!(json_response(&state.auth_url)),
             (&Method::GET, "/redirect") => {
                 let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
-                let (code, auth_state) = ftry_send!(
-                    handle_code_response(query_pairs)
-                        .chain_err(|| "Failed to handle response from redirect")
-                );
+                let (code, auth_state) = ftry_send!(handle_code_response(query_pairs)
+                    .chain_err(|| "Failed to handle response from redirect"));
                 if auth_state != state.auth_state_value {
                     return ftry_send!(Err("Mismatched auth states after redirect"));
                 }
@@ -385,11 +384,12 @@ mod implicit {
             .get(EXPIRES_IN_RESULT_PARAM)
             .ok_or("No expiry found in response")?;
         // Calculate ASAP the actual time at which the token will expire
-        let expires_at = Instant::now() + Duration::from_secs(
-            expires_in
-                .parse()
-                .map_err(|_| "Failed to parse expiry as integer")?,
-        );
+        let expires_at = Instant::now()
+            + Duration::from_secs(
+                expires_in
+                    .parse()
+                    .map_err(|_| "Failed to parse expiry as integer")?,
+            );
         let state = params
             .get(STATE_RESULT_PARAM)
             .ok_or("No state found in response")?;
@@ -435,9 +435,9 @@ mod implicit {
             (&Method::GET, "/redirect") => html_response(SAVE_AUTH_AFTER_REDIRECT),
             (&Method::POST, "/save_auth") => {
                 let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
-                let (token, expires_at, auth_state) = ftry_send!(
-                    handle_response(query_pairs).chain_err(|| "Failed to save auth after redirect")
-                );
+                let (token, expires_at, auth_state) =
+                    ftry_send!(handle_response(query_pairs)
+                        .chain_err(|| "Failed to save auth after redirect"));
                 if auth_state != state.auth_state_value {
                     return ftry_send!(Err("Mismatched auth states after redirect"));
                 }
@@ -489,7 +489,7 @@ impl<F, ReqBody, Ret, ResBody> Service for ServiceFn<F, ReqBody>
 where
     F: Fn(Request<ReqBody>) -> Ret,
     ReqBody: Payload,
-    Ret: IntoFuture<Item=Response<ResBody>>,
+    Ret: IntoFuture<Item = Response<ResBody>>,
     Ret::Error: Into<Box<dyn StdError + Send + Sync>>,
     ResBody: Payload,
 {
@@ -513,15 +513,9 @@ impl<F, R> IntoFuture for ServiceFn<F, R> {
     }
 }
 
-fn try_serve<T>(
-    serve: T,
-) -> Result<
-    Server<
-        AddrIncoming,
-        impl Fn() -> ServiceFn<T, Body>,
-    >,
->
-where T: ServeFn
+fn try_serve<T>(serve: T) -> Result<Server<AddrIncoming, impl Fn() -> ServiceFn<T, Body>>>
+where
+    T: ServeFn,
 {
     // Try all the valid ports
     for &port in VALID_PORTS {
@@ -546,9 +540,7 @@ where T: ServeFn
 
         let new_service = move || service_fn(serve);
         match Server::try_bind(&addr) {
-            Ok(s) => {
-                return Ok(s.serve(new_service))
-            }
+            Ok(s) => return Ok(s.serve(new_service)),
             Err(ref err)
                 if err
                     .cause2()

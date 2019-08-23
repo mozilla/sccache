@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::mock_command::{CommandChild, RunCommand};
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
 use futures_cpupool::CpuPool;
-use crate::mock_command::{CommandChild, RunCommand};
 use ring::digest::{Context, SHA512};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
-use std::io::BufReader;
 use std::io::prelude::*;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
@@ -53,7 +53,8 @@ impl Digest {
 
     pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
-            let rdr = File::open(&path).chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
+            let rdr = File::open(&path)
+                .chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
             let mut m = Digest::new();
             let mut reader = BufReader::new(rdr);
             loop {
@@ -105,7 +106,8 @@ pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
                 .into_iter()
                 .map(move |f| Digest::file(f, &pool))
                 .collect::<Vec<_>>(),
-        ).map(move |hashes| {
+        )
+        .map(move |hashes| {
             trace!(
                 "Hashed {} files in {}",
                 count,
@@ -177,7 +179,8 @@ where
             Stdio::piped()
         } else {
             Stdio::inherit()
-        }).stdout(Stdio::piped())
+        })
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
 

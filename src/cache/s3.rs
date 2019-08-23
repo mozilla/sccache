@@ -12,26 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{
-    Cache,
-    CacheRead,
-    CacheWrite,
-    Storage,
+use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::simples3::{
+    AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
 use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
-use crate::simples3::{
-    AutoRefreshingProvider,
-    Bucket,
-    ChainProvider,
-    ProfileProvider,
-    ProvideAwsCredentials,
-    Ssl,
-};
 use std::io;
 use std::rc::Rc;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
@@ -56,7 +46,8 @@ impl S3Cache {
             // or make those builders put their credentials in ~/.aws/credentials
             ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
         ];
-        let provider = AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
+        let provider =
+            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         //TODO: configurable SSL
         let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No)?);
         Ok(S3Cache {
@@ -73,16 +64,14 @@ fn normalize_key(key: &str) -> String {
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = normalize_key(key);
-        Box::new(self.bucket.get(&key).then(|result| {
-            match result {
-                Ok(data) => {
-                    let hit = CacheRead::from(io::Cursor::new(data))?;
-                    Ok(Cache::Hit(hit))
-                }
-                Err(e) => {
-                    warn!("Got AWS error: {:?}", e);
-                    Ok(Cache::Miss)
-                }
+        Box::new(self.bucket.get(&key).then(|result| match result {
+            Ok(data) => {
+                let hit = CacheRead::from(io::Cursor::new(data))?;
+                Ok(Cache::Hit(hit))
+            }
+            Err(e) => {
+                warn!("Got AWS error: {:?}", e);
+                Ok(Cache::Miss)
             }
         }))
     }
@@ -94,15 +83,16 @@ impl Storage for S3Cache {
             Ok(data) => data,
             Err(e) => return f_err(e),
         };
-        let credentials = self.provider.credentials().chain_err(|| {
-            "failed to get AWS credentials"
-        });
+        let credentials = self
+            .provider
+            .credentials()
+            .chain_err(|| "failed to get AWS credentials");
 
         let bucket = self.bucket.clone();
         let response = credentials.and_then(move |credentials| {
-            bucket.put(&key, data, &credentials).chain_err(|| {
-                "failed to put cache entry in s3"
-            })
+            bucket
+                .put(&key, data, &credentials)
+                .chain_err(|| "failed to put cache entry in s3")
         });
 
         Box::new(response.map(move |_| start.elapsed()))
@@ -112,6 +102,10 @@ impl Storage for S3Cache {
         format!("S3, bucket: {}", self.bucket)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
-    fn max_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
+    fn current_size(&self) -> SFuture<Option<u64>> {
+        Box::new(future::ok(None))
+    }
+    fn max_size(&self) -> SFuture<Option<u64>> {
+        Box::new(future::ok(None))
+    }
 }

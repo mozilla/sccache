@@ -21,15 +21,15 @@ use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments
 use crate::compiler::{Cacheable, CompileCommand, CompilerArguments};
 use crate::dist;
 use crate::errors::*;
-use log::Level::Trace;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
+use crate::util::{run_input_output, OsStrExt};
+use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
-use crate::util::{run_input_output, OsStrExt};
 
 #[derive(Clone, Debug)]
 pub struct Diab;
@@ -397,12 +397,12 @@ mod test {
         PathBuf, ARGS,
     };
     use crate::compiler::*;
-    use futures::Future;
     use crate::mock_command::*;
+    use crate::test::utils::*;
+    use futures::Future;
     use std::fs::File;
     use std::io::Write;
     use tempdir::TempDir;
-    use crate::test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();

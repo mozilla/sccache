@@ -40,13 +40,22 @@ impl MockStorage {
 impl Storage for MockStorage {
     fn get(&self, _key: &str) -> SFuture<Cache> {
         let mut g = self.gets.borrow_mut();
-        assert!(g.len() > 0, "MockStorage get called, but no get results available");
+        assert!(
+            g.len() > 0,
+            "MockStorage get called, but no get results available"
+        );
         g.remove(0)
     }
     fn put(&self, _key: &str, _entry: CacheWrite) -> SFuture<Duration> {
         f_ok(Duration::from_secs(0))
     }
-    fn location(&self) -> String { "Mock Storage".to_string() }
-    fn current_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
-    fn max_size(&self) -> SFuture<Option<u64>> { Box::new(future::ok(None)) }
+    fn location(&self) -> String {
+        "Mock Storage".to_string()
+    }
+    fn current_size(&self) -> SFuture<Option<u64>> {
+        Box::new(future::ok(None))
+    }
+    fn max_size(&self) -> SFuture<Option<u64>> {
+        Box::new(future::ok(None))
+    }
 }

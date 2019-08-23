@@ -14,10 +14,10 @@
 
 use crate::compiler;
 use rand::RngCore;
+use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::ffi::OsString;
 use std::path::Path;
 use std::process;
 use std::str::FromStr;
@@ -65,7 +65,7 @@ mod path_transform {
         };
         let root = components.next()?;
         if root != Component::RootDir {
-            return None
+            return None;
         }
         Some(pc)
     }
@@ -75,16 +75,18 @@ mod path_transform {
             // Transforming these to the same place means these may flip-flop
             // in the tracking map, but they're equivalent so not really an
             // issue
-            Prefix::Disk(diskchar) |
-            Prefix::VerbatimDisk(diskchar) => {
+            Prefix::Disk(diskchar) | Prefix::VerbatimDisk(diskchar) => {
                 assert!(diskchar.is_ascii_alphabetic());
                 let diskchar = diskchar.to_ascii_uppercase();
-                Some(format!("/prefix/disk-{}", str::from_utf8(&[diskchar]).expect("invalid disk char")))
-            },
-            Prefix::Verbatim(_) |
-            Prefix::VerbatimUNC(_, _) |
-            Prefix::DeviceNS(_) |
-            Prefix::UNC(_, _) => None,
+                Some(format!(
+                    "/prefix/disk-{}",
+                    str::from_utf8(&[diskchar]).expect("invalid disk char")
+                ))
+            }
+            Prefix::Verbatim(_)
+            | Prefix::VerbatimUNC(_, _)
+            | Prefix::DeviceNS(_)
+            | Prefix::UNC(_, _) => None,
         }
     }
 
@@ -100,7 +102,9 @@ mod path_transform {
             }
         }
         pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
-            if !p.is_absolute() { return None }
+            if !p.is_absolute() {
+                return None;
+            }
             self.to_dist(p)
         }
         pub fn to_dist(&mut self, p: &Path) -> Option<String> {
@@ -108,8 +112,8 @@ mod path_transform {
 
             // Extract the prefix (e.g. "C:/") if present
             let maybe_dist_prefix = if p.is_absolute() {
-                let pc = take_prefix(&mut components)
-                    .expect("could not take prefix from absolute path");
+                let pc =
+                    take_prefix(&mut components).expect("could not take prefix from absolute path");
                 Some(transform_prefix_component(pc)?)
             } else {
                 None
@@ -119,14 +123,13 @@ mod path_transform {
             let mut dist_suffix = String::new();
             for component in components {
                 let part = match component {
-                    Component::Prefix(_) |
-                    Component::RootDir => {
+                    Component::Prefix(_) | Component::RootDir => {
                         // On Windows there is such a thing as a path like C:file.txt
                         // It's not clear to me what the semantics of such a path are,
                         // so give up.
                         error!("unexpected part in path {:?}", p);
-                        return None
-                    },
+                        return None;
+                    }
                     Component::Normal(osstr) => osstr.to_str()?,
                     // TODO: should be forbidden
                     Component::CurDir => ".",
@@ -145,19 +148,20 @@ mod path_transform {
             } else {
                 dist_suffix
             };
-            self.dist_to_local_path.insert(dist_path.clone(), p.to_owned());
+            self.dist_to_local_path
+                .insert(dist_path.clone(), p.to_owned());
             Some(dist_path)
         }
-        pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
+        pub fn disk_mappings(&self) -> impl Iterator<Item = (PathBuf, String)> {
             let mut normal_mappings = HashMap::new();
             let mut verbatim_mappings = HashMap::new();
             for (_dist_path, local_path) in self.dist_to_local_path.iter() {
                 if !local_path.is_absolute() {
-                    continue
+                    continue;
                 }
                 let mut components = local_path.components();
-                let local_prefix = take_prefix(&mut components)
-                    .expect("could not take prefix from absolute path");
+                let local_prefix =
+                    take_prefix(&mut components).expect("could not take prefix from absolute path");
                 let local_prefix_component = Component::Prefix(local_prefix);
                 let local_prefix_path: &Path = local_prefix_component.as_ref();
                 let mappings = if let Prefix::VerbatimDisk(_) = local_prefix.kind() {
@@ -166,7 +170,7 @@ mod path_transform {
                     &mut normal_mappings
                 };
                 if mappings.contains_key(local_prefix_path) {
-                    continue
+                    continue;
                 }
                 let dist_prefix = transform_prefix_component(local_prefix)
                     .expect("prefix already in tracking map could not be transformed");
@@ -185,8 +189,14 @@ mod path_transform {
     fn test_basic() {
         let mut pt = PathTransformer::new();
         assert_eq!(pt.to_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
-        assert_eq!(pt.to_dist(Path::new(r#"C:\a\b.c"#)).unwrap(), "/prefix/disk-C/a/b.c");
-        assert_eq!(pt.to_dist(Path::new("X:/other.c")).unwrap(), "/prefix/disk-X/other.c");
+        assert_eq!(
+            pt.to_dist(Path::new(r#"C:\a\b.c"#)).unwrap(),
+            "/prefix/disk-C/a/b.c"
+        );
+        assert_eq!(
+            pt.to_dist(Path::new("X:/other.c")).unwrap(),
+            "/prefix/disk-X/other.c"
+        );
         let mut disk_mappings: Vec<_> = pt.disk_mappings().collect();
         disk_mappings.sort();
         assert_eq!(
@@ -197,8 +207,14 @@ mod path_transform {
             ]
         );
         assert_eq!(pt.to_local("/prefix/disk-C/a").unwrap(), Path::new("C:/a"));
-        assert_eq!(pt.to_local("/prefix/disk-C/a/b.c").unwrap(), Path::new("C:/a/b.c"));
-        assert_eq!(pt.to_local("/prefix/disk-X/other.c").unwrap(), Path::new("X:/other.c"));
+        assert_eq!(
+            pt.to_local("/prefix/disk-C/a/b.c").unwrap(),
+            Path::new("C:/a/b.c")
+        );
+        assert_eq!(
+            pt.to_local("/prefix/disk-X/other.c").unwrap(),
+            Path::new("X:/other.c")
+        );
     }
 
     #[test]
@@ -212,10 +228,19 @@ mod path_transform {
     #[test]
     fn test_verbatim_disks() {
         let mut pt = PathTransformer::new();
-        assert_eq!(pt.to_dist(Path::new("X:/other.c")).unwrap(), "/prefix/disk-X/other.c");
+        assert_eq!(
+            pt.to_dist(Path::new("X:/other.c")).unwrap(),
+            "/prefix/disk-X/other.c"
+        );
         pt.to_dist(Path::new(r#"\\?\X:\out\other.o"#));
-        assert_eq!(pt.to_local("/prefix/disk-X/other.c").unwrap(), Path::new("X:/other.c"));
-        assert_eq!(pt.to_local("/prefix/disk-X/out/other.o").unwrap(), Path::new(r#"\\?\X:\out\other.o"#));
+        assert_eq!(
+            pt.to_local("/prefix/disk-X/other.c").unwrap(),
+            Path::new("X:/other.c")
+        );
+        assert_eq!(
+            pt.to_local("/prefix/disk-X/out/other.o").unwrap(),
+            Path::new(r#"\\?\X:\out\other.o"#)
+        );
         let disk_mappings: Vec<_> = pt.disk_mappings().collect();
         // Verbatim disks should come last
         assert_eq!(
@@ -246,15 +271,19 @@ mod path_transform {
     pub struct PathTransformer;
 
     impl PathTransformer {
-        pub fn new() -> Self { PathTransformer }
+        pub fn new() -> Self {
+            PathTransformer
+        }
         pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
-            if !p.is_absolute() { return None }
+            if !p.is_absolute() {
+                return None;
+            }
             self.to_dist(p)
         }
         pub fn to_dist(&mut self, p: &Path) -> Option<String> {
             p.as_os_str().to_str().map(Into::into)
         }
-        pub fn disk_mappings(&self) -> impl Iterator<Item=(PathBuf, String)> {
+        pub fn disk_mappings(&self) -> impl Iterator<Item = (PathBuf, String)> {
             iter::empty()
         }
         pub fn to_local(&self, p: &str) -> Option<PathBuf> {
@@ -264,10 +293,16 @@ mod path_transform {
 }
 
 pub fn osstrings_to_strings(osstrings: &[OsString]) -> Option<Vec<String>> {
-    osstrings.into_iter().map(|arg| arg.clone().into_string().ok()).collect::<Option<_>>()
+    osstrings
+        .into_iter()
+        .map(|arg| arg.clone().into_string().ok())
+        .collect::<Option<_>>()
 }
-pub fn osstring_tuples_to_strings(osstring_tuples: &[(OsString, OsString)]) -> Option<Vec<(String, String)>> {
-    osstring_tuples.into_iter()
+pub fn osstring_tuples_to_strings(
+    osstring_tuples: &[(OsString, OsString)],
+) -> Option<Vec<(String, String)>> {
+    osstring_tuples
+        .into_iter()
         .map(|(k, v)| Some((k.clone().into_string().ok()?, v.clone().into_string().ok()?)))
         .collect::<Option<_>>()
 }
@@ -282,8 +317,12 @@ pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<
     } = command;
     Some(CompileCommand {
         executable: executable.into_os_string().into_string().ok()?,
-        arguments: arguments.into_iter().map(|arg| arg.into_string().ok()).collect::<Option<_>>()?,
-        env_vars: env_vars.into_iter()
+        arguments: arguments
+            .into_iter()
+            .map(|arg| arg.into_string().ok())
+            .collect::<Option<_>>()?,
+        env_vars: env_vars
+            .into_iter()
             .map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect::<Option<_>>()?,
         cwd: cwd.into_os_string().into_string().ok()?,
@@ -293,15 +332,13 @@ pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<
 // TODO: Clone by assuming immutable/no GC for now
 // TODO: make fields non-public?
 // TODO: make archive_id validate that it's just a bunch of hex chars
-#[derive(Debug, Hash, Eq, PartialEq)]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toolchain {
     pub archive_id: String,
 }
 
-#[derive(Hash, Eq, PartialEq)]
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobId(pub u64);
 impl fmt::Display for JobId {
@@ -315,8 +352,7 @@ impl FromStr for JobId {
         u64::from_str(s).map(JobId)
     }
 }
-#[derive(Hash, Eq, PartialEq)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerId(SocketAddr);
 impl ServerId {
@@ -333,8 +369,7 @@ impl FromStr for ServerId {
         SocketAddr::from_str(s).map(ServerId)
     }
 }
-#[derive(Eq, PartialEq)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerNonce(u64);
 impl ServerNonce {
@@ -343,9 +378,7 @@ impl ServerNonce {
     }
 }
 
-
-#[derive(Hash, Eq, PartialEq)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum JobState {
     Pending,
@@ -361,7 +394,8 @@ impl fmt::Display for JobState {
             Ready => "ready",
             Started => "started",
             Complete => "complete",
-        }.fmt(f)
+        }
+        .fmt(f)
     }
 }
 
@@ -387,17 +421,29 @@ pub struct ProcessOutput {
 impl ProcessOutput {
     #[cfg(unix)]
     pub fn try_from(o: process::Output) -> Result<Self> {
-        let process::Output { status, stdout, stderr } = o;
+        let process::Output {
+            status,
+            stdout,
+            stderr,
+        } = o;
         let code = match (status.code(), status.signal()) {
-            (Some(c), _)    => c,
+            (Some(c), _) => c,
             (None, Some(s)) => bail!("Process status {} terminated with signal {}", status, s),
-            (None, None)    => bail!("Process status {} has no exit code or signal", status),
+            (None, None) => bail!("Process status {} has no exit code or signal", status),
         };
-        Ok(ProcessOutput { code, stdout, stderr })
+        Ok(ProcessOutput {
+            code,
+            stdout,
+            stderr,
+        })
     }
     #[cfg(test)]
     pub fn fake_output(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Self {
-        Self { code, stdout, stderr }
+        Self {
+            code,
+            stdout,
+            stderr,
+        }
     }
 }
 #[cfg(unix)]
@@ -417,7 +463,11 @@ fn exit_status(code: i32) -> process::ExitStatus {
 impl From<ProcessOutput> for process::Output {
     fn from(o: ProcessOutput) -> Self {
         // TODO: handle signals, i.e. None code
-        process::Output { status: exit_status(o.code), stdout: o.stdout, stderr: o.stderr }
+        process::Output {
+            status: exit_status(o.code),
+            stdout: o.stdout,
+            stderr: o.stderr,
+        }
     }
 }
 
@@ -427,15 +477,18 @@ pub struct OutputData(Vec<u8>, u64);
 impl OutputData {
     #[cfg(any(feature = "dist-server", all(feature = "dist-client", test)))]
     pub fn try_from_reader<R: Read>(r: R) -> io::Result<Self> {
-        use flate2::Compression;
         use flate2::read::ZlibEncoder as ZlibReadEncoder;
+        use flate2::Compression;
         let mut compressor = ZlibReadEncoder::new(r, Compression::fast());
         let mut res = vec![];
         io::copy(&mut compressor, &mut res)?;
         Ok(OutputData(res, compressor.total_in()))
     }
     pub fn lens(&self) -> OutputDataLens {
-        OutputDataLens { actual: self.1, compressed: self.0.len() as u64 }
+        OutputDataLens {
+            actual: self.1,
+            compressed: self.0.len() as u64,
+        }
     }
     #[cfg(feature = "dist-client")]
     pub fn into_reader(self) -> impl Read {
@@ -470,8 +523,13 @@ pub struct JobAlloc {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum AllocJobResult {
-    Success { job_alloc: JobAlloc, need_toolchain: bool },
-    Fail { msg: String },
+    Success {
+        job_alloc: JobAlloc,
+        need_toolchain: bool,
+    },
+    Fail {
+        msg: String,
+    },
 }
 
 // AssignJob
@@ -552,12 +610,16 @@ pub struct BuildResult {
 
 pub struct ToolchainReader<'a>(Box<dyn Read + 'a>);
 impl<'a> Read for ToolchainReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
 }
 
 pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
 impl<'a> Read for InputsReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
 }
 
 #[cfg(feature = "dist-server")]
@@ -566,7 +628,13 @@ type ExtResult<T, E> = ::std::result::Result<T, E>;
 #[cfg(feature = "dist-server")]
 pub trait SchedulerOutgoing {
     // To Server
-    fn do_assign_job(&self, server_id: ServerId, job_id: JobId, tc: Toolchain, auth: String) -> Result<AssignJobResult>;
+    fn do_assign_job(
+        &self,
+        server_id: ServerId,
+        job_id: JobId,
+        tc: Toolchain,
+        auth: String,
+    ) -> Result<AssignJobResult>;
 }
 
 #[cfg(feature = "dist-server")]
@@ -586,11 +654,26 @@ pub trait JobAuthorizer: Send {
 pub trait SchedulerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Client
-    fn handle_alloc_job(&self, requester: &dyn SchedulerOutgoing, tc: Toolchain) -> ExtResult<AllocJobResult, Self::Error>;
+    fn handle_alloc_job(
+        &self,
+        requester: &dyn SchedulerOutgoing,
+        tc: Toolchain,
+    ) -> ExtResult<AllocJobResult, Self::Error>;
     // From Server
-    fn handle_heartbeat_server(&self, server_id: ServerId, server_nonce: ServerNonce, num_cpus: usize, job_authorizer: Box<dyn JobAuthorizer>) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    fn handle_heartbeat_server(
+        &self,
+        server_id: ServerId,
+        server_nonce: ServerNonce,
+        num_cpus: usize,
+        job_authorizer: Box<dyn JobAuthorizer>,
+    ) -> ExtResult<HeartbeatServerResult, Self::Error>;
     // From Server
-    fn handle_update_job_state(&self, job_id: JobId, server_id: ServerId, job_state: JobState) -> ExtResult<UpdateJobStateResult, Self::Error>;
+    fn handle_update_job_state(
+        &self,
+        job_id: JobId,
+        server_id: ServerId,
+        job_state: JobState,
+    ) -> ExtResult<UpdateJobStateResult, Self::Error>;
     // From anyone
     fn handle_status(&self) -> ExtResult<SchedulerStatusResult, Self::Error>;
 }
@@ -599,18 +682,41 @@ pub trait SchedulerIncoming: Send + Sync {
 pub trait ServerIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Scheduler
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Self::Error>;
+    fn handle_assign_job(
+        &self,
+        job_id: JobId,
+        tc: Toolchain,
+    ) -> ExtResult<AssignJobResult, Self::Error>;
     // From Client
-    fn handle_submit_toolchain(&self, requester: &dyn ServerOutgoing, job_id: JobId, tc_rdr: ToolchainReader<'_>) -> ExtResult<SubmitToolchainResult, Self::Error>;
+    fn handle_submit_toolchain(
+        &self,
+        requester: &dyn ServerOutgoing,
+        job_id: JobId,
+        tc_rdr: ToolchainReader<'_>,
+    ) -> ExtResult<SubmitToolchainResult, Self::Error>;
     // From Client
-    fn handle_run_job(&self, requester: &dyn ServerOutgoing, job_id: JobId, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader<'_>) -> ExtResult<RunJobResult, Self::Error>;
+    fn handle_run_job(
+        &self,
+        requester: &dyn ServerOutgoing,
+        job_id: JobId,
+        command: CompileCommand,
+        outputs: Vec<String>,
+        inputs_rdr: InputsReader<'_>,
+    ) -> ExtResult<RunJobResult, Self::Error>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait BuilderIncoming: Send + Sync {
     type Error: ::std::error::Error;
     // From Server
-    fn run_build(&self, toolchain: Toolchain, command: CompileCommand, outputs: Vec<String>, inputs_rdr: InputsReader<'_>, cache: &Mutex<TcCache>) -> ExtResult<BuildResult, Self::Error>;
+    fn run_build(
+        &self,
+        toolchain: Toolchain,
+        command: CompileCommand,
+        outputs: Vec<String>,
+        inputs_rdr: InputsReader<'_>,
+        cache: &Mutex<TcCache>,
+    ) -> ExtResult<BuildResult, Self::Error>;
 }
 
 /////////
@@ -621,8 +727,23 @@ pub trait Client {
     // To Scheduler
     fn do_get_status(&self) -> SFuture<SchedulerStatusResult>;
     // To Server
-    fn do_submit_toolchain(&self, job_alloc: JobAlloc, tc: Toolchain) -> SFuture<SubmitToolchainResult>;
+    fn do_submit_toolchain(
+        &self,
+        job_alloc: JobAlloc,
+        tc: Toolchain,
+    ) -> SFuture<SubmitToolchainResult>;
     // To Server
-    fn do_run_job(&self, job_alloc: JobAlloc, command: CompileCommand, outputs: Vec<String>, inputs_packager: Box<dyn pkg::InputsPackager>) -> SFuture<(RunJobResult, PathTransformer)>;
-    fn put_toolchain(&self, compiler_path: &Path, weak_key: &str, toolchain_packager: Box<dyn pkg::ToolchainPackager>) -> SFuture<(Toolchain, Option<String>)>;
+    fn do_run_job(
+        &self,
+        job_alloc: JobAlloc,
+        command: CompileCommand,
+        outputs: Vec<String>,
+        inputs_packager: Box<dyn pkg::InputsPackager>,
+    ) -> SFuture<(RunJobResult, PathTransformer)>;
+    fn put_toolchain(
+        &self,
+        compiler_path: &Path,
+        weak_key: &str,
+        toolchain_packager: Box<dyn pkg::ToolchainPackager>,
+    ) -> SFuture<(Toolchain, Option<String>)>;
 }

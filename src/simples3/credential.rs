@@ -319,7 +319,8 @@ impl IamProvider {
                     let bytes = res.chain_err(|| "couldn't connect to metadata service")?;
                     String::from_utf8(bytes)
                         .chain_err(|| "Didn't get a parsable response body from metadata service")
-                }).map(move |body| {
+                })
+                .map(move |body| {
                     let mut address = address.to_string();
                     address.push_str(&body);
                     address
@@ -356,7 +357,8 @@ impl ProvideAwsCredentials for IamProvider {
                 .fold(Vec::new(), |mut body, chunk| {
                     body.extend_from_slice(&chunk);
                     Ok::<_, hyper::Error>(body)
-                }).chain_err(|| "failed to read http body")
+                })
+                .chain_err(|| "failed to read http body")
         });
         let body = body
             .map_err(|e| format!("Failed to get IAM credentials: {}", e).into())
@@ -512,7 +514,8 @@ impl ProvideAwsCredentials for ChainProvider {
                         debug!("Using AWS credentials from IAM");
                         c
                     })
-                }).map_err(|_| {
+                })
+                .map_err(|_| {
                     "Couldn't find AWS credentials in environment, credentials file, or IAM role."
                         .into()
                 }),

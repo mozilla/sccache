@@ -84,7 +84,8 @@ mod common {
                 status.as_u16(),
                 res.headers(),
                 String::from_utf8_lossy(&body)
-            ).into())
+            )
+            .into())
         } else {
             bincode::deserialize(&body).map_err(Into::into)
         }
@@ -102,7 +103,8 @@ mod common {
                         .concat2()
                         .map(move |b| (status, b))
                         .map_err(Into::into)
-                }).and_then(|(status, body)| {
+                })
+                .and_then(|(status, body)| {
                     if !status.is_success() {
                         let errmsg = format!(
                             "Error {}: {}",
@@ -225,7 +227,8 @@ pub mod urls {
             .join(&format!(
                 "/api/v1/scheduler/server_certificate/{}",
                 server_id.addr()
-            )).expect("failed to create server certificate url")
+            ))
+            .expect("failed to create server certificate url")
     }
     pub fn scheduler_heartbeat_server(scheduler_url: &reqwest::Url) -> reqwest::Url {
         scheduler_url
@@ -271,9 +274,9 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 mod server {
+    use crate::jwt;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use crate::jwt;
     use rand::RngCore;
     use rouille::accept;
     use std::collections::HashMap;
@@ -339,13 +342,14 @@ mod server {
             .chain_err(|| "failed to set pubkey for x509")?;
 
         let mut name = openssl::x509::X509Name::builder()?;
-        name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME,
-                                 "sccache-internal")?;
+        name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME, "sccache-internal")?;
         let name = name.build();
 
-        builder.set_subject_name(&name)
+        builder
+            .set_subject_name(&name)
             .chain_err(|| "failed to set subject name")?;
-        builder.set_issuer_name(&name)
+        builder
+            .set_issuer_name(&name)
             .chain_err(|| "failed to set issuer name")?;
 
         // Add the SubjectAlternativeName
@@ -435,7 +439,10 @@ mod server {
         }
     }
     impl std::fmt::Display for RouilleBincodeError {
-        fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        fn fmt(
+            &self,
+            fmt: &mut std::fmt::Formatter<'_>,
+        ) -> std::result::Result<(), std::fmt::Error> {
             write!(fmt, "{}", std::error::Error::description(self))
         }
     }
@@ -559,9 +566,9 @@ mod server {
         T: serde::Serialize,
     {
         accept!(request,
-                "application/octet-stream" => bincode_response(content),
-                "application/json" => rouille::Response::json(content),
-                )
+        "application/octet-stream" => bincode_response(content),
+        "application/json" => rouille::Response::json(content),
+        )
     }
 
     // Verification of job auth in a request
@@ -680,9 +687,11 @@ mod server {
                                 match header_val.parse() {
                                     Ok(ip) => ip,
                                     Err(err) => {
-                                        warn!("X-Real-IP value {:?} could not be parsed: {:?}",
-                                              header_val, err);
-                                        return rouille::Response::empty_400()
+                                        warn!(
+                                            "X-Real-IP value {:?} could not be parsed: {:?}",
+                                            header_val, err
+                                        );
+                                        return rouille::Response::empty_400();
                                     }
                                 }
                             } else {
@@ -691,11 +700,11 @@ mod server {
                             if server_id.addr().ip() != origin_ip {
                                 trace!("server ip: {:?}", server_id.addr().ip());
                                 trace!("request ip: {:?}", $request.remote_addr().ip());
-                                return make_401("invalid_bearer_token_mismatched_address")
+                                return make_401("invalid_bearer_token_mismatched_address");
                             } else {
                                 server_id
                             }
-                        },
+                        }
                         None => return make_401("invalid_bearer_token"),
                     }
                 }};
@@ -1015,7 +1024,8 @@ mod server {
                     .post(url)
                     .bearer_auth(self.scheduler_auth.clone())
                     .bincode(&state)?,
-            ).chain_err(|| "POST to scheduler job_state failed")
+            )
+            .chain_err(|| "POST to scheduler job_state failed")
         }
     }
 }
@@ -1023,13 +1033,13 @@ mod server {
 #[cfg(feature = "dist-client")]
 mod client {
     use super::super::cache;
-    use byteorder::{BigEndian, WriteBytesExt};
     use crate::config;
     use crate::dist::pkg::{InputsPackager, ToolchainPackager};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
-        SubmitToolchainResult, Toolchain, SchedulerStatusResult,
+        SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
+    use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
     use futures::Future;
@@ -1148,55 +1158,51 @@ mod client {
             let client = self.client.clone();
             let client_async = self.client_async.clone();
             let server_certs = self.server_certs.clone();
-            Box::new(
-                bincode_req_fut(req)
-                    .and_then(move |res| match res {
-                        AllocJobHttpResponse::Success {
-                            job_alloc,
-                            need_toolchain,
-                            cert_digest,
-                        } => {
-                            let server_id = job_alloc.server_id;
-                            let alloc_job_res = f_ok(AllocJobResult::Success {
-                                job_alloc,
-                                need_toolchain,
-                            });
-                            if server_certs.lock().unwrap().contains_key(&cert_digest) {
-                                return alloc_job_res;
-                            }
-                            info!(
-                                "Need to request new certificate for server {}",
-                                server_id.addr()
-                            );
-                            let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
-                            let req = client_async.lock().unwrap().get(url);
-                            Box::new(
-                                bincode_req_fut(req)
-                                    .map_err(|e| {
-                                        e.chain_err(|| "GET to scheduler server_certificate failed")
-                                    }).and_then(move |res: ServerCertificateHttpResponse| {
-                                        ftry!(Self::update_certs(
-                                            &mut client.lock().unwrap(),
-                                            &mut client_async.lock().unwrap(),
-                                            &mut server_certs.lock().unwrap(),
-                                            res.cert_digest,
-                                            res.cert_pem,
-                                        ));
-                                        alloc_job_res
-                                    }),
-                            )
-                        }
-                        AllocJobHttpResponse::Fail { msg } => f_ok(AllocJobResult::Fail { msg }),
-                    }),
-            )
+            Box::new(bincode_req_fut(req).and_then(move |res| match res {
+                AllocJobHttpResponse::Success {
+                    job_alloc,
+                    need_toolchain,
+                    cert_digest,
+                } => {
+                    let server_id = job_alloc.server_id;
+                    let alloc_job_res = f_ok(AllocJobResult::Success {
+                        job_alloc,
+                        need_toolchain,
+                    });
+                    if server_certs.lock().unwrap().contains_key(&cert_digest) {
+                        return alloc_job_res;
+                    }
+                    info!(
+                        "Need to request new certificate for server {}",
+                        server_id.addr()
+                    );
+                    let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
+                    let req = client_async.lock().unwrap().get(url);
+                    Box::new(
+                        bincode_req_fut(req)
+                            .map_err(|e| {
+                                e.chain_err(|| "GET to scheduler server_certificate failed")
+                            })
+                            .and_then(move |res: ServerCertificateHttpResponse| {
+                                ftry!(Self::update_certs(
+                                    &mut client.lock().unwrap(),
+                                    &mut client_async.lock().unwrap(),
+                                    &mut server_certs.lock().unwrap(),
+                                    res.cert_digest,
+                                    res.cert_pem,
+                                ));
+                                alloc_job_res
+                            }),
+                    )
+                }
+                AllocJobHttpResponse::Fail { msg } => f_ok(AllocJobResult::Fail { msg }),
+            }))
         }
         fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
-            Box::new(self.pool.spawn_fn(move || {
-                bincode_req(req)
-            }))
+            Box::new(self.pool.spawn_fn(move || bincode_req(req)))
         }
         fn do_submit_toolchain(
             &self,

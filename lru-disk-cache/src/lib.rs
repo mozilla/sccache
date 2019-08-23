@@ -5,21 +5,21 @@ extern crate log;
 //extern crate lru_cache;
 pub mod lru_cache;
 
-use std::io::prelude::*;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self,File};
-use std::io;
+use std::fs::{self, File};
 use std::hash::BuildHasher;
-use std::path::{Path,PathBuf};
+use std::io;
+use std::io::prelude::*;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use filetime::{FileTime, set_file_times};
-pub use crate::lru_cache::{LruCache,Meter};
+pub use crate::lru_cache::{LruCache, Meter};
+use filetime::{set_file_times, FileTime};
 use walkdir::WalkDir;
 
 struct FileSize;
@@ -28,7 +28,8 @@ struct FileSize;
 impl<K> Meter<K, u64> for FileSize {
     type Measure = usize;
     fn measure<Q: ?Sized>(&self, _: &Q, v: &u64) -> usize
-        where K: Borrow<Q>
+    where
+        K: Borrow<Q>,
     {
         *v as usize
     }
@@ -36,19 +37,24 @@ impl<K> Meter<K, u64> for FileSize {
 
 /// Return an iterator of `(path, size)` of files under `path` sorted by ascending last-modified
 /// time, such that the oldest modified file is returned first.
-fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item=(PathBuf, u64)>> {
+fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u64)>> {
     let mut files: Vec<_> = WalkDir::new(path.as_ref())
         .into_iter()
-        .filter_map(|e| e.ok()
-                    .and_then(|f| {
-                        // Only look at files
-                        if f.file_type().is_file() {
-                            // Get the last-modified time, size, and the full path.
-                            f.metadata().ok().and_then(|m| m.modified().ok().map(|mtime| (mtime, f.path().to_owned(), m.len())))
-                        } else {
-                            None
-                        }
-                    }))
+        .filter_map(|e| {
+            e.ok().and_then(|f| {
+                // Only look at files
+                if f.file_type().is_file() {
+                    // Get the last-modified time, size, and the full path.
+                    f.metadata().ok().and_then(|m| {
+                        m.modified()
+                            .ok()
+                            .map(|mtime| (mtime, f.path().to_owned(), m.len()))
+                    })
+                } else {
+                    None
+                }
+            })
+        })
         .collect();
     // Sort by last-modified-time, so oldest file first.
     files.sort_by_key(|k| k.0);
@@ -129,32 +135,47 @@ impl LruDiskCache {
     /// The cache is not observant of changes to files under `path` from external sources, it
     /// expects to have sole maintence of the contents.
     pub fn new<T>(path: T, size: u64) -> Result<Self>
-        where PathBuf: From<T>
+    where
+        PathBuf: From<T>,
     {
         LruDiskCache {
             lru: LruCache::with_meter(size, FileSize),
             root: PathBuf::from(path),
-        }.init()
+        }
+        .init()
     }
 
     /// Return the current size of all the files in the cache.
-    pub fn size(&self) -> u64 { self.lru.size() }
+    pub fn size(&self) -> u64 {
+        self.lru.size()
+    }
 
     /// Return the maximum size of the cache.
-    pub fn capacity(&self) -> u64 { self.lru.capacity() }
+    pub fn capacity(&self) -> u64 {
+        self.lru.capacity()
+    }
 
     /// Return the path in which the cache is stored.
-    pub fn path(&self) -> &Path { self.root.as_path() }
+    pub fn path(&self) -> &Path {
+        self.root.as_path()
+    }
 
     /// Return the path that `key` would be stored at.
-    fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf { self.root.join(rel_path) }
+    fn rel_to_abs_path<K: AsRef<Path>>(&self, rel_path: K) -> PathBuf {
+        self.root.join(rel_path)
+    }
 
     /// Scan `self.root` for existing files and store them.
     fn init(mut self) -> Result<Self> {
         fs::create_dir_all(&self.root)?;
         for (file, size) in get_all_files(&self.root) {
             if !self.can_store(size) {
-                fs::remove_file(file).unwrap_or_else(|e| error!("Error removing file `{}` which is too large for the cache ({} bytes)", e, size));
+                fs::remove_file(file).unwrap_or_else(|e| {
+                    error!(
+                        "Error removing file `{}` which is too large for the cache ({} bytes)",
+                        e, size
+                    )
+                });
             } else {
                 self.add_file(AddFile::AbsPath(file), size)
                     .unwrap_or_else(|e| error!("Error adding file: {}", e));
@@ -179,17 +200,24 @@ impl LruDiskCache {
         };
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.lru.size() as u64 + size > self.lru.capacity() as u64 {
-            let (rel_path,  _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
             // due to outside interference.
-            fs::remove_file(&remove_path).unwrap_or_else(|e| panic!("Error removing file from cache: `{:?}`: {}", remove_path, e));
+            fs::remove_file(&remove_path).unwrap_or_else(|e| {
+                panic!("Error removing file from cache: `{:?}`: {}", remove_path, e)
+            });
         }
         self.lru.insert(rel_path.to_owned(), size);
         Ok(())
     }
 
-    fn insert_by<K: AsRef<OsStr>, F: FnOnce(&Path) -> io::Result<()>>(&mut self, key: K, size: Option<u64>, by: F) -> Result<()> {
+    fn insert_by<K: AsRef<OsStr>, F: FnOnce(&Path) -> io::Result<()>>(
+        &mut self,
+        key: K,
+        size: Option<u64>,
+        by: F,
+    ) -> Result<()> {
         if let Some(size) = size {
             if !self.can_store(size) {
                 return Err(Error::FileTooLarge);
@@ -205,14 +233,23 @@ impl LruDiskCache {
         };
         self.add_file(AddFile::RelPath(rel_path), size)
             .or_else(|e| {
-                error!("Failed to insert file `{}`: {}", rel_path.to_string_lossy(), e);
-                fs::remove_file(&self.rel_to_abs_path(rel_path)).expect("Failed to remove file we just created!");
+                error!(
+                    "Failed to insert file `{}`: {}",
+                    rel_path.to_string_lossy(),
+                    e
+                );
+                fs::remove_file(&self.rel_to_abs_path(rel_path))
+                    .expect("Failed to remove file we just created!");
                 Err(e)
             })
     }
 
     /// Add a file by calling `with` with the open `File` corresponding to the cache at path `key`.
-    pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(&mut self, key: K, with: F) -> Result<()> {
+    pub fn insert_with<K: AsRef<OsStr>, F: FnOnce(File) -> io::Result<()>>(
+        &mut self,
+        key: K,
+        with: F,
+    ) -> Result<()> {
         self.insert_by(key, None, |path| with(File::create(&path)?))
     }
 
@@ -229,14 +266,14 @@ impl LruDiskCache {
     pub fn insert_file<K: AsRef<OsStr>, P: AsRef<OsStr>>(&mut self, key: K, path: P) -> Result<()> {
         let size = fs::metadata(path.as_ref())?.len();
         self.insert_by(key, Some(size), |new_path| {
-            fs::rename(path.as_ref(), new_path)
-                .or_else(|_| {
-                    warn!("fs::rename failed, falling back to copy!");
-                    fs::copy(path.as_ref(), new_path)?;
-                    fs::remove_file(path.as_ref())
-                        .unwrap_or_else(|e| error!("Failed to remove original file in insert_file: {}", e));
-                    Ok(())
-                })
+            fs::rename(path.as_ref(), new_path).or_else(|_| {
+                warn!("fs::rename failed, falling back to copy!");
+                fs::copy(path.as_ref(), new_path)?;
+                fs::remove_file(path.as_ref()).unwrap_or_else(|e| {
+                    error!("Failed to remove original file in insert_file: {}", e)
+                });
+                Ok(())
+            })
         })
     }
 
@@ -250,7 +287,8 @@ impl LruDiskCache {
     pub fn get_file<K: AsRef<OsStr>>(&mut self, key: K) -> Result<File> {
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
-        self.lru.get(rel_path)
+        self.lru
+            .get(rel_path)
             .ok_or(Error::FileNotInCache)
             .and_then(|_| {
                 let t = filetime_now();
@@ -268,12 +306,12 @@ impl LruDiskCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{LruDiskCache, Error};
+    use super::{Error, LruDiskCache};
 
-    use filetime::{FileTime, set_file_times};
-    use std::fs::{self,File};
+    use filetime::{set_file_times, FileTime};
+    use std::fs::{self, File};
     use std::io::{self, Read, Write};
-    use std::path::{Path,PathBuf};
+    use std::path::{Path, PathBuf};
     use tempdir::TempDir;
 
     struct TestFixture {
@@ -281,7 +319,11 @@ mod tests {
         pub tempdir: TempDir,
     }
 
-    fn create_file<T: AsRef<Path>, F: FnOnce(File) -> io::Result<()>>(dir: &Path, path: T, fill_contents: F) -> io::Result<PathBuf> {
+    fn create_file<T: AsRef<Path>, F: FnOnce(File) -> io::Result<()>>(
+        dir: &Path,
+        path: T,
+        fill_contents: F,
+    ) -> io::Result<PathBuf> {
         let b = dir.join(path);
         fs::create_dir_all(b.parent().unwrap())?;
         let f = fs::File::create(&b)?;
@@ -293,12 +335,15 @@ mod tests {
     fn set_mtime_back<T: AsRef<Path>>(path: T, seconds: usize) {
         let m = fs::metadata(path.as_ref()).unwrap();
         let t = FileTime::from_last_modification_time(&m);
-        let t = FileTime::from_seconds_since_1970(t.seconds_relative_to_1970() - seconds as u64, t.nanoseconds());
+        let t = FileTime::from_seconds_since_1970(
+            t.seconds_relative_to_1970() - seconds as u64,
+            t.nanoseconds(),
+        );
         set_file_times(path, t, t).unwrap();
     }
 
     fn read_all<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
-        let mut v = vec!();
+        let mut v = vec![];
         r.read_to_end(&mut v)?;
         Ok(v)
     }
@@ -310,10 +355,15 @@ mod tests {
             }
         }
 
-        pub fn tmp(&self) -> &Path { self.tempdir.path() }
+        pub fn tmp(&self) -> &Path {
+            self.tempdir.path()
+        }
 
         pub fn create_file<T: AsRef<Path>>(&self, path: T, size: usize) -> PathBuf {
-            create_file(self.tempdir.path(), path, |mut f| f.write_all(&vec![0; size])).unwrap()
+            create_file(self.tempdir.path(), path, |mut f| {
+                f.write_all(&vec![0; size])
+            })
+            .unwrap()
         }
     }
 
@@ -402,7 +452,10 @@ mod tests {
             c.insert_bytes("file1", &vec![1; 10]).unwrap();
             c.insert_bytes("file2", &vec![2; 10]).unwrap();
             // Get the file to bump its LRU status.
-            assert_eq!(read_all(&mut c.get("file1").unwrap()).unwrap(), vec![1u8; 10]);
+            assert_eq!(
+                read_all(&mut c.get("file1").unwrap()).unwrap(),
+                vec![1u8; 10]
+            );
             // Adding this third file should put the cache above the limit.
             c.insert_bytes("file3", &vec![3; 10]).unwrap();
             assert_eq!(c.size(), 20);
@@ -454,7 +507,10 @@ mod tests {
         c.insert_file("file1", &p1).unwrap();
         c.insert_file("file2", &p2).unwrap();
         // Get the file to bump its LRU status.
-        assert_eq!(read_all(&mut c.get("file1").unwrap()).unwrap(), vec![0u8; 10]);
+        assert_eq!(
+            read_all(&mut c.get("file1").unwrap()).unwrap(),
+            vec![0u8; 10]
+        );
         // Adding this third file should put the cache above the limit.
         c.insert_file("file3", &p3).unwrap();
         assert_eq!(c.size(), 20);

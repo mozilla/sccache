@@ -23,9 +23,10 @@ use crate::compiler::rust::Rust;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
+use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
+use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use futures::Future;
 use futures_cpupool::CpuPool;
-use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -42,7 +43,6 @@ use std::time::{Duration, Instant};
 use tempdir::TempDir;
 use tempfile::NamedTempFile;
 use tokio_timer::Timeout;
-use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 
 use crate::errors::*;
 
@@ -82,7 +82,8 @@ impl CompilerKind {
         match self {
             CompilerKind::C(_) => "C/C++",
             CompilerKind::Rust => "Rust",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -150,15 +151,9 @@ where
         let start = Instant::now();
         let may_dist = match dist_client {
             Ok(Some(_)) => true,
-            _ => false
+            _ => false,
         };
-        let result = self.generate_hash_key(
-            &creator,
-            cwd.clone(),
-            env_vars,
-            may_dist,
-            &pool,
-        );
+        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, may_dist, &pool);
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!(
                 "[{}]: generate_hash_key took {}",
@@ -354,7 +349,8 @@ where
                                         ),
                                         compiler_result,
                                     ))
-                                }).chain_err(move || format!("failed to store `{}` to cache", o)),
+                                })
+                                .chain_err(move || format!("failed to store `{}` to cache", o)),
                         )
                     }),
                 )
@@ -433,7 +429,7 @@ where
                     .execute(&creator)
                     .map(move |o| (cacheable, DistType::NoDist, o)),
             );
-        },
+        }
         Err(e) => {
             return f_err(e);
         }
@@ -818,7 +814,8 @@ pub fn write_temp_file(
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;
         Ok((dir, src))
-    }).chain_err(|| "failed to write temporary file")
+    })
+    .chain_err(|| "failed to write temporary file")
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
@@ -841,12 +838,8 @@ where
     let rustc_vv = if filename.to_string_lossy().to_lowercase() == "rustc" {
         // Sanity check that it's really rustc.
         let executable = executable.to_path_buf();
-        let mut child = creator
-            .clone()
-            .new_command_sync(executable);
-        child.env_clear()
-            .envs(ref_env(env))
-            .args(&["-vV"]);
+        let mut child = creator.clone().new_command_sync(executable);
+        child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
         Box::new(run_input_output(child, None).map(|output| {
             if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
@@ -864,15 +857,16 @@ where
     let executable = executable.to_owned();
     let env = env.to_owned();
     let pool = pool.clone();
-    Box::new(rustc_vv.and_then(move |rustc_vv| {
-        match rustc_vv {
-            Some(Ok(rustc_verbose_version)) => {
-                debug!("Found rustc");
-                Box::new(Rust::new(creator, executable, &env, &rustc_verbose_version, pool).map(|c| Box::new(c) as Box<dyn Compiler<T>>))
-            },
-            Some(Err(e)) => f_err(e),
-            None => detect_c_compiler(creator, executable, env, pool)
+    Box::new(rustc_vv.and_then(move |rustc_vv| match rustc_vv {
+        Some(Ok(rustc_verbose_version)) => {
+            debug!("Found rustc");
+            Box::new(
+                Rust::new(creator, executable, &env, &rustc_verbose_version, pool)
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+            )
         }
+        Some(Err(e)) => f_err(e),
+        None => detect_c_compiler(creator, executable, env, pool),
     }))
 }
 
@@ -898,7 +892,8 @@ gcc
 #elif defined(__DCC__)
 diab
 #endif
-".to_vec();
+"
+    .to_vec();
     let write = write_temp_file(&pool, "testfile.c".as_ref(), test);
 
     let mut cmd = creator.clone().new_command_sync(&executable);
@@ -913,7 +908,8 @@ diab
                 child
                     .wait_with_output()
                     .chain_err(|| "failed to read child output")
-            }).map(|e| {
+            })
+            .map(|e| {
                 drop(tempdir);
                 e
             })
@@ -929,36 +925,47 @@ diab
             match line {
                 "clang" => {
                     debug!("Found clang");
-                    return Box::new(CCompiler::new(Clang, executable, &pool)
-                                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
+                    return Box::new(
+                        CCompiler::new(Clang, executable, &pool)
+                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                    );
                 }
                 "diab" => {
                     debug!("Found diab");
-                    return Box::new(CCompiler::new(Diab, executable, &pool)
-                                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
-
+                    return Box::new(
+                        CCompiler::new(Diab, executable, &pool)
+                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                    );
                 }
                 "gcc" => {
                     debug!("Found GCC");
-                    return Box::new(CCompiler::new(GCC, executable, &pool)
-                                .map(|c| Box::new(c) as Box<dyn Compiler<T>>));
+                    return Box::new(
+                        CCompiler::new(GCC, executable, &pool)
+                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                    );
                 }
                 "msvc" | "msvc-clang" => {
                     let is_clang = line == "msvc-clang";
                     debug!("Found MSVC (is clang: {})", is_clang);
-                    let prefix = msvc::detect_showincludes_prefix(&creator,
-                                                                executable.as_ref(),
-                                                                is_clang,
-                                                                env,
-                                                                &pool);
+                    let prefix = msvc::detect_showincludes_prefix(
+                        &creator,
+                        executable.as_ref(),
+                        is_clang,
+                        env,
+                        &pool,
+                    );
                     return Box::new(prefix.and_then(move |prefix| {
                         trace!("showIncludes prefix: '{}'", prefix);
-                        CCompiler::new(MSVC {
-                            includes_prefix: prefix,
-                            is_clang,
-                        }, executable, &pool)
-                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
-                    }))
+                        CCompiler::new(
+                            MSVC {
+                                includes_prefix: prefix,
+                                is_clang,
+                            },
+                            executable,
+                            &pool,
+                        )
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                    }));
                 }
                 _ => (),
             }
@@ -992,16 +999,16 @@ mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
     use crate::cache::Storage;
+    use crate::mock_command::*;
+    use crate::test::mock_storage::MockStorage;
+    use crate::test::utils::*;
     use futures::{future, Future};
     use futures_cpupool::CpuPool;
-    use crate::mock_command::*;
     use std::fs::{self, File};
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
-    use crate::test::mock_storage::MockStorage;
-    use crate::test::utils::*;
     use tokio::runtime::current_thread::Runtime;
 
     #[test]
@@ -1102,8 +1109,13 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")));
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool).wait().unwrap();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
+        );
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
+            .wait()
+            .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
     }
 
@@ -1115,11 +1127,9 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
-        assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
-                .wait()
-                .is_err()
-        );
+        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
+            .wait()
+            .is_err());
     }
 
     #[test]
@@ -1127,11 +1137,9 @@ LLVM version: 6.0",
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
-                .wait()
-                .is_err()
-        );
+        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
+            .wait()
+            .is_err());
     }
 
     #[test]
@@ -1201,7 +1209,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1237,7 +1246,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1298,7 +1308,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1334,7 +1345,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1402,7 +1414,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1478,7 +1491,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
             true,
@@ -1506,7 +1520,8 @@ LLVM version: 6.0",
                 vec![],
                 CacheControl::ForceRecache,
                 pool,
-            ).wait()
+            )
+            .wait()
             .unwrap();
         // Ensure that the object file was created.
         assert_eq!(
@@ -1567,7 +1582,8 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 )
-            })).unwrap();
+            }))
+            .unwrap();
         assert_eq!(cached, CompileResult::Error);
         assert_eq!(exit_status(1), res.status);
         // Shouldn't get anything on stdout, since that would just be preprocessor spew!
@@ -1641,7 +1657,8 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::ForceRecache,
                     pool.clone(),
-                ).wait()
+                )
+                .wait()
                 .unwrap();
             // Ensure that the object file was created.
             assert_eq!(
@@ -1667,8 +1684,8 @@ LLVM version: 6.0",
 mod test_dist {
     use crate::dist::pkg;
     use crate::dist::{
-        self, AllocJobResult, SchedulerStatusResult, CompileCommand, JobAlloc, JobComplete,
-        JobId, OutputData, PathTransformer, ProcessOutput, RunJobResult, ServerId,
+        self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
+        PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
         SubmitToolchainResult, Toolchain,
     };
     use std::cell::Cell;
@@ -1935,7 +1952,8 @@ mod test_dist {
                     let data = format!("some data in {}", name);
                     let data = OutputData::try_from_reader(data.as_bytes()).unwrap();
                     (name, data)
-                }).collect();
+                })
+                .collect();
             let result = RunJobResult::Complete(JobComplete {
                 output: self.output.clone(),
                 outputs,

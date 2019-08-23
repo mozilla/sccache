@@ -5,29 +5,29 @@
 
 #![deny(rust_2018_idioms)]
 
-#[cfg(not(target_os="macos"))]
+#[cfg(not(target_os = "macos"))]
 #[macro_use]
 extern crate log;
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.
 #[test]
-#[cfg(not(target_os="macos"))] // test currently fails on macos
+#[cfg(not(target_os = "macos"))] // test currently fails on macos
 fn test_rust_cargo() {
     test_rust_cargo_cmd("check");
     test_rust_cargo_cmd("build");
 }
 
-#[cfg(not(target_os="macos"))] // test currently fails on macos
+#[cfg(not(target_os = "macos"))] // test currently fails on macos
 fn test_rust_cargo_cmd(cmd: &str) {
-    use std::env;
-    use std::io::Write;
-    use std::fs;
-    use std::path::Path;
     use assert_cmd::prelude::*;
     use chrono::Local;
     use escargot::CargoBuild;
     use predicates::prelude::*;
+    use std::env;
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
     use std::process::{Command, Stdio};
     use tempdir::TempDir;
 
@@ -43,25 +43,29 @@ fn test_rust_cargo_cmd(cmd: &str) {
 
     fn stop() {
         trace!("sccache --stop-server");
-        drop(sccache_command()
-            .arg("--stop-server")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status());
+        drop(
+            sccache_command()
+                .arg("--stop-server")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+        );
     }
 
-    drop(env_logger::Builder::new()
-         .format(|f, record| {
-             write!(
-                 f,
-                 "{} [{}] - {}",
-                 Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                 record.level(),
-                 record.args()
-             )
-         })
-        .parse(&env::var("RUST_LOG").unwrap_or_default())
-        .try_init());
+    drop(
+        env_logger::Builder::new()
+            .format(|f, record| {
+                write!(
+                    f,
+                    "{} [{}] - {}",
+                    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                    record.level(),
+                    record.args()
+                )
+            })
+            .parse(&env::var("RUST_LOG").unwrap_or_default())
+            .try_init(),
+    );
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
     #[allow(deprecated)]
@@ -84,8 +88,10 @@ fn test_rust_cargo_cmd(cmd: &str) {
         .assert()
         .success();
     // `cargo clean` first, just to be sure there's no leftover build objects.
-    let envs = vec![("RUSTC_WRAPPER", &sccache),
-                    ("CARGO_TARGET_DIR", &cargo_dir)];
+    let envs = vec![
+        ("RUSTC_WRAPPER", &sccache),
+        ("CARGO_TARGET_DIR", &cargo_dir),
+    ];
     Command::new(&cargo)
         .args(&["clean"])
         .envs(envs.iter().map(|v| *v))

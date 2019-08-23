@@ -16,15 +16,15 @@ use crate::mock_command::*;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
-use std::fs::{self,File};
+use std::fs::{self, File};
 use std::io;
-use std::path::{Path,PathBuf};
+use std::path::{Path, PathBuf};
 
-use std::sync::{Arc,Mutex};
+use std::sync::{Arc, Mutex};
 use tempdir::TempDir;
 
-use crate::jobserver::Client;
 use crate::errors::*;
+use crate::jobserver::Client;
 
 /// Return a `Vec` with each listed entry converted to an owned `String`.
 macro_rules! stringvec {
@@ -49,16 +49,19 @@ macro_rules! pathvec {
 
 /// Assert that `left != right`.
 macro_rules! assert_neq {
-    ($left:expr , $right:expr) => ({
+    ($left:expr , $right:expr) => {{
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if !(*left_val != *right_val) {
-                    panic!("assertion failed: `(left != right)` \
-                           (left: `{:?}`, right: `{:?}`)", left_val, right_val)
+                    panic!(
+                        "assertion failed: `(left != right)` \
+                         (left: `{:?}`, right: `{:?}`)",
+                        left_val, right_val
+                    )
                 }
             }
         }
-    })
+    }};
 }
 
 /// Assert that `map` contains all of the (`key`, `val`) pairs specified.
@@ -79,28 +82,32 @@ pub fn new_creator() -> Arc<Mutex<MockCommandCreator>> {
     Arc::new(Mutex::new(MockCommandCreator::new(&client)))
 }
 
-pub fn next_command(creator : &Arc<Mutex<MockCommandCreator>>,
-                    child: Result<MockChild>) {
+pub fn next_command(creator: &Arc<Mutex<MockCommandCreator>>, child: Result<MockChild>) {
     creator.lock().unwrap().next_command_spawns(child);
 }
 
-pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static>(creator: &Arc<Mutex<MockCommandCreator>>, call: C) {
+pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'static>(
+    creator: &Arc<Mutex<MockCommandCreator>>,
+    call: C,
+) {
     creator.lock().unwrap().next_command_calls(call);
 }
 
-#[cfg(not(target_os="macos"))]
+#[cfg(not(target_os = "macos"))]
 pub fn find_sccache_binary() -> PathBuf {
     // Older versions of cargo put the test binary next to the sccache binary.
     // Newer versions put it in the deps/ subdirectory.
     let exe = env::current_exe().unwrap();
     let this_dir = exe.parent().unwrap();
     let dirs = &[&this_dir, &this_dir.parent().unwrap()];
-    dirs
-        .iter()
+    dirs.iter()
         .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
         .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
         .next()
-        .expect(&format!("Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?", dirs))
+        .expect(&format!(
+            "Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?",
+            dirs
+        ))
 }
 
 pub struct TestFixture {
@@ -116,7 +123,8 @@ pub const SUBDIRS: &'static [&'static str] = &["a", "b", "c"];
 pub const BIN_NAME: &'static str = "bin";
 
 pub fn create_file<F>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf>
-    where F: FnOnce(File) -> io::Result<()>
+where
+    F: FnOnce(File) -> io::Result<()>,
 {
     let b = dir.join(path);
     let parent = b.parent().unwrap();
@@ -131,7 +139,11 @@ pub fn touch(dir: &Path, path: &str) -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-pub fn mk_bin_contents<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, fill_contents: F) -> io::Result<PathBuf> {
+pub fn mk_bin_contents<F: FnOnce(File) -> io::Result<()>>(
+    dir: &Path,
+    path: &str,
+    fill_contents: F,
+) -> io::Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let bin = dir.join(path);
     let parent = bin.parent().unwrap();
@@ -152,13 +164,30 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 
 #[cfg(not(unix))]
 #[allow(dead_code)]
-pub fn mk_bin_contents<F : FnOnce(File) -> io::Result<()>>(dir: &Path, path: &str, contents: F) -> io::Result<PathBuf> {
-    create_file(dir,  Path::new(path).with_extension(env::consts::EXE_EXTENSION).to_str().unwrap(), contents)
+pub fn mk_bin_contents<F: FnOnce(File) -> io::Result<()>>(
+    dir: &Path,
+    path: &str,
+    contents: F,
+) -> io::Result<PathBuf> {
+    create_file(
+        dir,
+        Path::new(path)
+            .with_extension(env::consts::EXE_EXTENSION)
+            .to_str()
+            .unwrap(),
+        contents,
+    )
 }
 
 #[cfg(not(unix))]
 pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
-    touch(dir, Path::new(path).with_extension(env::consts::EXE_EXTENSION).to_str().unwrap())
+    touch(
+        dir,
+        Path::new(path)
+            .with_extension(env::consts::EXE_EXTENSION)
+            .to_str()
+            .unwrap(),
+    )
 }
 
 impl TestFixture {
@@ -166,8 +195,8 @@ impl TestFixture {
         let tempdir = TempDir::new("sccache_test").unwrap();
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
-        let mut paths = vec!();
-        let mut bins = vec!();
+        let mut paths = vec![];
+        let mut bins = vec![];
         for d in SUBDIRS.iter() {
             let p = tempdir.path().join(d);
             builder.create(&p).unwrap();
@@ -191,7 +220,6 @@ impl TestFixture {
         mk_bin(self.tempdir.path(), &path)
     }
 }
-
 
 #[test]
 fn test_map_contains_ok() {

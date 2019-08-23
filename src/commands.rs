@@ -12,18 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use atty::Stream;
-use byteorder::{BigEndian, ByteOrder};
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
 use crate::config::Config;
-use futures::Future;
 use crate::jobserver::Client;
-use log::Level::Trace;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
-use crate::server::{self, ServerInfo, DistInfo, ServerStartup};
+use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
+use crate::util::daemonize;
+use atty::Stream;
+use byteorder::{BigEndian, ByteOrder};
+use futures::Future;
+use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
@@ -37,7 +38,6 @@ use tokio::runtime::current_thread::Runtime;
 use tokio_io::io::read_exact;
 use tokio_io::AsyncRead;
 use tokio_timer::Timeout;
-use crate::util::daemonize;
 use which::which_in;
 
 use crate::errors::*;
@@ -155,11 +155,11 @@ fn run_server_process() -> Result<ServerStartup> {
     use tokio_named_pipes::NamedPipe;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
+    use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
     use winapi::um::winbase::{
         CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS,
     };
-    use winapi::um::handleapi::CloseHandle;
 
     trace!("run_server_process");
 
@@ -224,7 +224,10 @@ fn run_server_process() -> Result<ServerStartup> {
             ptr::null_mut(),
             ptr::null_mut(),
             FALSE,
-            CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+            CREATE_UNICODE_ENVIRONMENT
+                | DETACHED_PROCESS
+                | CREATE_NEW_PROCESS_GROUP
+                | CREATE_NO_WINDOW,
             envp.as_mut_ptr() as LPVOID,
             ptr::null(),
             &mut si,
@@ -466,7 +469,8 @@ where
                         io::stderr(),
                         "warning: sccache server looks like it shut down \
                          unexpectedly, compiling locally instead"
-                    ).unwrap();
+                    )
+                    .unwrap();
                 }
                 Err(e) => {
                     return Err(e).chain_err(|| {
@@ -614,7 +618,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     cached_config
                         .with_mut(|c| {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
-                        }).chain_err(|| "Unable to save auth token")?;
+                        })
+                        .chain_err(|| "Unable to save auth token")?;
                     println!("Saved token")
                 }
                 config::DistAuth::Oauth2Implicit {
@@ -631,7 +636,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     cached_config
                         .with_mut(|c| {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
-                        }).chain_err(|| "Unable to save auth token")?;
+                        })
+                        .chain_err(|| "Unable to save auth token")?;
                     println!("Saved token")
                 }
             };
@@ -643,9 +649,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::DistStatus => {
             trace!("Command::DistStatus");
             let srv = connect_or_start_server(get_port())?;
-            let status = request_dist_status(srv).chain_err(|| "failed to get dist-status from server")?;
+            let status =
+                request_dist_status(srv).chain_err(|| "failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
-        },
+        }
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;

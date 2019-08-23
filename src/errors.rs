@@ -20,10 +20,10 @@ use std::error;
 use std::io;
 use std::process;
 
-use futures::Future;
-use futures::future;
 #[cfg(feature = "jsonwebtoken")]
 use crate::jwt;
+use futures::future;
+use futures::Future;
 
 error_chain! {
     foreign_links {
@@ -71,7 +71,7 @@ impl From<which::Error> for Error {
 #[cfg(feature = "gcs")]
 impl From<chrono::ParseError> for Error {
     fn from(err: chrono::ParseError) -> Self {
-       Error::from(err.to_string())
+        Error::from(err.to_string())
     }
 }
 
@@ -80,17 +80,20 @@ pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
 
 pub trait FutureChainErr<T> {
     fn chain_err<F, E>(self, callback: F) -> SFuture<T>
-        where F: FnOnce() -> E + 'static,
-              E: Into<ErrorKind>;
+    where
+        F: FnOnce() -> E + 'static,
+        E: Into<ErrorKind>;
 }
 
 impl<F> FutureChainErr<F::Item> for F
-    where F: Future + 'static,
-          F::Error: error::Error + Send + 'static,
+where
+    F: Future + 'static,
+    F::Error: error::Error + Send + 'static,
 {
     fn chain_err<C, E>(self, callback: C) -> SFuture<F::Item>
-        where C: FnOnce() -> E + 'static,
-              E: Into<ErrorKind>,
+    where
+        C: FnOnce() -> E + 'static,
+        E: Into<ErrorKind>,
     {
         Box::new(self.then(|r| r.chain_err(callback)))
     }
@@ -103,7 +106,7 @@ macro_rules! ftry {
             Ok(v) => v,
             Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
         }
-    }
+    };
 }
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -113,24 +116,27 @@ macro_rules! ftry_send {
             Ok(v) => v,
             Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFutureSend<_>,
         }
-    }
+    };
 }
 
 pub fn f_res<T, E: convert::Into<Error>>(t: ::std::result::Result<T, E>) -> SFuture<T>
-    where T: 'static,
+where
+    T: 'static,
 {
     Box::new(future::result(t.map_err(Into::into)))
 }
 
 pub fn f_ok<T>(t: T) -> SFuture<T>
-    where T: 'static,
+where
+    T: 'static,
 {
     Box::new(future::ok(t))
 }
 
 pub fn f_err<T, E>(e: E) -> SFuture<T>
-    where T: 'static,
-          E: Into<Error>,
+where
+    T: 'static,
+    E: Into<Error>,
 {
     Box::new(future::err(e.into()))
 }
