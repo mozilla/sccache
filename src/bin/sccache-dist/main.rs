@@ -823,7 +823,8 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Started)
             .chain_err(|| "Updating job state failed")?;
-        let res = match self.job_toolchains.lock().unwrap().remove(&job_id) {
+        let tc = self.job_toolchains.lock().unwrap().remove(&job_id);
+        let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
                 match self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache) {
