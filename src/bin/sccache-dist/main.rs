@@ -734,10 +734,12 @@ impl SchedulerIncoming for Scheduler {
 
     fn handle_status(&self) -> Result<SchedulerStatusResult> {
         let servers = self.servers.lock().unwrap();
+        let jobs = self.jobs.lock().unwrap();
 
         Ok(SchedulerStatusResult {
             num_servers: servers.len(),
             num_cpus: servers.values().map(|v| v.num_cpus).sum(),
+            in_progress: jobs.len(),
         })
     }
 }
