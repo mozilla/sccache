@@ -295,7 +295,7 @@ impl DistSystem {
         wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(|| {
             let status = self.scheduler_status();
-            if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _ }) { Ok(()) } else { Err(format!("{:?}", status)) }
+            if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 }) { Ok(()) } else { Err(format!("{:?}", status)) }
         }, Duration::from_millis(100), MAX_STARTUP_WAIT);
     }
 
@@ -386,7 +386,7 @@ impl DistSystem {
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(|| {
             let status = self.scheduler_status();
-            if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _ }) { Ok(()) } else { Err(format!("{:?}", status)) }
+            if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 }) { Ok(()) } else { Err(format!("{:?}", status)) }
         }, Duration::from_millis(100), MAX_STARTUP_WAIT);
     }
 

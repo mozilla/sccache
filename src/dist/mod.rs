@@ -522,6 +522,7 @@ pub struct JobComplete {
 pub struct SchedulerStatusResult {
     pub num_servers: usize,
     pub num_cpus: usize,
+    pub in_progress: usize,
 }
 
 // SubmitToolchain
