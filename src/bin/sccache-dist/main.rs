@@ -802,8 +802,9 @@ impl ServerIncoming for Server {
             None => return Ok(SubmitToolchainResult::JobNotFound),
         };
         let mut cache = self.cache.lock().unwrap();
-        // TODO: this returns before reading all the data, is that valid?
-        if cache.contains_toolchain(&tc) {
+
+        // only return if the hashes match
+        if cache.contains_toolchain(&tc) && cache.toolchain_valid(&tc) {
             return Ok(SubmitToolchainResult::Success);
         }
         Ok(cache

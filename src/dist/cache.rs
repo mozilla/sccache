@@ -319,6 +319,17 @@ impl TcCache {
         self.inner.contains_key(make_lru_key_path(&tc.archive_id))
     }
 
+    /// verify the on-disk files hash is equal to the received hash
+    /// 
+    /// otherwise this shows that the toolchain is either invalid or not complete
+    pub fn toolchain_valid(&self, tc: &Toolchain) -> bool {
+        self.get(tc)
+            .and_then(|key| file_key(key))
+            .map(|verified_archive_id| {
+                tc.archive_id == verified_archive_id
+            } ).unwrap_or(false)
+    }
+
     pub fn insert_with<F: FnOnce(fs::File) -> io::Result<()>>(&mut self, tc: &Toolchain, with: F) -> Result<()> {
         self.inner.insert_with(make_lru_key_path(&tc.archive_id), with).map_err(|e| -> Error { e.into() })?;
         let verified_archive_id = file_key(self.get(tc)?)?;
