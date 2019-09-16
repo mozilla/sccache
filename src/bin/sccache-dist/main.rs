@@ -668,9 +668,20 @@ impl SchedulerIncoming for Scheduler {
         let mut servers = self.servers.lock().unwrap();
 
         match servers.get_mut(&server_id) {
-            Some(ref mut details) if details.server_nonce == server_nonce => {
-                details.last_seen = Instant::now();
-                return Ok(HeartbeatServerResult { is_new: false });
+            Some(ref mut details) => {
+                if details.server_nonce == server_nonce {
+                    details.last_seen = Instant::now();
+                    return Ok(HeartbeatServerResult { is_new: false });
+                }
+                let mut jobs = self.jobs.lock().unwrap();
+                for job_id in details.jobs_assigned.iter() {
+                    if jobs.remove(&job_id).is_none() {
+                        warn!(
+                            "Unknown job found when replacing server {}: {}",
+                            server_id.addr(), job_id
+                        );
+                    }
+                }
             }
             _ => (),
         }
