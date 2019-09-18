@@ -15,7 +15,6 @@
 use directories::ProjectDirs;
 use regex::Regex;
 use rusoto_core::Region;
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
