@@ -23,7 +23,9 @@ use crate::compiler::{
 #[cfg(feature = "dist-client")]
 use crate::config;
 use crate::config::Config;
-use crate::dist::{self, Client as _};
+use crate::dist;
+#[cfg(feature = "dist-client")]
+use crate::dist::Client as _;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
