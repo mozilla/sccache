@@ -454,6 +454,8 @@ fn init_logging() {
 
 const MAX_PER_CORE_LOAD: f64 = 10f64;
 const SERVER_REMEMBER_ERROR_TIMEOUT: Duration = Duration::from_secs(300);
+const UNCLAIMED_PENDING_TIMEOUT: Duration = Duration::from_secs(300);
+const UNCLAIMED_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Copy, Clone)]
 struct JobDetail {
@@ -477,6 +479,9 @@ pub struct Scheduler {
 
 struct ServerDetails {
     jobs_assigned: HashSet<JobId>,
+    // Jobs assigned that haven't seen a state change. Can only be pending
+    // or ready.
+    jobs_unclaimed: HashMap<JobId, Instant>,
     last_seen: Instant,
     last_error: Option<Instant>,
     num_cpus: usize,
@@ -560,6 +565,7 @@ impl SchedulerIncoming for Scheduler {
                     let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
                     let job_id = JobId(job_count);
                     assert!(server_details.jobs_assigned.insert(job_id));
+                    assert!(server_details.jobs_unclaimed.insert(job_id, Instant::now()).is_none());
 
                     info!(
                         "Job {} created and will be assigned to server {:?}",
@@ -620,6 +626,7 @@ impl SchedulerIncoming for Scheduler {
                 let mut servers = self.servers.lock().unwrap();
                 if let Some(entry) = servers.get_mut(&server_id) {
                     entry.last_error = Some(Instant::now());
+                    entry.jobs_unclaimed.remove(&job_id);
                     if !entry.jobs_assigned.remove(&job_id) {
                         "assign job failed and job not known to the server"
                     } else {
@@ -668,11 +675,69 @@ impl SchedulerIncoming for Scheduler {
         let mut servers = self.servers.lock().unwrap();
 
         match servers.get_mut(&server_id) {
-            Some(ref mut details) => {
-                if details.server_nonce == server_nonce {
-                    details.last_seen = Instant::now();
-                    return Ok(HeartbeatServerResult { is_new: false });
+            Some(ref mut details) if details.server_nonce == server_nonce => {
+                let now = Instant::now();
+                details.last_seen = now;
+
+                let mut stale_jobs = Vec::new();
+                for (&job_id, &last_seen) in details.jobs_unclaimed.iter() {
+                    if now.duration_since(last_seen) < UNCLAIMED_READY_TIMEOUT {
+                        continue;
+                    }
+                    let jobs = self.jobs.lock().unwrap();
+                    if let Some(detail) = jobs.get(&job_id) {
+                        match detail.state {
+                            JobState::Ready => {
+                                stale_jobs.push(job_id);
+                            },
+                            JobState::Pending => {
+                                if now.duration_since(last_seen) >
+                                    UNCLAIMED_PENDING_TIMEOUT {
+                                        stale_jobs.push(job_id);
+                                    }
+                            },
+                            state => {
+                                warn!("Invalid unclaimed job state for {}: {}",
+                                      job_id, state);
+                            }
+                        }
+                    } else {
+                        warn!("Unknown stale job {}", job_id);
+                        stale_jobs.push(job_id);
+                    }
                 }
+
+                if stale_jobs.len() > 0 {
+                    warn!("The following stale jobs will be de-allocated: {:?}",
+                          stale_jobs);
+
+                    let mut jobs = self.jobs.lock().unwrap();
+
+                    for job_id in stale_jobs {
+                        if !details.jobs_assigned.remove(&job_id) {
+                            warn!(
+                                "Stale job for server {} not assigned: {}",
+                                server_id.addr(), job_id
+                            );
+                        }
+                        if details.jobs_unclaimed.remove(&job_id).is_none() {
+                            warn!(
+                                "Unknown stale job for server {}: {}",
+                                server_id.addr(), job_id
+                            );
+                        }
+                        if jobs.remove(&job_id).is_none() {
+                            warn!(
+                                "Unknown stale job for server {}: {}",
+                                server_id.addr(), job_id
+                            );
+                        }
+                    }
+                }
+
+                return Ok(HeartbeatServerResult { is_new: false });
+            }
+            Some(ref mut details) if details.server_nonce != server_nonce => {
                 let mut jobs = self.jobs.lock().unwrap();
                 for job_id in details.jobs_assigned.iter() {
                     if jobs.remove(&job_id).is_none() {
@@ -692,6 +757,7 @@ impl SchedulerIncoming for Scheduler {
                 last_seen: Instant::now(),
                 last_error: None,
                 jobs_assigned: HashSet::new(),
+                jobs_unclaimed: HashMap::new(),
                 num_cpus,
                 server_nonce,
                 job_authorizer,
@@ -722,7 +788,15 @@ impl SchedulerIncoming for Scheduler {
                 )
             }
             match (job_detail.state, job_state) {
-                (JobState::Pending, JobState::Ready) | (JobState::Ready, JobState::Started) => {
+                (JobState::Pending, JobState::Ready) => {
+                    entry.get_mut().state = job_state
+                }
+                (JobState::Ready, JobState::Started) => {
+                    if let Some(details) = servers.get_mut(&server_id) {
+                        details.jobs_unclaimed.remove(&job_id);
+                    } else {
+                        warn!("Job state updated, but server is not known to scheduler")
+                    }
                     entry.get_mut().state = job_state
                 }
                 (JobState::Started, JobState::Complete) => {
