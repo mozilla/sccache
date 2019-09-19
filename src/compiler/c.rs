@@ -26,8 +26,6 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-#[cfg(feature = "dist-client")]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::fs;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
@@ -245,8 +243,28 @@ impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
         });
         let out_pretty = parsed_args.output_pretty().into_owned();
         let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone());
+        let outputs = parsed_args.outputs.clone();
+        let args_cwd = cwd.clone();
 
         Box::new(result.or_else(move |err| {
+            // Errors remove all traces of potential output.
+            debug!("removing files {:?}", &outputs);
+
+            let v: std::result::Result<(), std::io::Error> = outputs.values().fold(Ok(()), |r, f| {
+                r.and_then(|_| {
+                    let mut path = (&args_cwd).clone();
+                    path.push(&f);
+                    match fs::metadata(&path) {
+                        // File exists, remove it.
+                        Ok(_) => fs::remove_file(&path),
+                        _ => Ok(()),
+                    }
+                })
+            });
+            if v.is_err() {
+                warn!("Could not remove files after preprocessing failed!\n");
+            }
+
             match err {
                 Error(ErrorKind::ProcessError(output), _) => {
                     debug!("[{}]: preprocessor returned error status {:?}",

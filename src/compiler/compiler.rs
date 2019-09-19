@@ -1534,11 +1534,20 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: Arc<dyn Storage> = Arc::new(storage);
-        // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        // Pretend to be GCC.  Also inject a fake object file that the subsequent
+        // preprocessor failure should remove.
+        let obj = f.tempdir.path().join("foo.o");
+        let o = obj.clone();
+        next_command_calls(&creator, move |_| {
+            let mut f = File::create(&o)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), "gcc", ""))
+        });
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
             .wait()
             .unwrap();
+        // We should now have a fake object file.
+        assert_eq!(fs::metadata(&obj).is_ok(), true);
         // The preprocessor invocation.
         const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
         next_command(
@@ -1573,6 +1582,8 @@ LLVM version: 6.0",
         // Shouldn't get anything on stdout, since that would just be preprocessor spew!
         assert_eq!(b"", res.stdout.as_slice());
         assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
+        // Errors in preprocessing should remove the object file.
+        assert_eq!(fs::metadata(&obj).is_ok(), false);
     }
 
     #[test]
