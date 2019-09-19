@@ -151,14 +151,14 @@ mod client {
                 let (tc, compiler_path) = tc_and_compiler_path?;
                 return Ok((tc, Some(compiler_path)))
             }
+            // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
+            // to create the same toolchain, just a waste of time
+            let mut cache = self.cache.lock().unwrap();
             if let Some(archive_id) = self.weak_to_strong(weak_key) {
                 debug!("Using cached toolchain {} -> {}", weak_key, archive_id);
                 return Ok((Toolchain { archive_id }, None))
             }
             debug!("Weak key {} appears to be new", weak_key);
-            // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
-            // to create the same toolchain, just a waste of time
-            let mut cache = self.cache.lock().unwrap();
             let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
             toolchain_packager.write_pkg(tmpfile.reopen()?).chain_err(|| "Could not package toolchain")?;
             let tc = cache.insert_file(tmpfile.path())?;
