@@ -362,7 +362,7 @@ mod http_extension {
             H: hyperx::header::Header,
         {
             http::HeaderMap::get(self, H::header_name())
-                .and_then(|header| H::parse_header(&header.as_bytes().into()).ok())
+                .and_then(|header| H::parse_header(&header).ok())
         }
     }
 

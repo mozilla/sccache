@@ -26,7 +26,7 @@ use redis::{
     Client,
     InfoDict,
 };
-use redis::r#async::Connection;
+use redis::aio::Connection;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{

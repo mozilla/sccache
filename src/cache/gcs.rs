@@ -240,7 +240,7 @@ impl GCSCredentialProvider {
         // case of GCP keys
         let key_string = sa_key.private_key.splitn(5, "-----").nth(2).ok_or_else(|| "invalid key format")?;
         // Skip the leading `\n`
-        let key_bytes = base64::decode_config(key_string[1..].as_bytes(), base64::MIME)?;
+        let key_bytes = base64::decode(key_string[1..].as_bytes())?;
 
         let auth_request_jwt = jwt::encode(
             &jwt::Header::new(jwt::Algorithm::RS256),

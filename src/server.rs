@@ -24,6 +24,7 @@ use crate::compiler::{
 use crate::config;
 use crate::config::Config;
 use crate::dist;
+#[cfg(feature = "dist-client")]
 use crate::dist::Client as DistClient;
 use filetime::FileTime;
 use futures::sync::mpsc;
@@ -32,7 +33,7 @@ use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, S
 use futures_cpupool::CpuPool;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
-use number_prefix::{binary_prefix, Prefixed, Standalone};
+use number_prefix::{NumberPrefix, Prefixed, Standalone};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1363,7 +1364,7 @@ impl ServerInfo {
             ("Max cache size", &self.max_cache_size),
         ] {
             if let &Some(val) = val {
-                let (val, suffix) = match binary_prefix(val as f64) {
+                let (val, suffix) = match NumberPrefix::binary(val as f64) {
                     Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
                     Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
                 };

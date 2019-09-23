@@ -60,7 +60,7 @@ impl Storage for S3Cache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = normalize_key(key);
         let credentials = self.provider.credentials().chain_err(|| {
-            "failed to get AWS credentials"
+            "failed to get S3 credentials"
         });
 
         let bucket = self.bucket.clone();
@@ -73,7 +73,7 @@ impl Storage for S3Cache {
                         Ok(Cache::Hit(hit))
                     }
                     Err(e) => {
-                        warn!("Got AWS error: {:?}", e);
+                        warn!("Got S3 error: {:?}", e);
                         Ok(Cache::Miss)
                     }
                 }
@@ -89,7 +89,7 @@ impl Storage for S3Cache {
             Err(e) => return f_err(e),
         };
         let credentials = self.provider.credentials().chain_err(|| {
-            "failed to get AWS credentials"
+            "failed to get S3 credentials"
         });
 
         let bucket = self.bucket.clone();

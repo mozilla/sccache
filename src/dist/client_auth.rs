@@ -187,9 +187,7 @@ mod code_grant_pkce {
 
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
-        let mut rng =
-            rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
-        rng.fill_bytes(&mut code_verifier_bytes);
+        rand::rngs::OsRng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
         let mut hasher = HASHER::new();
         hasher.input_str(&code_verifier);
@@ -551,7 +549,7 @@ where T: ServeFn
             }
             Err(ref err)
                 if err
-                    .cause2()
+                    .source()
                     .and_then(|err| err.downcast_ref::<io::Error>())
                     .map(|err| err.kind() == io::ErrorKind::AddrInUse)
                     .unwrap_or(false) =>

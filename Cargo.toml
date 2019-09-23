@@ -22,101 +22,99 @@ name = "sccache-dist"
 required-features = ["dist-server"]
 
 [dependencies]
-ar = { version = "0.6", optional = true }
-atty = "0.2.6"
-base64 = "0.9.0"
-bincode = "1"
-byteorder = "1.0"
-bytes = "0.4"
-chrono = { version = "0.4", optional = true }
-clap = "2.23.0"
-counted-array = "0.1"
-directories = "1"
-env_logger = "0.5"
+ar = { version = "0.8.0", optional = true }
+atty = "0.2.13"
+base64 = "0.10.1"
+bincode = "1.1.4"
+byteorder = "1.3.2"
+bytes = "0.4.12"
+chrono = { version = "0.4.9", optional = true }
+clap = "2.33.0"
+counted-array = "0.1.2"
+directories = "2.0.2"
+env_logger = "0.6.2"
 error-chain = { version = "0.12.1", default-features = false }
-filetime = "0.2"
-flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
-futures = "0.1.11"
-futures-cpupool = "0.1"
-http = "0.1"
-hyper = { version = "0.12", optional = true }
-hyperx = { version = "0.12", optional = true }
-jobserver = "0.1"
-jsonwebtoken = { version = "5.0", optional = true }
-lazy_static = "1.0.0"
-libc = "0.2.10"
+filetime = "0.2.7"
+flate2 = { version = "1.0.11", optional = true, default-features = false, features = ["rust_backend"] }
+futures = "0.1.29"
+futures-cpupool = "0.1.8"
+http = "0.1.18"
+hyper = { version = "0.12.35", optional = true }
+hyperx = { version = "0.15.1", optional = true }
+jobserver = "0.1.17"
+jsonwebtoken = { version = "6.0.1", optional = true }
+lazy_static = "1.4.0"
+libc = "0.2.62"
 local-encoding = "0.2.0"
-log = "0.4"
+log = "0.4.8"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.3.0" }
-memcached-rs = { version = "0.3" , optional = true }
-num_cpus = "1.0"
-number_prefix = "0.2.5"
-openssl = { version = "0.10", optional = true }
-rand = "0.5"
-redis = { version = "0.9.0", optional = true }
-regex = "1"
-reqwest = { version = "0.9", optional = true }
-retry = "0.4.0"
-ring = "0.13.2"
+memcached-rs = { version = "0.4.1", optional = true }
+num_cpus = "1.10.1"
+number_prefix = "0.3.0"
+openssl = { version = "0.10.24", optional = true }
+rand = "0.7.1"
+redis = { version = "0.12.0", optional = true }
+regex = "1.3.1"
+reqwest = { version = "0.9.20", optional = true }
+retry = "0.5.1"
+ring = "0.14.4"
+rusoto_core = { version = "0.40.0", optional = true }
 rust-crypto = { version = "0.2.36", optional = true }
-serde = "1.0"
-serde_derive = "1.0"
-serde_json = "1.0"
-strip-ansi-escapes = "0.1"
-tar = "0.4"
-tempdir = "0.3.4"
-tempfile = "3"
-time = "0.1.35"
-tokio = "0.1.11"
-tokio-io = "0.1"
-tokio-process = "0.2"
-tokio-serde-bincode = "0.1"
-tokio-service = "0.1"
-tokio-tcp = "0.1"
-tokio-timer = "0.2"
-toml = "0.4"
-uuid = { version = "0.7", features = ["v4"] }
-url = { version = "1.0", optional = true }
-walkdir = "1.0.7"
-which = "2"
-zip = { version = "0.4", default-features = false, features = ["deflate"] }
+serde = "1.0.100"
+serde_derive = "1.0.100"
+serde_json = "1.0.40"
+strip-ansi-escapes = "0.1.0"
+tar = "0.4.26"
+tempdir = "0.3.7"
+tempfile = "3.1.0"
+time = "0.1.42"
+tokio = "0.1.22"
+tokio-io = "0.1.12"
+tokio-process = "0.2.4"
+tokio-serde-bincode = "0.1.1"
+tokio-service = "0.1.0"
+tokio-tcp = "0.1.3"
+tokio-timer = "0.2.11"
+toml = "0.5.3"
+uuid = { version = "0.7.4", features = ["v4"] }
+url = { version = "1.7.2", optional = true }
+walkdir = "2.2.9"
+which = "2.0.1"
+zip = { version = "0.5.3", default-features = false, features = ["deflate"] }
 
 # dist-server only
-arraydeque = { version = "0.4", optional = true }
-crossbeam-utils = { version = "0.5", optional = true }
-libmount = { version = "0.1.10", optional = true }
-nix = { version = "0.11.0", optional = true }
-rouille = { version = "2.2", optional = true, default-features = false, features = ["ssl"] }
+arraydeque = { version = "0.4.5", optional = true }
+crossbeam-utils = { version = "0.6.6", optional = true }
+libmount = { version = "0.1.13", optional = true }
+nix = { version = "0.15.0", optional = true }
+rouille = { version = "3.0.0", optional = true, default-features = false, features = ["ssl"] }
 syslog = { version = "4.0.1", optional = true }
-void = { version = "1", optional = true }
-version-compare = { version = "0.0.8", optional = true }
-rusoto_core = "0.39.0"
+void = { version = "1.0.2", optional = true }
+version-compare = { version = "0.0.9", optional = true }
 
 [patch.crates-io]
-# Waiting for https://github.com/tiny-http/tiny-http/pull/151
-tiny_http = { git = "https://github.com/aidanhs/tiny-http-sccache.git", rev = "a14fa0a" }
-# Waiting for https://github.com/Keats/jsonwebtoken/pull/74
-jsonwebtoken = { git = "https://github.com/Jake-Shadle/jsonwebtoken.git", rev = "2f469a61" }
+# Waiting for https://github.com/tiny-http/tiny-http/pull/151 to be released
+tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680d" }
 
 [dev-dependencies]
-assert_cmd = "0.9"
-cc = "1.0"
-chrono = "0.4"
-escargot = "0.3"
-itertools = "0.7"
-predicates = "0.9.0"
-selenium-rs = "0.1"
+assert_cmd = "0.11.1"
+cc = "1.0.45"
+chrono = "0.4.9"
+escargot = "0.5.0"
+itertools = "0.8.0"
+predicates = "1.0.1"
+selenium-rs = "0.1.1"
 
 [target.'cfg(unix)'.dependencies]
-daemonize = "0.3"
-tokio-uds = "0.2"
+daemonize = "0.4.1"
+tokio-uds = "0.2.5"
 
 [target.'cfg(windows)'.dependencies]
-tokio-named-pipes = "0.1"
-tokio-reactor = "0.1"
+tokio-named-pipes = "0.1.0"
+tokio-reactor = "0.1.9"
 
 [target.'cfg(windows)'.dependencies.winapi]
-version = "0.3"
+version = "0.3.8"
 features = [
     "fileapi",
     "handleapi",
@@ -127,7 +125,7 @@ features = [
 default = ["dist-client", "s3"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
-s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
+s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3", "rusoto_core"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "jsonwebtoken", "reqwest", "url"]
 memcached = ["memcached-rs"]
