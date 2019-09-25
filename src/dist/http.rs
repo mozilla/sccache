@@ -394,7 +394,6 @@ mod server {
         static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
             leeway: 0,
             validate_exp: false,
-            validate_iat: false,
             validate_nbf: false,
             aud: None,
             iss: None,
@@ -870,8 +869,7 @@ mod server {
                 create_https_cert_and_privkey(public_addr)
                     .chain_err(|| "failed to create HTTPS certificate for server")?;
             let mut jwt_key = vec![0; JWT_KEY_LENGTH];
-            let mut rng = rand::OsRng::new()
-                .chain_err(|| "Failed to initialise a random number generator")?;
+            let mut rng = rand::rngs::OsRng;
             rng.fill_bytes(&mut jwt_key);
             let server_nonce = ServerNonce::from_rng(&mut rng);
 
