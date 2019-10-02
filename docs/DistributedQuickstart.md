@@ -13,6 +13,8 @@ cargo build --release --features="dist-client dist-server"
 
 The `target/release/sccache` binary will be used on the client, and the `target/release/sccache-dist` binary will be used on the scheduler and build server.
 
+If you're only planning to use the client, it is enabled by default, so just `cargo install sccache` should do the trick.
+
 Configure a scheduler
 ---------------------
 
@@ -132,6 +134,16 @@ type = "mozilla"
 And retrieve a token from the Mozilla identity service by running `sccache --dist-auth`
 and following the instructions. Completing this process will retrieve and cache a token
 valid for 7 days.
+
+Make sure to run `sccache --stop-server` and `sccache --start-server` if sccache was
+running before changing the configuration.
+
+You can check the status with `sccache --dist-status`, it should say something like:
+
+```
+$ sccache --dist-status
+{"SchedulerStatus":["https://sccache1.corpdmz.ber3.mozilla.com/",{"num_servers":3,"num_cpus":56,"in_progress":24}]}
+```
 
 Using custom toolchains
 -----------------------
