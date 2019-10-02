@@ -157,7 +157,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
     use winapi::um::winbase::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
     };
 
     trace!("run_server_process");
@@ -227,10 +227,7 @@ fn run_server_process() -> Result<ServerStartup> {
             ptr::null_mut(),
             ptr::null_mut(),
             FALSE,
-            CREATE_UNICODE_ENVIRONMENT
-                | DETACHED_PROCESS
-                | CREATE_NEW_PROCESS_GROUP
-                | CREATE_NO_WINDOW,
+            CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             envp.as_mut_ptr() as LPVOID,
             ptr::null(),
             &mut si,
