@@ -979,7 +979,14 @@ where
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
                             match dist_type {
                                 DistType::NoDist => {}
-                                DistType::Ok => stats.dist_compiles += 1,
+                                DistType::Ok(id) => {
+                                    let server = id.addr().to_string();
+                                    let server_count = stats
+                                        .dist_compiles
+                                        .entry(server)
+                                        .or_insert(0);
+                                    *server_count += 1;
+                                },
                                 DistType::Error => stats.dist_errors += 1,
                             }
                             match miss_type {
@@ -1158,8 +1165,9 @@ pub struct ServerStats {
     pub compile_fails: u64,
     /// Counts of reasons why compiles were not cached.
     pub not_cached: HashMap<String, usize>,
-    /// The count of compilations that were successfully distributed
-    pub dist_compiles: u64,
+    /// The count of compilations that were successfully distributed indexed
+    /// by the server that ran those compilations.
+    pub dist_compiles: HashMap<String, usize>,
     /// The count of compilations that were distributed but failed and had to be re-run locally
     pub dist_errors: u64,
 }
@@ -1205,7 +1213,7 @@ impl Default for ServerStats {
             cache_read_miss_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
             not_cached: HashMap::new(),
-            dist_compiles: u64::default(),
+            dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
         }
     }
@@ -1282,16 +1290,6 @@ impl ServerStats {
             self.requests_unsupported_compiler,
             "Unsupported compiler calls"
         );
-        set_stat!(
-            stats_vec,
-            self.dist_compiles,
-            "Successful distributed compilations"
-        );
-        set_stat!(
-            stats_vec,
-            self.dist_errors,
-            "Failed distributed compilations"
-        );
         set_duration_stat!(
             stats_vec,
             self.cache_write_duration,
@@ -1309,6 +1307,11 @@ impl ServerStats {
             self.cache_read_hit_duration,
             self.cache_hits.all(),
             "Average cache read hit"
+        );
+        set_stat!(
+            stats_vec,
+            self.dist_errors,
+            "Failed distributed compilations"
         );
         let name_width = stats_vec
             .iter()
@@ -1328,6 +1331,20 @@ impl ServerStats {
                 name_width = name_width,
                 stat_width = stat_width + suffix_len
             );
+        }
+        if self.dist_compiles.len() > 0 {
+            println!("\nSuccessful distributed compiles");
+            let mut counts: Vec<_> = self.dist_compiles.iter().collect();
+            counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
+            for (reason, count) in counts {
+                println!(
+                    "  {:<name_width$} {:>stat_width$}",
+                    reason,
+                    count,
+                    name_width = name_width - 2,
+                    stat_width = stat_width
+                );
+            }
         }
         if !self.not_cached.is_empty() {
             println!("\nNon-cacheable reasons:");
