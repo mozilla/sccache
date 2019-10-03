@@ -494,13 +494,14 @@ where
                     alloc
                         .and_then(move |job_alloc| {
                             let job_id = job_alloc.job_id;
+                            let server_id = job_alloc.server_id;
                             debug!("[{}]: Running job", compile_out_pretty3);
                             dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
-                                .map(move |res| (job_id, res))
+                                .map(move |res| ((job_id, server_id), res))
                                 .chain_err(|| "could not run distributed compilation job")
                         })
                 })
-                .and_then(move |(job_id, (jres, path_transformer))| {
+                .and_then(move |((job_id, server_id), (jres, path_transformer))| {
                     let jc = match jres {
                         dist::RunJobResult::Complete(jc) => jc,
                         dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
@@ -544,7 +545,7 @@ where
                     }
                     try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths)
                         .chain_err(|| "failed to rewrite outputs from compile"));
-                    Ok((DistType::Ok, jc.output.into()))
+                    Ok((DistType::Ok(server_id), jc.output.into()))
                 })
         })
         .or_else(move |e| {
@@ -669,7 +670,7 @@ pub enum DistType {
     /// Distribution was not enabled.
     NoDist,
     /// Distributed compile success.
-    Ok,
+    Ok(dist::ServerId),
     /// Distributed compile failed.
     Error,
 }
@@ -1305,7 +1306,7 @@ LLVM version: 6.0",
             fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
         );
         match cached {
-            CompileResult::CacheMiss(MissType::Normal, DistType::Ok, _, f) => {
+            CompileResult::CacheMiss(MissType::Normal, DistType::Ok(_), _, f) => {
                 // wait on cache write future so we don't race with it!
                 f.wait().unwrap();
             }
