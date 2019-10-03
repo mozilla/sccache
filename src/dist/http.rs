@@ -340,7 +340,7 @@ mod server {
 
         let mut name = openssl::x509::X509Name::builder()?;
         name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME,
-                                 "sccache-internal")?;
+                                 &addr.to_string())?;
         let name = name.build();
 
         builder.set_subject_name(&name)
