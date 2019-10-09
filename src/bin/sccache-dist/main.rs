@@ -672,6 +672,7 @@ impl SchedulerIncoming for Scheduler {
         }
 
         // LOCKS
+        let mut jobs = self.jobs.lock().unwrap();
         let mut servers = self.servers.lock().unwrap();
 
         match servers.get_mut(&server_id) {
@@ -684,7 +685,6 @@ impl SchedulerIncoming for Scheduler {
                     if now.duration_since(last_seen) < UNCLAIMED_READY_TIMEOUT {
                         continue;
                     }
-                    let jobs = self.jobs.lock().unwrap();
                     if let Some(detail) = jobs.get(&job_id) {
                         match detail.state {
                             JobState::Ready => {
@@ -711,8 +711,6 @@ impl SchedulerIncoming for Scheduler {
                     warn!("The following stale jobs will be de-allocated: {:?}",
                           stale_jobs);
 
-                    let mut jobs = self.jobs.lock().unwrap();
-
                     for job_id in stale_jobs {
                         if !details.jobs_assigned.remove(&job_id) {
                             warn!(
@@ -738,7 +736,6 @@ impl SchedulerIncoming for Scheduler {
                 return Ok(HeartbeatServerResult { is_new: false });
             }
             Some(ref mut details) if details.server_nonce != server_nonce => {
-                let mut jobs = self.jobs.lock().unwrap();
                 for job_id in details.jobs_assigned.iter() {
                     if jobs.remove(&job_id).is_none() {
                         warn!(
@@ -818,8 +815,9 @@ impl SchedulerIncoming for Scheduler {
     }
 
     fn handle_status(&self) -> Result<SchedulerStatusResult> {
-        let servers = self.servers.lock().unwrap();
+        // LOCKS
         let jobs = self.jobs.lock().unwrap();
+        let servers = self.servers.lock().unwrap();
 
         Ok(SchedulerStatusResult {
             num_servers: servers.len(),
