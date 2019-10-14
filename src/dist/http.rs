@@ -1048,6 +1048,7 @@ mod client {
     use crate::errors::*;
 
     const REQUEST_TIMEOUT_SECS: u64 = 600;
+    const CONNECT_TIMEOUT_SECS: u64 = 5;
 
     pub struct Client {
         auth_token: String,
@@ -1072,12 +1073,15 @@ mod client {
             auth_token: String,
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
+            let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
             let client = reqwest::ClientBuilder::new()
                 .timeout(timeout)
+                .connect_timeout(connect_timeout)
                 .build()
                 .chain_err(|| "failed to create a HTTP client")?;
             let client_async = reqwest::r#async::ClientBuilder::new()
                 .timeout(timeout)
+                .connect_timeout(connect_timeout)
                 .build()
                 .chain_err(|| "failed to create an async HTTP client")?;
             let client_toolchains =
