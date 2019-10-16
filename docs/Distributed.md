@@ -27,8 +27,8 @@ Distributed sccache consists of three parts:
    a build
 
 All servers are required to be a 64-bit Linux install. Clients may request
-compilation from Linux, Windows or OSX. Linux compilations will attempt to
-automatically package the compiler in use, while Windows and OSX users will
+compilation from Linux, Windows or macOS. Linux compilations will attempt to
+automatically package the compiler in use, while Windows and macOS users will
 need to specify a toolchain for cross-compilation ahead of time.
 
 ## Communication
