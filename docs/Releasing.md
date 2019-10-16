@@ -2,7 +2,7 @@
 
 Most of the sccache release process is automated, [there are Linux/macOS release builds](https://github.com/mozilla/sccache/blob/5bb5d047e27bd8e69da0e1cab2882468313cd080/.travis.yml#L17-L27) in the Travis CI configuration, [as well as a `deploy` section](https://github.com/mozilla/sccache/blob/5bb5d047e27bd8e69da0e1cab2882468313cd080/.travis.yml#L46-L57) that will create a GitHub release which is triggered by pushing a new tag to the repository. Similarly [there is a release build](https://github.com/mozilla/sccache/blob/5bb5d047e27bd8e69da0e1cab2882468313cd080/appveyor.yml#L40-L43) in the AppVeyor configuration and [a `deploy` section](https://github.com/mozilla/sccache/blob/5bb5d047e27bd8e69da0e1cab2882468313cd080/appveyor.yml#L68-L76) that triggers on new tags being pushed. Both CI configs will upload the resulting binary packages to [the GitHub releases page](https://github.com/mozilla/sccache/releases) on the repository.
 
-The `api_key` / `auth_token` in each CI configuration contains an encrypted GitHub API token for the [`sccachereleasebot`](https://github.com/sccachereleasebot) user, which has write permission to the sccache repository for creating releaes.
+The `api_key` / `auth_token` in each CI configuration contains an encrypted GitHub API token for the [`sccachereleasebot`](https://github.com/sccachereleasebot) user, which has write permission to the sccache repository for creating release.
 
 # Producing a release
 

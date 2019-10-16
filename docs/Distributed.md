@@ -221,7 +221,7 @@ auth = { type = "oauth2_implicit", client_id = "...", auth_url = "..." }
 
 The client should then run `sccache --dist-auth` and follow the instructions to retrieve
 a token. This will be automatically cached locally for the token expiry period (manual
-revalidatation will be necessary after expiry).
+revalidation will be necessary after expiry).
 
 #### Token
 
