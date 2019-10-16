@@ -123,15 +123,13 @@ impl MozillaCheck {
             bail!("JWT expired")
         }
         // If the token is cached and not expired, return it
-        {
-            let mut auth_cache = self.auth_cache.lock().unwrap();
-            if let Some(cached_at) = auth_cache.get(token) {
-                if cached_at.elapsed() < MOZ_SESSION_TIMEOUT {
-                    return Ok(())
-                }
+        let mut auth_cache = self.auth_cache.lock().unwrap();
+        if let Some(cached_at) = auth_cache.get(token) {
+            if cached_at.elapsed() < MOZ_SESSION_TIMEOUT {
+                return Ok(())
             }
-            auth_cache.remove(token);
         }
+        auth_cache.remove(token);
 
         debug!("User {} not in cache, validating via auth0 endpoint", user);
         // Retrieve the groups from the auth0 /userinfo endpoint, which Mozilla rules populate with groups
@@ -152,10 +150,7 @@ impl MozillaCheck {
 
         // Validation success, cache the token
         debug!("Validation for user {} succeeded, caching", user);
-        {
-            let mut auth_cache = self.auth_cache.lock().unwrap();
-            auth_cache.insert(token.to_owned(), Instant::now());
-        }
+        auth_cache.insert(token.to_owned(), Instant::now());
         Ok(())
     }
 }
