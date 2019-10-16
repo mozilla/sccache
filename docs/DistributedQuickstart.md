@@ -148,14 +148,14 @@ $ sccache --dist-status
 Using custom toolchains
 -----------------------
 
-Since Windows and OSX cannot automatically package toolchains, it is important to be
+Since Windows and macOS cannot automatically package toolchains, it is important to be
 able to manually specify toolchains for distribution. This functionality is also available
 on Linux.
 
 Using custom toolchains involves adding a `dist.toolchains` section to your client config
 file (you can add it multiple times to specify multiple toolchains).
 
-On Linux and OSX:
+On Linux and macOS:
 
 ```
 [[dist.toolchains]]
@@ -187,7 +187,7 @@ Where:
 A toolchain archive should be a Gzip compressed TAR archive, containing a filesystem
 sufficient to run the compiler without relying on any external files. If you have archives
 compatible with icecream (created with `icecc-create-env`, like
-[these ones](https://github.com/jyavenard/mozilla-icecream) for OSX), they should also work
+[these ones](https://github.com/jyavenard/mozilla-icecream) for macOS), they should also work
 with sccache. To create a Windows toolchain, it is recommended that you download the [Clang
 binaries for Ubuntu 16.04](http://releases.llvm.org/download.html) and extract them,
 package up the toolchain using the extracted `bin/clang` file (requires
