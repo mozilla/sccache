@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_imports,dead_code,unused_variables)]
+#![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
@@ -59,7 +59,15 @@ impl CCompilerImpl for Clang {
     where
         T: CommandCreatorSync,
     {
-        gcc::preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
+        gcc::preprocess(
+            creator,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            may_dist,
+            self.kind(),
+        )
     }
 
     fn generate_compile_commands(
