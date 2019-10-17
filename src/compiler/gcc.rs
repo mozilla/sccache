@@ -56,7 +56,15 @@ impl CCompilerImpl for GCC {
     where
         T: CommandCreatorSync,
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
+        preprocess(
+            creator,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            may_dist,
+            self.kind(),
+        )
     }
 
     fn generate_compile_commands(
@@ -113,7 +121,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
-    take_arg!("-D", OsString, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-D", OsString, CanBeSeparated, PassThrough),
     flag!("-E", TooHardFlag),
     take_arg!("-F", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-G", OsString, Separated, PassThrough),
@@ -128,7 +136,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-MQ", OsString, Separated, PreprocessorArgument),
     take_arg!("-MT", OsString, Separated, DepTarget),
     flag!("-P", TooHardFlag),
-    take_arg!("-U", OsString, CanBeSeparated, PreprocessorArgument),
+    take_arg!("-U", OsString, CanBeSeparated, PassThrough),
     take_arg!("-V", OsString, Separated, PassThrough),
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
@@ -436,6 +444,7 @@ pub fn preprocess<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
+    kind: CCompilerKind,
 ) -> SFuture<process::Output>
 where
     T: CommandCreatorSync,
@@ -455,6 +464,15 @@ where
     // With -fprofile-generate line number information is important, so don't use -P.
     if !may_dist && !parsed_args.profile_generate {
         cmd.arg("-P");
+    }
+    match kind {
+        CCompilerKind::Clang => {
+            cmd.arg("-frewrite-includes");
+        }
+        CCompilerKind::GCC => {
+            cmd.arg("-fdirectives-only");
+        }
+        _ => (),
     }
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
@@ -517,10 +535,10 @@ pub fn generate_compile_commands(
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
         let language = match parsed_args.language {
-            Language::C => "cpp-output",
-            Language::Cxx => "c++-cpp-output",
-            Language::ObjectiveC => "objective-c-cpp-output",
-            Language::ObjectiveCxx => "objective-c++-cpp-output",
+            Language::C => "c",
+            Language::Cxx => "c++",
+            Language::ObjectiveC => "objective-c",
+            Language::ObjectiveCxx => "objective-c++",
         };
         let mut arguments: Vec<String> = vec![
             "-x".into(),
@@ -530,7 +548,6 @@ pub fn generate_compile_commands(
             "-o".into(),
             path_transformer.to_dist(out_file)?,
         ];
-        // We could do preprocessor_args here, but skip for consistency with msvc
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
