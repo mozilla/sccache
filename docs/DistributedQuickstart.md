@@ -1,7 +1,8 @@
 sccache distributed compilation quickstart
 ==========================================
 
-This is a quick start guide to getting distributed compilation working with sccache. This guide currently only covers Linux clients, although macOS and Windows clients are supported.
+This is a quick start guide to getting distributed compilation working with sccache. This guide primarily covers Linux clients.
+macOS and Windows clients are supported but have seen significantly less testing.
 
 Get sccache binaries
 --------------------
@@ -162,7 +163,7 @@ On Linux and macOS:
 type = "path_override"
 compiler_executable = "/home/me/.mozbuild/clang/bin/clang"
 archive = "/home/me/.mozbuild/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
-archive_compiler_executable = "/builds/worker/workspace/build/src/clang/bin/clang"
+archive_compiler_executable = "/builds/worker/toolchains/clang/bin/clang"
 ```
 
 On Windows:
@@ -172,7 +173,7 @@ On Windows:
 type = "path_override"
 compiler_executable = "C:/clang/bin\\clang-cl.exe"
 archive = "C:/toolchains/33d92fcd79ffef6e-clang-dist-toolchain.tar.xz"
-archive_compiler_executable = "/builds/worker/workspace/build/src/clang/bin/clang"
+archive_compiler_executable = "/builds/worker/toolchains/clang/bin/clang"
 ```
 
 Where:
@@ -197,7 +198,7 @@ the appropriate path as a symlink to the `bin/clang` binary.
 Considerations when distributing from macOS
 -------------------------------------------
 
-When distributing from a macOS client, additional flags and configuration considerations
+When distributing from a macOS client, additional flags and configuration
 may be required:
 
 - An explicit target should be passed to the compiler, for instance by adding
