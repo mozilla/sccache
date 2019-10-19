@@ -380,7 +380,7 @@ where
     let mut outputs = HashMap::new();
     let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
-        None => Path::new(&input).with_extension("o"),
+        None => PathBuf::from(Path::new(&input).with_extension("o").file_name().unwrap()),
         Some(o) => PathBuf::from(o),
     };
     if split_dwarf {
@@ -663,6 +663,19 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_default_outputdir() {
+        let args = stringvec!["-c", "/tmp/foo.c"];
+        let ParsedArguments {
+            outputs,
+            ..
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
     }
 
     #[test]
