@@ -490,21 +490,18 @@ where
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    match runtime.block_on(
+    let status = runtime.block_on(
         cmd.spawn()
             .and_then(|c| c.wait().chain_err(|| "failed to wait for child")),
-    ) {
-        Ok(status) => {
-            Ok(status.code().unwrap_or_else(|| {
-                if let Some(sig) = status_signal(status) {
-                    println!("Compile terminated by signal {}", sig);
-                }
-                // Arbitrary.
-                2
-            }))
+    )?;
+
+    Ok(status.code().unwrap_or_else(|| {
+        if let Some(sig) = status_signal(status) {
+            println!("Compile terminated by signal {}", sig);
         }
-        Err(e) => Err(e),
-    }
+        // Arbitrary.
+        2
+    }))
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
