@@ -210,3 +210,47 @@ may be required:
   not `~/.config/sccache/config`.
 - Some cross compilers may not understand some intrinsics used in more recent macOS
   SDKs. The 10.11 SDK is known to work.
+
+Making a build server start at boot time
+----------------------------------------
+
+It is very easy with a systemd service to spawn the server on boot.
+
+You can create a service file like `/etc/systemd/system/sccache-server.service`
+with the following contents:
+
+```ini
+[Unit]
+Description=sccache-dist server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/path/to/sccache-dist server --config /path/to/server.conf
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Note** that if the `sccache-dist` binary is in a user's home directory, and
+you're in a distro with SELinux enabled (like Fedora), you may need to use an
+`ExecStart` line like:
+
+```ini
+ExecStart=/bin/bash -c "/home/<user>/path/to/sccache-dist server --config /home/<user>/path/to/server.conf"
+```
+
+This is because SELinux by default prevents services from running binaries in
+home directories, for some reason. Using a shell works around that. An
+alternative would be to move the `sccache-dist` binary to somewhere like
+`/usr/local/bin`, but then you need to remember to update it manually.
+
+After creating that file, you can ensure it's working and enable it by default
+like:
+
+```
+# systemctl daemon-reload
+# systemctl start sccache-server
+# systemctl status # And check it's fine.
+# systemctl enable sccache-server # This enables the service on boot
+```
