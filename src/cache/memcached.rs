@@ -13,24 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{
-    Cache,
-    CacheRead,
-    CacheWrite,
-    Storage,
-};
+use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use futures_cpupool::CpuPool;
 use memcached::client::Client;
-use memcached::proto::Operation;
 use memcached::proto::NoReplyOperation;
+use memcached::proto::Operation;
 use memcached::proto::ProtoType::Binary;
 use std::cell::RefCell;
 use std::io::Cursor;
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::time::{Duration, Instant};
 
 thread_local! {
     static CLIENT: RefCell<Option<Client>> = RefCell::default();
@@ -55,15 +47,21 @@ impl MemcachedCache {
     }
 
     fn exec<U, F>(&self, f: F) -> U
-        where F: FnOnce(&mut Client) -> U
+    where
+        F: FnOnce(&mut Client) -> U,
     {
-        CLIENT.with(|rc| match *rc.borrow_mut() {
-            ref mut opt @ Some(_) => opt,
-            ref mut opt @ None => {
-                *opt = Some(Client::connect(&self.parse(), Binary).unwrap());
-                opt
+        CLIENT.with(|rc| {
+            match *rc.borrow_mut() {
+                ref mut opt @ Some(_) => opt,
+                ref mut opt @ None => {
+                    *opt = Some(Client::connect(&self.parse(), Binary).unwrap());
+                    opt
+                }
             }
-        }.as_mut().map(f).unwrap())
+            .as_mut()
+            .map(f)
+            .unwrap()
+        })
     }
 }
 
@@ -73,8 +71,8 @@ impl Storage for MemcachedCache {
         let me = self.clone();
         Box::new(self.pool.spawn_fn(move || {
             me.exec(|c| c.get(&key.as_bytes()))
-            .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
-            .unwrap_or(Ok(Cache::Miss))
+                .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
+                .unwrap_or(Ok(Cache::Miss))
         }))
     }
 
@@ -93,6 +91,10 @@ impl Storage for MemcachedCache {
         format!("Memcached: {}", self.url)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
-    fn max_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
+    fn current_size(&self) -> SFuture<Option<u64>> {
+        f_ok(None)
+    }
+    fn max_size(&self) -> SFuture<Option<u64>> {
+        f_ok(None)
+    }
 }

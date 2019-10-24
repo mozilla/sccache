@@ -14,33 +14,20 @@
 
 #![allow(unused_imports,dead_code,unused_variables)]
 
-use crate::compiler::{
-    gcc,
-    Cacheable,
-    CompilerArguments,
-    CompileCommand,
-    write_temp_file,
-};
-use crate::dist;
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
+use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
+use crate::dist;
+use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
+use crate::util::{run_input_output, OsStrExt};
 use futures::future::{self, Future};
 use futures_cpupool::CpuPool;
-use crate::mock_command::{
-    CommandCreator,
-    CommandCreatorSync,
-    RunCommand,
-};
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{
-    self,
-    Write,
-};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use crate::util::{run_input_output, OsStrExt};
 
 use crate::errors::*;
 
@@ -49,34 +36,40 @@ use crate::errors::*;
 pub struct Clang;
 
 impl CCompilerImpl for Clang {
-    fn kind(&self) -> CCompilerKind { CCompilerKind::Clang }
-    fn parse_arguments(&self,
-                       arguments: &[OsString],
-                       cwd: &Path) -> CompilerArguments<ParsedArguments>
-    {
+    fn kind(&self) -> CCompilerKind {
+        CCompilerKind::Clang
+    }
+    fn parse_arguments(
+        &self,
+        arguments: &[OsString],
+        cwd: &Path,
+    ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]))
     }
 
-    fn preprocess<T>(&self,
-                     creator: &T,
-                     executable: &Path,
-                     parsed_args: &ParsedArguments,
-                     cwd: &Path,
-                     env_vars: &[(OsString, OsString)],
-                     may_dist: bool)
-                     -> SFuture<process::Output> where T: CommandCreatorSync
+    fn preprocess<T>(
+        &self,
+        creator: &T,
+        executable: &Path,
+        parsed_args: &ParsedArguments,
+        cwd: &Path,
+        env_vars: &[(OsString, OsString)],
+        may_dist: bool,
+    ) -> SFuture<process::Output>
+    where
+        T: CommandCreatorSync,
     {
         gcc::preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
     }
 
-    fn generate_compile_commands(&self,
-                                path_transformer: &mut dist::PathTransformer,
-                                executable: &Path,
-                                parsed_args: &ParsedArguments,
-                                cwd: &Path,
-                                env_vars: &[(OsString, OsString)])
-                                -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>
-    {
+    fn generate_compile_commands(
+        &self,
+        path_transformer: &mut dist::PathTransformer,
+        executable: &Path,
+        parsed_args: &ParsedArguments,
+        cwd: &Path,
+        env_vars: &[(OsString, OsString)],
+    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
         gcc::generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }
 }
@@ -104,15 +97,15 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 
 #[cfg(test)]
 mod test {
-    use crate::compiler::*;
+    use super::*;
     use crate::compiler::gcc;
+    use crate::compiler::*;
+    use crate::mock_command::*;
+    use crate::test::utils::*;
     use futures::Future;
     use futures_cpupool::CpuPool;
-    use crate::mock_command::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use super::*;
-    use crate::test::utils::*;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -128,7 +121,6 @@ mod test {
         }
     }
 
-
     #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
@@ -143,7 +135,10 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let a = parses!("-c", "foo.cxx", "-arch", "xyz", "-fabc","-I", "include", "-o", "foo.o", "-include", "file");
+        let a = parses!(
+            "-c", "foo.cxx", "-arch", "xyz", "-fabc", "-I", "include", "-o", "foo.o", "-include",
+            "file"
+        );
         assert_eq!(Some("foo.cxx"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
@@ -156,40 +151,90 @@ mod test {
     #[test]
     fn test_parse_arguments_others() {
         parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
-        parses!("-c", "foo.c", "-target", "x86_64-apple-darwin11", "-o", "foo.o");
+        parses!(
+            "-c",
+            "foo.c",
+            "-target",
+            "x86_64-apple-darwin11",
+            "-o",
+            "foo.o"
+        );
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
     }
 
     #[test]
     fn test_parse_arguments_clangmodules() {
-        assert_eq!(CompilerArguments::CannotCache("-fcxx-modules", None),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"]));
-        assert_eq!(CompilerArguments::CannotCache("-fmodules", None),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"]));
+        assert_eq!(
+            CompilerArguments::CannotCache("-fcxx-modules", None),
+            _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-fmodules", None),
+            _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"])
+        );
     }
 
     #[test]
     fn test_parse_xclang_invalid() {
-        assert_eq!(CompilerArguments::CannotCache("Can't handle Raw arguments with -Xclang", None),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "broken"]));
-        assert_eq!(CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"]));
-        assert_eq!(CompilerArguments::CannotCache("argument parse", Some("Unexpected end of args".to_string())),
-                   _parse_arguments(&stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "-load"]));
+        assert_eq!(
+            CompilerArguments::CannotCache("Can't handle Raw arguments with -Xclang", None),
+            _parse_arguments(&stringvec![
+                "-c", "foo.c", "-o", "foo.o", "-Xclang", "broken"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
+            _parse_arguments(&stringvec![
+                "-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "argument parse",
+                Some("Unexpected end of args".to_string())
+            ),
+            _parse_arguments(&stringvec![
+                "-c", "foo.c", "-o", "foo.o", "-Xclang", "-load"
+            ])
+        );
     }
 
     #[test]
     fn test_parse_xclang_load() {
-        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-load", "-Xclang", "plugin.so");
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-load",
+            "-Xclang",
+            "plugin.so"
+        );
         println!("A {:#?}", a);
-        assert_eq!(ovec!["-Xclang", "-load", "-Xclang", "plugin.so"], a.common_args);
+        assert_eq!(
+            ovec!["-Xclang", "-load", "-Xclang", "plugin.so"],
+            a.common_args
+        );
         assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
     }
 
     #[test]
     fn test_parse_xclang_add_plugin() {
-        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-add-plugin", "-Xclang", "foo");
-        assert_eq!(ovec!["-Xclang", "-add-plugin", "-Xclang", "foo"], a.common_args);
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-add-plugin",
+            "-Xclang",
+            "foo"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-add-plugin", "-Xclang", "foo"],
+            a.common_args
+        );
     }
 
     #[test]
@@ -205,5 +250,4 @@ mod test {
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
         assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
     }
-
 }

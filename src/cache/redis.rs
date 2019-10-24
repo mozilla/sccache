@@ -13,26 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{
-    Cache,
-    CacheRead,
-    CacheWrite,
-    Storage,
-};
+use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use futures::{future, Future};
-use redis::{
-    cmd,
-    Client,
-    InfoDict,
-};
 use redis::r#async::Connection;
+use redis::{cmd, Client, InfoDict};
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::time::{Duration, Instant};
 
 /// A cache that stores entries in a Redis.
 #[derive(Clone)]
@@ -52,8 +40,7 @@ impl RedisCache {
 
     /// Returns a connection with configured read and write timeouts.
     fn connect(&self) -> impl Future<Item = Connection, Error = Error> {
-        self.client.get_async_connection()
-            .map_err(|e| e.into())
+        self.client.get_async_connection().map_err(|e| e.into())
     }
 }
 
@@ -64,17 +51,14 @@ impl Storage for RedisCache {
         let me = self.clone();
         Box::new(
             me.connect()
-                .and_then(|c| {
-                    cmd("GET").arg(key).query_async(c).from_err()
-                })
+                .and_then(|c| cmd("GET").arg(key).query_async(c).from_err())
                 .and_then(|(_, d): (_, Vec<u8>)| {
                     if d.is_empty() {
                         Ok(Cache::Miss)
                     } else {
-                        CacheRead::from(Cursor::new(d))
-                            .map(Cache::Hit)
+                        CacheRead::from(Cursor::new(d)).map(Cache::Hit)
                     }
-                })
+                }),
         )
     }
 
@@ -86,11 +70,10 @@ impl Storage for RedisCache {
         Box::new(
             me.connect()
                 .and_then(move |c| {
-                    future::result(entry.finish()).and_then(|d| {
-                        cmd("SET").arg(key).arg(d).query_async(c).from_err()
-                    })
+                    future::result(entry.finish())
+                        .and_then(|d| cmd("SET").arg(key).arg(d).query_async(c).from_err())
                 })
-                .map(move |(_, ())| start.elapsed())
+                .map(move |(_, ())| start.elapsed()),
         )
     }
 
@@ -106,7 +89,7 @@ impl Storage for RedisCache {
             self.connect()
                 .and_then(|c| cmd("INFO").query_async(c).from_err())
                 .map(|(_, v)| v)
-                .map(|i: InfoDict| i.get("used_memory"))
+                .map(|i: InfoDict| i.get("used_memory")),
         )
     }
 
@@ -116,17 +99,18 @@ impl Storage for RedisCache {
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(
             self.connect()
-                .and_then(|c| cmd("CONFIG").arg("GET").arg("maxmemory").query_async(c).from_err())
+                .and_then(|c| {
+                    cmd("CONFIG")
+                        .arg("GET")
+                        .arg("maxmemory")
+                        .query_async(c)
+                        .from_err()
+                })
                 .map(|(_, v)| v)
                 .map(|h: HashMap<String, usize>| {
-                    h.get("maxmemory").and_then(|&s| {
-                        if s != 0 {
-                            Some(s as u64)
-                        } else {
-                            None
-                        }
-                    })
-                })
+                    h.get("maxmemory")
+                        .and_then(|&s| if s != 0 { Some(s as u64) } else { None })
+                }),
         )
     }
 }

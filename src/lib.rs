@@ -99,4 +99,3 @@ fn init_logging() {
         }
     }
 }
-

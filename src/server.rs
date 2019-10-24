@@ -17,23 +17,24 @@
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
-    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerKind,
-    CompilerArguments, CompilerHasher, DistType, MissType,
+    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
+    CompilerKind, DistType, MissType,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
 use crate::config::Config;
 use crate::dist;
 use crate::dist::Client as DistClient;
+use crate::jobserver::Client;
+use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
+use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::util;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::task::{self, Task};
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures_cpupool::CpuPool;
-use crate::jobserver::Client;
-use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use number_prefix::{binary_prefix, Prefixed, Standalone};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -59,8 +60,7 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
 use tokio_service::Service;
 use tokio_tcp::TcpListener;
-use tokio_timer::{Delay, Timeout};
-use crate::util; //::fmt_duration_as_secs;
+use tokio_timer::{Delay, Timeout}; //::fmt_duration_as_secs;
 
 use crate::errors::*;
 
@@ -174,12 +174,10 @@ impl DistClientContainer {
         Self {}
     }
 
-    pub fn reset_state(&self) { }
+    pub fn reset_state(&self) {}
 
     pub fn get_status(&self) -> DistInfo {
-        DistInfo::Disabled(
-            "dist-client feature not selected".to_string()
-        )
+        DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
@@ -216,15 +214,13 @@ impl DistClientContainer {
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
         match mem::replace(state, DistClientState::Disabled) {
-            DistClientState::Some(cfg, _) |
-            DistClientState::FailWithMessage(cfg, _) |
-            DistClientState::RetryCreateAt(cfg, _) => {
+            DistClientState::Some(cfg, _)
+            | DistClientState::FailWithMessage(cfg, _)
+            | DistClientState::RetryCreateAt(cfg, _) => {
                 warn!("State reset. Will recreate");
-                *state = DistClientState::RetryCreateAt(
-                    cfg,
-                    Instant::now() - Duration::from_secs(1)
-                );
-            },
+                *state =
+                    DistClientState::RetryCreateAt(cfg, Instant::now() - Duration::from_secs(1));
+            }
             DistClientState::Disabled => (),
         }
     }
@@ -234,9 +230,7 @@ impl DistClientContainer {
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
         match state {
-            DistClientState::Disabled => DistInfo::Disabled(
-                "disabled".to_string(),
-            ),
+            DistClientState::Disabled => DistInfo::Disabled("disabled".to_string()),
             DistClientState::FailWithMessage(cfg, _) => DistInfo::NotConnected(
                 cfg.scheduler_url.clone(),
                 "enabled, auth not configured".to_string(),
@@ -245,15 +239,12 @@ impl DistClientContainer {
                 cfg.scheduler_url.clone(),
                 "enabled, not connected, will retry".to_string(),
             ),
-            DistClientState::Some(cfg, client) => {
-                match client.do_get_status().wait() {
-                    Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(),
-                                                         res),
-                    Err(_) => DistInfo::NotConnected(
-                        cfg.scheduler_url.clone(),
-                        "could not communicate with scheduler".to_string(),
-                    ),
-                }
+            DistClientState::Some(cfg, client) => match client.do_get_status().wait() {
+                Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
+                Err(_) => DistInfo::NotConnected(
+                    cfg.scheduler_url.clone(),
+                    "could not communicate with scheduler".to_string(),
+                ),
             },
         }
     }
@@ -265,12 +256,8 @@ impl DistClientContainer {
         Self::maybe_recreate_state(state);
         let res = match state {
             DistClientState::Some(_, dc) => Ok(Some(dc.clone())),
-            DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => {
-                Ok(None)
-            },
-            DistClientState::FailWithMessage(_, msg) => {
-                Err(Error::from(msg.clone()))
-            },
+            DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => Ok(None),
+            DistClientState::FailWithMessage(_, msg) => Err(Error::from(msg.clone())),
         };
         match res {
             Err(_) => {
@@ -280,9 +267,9 @@ impl DistClientContainer {
                 };
                 // The client is most likely mis-configured, make sure we
                 // re-create on our next attempt.
-                *state = DistClientState::RetryCreateAt(config,
-                                                        Instant::now() - Duration::from_secs(1));
-            },
+                *state =
+                    DistClientState::RetryCreateAt(config, Instant::now() - Duration::from_secs(1));
+            }
             _ => (),
         };
         res
@@ -328,10 +315,7 @@ impl DistClientContainer {
                         use error_chain::ChainedError;
                         let errmsg = e.display_chain();
                         error!("{}", errmsg);
-                        return DistClientState::FailWithMessage(
-                            config,
-                            errmsg.to_string()
-                        );
+                        return DistClientState::FailWithMessage(config, errmsg.to_string());
                     }
                 }
             }};
@@ -353,11 +337,9 @@ impl DistClientContainer {
                         auth_url,
                     } => Self::get_cached_config_auth_token(auth_url),
                 };
-                let auth_token = try_or_fail_with_message!(
-                    auth_token.chain_err(|| {
-                        "could not load client auth token, run |sccache --dist-auth|"
-                    })
-                );
+                let auth_token = try_or_fail_with_message!(auth_token.chain_err(|| {
+                    "could not load client auth token, run |sccache --dist-auth|"
+                }));
                 // TODO: NLL would let us move this inside the previous match
                 let dist_client = dist::http::Client::new(
                     &config.pool,
@@ -372,9 +354,12 @@ impl DistClientContainer {
                 );
                 match dist_client.do_get_status().wait() {
                     Ok(res) => {
-                        info!("Successfully created dist client with {:?} cores across {:?} servers", res.num_cpus, res.num_servers);
+                        info!(
+                            "Successfully created dist client with {:?} cores across {:?} servers",
+                            res.num_cpus, res.num_servers
+                        );
                         DistClientState::Some(config, Arc::new(dist_client))
-                    },
+                    }
                     Err(_) => {
                         warn!("Scheduler address configured, but could not communicate with scheduler");
                         DistClientState::RetryCreateAt(
@@ -537,7 +522,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             tokio::runtime::current_thread::TaskExecutor::current()
                 .spawn_local(Box::new(service.clone().bind(socket).map_err(|err| {
                     error!("{}", err);
-                }))).unwrap();
+                })))
+                .unwrap();
             Ok(())
         });
 
@@ -757,7 +743,8 @@ where
 
         let (sink, stream) = SccacheTransport {
             inner: WriteBincode::new(ReadBincode::new(io)),
-        }.split();
+        }
+        .split();
         let sink = sink.sink_from_err::<Error>();
 
         stream
@@ -773,12 +760,14 @@ where
                         stream::once(Ok(Frame::Message {
                             message,
                             body: true,
-                        })).chain(body.map(|chunk| Frame::Body { chunk: Some(chunk) }))
+                        }))
+                        .chain(body.map(|chunk| Frame::Body { chunk: Some(chunk) }))
                         .chain(stream::once(Ok(Frame::Body { chunk: None }))),
                     ),
                 };
                 Ok(f.from_err::<Error>())
-            }).flatten()
+            })
+            .flatten()
             .forward(sink)
             .map(|_| ())
     }
@@ -841,9 +830,7 @@ where
         // https://github.com/mozilla/sccache/issues/87
         let result = match self.compilers.borrow().get(&path) {
             // It's a hit only if the mtime matches.
-            Some(&Some((ref c, ref cached_mtime))) if *cached_mtime == mtime => {
-                Some(c.clone())
-            }
+            Some(&Some((ref c, ref cached_mtime))) if *cached_mtime == mtime => Some(c.clone()),
             _ => None,
         };
         match result {
@@ -864,8 +851,7 @@ where
                         Ok(ref c) => Some((c.clone(), mtime)),
                         Err(_) => None,
                     };
-                    me.compilers.borrow_mut()
-                        .insert(path, map_info);
+                    me.compilers.borrow_mut().insert(path, map_info);
                     Ok(info)
                 }))
             }
@@ -981,12 +967,10 @@ where
                                 DistType::NoDist => {}
                                 DistType::Ok(id) => {
                                     let server = id.addr().to_string();
-                                    let server_count = stats
-                                        .dist_compiles
-                                        .entry(server)
-                                        .or_insert(0);
+                                    let server_count =
+                                        stats.dist_compiles.entry(server).or_insert(0);
                                     *server_count += 1;
-                                },
+                                }
                                 DistType::Error => stats.dist_errors += 1,
                             }
                             match miss_type {
@@ -1104,7 +1088,7 @@ impl PerLanguageCount {
         let key = kind.lang_kind().clone();
         let count = match self.counts.get(&key) {
             Some(v) => v + 1,
-            None => 1
+            None => 1,
         };
         self.counts.insert(key, count);
     }
@@ -1238,7 +1222,7 @@ impl ServerStats {
                 sorted_stats.sort_by_key(|v| v.0);
                 for (lang, count) in sorted_stats.iter() {
                     $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
-                };
+                }
             }};
         }
 
@@ -1399,7 +1383,7 @@ impl ServerInfo {
 
 enum Frame<R, R1> {
     Body { chunk: Option<R1> },
-    Message { message: R, body: bool, }
+    Message { message: R, body: bool },
 }
 
 struct Body<R> {

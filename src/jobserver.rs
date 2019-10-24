@@ -1,10 +1,9 @@
-
 use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
-use futures::prelude::*;
 use futures::future;
+use futures::prelude::*;
 use futures::sync::mpsc;
 use futures::sync::oneshot;
 
@@ -31,8 +30,7 @@ impl Client {
     }
 
     pub fn new_num(num: usize) -> Client {
-        let inner = jobserver::Client::new(num)
-                .expect("failed to create jobserver");
+        let inner = jobserver::Client::new(num).expect("failed to create jobserver");
         Client::_new(inner, false)
     }
 
@@ -42,11 +40,14 @@ impl Client {
         } else {
             let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
             let mut rx = rx.wait();
-            let helper = inner.clone().into_helper_thread(move |token| {
-                if let Some(Ok(sender)) = rx.next() {
-                    drop(sender.send(token));
-                }
-            }).expect("failed to spawn helper thread");
+            let helper = inner
+                .clone()
+                .into_helper_thread(move |token| {
+                    if let Some(Ok(sender)) = rx.next() {
+                        drop(sender.send(token));
+                    }
+                })
+                .expect("failed to spawn helper thread");
             (Some(Arc::new(helper)), Some(tx))
         };
 
@@ -71,8 +72,10 @@ impl Client {
         let (mytx, myrx) = oneshot::channel();
         helper.request_token();
         tx.unbounded_send(mytx).unwrap();
-        Box::new(myrx.chain_err(|| "jobserver helper panicked")
-                   .and_then(|t| t.chain_err(|| "failed to acquire jobserver token"))
-                   .map(|t| Acquired { _token: Some(t) }))
+        Box::new(
+            myrx.chain_err(|| "jobserver helper panicked")
+                .and_then(|t| t.chain_err(|| "failed to acquire jobserver token"))
+                .map(|t| Acquired { _token: Some(t) }),
+        )
     }
 }
