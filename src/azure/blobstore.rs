@@ -14,16 +14,14 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use crypto::digest::Digest;
-use crypto::hmac::Hmac;
-use crypto::mac::Mac;
-use crypto::md5::Md5;
-use crypto::sha2::Sha256;
 use futures::{Future, Stream};
+use hmac::{Hmac, Mac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
+use md5::{Digest, Md5};
 use reqwest::r#async::{Client, Request};
+use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
 use url::Url;
@@ -33,25 +31,22 @@ use crate::util::HeadersExt;
 
 const BLOB_API_VERSION: &str = "2017-04-17";
 
-fn hmac<D: Digest>(digest: D, data: &[u8], secret: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::new(digest, secret);
+fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
+    let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
     hmac.input(data);
     hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
     let decoded_secret = base64::decode_config(secret.as_bytes(), base64::STANDARD).unwrap();
-    let sig = hmac(Sha256::new(), to_sign.as_bytes(), &decoded_secret);
+    let sig = hmac(to_sign.as_bytes(), &decoded_secret);
     base64::encode_config::<Vec<u8>>(&sig, base64::STANDARD)
 }
 
 fn md5(data: &[u8]) -> String {
-    let mut result: Vec<u8> = vec![0; 16]; // md5 digest is 16 bytes long.
     let mut digest = Md5::new();
     digest.input(data);
-    digest.result(&mut result);
-
-    base64::encode_config::<Vec<u8>>(&result, base64::STANDARD)
+    base64::encode_config(&digest.result(), base64::STANDARD)
 }
 
 pub struct BlobContainer {

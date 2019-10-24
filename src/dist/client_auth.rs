@@ -128,11 +128,11 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use crypto::digest::Digest;
     use futures::future;
     use futures::sync::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::RngCore;
+    use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::sync::mpsc;
     use std::sync::Mutex;
@@ -173,7 +173,6 @@ mod code_grant_pkce {
     const TOKEN_TYPE_RESULT_PARAM_VALUE: &str = "bearer"; // case-insensitive
 
     const NUM_CODE_VERIFIER_BYTES: usize = 256 / 8;
-    type HASHER = crypto::sha2::Sha256;
 
     pub struct State {
         pub auth_url: String,
@@ -192,11 +191,9 @@ mod code_grant_pkce {
             rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
         rng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
-        let mut hasher = HASHER::new();
-        hasher.input_str(&code_verifier);
-        let mut code_challenge_bytes = vec![0; hasher.output_bytes()];
-        hasher.result(&mut code_challenge_bytes);
-        let code_challenge = base64::encode_config(&code_challenge_bytes, base64::URL_SAFE_NO_PAD);
+        let mut hasher = Sha256::new();
+        hasher.input(&code_verifier);
+        let code_challenge = base64::encode_config(&hasher.result(), base64::URL_SAFE_NO_PAD);
         Ok((code_verifier, code_challenge))
     }
 
