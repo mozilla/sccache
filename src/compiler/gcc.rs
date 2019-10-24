@@ -511,6 +511,13 @@ pub fn generate_compile_commands(path_transformer: &mut dist::PathTransformer,
     let dist_command = None;
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
+        if !parsed_args.extra_hash_files.is_empty() {
+            // If we're using a plugin of sorts, we have no guarantee that it'll
+            // be in the distributed server, so compile locally.
+            warn!("Cannot perform distributed compile due to gcc or clang plugin");
+            return None;
+        }
+
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
         let language = match parsed_args.language {
             Language::C => "cpp-output",
