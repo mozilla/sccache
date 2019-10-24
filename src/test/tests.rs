@@ -15,11 +15,12 @@
 use crate::cache::disk::DiskCache;
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
-use futures::sync::oneshot::{self, Sender};
-use futures_cpupool::CpuPool;
 use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
+use crate::test::utils::*;
+use futures::sync::oneshot::{self, Sender};
+use futures_cpupool::CpuPool;
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -31,7 +32,6 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::u64;
-use crate::test::utils::*;
 use tokio::runtime::current_thread::Runtime;
 
 /// Options for running the server in tests.
@@ -268,7 +268,8 @@ fn test_server_compile() {
             vec![],
             &mut stdout,
             &mut stderr
-        ).unwrap()
+        )
+        .unwrap()
     );
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());
@@ -293,7 +294,8 @@ fn test_server_port_in_use() {
         .env(
             "SCCACHE_SERVER_PORT",
             listener.local_addr().unwrap().port().to_string(),
-        ).output()
+        )
+        .output()
         .unwrap();
     assert!(!output.status.success());
     let s = String::from_utf8_lossy(&output.stderr);

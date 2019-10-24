@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::dist;
-use std::io;
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 
@@ -31,13 +31,14 @@ pub trait InputsPackager: Send {
 }
 
 pub trait OutputsRepackager {
-    fn repackage_outputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer>;
+    fn repackage_outputs(self: Box<Self>, wtr: &mut dyn io::Write)
+        -> Result<dist::PathTransformer>;
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod toolchain_imp {
-    use std::fs;
     use super::ToolchainPackager;
+    use std::fs;
 
     use crate::errors::*;
 
@@ -52,13 +53,13 @@ mod toolchain_imp {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
+    use super::tarify_path;
     use std::collections::BTreeMap;
-    use std::io::{Read, Write};
     use std::fs;
+    use std::io::{Read, Write};
     use std::path::{Component, Path, PathBuf};
     use std::process;
     use std::str;
-    use super::tarify_path;
     use walkdir::WalkDir;
 
     use crate::errors::*;
@@ -71,7 +72,10 @@ mod toolchain_imp {
 
     impl ToolchainPackageBuilder {
         pub fn new() -> Self {
-            ToolchainPackageBuilder { dir_set: BTreeMap::new(), file_set: BTreeMap::new() }
+            ToolchainPackageBuilder {
+                dir_set: BTreeMap::new(),
+                file_set: BTreeMap::new(),
+            }
         }
 
         pub fn add_common(&mut self) -> Result<()> {
@@ -85,7 +89,7 @@ mod toolchain_imp {
                 let tar_path = tarify_path(&obj_path)?;
                 // If file already in the set, assume we've analysed all deps
                 if self.file_set.contains_key(&tar_path) {
-                    continue
+                    continue;
                 }
                 let ldd_libraries = find_ldd_libraries(&obj_path)
                     .chain_err(|| format!("Failed to analyse {} with ldd", obj_path.display()))?;
@@ -98,10 +102,18 @@ mod toolchain_imp {
         pub fn add_dir(&mut self, dir_path: PathBuf) -> Result<()> {
             assert!(dir_path.is_absolute());
             if !dir_path.is_dir() {
-                bail!(format!("{} was not a dir when readying for tar", dir_path.to_string_lossy()))
+                bail!(format!(
+                    "{} was not a dir when readying for tar",
+                    dir_path.to_string_lossy()
+                ))
             }
-            if dir_path.components().next_back().expect("asserted absolute") == Component::RootDir {
-                return Ok(())
+            if dir_path
+                .components()
+                .next_back()
+                .expect("asserted absolute")
+                == Component::RootDir
+            {
+                return Ok(());
             }
             let tar_path = tarify_path(&dir_path)?;
             self.dir_set.insert(tar_path, dir_path);
@@ -111,7 +123,10 @@ mod toolchain_imp {
         pub fn add_file(&mut self, file_path: PathBuf) -> Result<()> {
             assert!(file_path.is_absolute());
             if !file_path.is_file() {
-                bail!(format!("{} was not a file when readying for tar", file_path.to_string_lossy()))
+                bail!(format!(
+                    "{} was not a file when readying for tar",
+                    file_path.to_string_lossy()
+                ))
             }
             let tar_path = tarify_path(&file_path)?;
             self.file_set.insert(tar_path, file_path);
@@ -126,15 +141,15 @@ mod toolchain_imp {
                 let entry = entry?;
                 let file_type = entry.file_type();
                 if file_type.is_dir() {
-                    continue
+                    continue;
                 } else if file_type.is_symlink() {
                     let metadata = fs::metadata(entry.path())?;
                     if !metadata.file_type().is_file() {
-                        continue
+                        continue;
                     }
                 } else if !file_type.is_file() {
                     // Device or other oddity
-                    continue
+                    continue;
                 }
                 trace!("walkdir add_file {}", entry.path().display());
                 // It's either a file, or a symlink pointing to a file
@@ -147,7 +162,8 @@ mod toolchain_imp {
             use flate2::write::GzEncoder;
             let ToolchainPackageBuilder { dir_set, file_set } = self;
 
-            let mut builder = tar::Builder::new(GzEncoder::new(writer, flate2::Compression::default()));
+            let mut builder =
+                tar::Builder::new(GzEncoder::new(writer, flate2::Compression::default()));
             for (tar_path, dir_path) in dir_set.into_iter() {
                 builder.append_dir(tar_path, dir_path)?
             }
@@ -181,8 +197,11 @@ mod toolchain_imp {
     //   "ldd: a.out: Not a valid dynamic program" and exits with code 1
     //
     fn find_ldd_libraries(executable: &Path) -> Result<Vec<PathBuf>> {
-
-        let process::Output { status, stdout, stderr } = process::Command::new("ldd").arg(executable).output()?;
+        let process::Output {
+            status,
+            stdout,
+            stderr,
+        } = process::Command::new("ldd").arg(executable).output()?;
 
         // Not a file ldd can handle. This can be a non-executable, or a static non-PIE
         if !status.success() {
@@ -207,11 +226,14 @@ mod toolchain_imp {
                 bail!("ldd failed on a non-ET_EXEC elf")
             }
             // It appears to be an ET_EXEC, good enough for us
-            return Ok(vec![])
+            return Ok(vec![]);
         }
 
         if !stderr.is_empty() {
-            trace!("ldd stderr non-empty: {:?}", String::from_utf8_lossy(&stderr))
+            trace!(
+                "ldd stderr non-empty: {:?}",
+                String::from_utf8_lossy(&stderr)
+            )
         }
 
         let stdout = str::from_utf8(&stdout).map_err(|_| "ldd output not utf8")?;
@@ -229,12 +251,11 @@ mod toolchain_imp {
             // Remove a possible "(0xdeadbeef)" or assume this isn't a library line
             match parts.pop() {
                 Some(s) if s.starts_with('(') && s.ends_with(')') => (),
-                Some(_) |
-                None => continue,
+                Some(_) | None => continue,
             }
 
             if parts.len() > 3 {
-                continue
+                continue;
             }
 
             let libpath = match (parts.get(0), parts.get(1), parts.get(2)) {
@@ -248,7 +269,7 @@ mod toolchain_imp {
             };
 
             if !libpath.is_absolute() {
-                continue
+                continue;
             }
 
             libs.push(libpath)
@@ -266,20 +287,26 @@ mod toolchain_imp {
 \t/lib64/ld-linux-x86-64.so.2 (0x00007f69cac8d000)
 \tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f69ca010000)
 ";
-        assert_eq!(parse_ldd_output(ubuntu_ls_output).iter().map(|p| p.to_str().unwrap()).collect::<Vec<_>>(), &[
-            "/lib/x86_64-linux-gnu/libselinux.so.1",
-            "/lib/x86_64-linux-gnu/libc.so.6",
-            "/lib/x86_64-linux-gnu/libpcre.so.3",
-            "/lib/x86_64-linux-gnu/libdl.so.2",
-            "/lib64/ld-linux-x86-64.so.2",
-            "/lib/x86_64-linux-gnu/libpthread.so.0",
-        ])
+        assert_eq!(
+            parse_ldd_output(ubuntu_ls_output)
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            &[
+                "/lib/x86_64-linux-gnu/libselinux.so.1",
+                "/lib/x86_64-linux-gnu/libc.so.6",
+                "/lib/x86_64-linux-gnu/libpcre.so.3",
+                "/lib/x86_64-linux-gnu/libdl.so.2",
+                "/lib64/ld-linux-x86-64.so.2",
+                "/lib/x86_64-linux-gnu/libpthread.so.0",
+            ]
+        )
     }
 
     #[test]
     fn test_ldd_parse_static() {
         let static_outputs = &[
-            "\tstatically linked", // glibc ldd output
+            "\tstatically linked",    // glibc ldd output
             "\tldd (0x7f79ef662000)", // musl ldd output
         ];
         for static_output in static_outputs {
@@ -297,13 +324,20 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
         // TODO: if the source file is a symlink, I think this does bad things
         file_header.set_metadata(&metadata);
     } else {
-        warn!("Couldn't get metadata of file {:?}, falling back to some defaults", src);
+        warn!(
+            "Couldn't get metadata of file {:?}, falling back to some defaults",
+            src
+        );
         file_header.set_mode(0o644);
         file_header.set_uid(0);
         file_header.set_gid(0);
         file_header.set_mtime(0);
-        file_header.set_device_major(0).expect("expected a ustar header");
-        file_header.set_device_minor(0).expect("expected a ustar header");
+        file_header
+            .set_device_major(0)
+            .expect("expected a ustar header");
+        file_header
+            .set_device_minor(0)
+            .expect("expected a ustar header");
         file_header.set_entry_type(tar::EntryType::file());
     }
 
@@ -342,9 +376,9 @@ pub fn simplify_path(path: &Path) -> Result<PathBuf> {
     let mut final_path = PathBuf::new();
     for component in path.components() {
         match component {
-            c @ Component::RootDir |
-            c @ Component::Prefix(_) |
-            c @ Component::Normal(_) => final_path.push(c),
+            c @ Component::RootDir | c @ Component::Prefix(_) | c @ Component::Normal(_) => {
+                final_path.push(c)
+            }
             Component::ParentDir => {
                 // If the path is doing funny symlink traversals, just give up
                 let is_symlink = fs::symlink_metadata(&final_path)
@@ -355,10 +389,9 @@ pub fn simplify_path(path: &Path) -> Result<PathBuf> {
                     bail!("Cannot handle symlinks in parent paths")
                 }
                 final_path.pop();
-            },
+            }
             Component::CurDir => continue,
         }
     }
     Ok(final_path)
 }
-

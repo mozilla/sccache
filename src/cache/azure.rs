@@ -19,48 +19,53 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use futures::future::Future;
 use std::io;
 use std::rc::Rc;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
 pub struct AzureBlobCache {
     container: Rc<BlobContainer>,
-    credentials: AzureCredentials
+    credentials: AzureCredentials,
 }
 
 impl AzureBlobCache {
     pub fn new() -> Result<AzureBlobCache> {
         let credentials = match EnvironmentProvider.provide_credentials() {
             Ok(creds) => creds,
-            Err(_) => bail!("Could not find Azure credentials in the environment")
+            Err(_) => bail!("Could not find Azure credentials in the environment"),
         };
 
-        let container = match BlobContainer::new(credentials.azure_blob_endpoint(), credentials.blob_container_name()) {
+        let container = match BlobContainer::new(
+            credentials.azure_blob_endpoint(),
+            credentials.blob_container_name(),
+        ) {
             Ok(container) => container,
-            Err(e) => bail!("Error instantiating BlobContainer: {:?}", e)
+            Err(e) => bail!("Error instantiating BlobContainer: {:?}", e),
         };
 
         Ok(AzureBlobCache {
             container: Rc::new(container),
-            credentials: credentials
+            credentials: credentials,
         })
     }
 }
 
 impl Storage for AzureBlobCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
-        Box::new(self.container.get(key, &self.credentials).then(|result| {
-            match result {
-                Ok(data) => {
-                    let hit = CacheRead::from(io::Cursor::new(data))?;
-                    Ok(Cache::Hit(hit))
-                }
-                Err(e) => {
-                    warn!("Got Azure error: {:?}", e);
-                    Ok(Cache::Miss)
-                }
-            }
-        }))
+        Box::new(
+            self.container
+                .get(key, &self.credentials)
+                .then(|result| match result {
+                    Ok(data) => {
+                        let hit = CacheRead::from(io::Cursor::new(data))?;
+                        Ok(Cache::Hit(hit))
+                    }
+                    Err(e) => {
+                        warn!("Got Azure error: {:?}", e);
+                        Ok(Cache::Miss)
+                    }
+                }),
+        )
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
@@ -70,9 +75,10 @@ impl Storage for AzureBlobCache {
             Err(e) => return f_err(e),
         };
 
-        let response = self.container.put(key, data, &self.credentials).chain_err(|| {
-            "Failed to put cache entry in Azure"
-        });
+        let response = self
+            .container
+            .put(key, data, &self.credentials)
+            .chain_err(|| "Failed to put cache entry in Azure");
 
         Box::new(response.map(move |_| start.elapsed()))
     }
@@ -81,6 +87,10 @@ impl Storage for AzureBlobCache {
         format!("Azure, container: {}", self.container)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
-    fn max_size(&self) -> SFuture<Option<u64>> { f_ok(None) }
+    fn current_size(&self) -> SFuture<Option<u64>> {
+        f_ok(None)
+    }
+    fn max_size(&self) -> SFuture<Option<u64>> {
+        f_ok(None)
+    }
 }

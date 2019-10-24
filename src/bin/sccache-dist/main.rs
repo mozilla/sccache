@@ -44,9 +44,9 @@ use std::env;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Instant, Duration};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use syslog::Facility;
 
 use crate::errors::*;
@@ -136,43 +136,56 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
                     SubCommand::with_name("generate-jwt-hs256-server-token")
                         .arg(Arg::from_usage(
                             "--server <SERVER_ADDR> 'Generate a key for the specified server'",
-                        )).arg(
+                        ))
+                        .arg(
                             Arg::from_usage(
                                 "--secret-key [KEY] 'Use specified key to create the token'",
-                            ).required_unless("config"),
-                        ).arg(
+                            )
+                            .required_unless("config"),
+                        )
+                        .arg(
                             Arg::from_usage(
                                 "--config [PATH] 'Use the key from the scheduler config file'",
-                            ).required_unless("secret-key"),
+                            )
+                            .required_unless("secret-key"),
                         ),
-                ).subcommand(
+                )
+                .subcommand(
                     SubCommand::with_name("generate-shared-token").arg(
                         Arg::from_usage(
                             "--bits [BITS] 'Use the specified number of bits of randomness'",
-                        ).default_value("256"),
+                        )
+                        .default_value("256"),
                     ),
                 ),
-            )
+        )
         .subcommand(
             SubCommand::with_name("scheduler")
-                .arg(Arg::from_usage("--config <PATH> 'Use the scheduler config file at PATH'"))
-                .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                     .required(false)
-                     .possible_values(LOG_LEVELS))
-                )
+                .arg(Arg::from_usage(
+                    "--config <PATH> 'Use the scheduler config file at PATH'",
+                ))
+                .arg(
+                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                        .required(false)
+                        .possible_values(LOG_LEVELS),
+                ),
+        )
         .subcommand(
             SubCommand::with_name("server")
-                .arg(Arg::from_usage("--config <PATH> 'Use the server config file at PATH'"))
-                .arg(Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                     .required(false)
-                     .possible_values(LOG_LEVELS))
+                .arg(Arg::from_usage(
+                    "--config <PATH> 'Use the server config file at PATH'",
+                ))
+                .arg(
+                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
+                        .required(false)
+                        .possible_values(LOG_LEVELS),
+                ),
         )
 }
 
 fn check_init_syslog<'a>(name: &str, matches: &ArgMatches<'a>) {
     if matches.is_present("syslog") {
-        let level = value_t!(matches, "syslog", log::LevelFilter)
-            .unwrap_or_else(|e| e.exit());
+        let level = value_t!(matches, "syslog", log::LevelFilter).unwrap_or_else(|e| e.exit());
         drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
     }
 }
@@ -338,7 +351,8 @@ fn run(command: Command) -> Result<i32> {
                         audience.to_owned(),
                         issuer.to_owned(),
                         &jwks_url,
-                    ).chain_err(|| "Failed to create a checker for valid JWTs")?,
+                    )
+                    .chain_err(|| "Failed to create a checker for valid JWTs")?,
                 ),
                 scheduler_config::ClientAuth::Mozilla { required_groups } => {
                     Box::new(token_check::MozillaCheck::new(required_groups))
@@ -381,7 +395,12 @@ fn run(command: Command) -> Result<i32> {
 
             daemonize()?;
             let scheduler = Scheduler::new();
-            let http_scheduler = dist::http::Scheduler::new(public_addr, scheduler, check_client_auth, check_server_auth);
+            let http_scheduler = dist::http::Scheduler::new(
+                public_addr,
+                scheduler,
+                check_client_auth,
+                check_server_auth,
+            );
             void::unreachable(http_scheduler.start()?);
         }
 
@@ -437,7 +456,8 @@ fn run(command: Command) -> Result<i32> {
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,
-            ).chain_err(|| "Failed to create sccache HTTP server instance")?;
+            )
+            .chain_err(|| "Failed to create sccache HTTP server instance")?;
             void::unreachable(http_server.start()?)
         }
     }
@@ -532,27 +552,35 @@ impl SchedulerIncoming for Scheduler {
                                 details.last_error = None;
                             }
                             match best_err {
-                                Some((_, &mut ServerDetails {
-                                    last_error: Some(best_last_err),
-                                    ..
-                                })) => {
+                                Some((
+                                    _,
+                                    &mut ServerDetails {
+                                        last_error: Some(best_last_err),
+                                        ..
+                                    },
+                                )) => {
                                     if last_error < best_last_err {
-                                        trace!("Selected {:?}, its most recent error is {:?} ago",
-                                               server_id, now - last_error);
+                                        trace!(
+                                            "Selected {:?}, its most recent error is {:?} ago",
+                                            server_id,
+                                            now - last_error
+                                        );
                                         best_err = Some((server_id, details));
                                     }
-                                },
+                                }
                                 _ => {
-                                    trace!("Selected {:?}, its most recent error is {:?} ago",
-                                           server_id, now - last_error);
+                                    trace!(
+                                        "Selected {:?}, its most recent error is {:?} ago",
+                                        server_id,
+                                        now - last_error
+                                    );
                                     best_err = Some((server_id, details));
-                                },
+                                }
                             }
                         }
                     } else if load < best_load {
                         best = Some((server_id, details));
-                        trace!("Selected {:?} as the server with the best load",
-                               server_id);
+                        trace!("Selected {:?} as the server with the best load", server_id);
                         best_load = load;
                         if load == 0f64 {
                             break;
@@ -565,7 +593,10 @@ impl SchedulerIncoming for Scheduler {
                     let job_count = self.job_count.fetch_add(1, Ordering::SeqCst) as u64;
                     let job_id = JobId(job_count);
                     assert!(server_details.jobs_assigned.insert(job_id));
-                    assert!(server_details.jobs_unclaimed.insert(job_id, Instant::now()).is_none());
+                    assert!(server_details
+                        .jobs_unclaimed
+                        .insert(job_id, Instant::now())
+                        .is_none());
 
                     info!(
                         "Job {} created and will be assigned to server {:?}",
@@ -620,7 +651,8 @@ impl SchedulerIncoming for Scheduler {
         let AssignJobResult {
             state,
             need_toolchain,
-        } = requester.do_assign_job(server_id, job_id, tc, auth.clone())
+        } = requester
+            .do_assign_job(server_id, job_id, tc, auth.clone())
             .chain_err(|| {
                 // LOCKS
                 let mut servers = self.servers.lock().unwrap();
@@ -644,10 +676,9 @@ impl SchedulerIncoming for Scheduler {
                 "Job {} successfully assigned and saved with state {:?}",
                 job_id, state
             );
-            assert!(
-                jobs.insert(job_id, JobDetail { server_id, state })
-                    .is_none()
-            );
+            assert!(jobs
+                .insert(job_id, JobDetail { server_id, state })
+                .is_none());
         }
         let job_alloc = JobAlloc {
             auth,
@@ -689,16 +720,14 @@ impl SchedulerIncoming for Scheduler {
                         match detail.state {
                             JobState::Ready => {
                                 stale_jobs.push(job_id);
-                            },
+                            }
                             JobState::Pending => {
-                                if now.duration_since(last_seen) >
-                                    UNCLAIMED_PENDING_TIMEOUT {
-                                        stale_jobs.push(job_id);
-                                    }
-                            },
+                                if now.duration_since(last_seen) > UNCLAIMED_PENDING_TIMEOUT {
+                                    stale_jobs.push(job_id);
+                                }
+                            }
                             state => {
-                                warn!("Invalid unclaimed job state for {}: {}",
-                                      job_id, state);
+                                warn!("Invalid unclaimed job state for {}: {}", job_id, state);
                             }
                         }
                     } else {
@@ -708,26 +737,31 @@ impl SchedulerIncoming for Scheduler {
                 }
 
                 if stale_jobs.len() > 0 {
-                    warn!("The following stale jobs will be de-allocated: {:?}",
-                          stale_jobs);
+                    warn!(
+                        "The following stale jobs will be de-allocated: {:?}",
+                        stale_jobs
+                    );
 
                     for job_id in stale_jobs {
                         if !details.jobs_assigned.remove(&job_id) {
                             warn!(
                                 "Stale job for server {} not assigned: {}",
-                                server_id.addr(), job_id
+                                server_id.addr(),
+                                job_id
                             );
                         }
                         if details.jobs_unclaimed.remove(&job_id).is_none() {
                             warn!(
                                 "Unknown stale job for server {}: {}",
-                                server_id.addr(), job_id
+                                server_id.addr(),
+                                job_id
                             );
                         }
                         if jobs.remove(&job_id).is_none() {
                             warn!(
                                 "Unknown stale job for server {}: {}",
-                                server_id.addr(), job_id
+                                server_id.addr(),
+                                job_id
                             );
                         }
                     }
@@ -740,7 +774,8 @@ impl SchedulerIncoming for Scheduler {
                     if jobs.remove(&job_id).is_none() {
                         warn!(
                             "Unknown job found when replacing server {}: {}",
-                            server_id.addr(), job_id
+                            server_id.addr(),
+                            job_id
                         );
                     }
                 }
@@ -785,9 +820,7 @@ impl SchedulerIncoming for Scheduler {
                 )
             }
             match (job_detail.state, job_state) {
-                (JobState::Pending, JobState::Ready) => {
-                    entry.get_mut().state = job_state
-                }
+                (JobState::Pending, JobState::Ready) => entry.get_mut().state = job_state,
                 (JobState::Ready, JobState::Started) => {
                     if let Some(details) = servers.get_mut(&server_id) {
                         details.jobs_unclaimed.remove(&job_id);
@@ -853,13 +886,12 @@ impl ServerIncoming for Server {
     type Error = Error;
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
-        assert!(
-            self.job_toolchains
-                .lock()
-                .unwrap()
-                .insert(job_id, tc)
-                .is_none()
-        );
+        assert!(self
+            .job_toolchains
+            .lock()
+            .unwrap()
+            .insert(job_id, tc)
+            .is_none());
         let state = if need_toolchain {
             JobState::Pending
         } else {
@@ -894,7 +926,8 @@ impl ServerIncoming for Server {
         Ok(cache
             .insert_with(&tc, |mut file| {
                 io::copy(&mut { tc_rdr }, &mut file).map(|_| ())
-            }).map(|_| SubmitToolchainResult::Success)
+            })
+            .map(|_| SubmitToolchainResult::Success)
             .unwrap_or(SubmitToolchainResult::CannotCache))
     }
     fn handle_run_job(
@@ -912,14 +945,17 @@ impl ServerIncoming for Server {
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
             Some(tc) => {
-                match self.builder.run_build(tc, command, outputs, inputs_rdr, &self.cache) {
+                match self
+                    .builder
+                    .run_build(tc, command, outputs, inputs_rdr, &self.cache)
+                {
                     Err(e) => Err(e.chain_err(|| "run build failed")),
                     Ok(res) => Ok(RunJobResult::Complete(JobComplete {
                         output: res.output,
                         outputs: res.outputs,
                     })),
                 }
-            },
+            }
         };
         requester
             .do_update_job_state(job_id, JobState::Complete)
