@@ -38,6 +38,7 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures-cpupool = "0.1"
+hmac = { version = "0.7", optional = true }
 http = "0.1"
 hyper = { version = "0.12", optional = true }
 hyperx = { version = "0.12", optional = true }
@@ -48,6 +49,7 @@ libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.3.0" }
+md-5 = { version = "0.8", optional = true }
 memcached-rs = { version = "0.3" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.2.5"
@@ -58,7 +60,8 @@ regex = "1"
 reqwest = { version = "0.9.11", optional = true }
 retry = "0.4.0"
 ring = "0.13.2"
-rust-crypto = { version = "0.2.36", optional = true }
+sha-1 = { version = "0.8", optional = true }
+sha2 = { version = "0.8", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
@@ -125,15 +128,15 @@ features = [
 [features]
 default = ["dist-client", "s3"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
-azure = ["chrono", "hyper", "hyperx", "rust-crypto", "url"]
-s3 = ["chrono", "hyper", "hyperx", "reqwest", "rust-crypto", "simple-s3"]
+azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
+s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "jsonwebtoken", "reqwest", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "rust-crypto", "url"]
+dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
 dist-server = ["arraydeque", "crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
