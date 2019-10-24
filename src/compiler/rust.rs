@@ -941,11 +941,13 @@ impl<T> CompilerHasher<T> for RustHasher
                          -> SFuture<HashResult>
     {
         let me = *self;
+        #[rustfmt::skip] // https://github.com/rust-lang/rustfmt/issues/3759
         let RustHasher {
             executable,
             host,
             sysroot,
-            compiler_shlibs_digests, #[cfg(feature = "dist-client")]
+            compiler_shlibs_digests,
+            #[cfg(feature = "dist-client")]
             rlib_dep_reader,
             parsed_args:
                 ParsedArguments {
