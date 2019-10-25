@@ -92,8 +92,8 @@ void = { version = "1", optional = true }
 version-compare = { version = "0.0.8", optional = true }
 
 [patch.crates-io]
-# Waiting for https://github.com/tiny-http/tiny-http/pull/151
-tiny_http = { git = "https://github.com/aidanhs/tiny-http-sccache.git", rev = "a14fa0a" }
+# Waiting for #151 to make it into a release
+tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680de" }
 # Waiting for https://github.com/Keats/jsonwebtoken/pull/74
 jsonwebtoken = { git = "https://github.com/Jake-Shadle/jsonwebtoken.git", rev = "2f469a61" }
 
