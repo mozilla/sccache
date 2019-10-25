@@ -27,6 +27,7 @@ use futures::Future;
 use futures_cpupool::CpuPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -400,7 +401,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
             executable,
             compiler,
             ..
-        } = *{ self };
+        } = *self;
         trace!("Dist inputs: {:?}", parsed_args.input);
 
         let input_path = cwd.join(&parsed_args.input);
@@ -408,6 +409,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
             input_path,
             preprocessed_input,
             path_transformer,
+            extra_hash_files: parsed_args.extra_hash_files,
         });
         let toolchain_packager = Box::new(CToolchainPackager {
             executable,
@@ -427,6 +429,7 @@ struct CInputsPackager {
     input_path: PathBuf,
     path_transformer: dist::PathTransformer,
     preprocessed_input: Vec<u8>,
+    extra_hash_files: Vec<PathBuf>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -436,19 +439,50 @@ impl pkg::InputsPackager for CInputsPackager {
             input_path,
             mut path_transformer,
             preprocessed_input,
-        } = *{ self };
-
-        let input_path = pkg::simplify_path(&input_path)?;
-        let dist_input_path = path_transformer
-            .to_dist(&input_path)
-            .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+            extra_hash_files,
+        } = *self;
 
         let mut builder = tar::Builder::new(wtr);
 
-        let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
-        file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
-        file_header.set_cksum();
-        builder.append(&file_header, preprocessed_input.as_slice())?;
+        {
+            let input_path = pkg::simplify_path(&input_path)?;
+            let dist_input_path = path_transformer
+                .to_dist(&input_path)
+                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+
+            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
+            file_header.set_cksum();
+            builder.append(&file_header, preprocessed_input.as_slice())?;
+        }
+
+        for input_path in extra_hash_files {
+            let input_path = pkg::simplify_path(&input_path)?;
+
+            if !super::CAN_DIST_DYLIBS
+                && input_path
+                    .extension()
+                    .map_or(false, |ext| ext == DLL_EXTENSION)
+            {
+                bail!(
+                    "Cannot distribute dylib input {} on this platform",
+                    input_path.display()
+                )
+            }
+
+            let dist_input_path = path_transformer
+                .to_dist(&input_path)
+                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+
+            let mut file = io::BufReader::new(fs::File::open(&input_path)?);
+            let mut output = vec![];
+            io::copy(&mut file, &mut output)?;
+
+            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            file_header.set_size(output.len() as u64);
+            file_header.set_cksum();
+            builder.append(&file_header, &*output)?;
+        }
 
         // Finish archive
         let _ = builder.into_inner();

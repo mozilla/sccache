@@ -46,6 +46,15 @@ use tokio_timer::Timeout;
 
 use crate::errors::*;
 
+/// Can dylibs (shared libraries or proc macros) be distributed on this platform?
+#[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
+pub const CAN_DIST_DYLIBS: bool = true;
+#[cfg(all(
+    feature = "dist-client",
+    not(all(target_os = "linux", target_arch = "x86_64"))
+))]
+pub const CAN_DIST_DYLIBS: bool = false;
+
 #[derive(Clone, Debug)]
 pub struct CompileCommand {
     pub executable: PathBuf,
