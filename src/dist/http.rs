@@ -361,6 +361,15 @@ mod server {
             .append_extension(extension)
             .chain_err(|| "failed to append SAN extension for x509")?;
 
+        // Add ExtendedKeyUsage
+        let ext_key_usage = openssl::x509::extension::ExtendedKeyUsage::new()
+            .server_auth()
+            .build()
+            .chain_err(|| "failed to build EKU extension for x509")?;
+        builder
+            .append_extension(ext_key_usage)
+            .chain_err(|| "failes to append EKU extension for x509")?;
+
         // Finish the certificate
         builder
             .sign(&privkey, openssl::hash::MessageDigest::sha1())
@@ -370,7 +379,7 @@ mod server {
             .to_pem()
             .chain_err(|| "failed to create pem from x509")?;
         let cert_digest = cert
-            .digest(openssl::hash::MessageDigest::sha1())
+            .digest(openssl::hash::MessageDigest::sha256())
             .chain_err(|| "failed to create digest of x509 certificate")?
             .as_ref()
             .to_owned();
