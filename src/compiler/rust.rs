@@ -57,15 +57,6 @@ use tempdir::TempDir;
 
 use crate::errors::*;
 
-/// Can dylibs (like proc macros) be distributed on this platform?
-#[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
-const CAN_DIST_DYLIBS: bool = true;
-#[cfg(all(
-    feature = "dist-client",
-    not(all(target_os = "linux", target_arch = "x86_64"))
-))]
-const CAN_DIST_DYLIBS: bool = false;
-
 #[cfg(feature = "dist-client")]
 const RLIB_PREFIX: &str = "lib";
 #[cfg(feature = "dist-client")]
@@ -1493,7 +1484,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         for input_path in inputs.into_iter() {
             let input_path = pkg::simplify_path(&input_path)?;
             if let Some(ext) = input_path.extension() {
-                if !CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
+                if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
                     bail!(
                         "Cannot distribute dylib input {} on this platform",
                         input_path.display()
@@ -1581,7 +1572,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                     }
                     if !path.is_file() {
                         continue;
-                    } else if !CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
+                    } else if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
                         bail!(
                             "Cannot distribute dylib input {} on this platform",
                             path.display()
