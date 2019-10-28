@@ -303,7 +303,7 @@ mod server {
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
-    pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+    pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
