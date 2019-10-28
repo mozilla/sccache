@@ -241,3 +241,21 @@ impl Bucket {
         format!("AWS {}:{}", creds.aws_access_key_id(), signature)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_signature() {
+        assert_eq!(
+            signature("/foo/bar\nbar", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+            "mwbstmHPMEJjTe2ksXi5H5f0c8U="
+        );
+
+        assert_eq!(
+            signature("/bar/foo\nbaz", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+            "F9gZMso3+P+QTEyRKQ6qhZ1YM6o="
+        );
+    }
+}
