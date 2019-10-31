@@ -380,7 +380,6 @@ fn run(command: Command) -> Result<i32> {
                     let validation = jwt::Validation {
                         leeway: 0,
                         validate_exp: false,
-                        validate_iat: false,
                         validate_nbf: false,
                         aud: None,
                         iss: None,

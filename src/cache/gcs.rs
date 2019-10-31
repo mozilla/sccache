@@ -13,24 +13,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cell::RefCell;
-use std::fmt;
-use std::io;
-use std::rc::Rc;
-use std::time;
+use std::{cell::RefCell, fmt, io, rc::Rc, time};
 
-use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::jwt;
-use futures::future::Shared;
-use futures::{future, Async, Future, Stream};
+use crate::{
+    cache::{Cache, CacheRead, CacheWrite, Storage},
+    errors::*,
+    util::HeadersExt,
+};
+use futures::{
+    future::{self, Shared},
+    Async, Future, Stream,
+};
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::r#async::{Client, Request};
-use url::form_urlencoded;
-use url::percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET};
-
-use crate::errors::*;
-use crate::util::HeadersExt;
+use serde::de;
+use url::{
+    form_urlencoded,
+    percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
+};
 
 /// GCS bucket
 struct Bucket {
@@ -161,28 +162,71 @@ pub enum ServiceAccountInfo {
     AccountKey(ServiceAccountKey),
 }
 
+fn deserialize_gcp_key<'de, D>(deserializer: D) -> std::result::Result<Vec<u8>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> de::Visitor<'de> for Visitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("private key string")
+        }
+
+        fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            // -----BEGIN PRIVATE KEY-----\n<key_data_with_newlines>\n-----END PRIVATE KEY-----\n
+            let key_string = v
+                .splitn(5, "-----")
+                .nth(2)
+                .ok_or_else(|| E::custom("invalid private key format"))?;
+
+            // Strip out all of the newlines
+            let key_string = key_string.split_whitespace().fold(
+                String::with_capacity(key_string.len()),
+                |mut s, line| {
+                    s.push_str(line);
+                    s
+                },
+            );
+
+            base64::decode_config(key_string.as_bytes(), base64::STANDARD)
+                .map_err(|e| E::custom(format!("failed to decode from base64 string: {}", e)))
+        }
+    }
+
+    deserializer.deserialize_any(Visitor)
+}
+
 /// ServiceAccountKey is a subset of the information in the JSON service account credentials.
 ///
 /// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
 /// structure minimal and not list all the fields present in a service account credential file.
 #[derive(Debug, Deserialize)]
 pub struct ServiceAccountKey {
-    private_key: String,
+    #[serde(deserialize_with = "deserialize_gcp_key")]
+    private_key: Vec<u8>,
     client_email: String,
+    /// The URI we send the token requests to, eg https://oauth2.googleapis.com/token
+    token_uri: String,
 }
 
 /// JwtClaims are the required claims that must be present in the OAUTH token request JWT.
 #[derive(Serialize)]
-struct JwtClaims {
+struct JwtClaims<'a> {
     #[serde(rename = "iss")]
-    issuer: String,
-    scope: String,
+    issuer: &'a str,
     #[serde(rename = "aud")]
-    audience: String,
+    audience: &'a str,
     #[serde(rename = "exp")]
     expiration: i64,
     #[serde(rename = "iat")]
     issued_at: i64,
+    scope: &'a str,
 }
 
 /// TokenMsg is a subset of the information provided by GCS in response to an OAUTH token request.
@@ -217,6 +261,56 @@ pub struct GCSCredential {
     expiration_time: chrono::DateTime<chrono::offset::Utc>,
 }
 
+/// A basic JWT header, the alg defaults to HS256 and typ is automatically
+/// set to `JWT`. All the other fields are optional.
+#[derive(Serialize)]
+struct Header<'a> {
+    /// The type of JWS: it can only be "JWT" here
+    ///
+    /// Defined in [RFC7515#4.1.9](https://tools.ietf.org/html/rfc7515#section-4.1.9).
+    pub typ: &'a str,
+    /// The algorithm used
+    ///
+    /// Defined in [RFC7515#4.1.1](https://tools.ietf.org/html/rfc7515#section-4.1.1).
+    pub alg: &'a str,
+}
+
+fn to_jwt_part<T: serde::Serialize>(input: &T) -> Result<String> {
+    let json = serde_json::to_string(input)?;
+    Ok(base64::encode_config(
+        json.as_bytes(),
+        base64::URL_SAFE_NO_PAD,
+    ))
+}
+
+use ring::signature;
+
+fn sign_rsa(
+    signing_input: &str,
+    key: &[u8],
+    alg: &'static dyn signature::RsaEncoding,
+) -> Result<String> {
+    let key_pair = signature::RsaKeyPair::from_pkcs8(untrusted::Input::from(key))
+        .chain_err(|| "failed to deserialize rsa key")?;
+
+    let mut signature = vec![0; key_pair.public_modulus_len()];
+    let rng = ring::rand::SystemRandom::new();
+    key_pair
+        .sign(alg, &rng, signing_input.as_bytes(), &mut signature)
+        .chain_err(|| "failed to sign JWT claim")?;
+
+    Ok(base64::encode_config(&signature, base64::URL_SAFE_NO_PAD))
+}
+
+fn encode(header: &Header<'_>, claims: &JwtClaims<'_>, key: &[u8]) -> Result<String> {
+    let encoded_header = to_jwt_part(header)?;
+    let encoded_claims = to_jwt_part(claims)?;
+    let signing_input = [encoded_header.as_ref(), encoded_claims.as_ref()].join(".");
+    let signature = sign_rsa(&*signing_input, key, &signature::RSA_PKCS1_SHA256)?;
+
+    Ok([signing_input, signature].join("."))
+}
+
 impl GCSCredentialProvider {
     pub fn new(rw_mode: RWMode, sa_info: ServiceAccountInfo) -> Self {
         GCSCredentialProvider {
@@ -231,37 +325,26 @@ impl GCSCredentialProvider {
         sa_key: &ServiceAccountKey,
         expire_at: &chrono::DateTime<chrono::offset::Utc>,
     ) -> Result<String> {
-        let scope = (match self.rw_mode {
+        let scope = match self.rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
-        })
-        .to_owned();
-
-        let jwt_claims = JwtClaims {
-            issuer: sa_key.client_email.clone(),
-            scope: scope,
-            audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
-            expiration: expire_at.timestamp(),
-            issued_at: chrono::offset::Utc::now().timestamp(),
         };
 
-        // Could also use the pem crate, but that seems overly complicated for just the specific
-        // case of GCP keys
-        let key_string = sa_key
-            .private_key
-            .splitn(5, "-----")
-            .nth(2)
-            .ok_or_else(|| "invalid key format")?;
-        // Skip the leading `\n`
-        let key_bytes = base64::decode_config(key_string[1..].as_bytes(), base64::MIME)?;
-
-        let auth_request_jwt = jwt::encode(
-            &jwt::Header::new(jwt::Algorithm::RS256),
-            &jwt_claims,
-            &key_bytes,
-        )?;
-
-        Ok(auth_request_jwt)
+        Ok(encode(
+            &Header {
+                typ: "JWT",
+                alg: "RS256",
+            },
+            &JwtClaims {
+                issuer: &sa_key.client_email,
+                scope,
+                audience: &sa_key.token_uri,
+                expiration: expire_at.timestamp(),
+                issued_at: chrono::offset::Utc::now().timestamp(),
+            },
+            &sa_key.private_key,
+        )
+        .unwrap())
     }
 
     fn request_new_token(
@@ -272,12 +355,12 @@ impl GCSCredentialProvider {
         let client = client.clone();
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
         let auth_jwt = self.auth_request_jwt(sa_key, &expires_at);
+        let url = sa_key.token_uri.clone();
 
         // Request credentials
         Box::new(
             future::result(auth_jwt)
                 .and_then(move |auth_jwt| {
-                    let url = "https://www.googleapis.com/oauth2/v4/token";
                     let params = form_urlencoded::Serializer::new(String::new())
                         .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
                         .append_pair("assertion", &auth_jwt)
@@ -312,6 +395,7 @@ impl GCSCredentialProvider {
                     // Convert body to string and parse the token out of the response
                     let body_str = String::from_utf8(body)?;
                     let token_msg: TokenMsg = serde_json::from_str(&body_str)?;
+
                     Ok(GCSCredential {
                         token: token_msg.access_token,
                         expiration_time: expires_at,
