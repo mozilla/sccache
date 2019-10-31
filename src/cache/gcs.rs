@@ -60,7 +60,7 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+        let creds_opt_future = if let Some(ref cred_provider) = cred_provider {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
@@ -80,7 +80,7 @@ impl Bucket {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(|body| {
@@ -107,7 +107,7 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let &Some(ref cred_provider) = cred_provider {
+        let creds_opt_future = if let Some(ref cred_provider) = cred_provider {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
@@ -132,7 +132,7 @@ impl Bucket {
                         Ok(())
                     } else {
                         trace!("PUT failed with HTTP status: {}", res.status());
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 }
                 Err(e) => {
@@ -239,7 +239,7 @@ impl GCSCredentialProvider {
 
         let jwt_claims = JwtClaims {
             issuer: sa_key.client_email.clone(),
-            scope: scope,
+            scope,
             audience: "https://www.googleapis.com/oauth2/v4/token".to_owned(),
             expiration: expire_at.timestamp(),
             issued_at: chrono::offset::Utc::now().timestamp(),
@@ -297,7 +297,7 @@ impl GCSCredentialProvider {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
@@ -330,7 +330,7 @@ impl GCSCredentialProvider {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
@@ -401,8 +401,8 @@ impl GCSCache {
     ) -> Result<GCSCache> {
         Ok(GCSCache {
             bucket: Rc::new(Bucket::new(bucket)?),
-            rw_mode: rw_mode,
-            credential_provider: credential_provider,
+            rw_mode,
+            credential_provider,
         })
     }
 }
@@ -433,7 +433,7 @@ impl Storage for GCSCache {
         let start = time::Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,
-            Err(e) => return Box::new(future::err(e.into())),
+            Err(e) => return Box::new(future::err(e)),
         };
         let bucket = self.bucket.clone();
         let response = bucket

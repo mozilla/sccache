@@ -381,7 +381,7 @@ where
     let output = match output_arg {
         // We can't cache compilation that doesn't go to a file
         None => Path::new(&input).with_extension("o"),
-        Some(o) => PathBuf::from(o),
+        Some(o) => o,
     };
     if split_dwarf {
         let dwo = output.with_extension("dwo");
@@ -400,12 +400,12 @@ where
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
-        language: language,
+        language,
         depfile: None,
-        outputs: outputs,
-        preprocessor_args: preprocessor_args,
-        common_args: common_args,
-        extra_hash_files: extra_hash_files,
+        outputs,
+        preprocessor_args,
+        common_args,
+        extra_hash_files,
         msvc_show_includes: false,
         profile_generate,
     })
@@ -488,7 +488,7 @@ pub fn generate_compile_commands(
     arguments.extend(parsed_args.common_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
-        arguments: arguments,
+        arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
     };
@@ -516,7 +516,7 @@ pub fn generate_compile_commands(
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
-            arguments: arguments,
+            arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.to_dist_abs(cwd)?,
         })
@@ -534,7 +534,7 @@ impl<'a> ExpandIncludeFile<'a> {
     pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
         ExpandIncludeFile {
             stack: args.iter().rev().map(|a| a.to_owned()).collect(),
-            cwd: cwd,
+            cwd,
         }
     }
 }

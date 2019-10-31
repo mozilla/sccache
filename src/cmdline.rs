@@ -127,9 +127,8 @@ pub fn parse() -> Result<Command> {
                                         env::split_paths(&path).filter(|p| p != dir),
                                     )
                                     .ok();
-                                    match which_in(exe_filename, path, &cwd) {
-                                        Ok(full_path) => args[0] = full_path.into(),
-                                        Err(_) => {}
+                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
+                                        args[0] = full_path.into();
                                     }
                                 }
                             }
@@ -203,8 +202,8 @@ pub fn parse() -> Result<Command> {
             let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
             Ok(Command::Compile {
                 exe: exe.to_owned(),
-                cmdline: cmdline,
-                cwd: cwd,
+                cmdline,
+                cwd,
                 env_vars: env::vars_os().collect(),
             })
         } else {

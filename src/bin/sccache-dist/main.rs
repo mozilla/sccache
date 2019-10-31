@@ -117,7 +117,7 @@ fn main() {
                 println!("caused by: {}", e);
             }
             get_app().print_help().unwrap();
-            println!("");
+            println!();
             1
         }
     });
@@ -208,7 +208,7 @@ fn parse() -> Result<Command> {
                             match config.server_auth {
                                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
                                 scheduler_config::ServerAuth::Insecure
-                                | scheduler_config::ServerAuth::Token { token: _ } => {
+                                | scheduler_config::ServerAuth::Token { .. } => {
                                     bail!("Scheduler not configured with JWT HS256")
                                 }
                             }
@@ -485,6 +485,7 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
+#[derive(Default)]
 pub struct Scheduler {
     job_count: AtomicUsize,
 
@@ -511,12 +512,7 @@ struct ServerDetails {
 
 impl Scheduler {
     pub fn new() -> Self {
-        Scheduler {
-            job_count: AtomicUsize::new(0),
-            jobs: Mutex::new(BTreeMap::new()),
-            finished_jobs: Mutex::new(ArrayDeque::new()),
-            servers: Mutex::new(HashMap::new()),
-        }
+        Self::default()
     }
 }
 
@@ -736,7 +732,7 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
-                if stale_jobs.len() > 0 {
+                if !stale_jobs.is_empty() {
                     warn!(
                         "The following stale jobs will be de-allocated: {:?}",
                         stale_jobs
@@ -967,6 +963,6 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Complete)
             .chain_err(|| "Updating job state failed")?;
-        return res;
+        res
     }
 }

@@ -97,12 +97,18 @@ pub struct CacheWrite {
     zip: ZipWriter<io::Cursor<Vec<u8>>>,
 }
 
-impl CacheWrite {
-    /// Create a new, empty cache entry.
-    pub fn new() -> CacheWrite {
-        CacheWrite {
+impl Default for CacheWrite {
+    fn default() -> Self {
+        Self {
             zip: ZipWriter::new(io::Cursor::new(vec![])),
         }
+    }
+}
+
+impl CacheWrite {
+    /// Create a new, empty cache entry.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
@@ -162,6 +168,7 @@ pub trait Storage {
 }
 
 /// Get a suitable `Storage` implementation from configuration.
+#[allow(clippy::cognitive_complexity)]
 pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
@@ -210,7 +217,7 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> 
 
                             service_account_key_res
                                 .ok()
-                                .map(|account_key| ServiceAccountInfo::AccountKey(account_key))
+                                .map(ServiceAccountInfo::AccountKey)
                         } else if let Some(ref url) = *url {
                             Some(ServiceAccountInfo::URL(url.clone()))
                         } else {

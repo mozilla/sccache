@@ -88,7 +88,7 @@ impl CCompilerImpl for MSVC {
     }
 }
 
-fn from_local_codepage(bytes: &Vec<u8>) -> io::Result<String> {
+fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
 }
 
@@ -169,7 +169,7 @@ where
                 if path.exists() {
                     // Everything from the beginning of the line
                     // to this index is the prefix.
-                    return Ok(line[..i + 1].to_owned());
+                    return Ok(line[..=i].to_owned());
                 }
             }
         }
@@ -394,7 +394,7 @@ pub fn parse_arguments(
             outputs.insert("obj", Path::new(&input).with_extension("obj"));
         }
         Some(o) => {
-            outputs.insert("obj", PathBuf::from(o));
+            outputs.insert("obj", o);
         }
     }
     // -Fd is not taken into account unless -Zi is given
@@ -413,12 +413,12 @@ pub fn parse_arguments(
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
-        language: language,
-        depfile: depfile,
-        outputs: outputs,
-        preprocessor_args: preprocessor_args,
-        common_args: common_args,
-        extra_hash_files: extra_hash_files,
+        language,
+        depfile,
+        outputs,
+        preprocessor_args,
+        common_args,
+        extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate: false,
     })
@@ -533,7 +533,7 @@ where
                 stderr_bytes.extend_from_slice(line.as_bytes());
                 stderr_bytes.push(b'\n');
             }
-            writeln!(f, "")?;
+            writeln!(f)?;
             // Write extra rules for each dependency to handle
             // removed files.
             encode_path(&mut f, &parsed_args.input)
@@ -547,8 +547,8 @@ where
                 }
             }
             Ok(process::Output {
-                status: status,
-                stdout: stdout,
+                status,
+                stdout,
                 stderr: stderr_bytes,
             })
         } else {
@@ -596,7 +596,7 @@ fn generate_compile_commands(
 
     let command = CompileCommand {
         executable: executable.to_owned(),
-        arguments: arguments,
+        arguments,
         env_vars: env_vars.to_owned(),
         cwd: cwd.to_owned(),
     };
@@ -623,7 +623,7 @@ fn generate_compile_commands(
 
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
-            arguments: arguments,
+            arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.to_dist(cwd)?,
         })

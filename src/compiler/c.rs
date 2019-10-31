@@ -118,8 +118,8 @@ impl Language {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match *self {
+    pub fn as_str(self) -> &'static str {
+        match self {
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objc",
@@ -193,9 +193,9 @@ where
     pub fn new(compiler: I, executable: PathBuf, pool: &CpuPool) -> SFuture<CCompiler<I>> {
         Box::new(
             Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
-                executable: executable,
+                executable,
                 executable_digest: digest,
-                compiler: compiler,
+                compiler,
             }),
         )
     }
@@ -311,7 +311,7 @@ where
                                 ..output
                             }))
                         }
-                        e @ _ => Err(e),
+                        e => Err(e),
                     }
                 })
                 .and_then(move |preprocessor_result| {
@@ -338,13 +338,13 @@ where
                         let weak_toolchain_key =
                             format!("{}-{}", executable.to_string_lossy(), executable_digest);
                         Ok(HashResult {
-                            key: key,
+                            key,
                             compilation: Box::new(CCompilation {
-                                parsed_args: parsed_args,
+                                parsed_args,
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: preprocessor_result.stdout,
-                                executable: executable,
-                                compiler: compiler,
+                                executable,
+                                compiler,
                                 cwd,
                                 env_vars,
                             }),
@@ -386,6 +386,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     }
 
     #[cfg(feature = "dist-client")]
+    #[allow(clippy::type_complexity)]
     fn into_dist_packagers(
         self: Box<Self>,
         path_transformer: dist::PathTransformer,

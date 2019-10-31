@@ -64,6 +64,7 @@ mod toolchain_imp {
 
     use crate::errors::*;
 
+    #[derive(Default)]
     pub struct ToolchainPackageBuilder {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)
         dir_set: BTreeMap<PathBuf, PathBuf>,
@@ -72,10 +73,7 @@ mod toolchain_imp {
 
     impl ToolchainPackageBuilder {
         pub fn new() -> Self {
-            ToolchainPackageBuilder {
-                dir_set: BTreeMap::new(),
-                file_set: BTreeMap::new(),
-            }
+            Self::default()
         }
 
         pub fn add_common(&mut self) -> Result<()> {
@@ -218,9 +216,9 @@ mod toolchain_imp {
                 _ => bail!("Invalid endianness in elf header"),
             };
             let e_type = if little_endian {
-                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+                u16::from(elf_bytes[0x11]) << 8 | u16::from(elf_bytes[0x10])
             } else {
-                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+                u16::from(elf_bytes[0x10]) << 8 | u16::from(elf_bytes[0x11])
             };
             if e_type != 0x02 {
                 bail!("ldd failed on a non-ET_EXEC elf")
@@ -342,9 +340,9 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     }
 
     // tar-rs imposes that `set_path` takes a relative path
-    assert!(dest.starts_with("/"));
-    let dest = dest.trim_start_matches("/");
-    assert!(!dest.starts_with("/"));
+    assert!(dest.starts_with('/'));
+    let dest = dest.trim_start_matches('/');
+    assert!(!dest.starts_with('/'));
     // `set_path` converts its argument to a Path and back to bytes on Windows, so this is
     // a bit of an inefficient round-trip. Windows path separators will also be normalised
     // to be like Unix, and the path is (now) relative so there should be no funny results

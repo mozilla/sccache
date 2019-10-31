@@ -187,7 +187,7 @@ impl AsyncCommand {
     pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
         AsyncCommand {
             inner: Some(Command::new(program)),
-            jobserver: jobserver,
+            jobserver,
         }
     }
 
@@ -271,7 +271,7 @@ impl RunCommand for AsyncCommand {
                 .chain_err(|| format!("failed to spawn {:?}", inner))?;
             Ok(Child {
                 inner: child,
-                token: token,
+                token,
             })
         }))
     }
@@ -405,9 +405,9 @@ impl CommandChild for MockChild {
         } = self;
         let result = wait_result.unwrap().and_then(|status| {
             Ok(Output {
-                status: status,
-                stdout: stdout.map(|c| c.into_inner()).unwrap_or(vec![]),
-                stderr: stderr.map(|c| c.into_inner()).unwrap_or(vec![]),
+                status,
+                stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
+                stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
             })
         });
         Box::new(future::result(result))
@@ -524,7 +524,7 @@ impl CommandCreator for MockCommandCreator {
     }
 
     fn new_command<S: AsRef<OsStr>>(&mut self, _program: S) -> MockCommand {
-        assert!(self.children.len() > 0, "Too many calls to MockCommandCreator::new_command, or not enough to MockCommandCreator::new_command_spawns!");
+        assert!(!self.children.is_empty(), "Too many calls to MockCommandCreator::new_command, or not enough to MockCommandCreator::new_command_spawns!");
         //TODO: assert value of program
         MockCommand {
             child: Some(self.children.remove(0)),

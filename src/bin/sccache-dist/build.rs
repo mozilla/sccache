@@ -258,7 +258,7 @@ impl OverlayBuilder {
                     fs::create_dir(&target_dir)
                         .chain_err(|| "Failed to create overlay target directory")?;
 
-                    let () = Overlay::writable(
+                    Overlay::writable(
                         iter::once(overlay.toolchain_dir.as_path()),
                         upper_dir,
                         work_dir,
@@ -332,7 +332,7 @@ impl OverlayBuilder {
                         .arg(cwd);
 
                     for (k, v) in env_vars {
-                        if k.contains("=") {
+                        if k.contains('=') {
                             warn!("Skipping environment variable: {:?}", k);
                             continue;
                         }
@@ -386,10 +386,7 @@ impl OverlayBuilder {
     fn finish_overlay(&self, _tc: &Toolchain, overlay: OverlaySpec) {
         // TODO: collect toolchain directories
 
-        let OverlaySpec {
-            build_dir,
-            toolchain_dir: _,
-        } = overlay;
+        let OverlaySpec { build_dir, .. } = overlay;
         if let Err(e) = fs::remove_dir_all(&build_dir) {
             error!(
                 "Failed to remove build directory {}: {}",
@@ -604,7 +601,7 @@ impl DockerBuilder {
                         continue;
                     }
                 }
-                lastpath = Some(changepath.clone());
+                lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
                     .args(&["exec", &cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
@@ -768,7 +765,7 @@ impl DockerBuilder {
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
         for (k, v) in env_vars {
-            if k.contains("=") {
+            if k.contains('=') {
                 warn!("Skipping environment variable: {:?}", k);
                 continue;
             }
@@ -777,7 +774,7 @@ impl DockerBuilder {
             env.push_str(&v);
             cmd.arg("-e").arg(env);
         }
-        let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
+        let shell_cmd = r#"cd "$1" && shift && exec "$@""#;
         cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
         cmd.arg(&executable);
         cmd.arg(cwd);

@@ -14,7 +14,7 @@
 
 #[cfg(feature = "azure")]
 pub mod azure;
-pub mod cache;
+pub mod core;
 pub mod disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -25,4 +25,4 @@ pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
 
-pub use crate::cache::cache::*;
+pub use self::core::*;

@@ -41,7 +41,7 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha1>::new_varkey(key).expect("HMAC can take key of any size");
     hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
+    hmac.result().code().iter().copied().collect::<Vec<u8>>()
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
@@ -67,7 +67,7 @@ impl Bucket {
         let base_url = base_url(&endpoint, ssl);
         Ok(Bucket {
             name: name.to_owned(),
-            base_url: base_url,
+            base_url,
             client: Client::new(),
         })
     }
@@ -77,32 +77,28 @@ impl Bucket {
         debug!("GET {}", url);
         let url2 = url.clone();
         let mut request = Request::new(Method::GET, url.parse().unwrap());
-        match creds {
-            Some(creds) => {
-                let mut canonical_headers = String::new();
 
-                if let Some(token) = creds.token().as_ref().map(|s| s.as_str()) {
-                    request.headers_mut().insert(
-                        "x-amz-security-token",
-                        HeaderValue::from_str(token)
-                            .expect("Invalid `x-amz-security-token` header"),
-                    );
-                    canonical_headers
-                        .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
-                }
-                let date = time::now_utc().rfc822().to_string();
-                let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
+        if let Some(creds) = creds {
+            let mut canonical_headers = String::new();
+
+            if let Some(token) = creds.token().as_ref().map(|s| s.as_str()) {
                 request.headers_mut().insert(
-                    "Date",
-                    HeaderValue::from_str(&date).expect("Invalid date header"),
+                    "x-amz-security-token",
+                    HeaderValue::from_str(token).expect("Invalid `x-amz-security-token` header"),
                 );
-                request.headers_mut().insert(
-                    "Authorization",
-                    HeaderValue::from_str(&auth).expect("Invalid authentication"),
-                );
+                canonical_headers
+                    .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
             }
-            // request is fine as-is
-            None => {}
+            let date = time::now_utc().rfc822().to_string();
+            let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
+            request.headers_mut().insert(
+                "Date",
+                HeaderValue::from_str(&date).expect("Invalid date header"),
+            );
+            request.headers_mut().insert(
+                "Authorization",
+                HeaderValue::from_str(&auth).expect("Invalid authentication"),
+            );
         }
 
         Box::new(
@@ -117,7 +113,7 @@ impl Bucket {
                             .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(|(body, content_length)| {
@@ -154,10 +150,10 @@ impl Bucket {
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
-        for (header, maybe_value) in vec![("x-amz-security-token", token)] {
+        for (header, maybe_value) in &[("x-amz-security-token", token)] {
             if let Some(ref value) = maybe_value {
                 request.headers_mut().insert(
-                    header,
+                    *header,
                     HeaderValue::from_str(value)
                         .unwrap_or_else(|_| panic!("Invalid `{}` header", header)),
                 );
@@ -186,7 +182,7 @@ impl Bucket {
             .set(header::ContentLength(content.len() as u64));
         request.headers_mut().set(header::CacheControl(vec![
             // Two weeks
-            header::CacheDirective::MaxAge(1296000),
+            header::CacheDirective::MaxAge(1_296_000),
         ]));
         request.headers_mut().insert(
             "Authorization",
@@ -201,7 +197,7 @@ impl Bucket {
                     Ok(())
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }
             Err(e) => {
@@ -211,6 +207,7 @@ impl Bucket {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
     fn auth(
         &self,

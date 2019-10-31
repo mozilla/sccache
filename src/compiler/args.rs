@@ -200,7 +200,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
                 _ => None,
             },
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
@@ -251,7 +251,7 @@ impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterS
                 _ => None,
             },
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
@@ -457,14 +457,14 @@ impl<T: ArgumentValue> ArgInfo<T> {
     /// how it differs.
     fn cmp(&self, arg: &str) -> Ordering {
         match self {
-            &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None))
-            | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None))
+            ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(None))
+            | ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(None))
                 if arg.starts_with(s) =>
             {
                 Ordering::Equal
             }
-            &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d)))
-            | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
+            ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d)))
+            | ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) =>
             {
                 arg.as_bytes()[s.len()].cmp(&d)
@@ -475,7 +475,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
 
     fn flag_str(&self) -> &'static str {
         match self {
-            &ArgInfo::Flag(s, _) | &ArgInfo::TakeArg(s, _, _) => s,
+            ArgInfo::Flag(s, _) | ArgInfo::TakeArg(s, _, _) => s,
         }
     }
 }
@@ -484,7 +484,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
 /// function. This implementation is tweaked to handle the case where the
 /// comparison function does prefix matching, where multiple items in the array
 /// might match, but the last match is the one actually matching.
-fn bsearch<'a, K, T, F>(key: K, items: &'a [T], cmp: F) -> Option<&'a T>
+fn bsearch<K, T, F>(key: K, items: &[T], cmp: F) -> Option<&T>
 where
     F: Fn(&T, &K) -> Ordering,
 {
@@ -584,8 +584,8 @@ where
         #[cfg(debug_assertions)]
         debug_assert!(arg_info.check());
         ArgsIter {
-            arguments: arguments,
-            arg_info: arg_info,
+            arguments,
+            arg_info,
             phantom: PhantomData,
         }
     }
@@ -605,7 +605,7 @@ where
             let arguments = &mut self.arguments;
             Some(match self.arg_info.search(&s[..]) {
                 Some(i) => i.clone().process(&s[..], || arguments.next()),
-                None => Ok(if s.starts_with("-") {
+                None => Ok(if s.starts_with('-') {
                     Argument::UnknownFlag(arg.clone())
                 } else {
                     Argument::Raw(arg.clone())

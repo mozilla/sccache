@@ -34,7 +34,7 @@ const BLOB_API_VERSION: &str = "2017-04-17";
 fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
     hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
+    hmac.result().code().iter().copied().collect::<Vec<u8>>()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
@@ -63,8 +63,8 @@ impl fmt::Display for BlobContainer {
 impl BlobContainer {
     pub fn new(base_url: &str, container_name: &Option<String>) -> Result<BlobContainer> {
         let container_url = match container_name {
-            &Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
-            &None => base_url.to_owned(),
+            Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
+            None => base_url.to_owned(),
         };
 
         Ok(BlobContainer {
@@ -118,7 +118,7 @@ impl BlobContainer {
                             .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(|(body, content_length)| {
@@ -208,7 +208,7 @@ impl BlobContainer {
                     Ok(())
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }
             Err(e) => {

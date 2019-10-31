@@ -92,7 +92,7 @@ mod client {
             // Load in toolchain configuration
             let mut custom_toolchain_paths = HashMap::new();
             let mut disabled_toolchains = HashSet::new();
-            for ct in toolchain_configs.into_iter() {
+            for ct in toolchain_configs.iter() {
                 match ct {
                     config::DistToolchainConfig::PathOverride {
                         compiler_executable,
@@ -217,7 +217,7 @@ mod client {
             &self,
             compiler_path: &Path,
         ) -> Option<Result<(Toolchain, String)>> {
-            return match self
+            match self
                 .custom_toolchain_paths
                 .lock()
                 .unwrap()
@@ -253,7 +253,7 @@ mod client {
                     Some(Ok((tc, custom_tc.compiler_executable.clone())))
                 }
                 None => None,
-            };
+            }
         }
 
         fn weak_to_strong(&self, weak_key: &str) -> Option<String> {

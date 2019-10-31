@@ -50,10 +50,7 @@ impl S3Cache {
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         //TODO: configurable SSL
         let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No)?);
-        Ok(S3Cache {
-            bucket: bucket,
-            provider: provider,
-        })
+        Ok(S3Cache { bucket, provider })
     }
 }
 

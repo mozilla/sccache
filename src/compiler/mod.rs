@@ -17,10 +17,10 @@ mod args;
 mod c;
 mod clang;
 #[macro_use]
-mod compiler;
+mod core;
 mod diab;
 mod gcc;
 mod msvc;
 mod rust;
 
-pub use crate::compiler::compiler::*;
+pub use self::core::*;

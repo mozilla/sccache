@@ -180,7 +180,7 @@ lazy_static! {
         "link",
         "metadata",
         "dep-info",
-    ].iter().map(|s| *s).collect();
+    ].iter().copied().collect();
 }
 
 /// Version number for cache key.
@@ -403,7 +403,7 @@ impl Rust {
             };
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
-                    executable: executable,
+                    executable,
                     host,
                     sysroot,
                     compiler_shlibs_digests: digests,
@@ -415,7 +415,7 @@ impl Rust {
         #[cfg(not(feature = "dist-client"))]
         return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(&libs, &pool).map(move |digests| Rust {
-                executable: executable,
+                executable,
                 host,
                 sysroot,
                 compiler_shlibs_digests: digests,
@@ -499,7 +499,7 @@ impl FromArg for ArgCrateTypes {
             staticlib: false,
             others: HashSet::new(),
         };
-        for ty in arg.split(",") {
+        for ty in arg.split(',') {
             match ty {
                 // It is assumed that "lib" always refers to "rlib", which
                 // is true right now but may not be in the future
@@ -698,7 +698,7 @@ impl IntoArg for ArgTarget {
         match self {
             ArgTarget::Name(s) => s.into(),
             ArgTarget::Path(p) => p.into(),
-            ArgTarget::Unsure(s) => s.into(),
+            ArgTarget::Unsure(s) => s,
         }
     }
     fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
@@ -790,7 +790,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
 
-    for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
+    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
@@ -819,7 +819,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = Some(value.split(",").map(str::to_owned).collect())
+                emit = Some(value.split(',').map(str::to_owned).collect())
             }
             Some(CrateType(ArgCrateTypes {
                 rlib,
@@ -838,7 +838,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(CrateName(value)) => crate_name = Some(value.clone()),
             Some(OutDir(value)) => output_dir = Some(value.clone()),
-            Some(Extern(ArgExtern { name: _, path })) => externs.push(path.clone()),
+            Some(Extern(ArgExtern { path, .. })) => externs.push(path.clone()),
             Some(CodeGen(ArgCodegen { opt, value })) => {
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
@@ -970,11 +970,11 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     externs.sort();
     CompilerArguments::Ok(ParsedArguments {
         arguments: args,
-        output_dir: output_dir.into(),
+        output_dir,
         crate_types,
-        externs: externs,
+        externs,
         crate_link_paths,
-        staticlibs: staticlibs,
+        staticlibs,
         crate_name: crate_name.to_string(),
         dep_info: dep_info.map(|s| s.into()),
         emit,
@@ -1015,8 +1015,8 @@ where
                     crate_types,
                     dep_info,
                     emit,
-                    color_mode: _,
                     has_json,
+                    ..
                 },
         } = me;
         trace!("[{}]: generate_hash_key", crate_name);
@@ -1043,7 +1043,7 @@ where
                 }
             })
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
-            .map(|a| a.clone())
+            .cloned()
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
@@ -1150,7 +1150,7 @@ where
                 // Turn arguments into a simple Vec<OsString> to calculate outputs.
                 let flat_os_string_arguments: Vec<OsString> = os_string_arguments
                     .into_iter()
-                    .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
+                    .flat_map(|(arg, val)| iter::once(arg).chain(val))
                     .collect();
                 Box::new(
                     get_compiler_outputs(
@@ -1182,7 +1182,7 @@ where
                                 }
                             }
                         }
-                        let output_dir = PathBuf::from(output_dir);
+
                         // Convert output files into a map of basename -> full path.
                         let mut outputs = outputs
                             .into_iter()
@@ -1217,12 +1217,12 @@ where
                         HashResult {
                             key: m.finish(),
                             compilation: Box::new(RustCompilation {
-                                executable: executable,
+                                executable,
                                 host,
-                                sysroot: sysroot,
-                                arguments: arguments,
-                                inputs: inputs,
-                                outputs: outputs,
+                                sysroot,
+                                arguments,
+                                inputs,
+                                outputs,
                                 crate_link_paths,
                                 crate_name,
                                 crate_types,
@@ -1392,6 +1392,7 @@ impl Compilation for RustCompilation {
     }
 
     #[cfg(feature = "dist-client")]
+    #[allow(clippy::type_complexity)]
     fn into_dist_packagers(
         self: Box<Self>,
         path_transformer: dist::PathTransformer,
@@ -2014,7 +2015,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         dep_names.push(libname);
     }
 
-    while let Some(line) = lines.next() {
+    for line in lines {
         if line != "" {
             bail!("Trailing non-blank lines in rustc -Z ls output")
         }
@@ -2665,7 +2666,7 @@ c:/foo/bar.rs:
                     staticlib: false,
                 },
                 dep_info: None,
-                emit: emit,
+                emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
             },
@@ -2757,7 +2758,7 @@ c:/foo/bar.rs:
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
-            parsed_args: parsed_args,
+            parsed_args,
         });
 
         let creator = new_creator();

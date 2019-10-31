@@ -19,6 +19,7 @@ pub enum Request {
 
 /// A server response.
 #[derive(Serialize, Deserialize, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Response {
     /// Response for `Request::Compile`.
     Compile(CompileResponse),

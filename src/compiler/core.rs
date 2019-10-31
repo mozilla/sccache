@@ -144,6 +144,7 @@ where
 
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
+    #[allow(clippy::too_many_arguments)]
     fn get_cached_or_compile(
         self: Box<Self>,
         dist_client: Result<Option<Arc<dyn dist::Client>>>,
@@ -233,8 +234,8 @@ where
                         });
                         let output = process::Output {
                             status: exit_status(0),
-                            stdout: stdout,
-                            stderr: stderr,
+                            stdout,
+                            stderr,
                         };
                         let result = CompileResult::CacheHit(duration);
                         return Box::new(write.map(|_| (result, output))) as SFuture<_>;
@@ -348,7 +349,7 @@ where
                                         }
                                         res.map(|duration| CacheWriteInfo {
                                             object_file_pretty: out_pretty,
-                                            duration: duration,
+                                            duration,
                                         })
                                     });
                                     let future = Box::new(future);
@@ -589,6 +590,7 @@ pub trait Compilation {
 
     /// Create a function that will create the inputs used to perform a distributed compilation
     #[cfg(feature = "dist-client")]
+    #[allow(clippy::type_complexity)]
     fn into_dist_packagers(
         self: Box<Self>,
         _path_transformer: dist::PathTransformer,
@@ -734,13 +736,13 @@ impl Default for ColorMode {
 impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            &CompileResult::Error => write!(f, "CompileResult::Error"),
-            &CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
-            &CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
+            CompileResult::Error => write!(f, "CompileResult::Error"),
+            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
-            &CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
-            &CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
+            CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
+            CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
         }
     }
 }
@@ -749,14 +751,14 @@ impl fmt::Debug for CompileResult {
 impl PartialEq<CompileResult> for CompileResult {
     fn eq(&self, other: &CompileResult) -> bool {
         match (self, other) {
-            (&CompileResult::Error, &CompileResult::Error) => true,
-            (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
+            (CompileResult::Error, CompileResult::Error) => true,
+            (CompileResult::CacheHit(_), CompileResult::CacheHit(_)) => true,
             (
-                &CompileResult::CacheMiss(ref m, ref dt, _, _),
-                &CompileResult::CacheMiss(ref n, ref dt2, _, _),
+                CompileResult::CacheMiss(ref m, ref dt, _, _),
+                CompileResult::CacheMiss(ref n, ref dt2, _, _),
             ) => m == n && dt == dt2,
-            (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
-            (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
+            (CompileResult::NotCacheable, CompileResult::NotCacheable) => true,
+            (CompileResult::CompileFailed, CompileResult::CompileFailed) => true,
             _ => false,
         }
     }
