@@ -107,7 +107,7 @@ A client uses `sccache` to wrap compile commands, communicates with the schedule
 
 Clients that are not targeting linux64 require the `icecc-create-env` script or should be provided with an archive. `icecc-create-env` is part of `icecream` for packaging toolchains. You can install icecream to get this script (`apt install icecc` on Ubuntu), or download it from the git repository and place it in your `PATH`: `curl https://raw.githubusercontent.com/icecc/icecream/master/client/icecc-create-env.in > icecc-create-env && chmod +x icecc-create-env`. See [using custom toolchains](#using-custom-toolchains).
 
-Create a client config file in `~/.config/sccache/config` (on Linux) or `~/Library/Preferences/Mozilla.sccache/config` (on macOS). A minimal example looks like:
+Create a client config file in `~/.config/sccache/config` (on Linux), `~/Library/Preferences/Mozilla.sccache/config` (on macOS), or `%APPDATA%\Mozilla\sccache\config\config` (on Windows). A minimal example looks like:
 ```toml
 [dist]
 # The URL used to connect to the scheduler (should use https, given an ideal
