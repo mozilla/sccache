@@ -1176,13 +1176,11 @@ where
                         // rmeta.
                         //
                         // This can go away once the above rustc PR makes it in.
-                        let emit_generates_only_metadata =
-                            !emit.is_empty() && emit.iter().all(|e| e == "metadata" || e == "dep-info");
+                        let emit_generates_only_metadata = !emit.is_empty()
+                            && emit.iter().all(|e| e == "metadata" || e == "dep-info");
 
                         if emit_generates_only_metadata {
-                            outputs.retain(|o| {
-                                o.ends_with(".rlib") || o.ends_with(".rmeta")
-                            });
+                            outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
                         }
 
                         if emit.contains("metadata") {
@@ -1722,6 +1720,7 @@ impl OutputsRewriter for RustOutputsRewriter {
         self: Box<Self>,
         path_transformer: &dist::PathTransformer,
         output_paths: &[PathBuf],
+        extra_inputs: &[PathBuf],
     ) -> Result<()> {
         use std::io::Write;
 
@@ -1729,6 +1728,9 @@ impl OutputsRewriter for RustOutputsRewriter {
         // remap-path-prefix is documented to only apply to 'inputs'.
         trace!("Pondering on rewriting dep file {:?}", self.dep_info);
         if let Some(dep_info) = self.dep_info {
+            let extra_input_str = extra_inputs
+                .into_iter()
+                .fold(String::new(), |s, p| s + " " + &p.to_string_lossy());
             for dep_info_local_path in output_paths {
                 trace!("Comparing with {}", dep_info_local_path.display());
                 if dep_info == *dep_info_local_path {
@@ -1753,6 +1755,9 @@ impl OutputsRewriter for RustOutputsRewriter {
                         );
                         let re = regex::Regex::new(&re_str).expect("Invalid regex");
                         deps = re.replace_all(&deps, local_path_str).into_owned();
+                    }
+                    if extra_inputs.len() > 0 {
+                        deps = deps.replace(": ", &format!(":{} ", extra_input_str));
                     }
                     // Write the depinfo file
                     let f = fs::File::create(&dep_info)

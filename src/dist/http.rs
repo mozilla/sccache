@@ -1295,7 +1295,7 @@ mod client {
             compiler_path: &Path,
             weak_key: &str,
             toolchain_packager: Box<dyn ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
+        ) -> SFuture<(Toolchain, Option<(String, std::path::PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
