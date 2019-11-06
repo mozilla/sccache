@@ -184,17 +184,17 @@ mod client {
             compiler_path: &Path,
             weak_key: &str,
             toolchain_packager: Box<dyn ToolchainPackager>,
-        ) -> Result<(Toolchain, Option<String>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             if self.disabled_toolchains.contains(compiler_path) {
                 bail!(
                     "Toolchain distribution for {} is disabled",
                     compiler_path.display()
                 )
             }
-            if let Some(tc_and_compiler_path) = self.get_custom_toolchain(compiler_path) {
+            if let Some(tc_and_paths) = self.get_custom_toolchain(compiler_path) {
                 debug!("Using custom toolchain for {:?}", compiler_path);
-                let (tc, compiler_path) = tc_and_compiler_path?;
-                return Ok((tc, Some(compiler_path)));
+                let (tc, compiler_path, archive) = tc_and_paths?;
+                return Ok((tc, Some((compiler_path, archive))));
             }
             // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
             // to create the same toolchain, just a waste of time
@@ -216,16 +216,18 @@ mod client {
         fn get_custom_toolchain(
             &self,
             compiler_path: &Path,
-        ) -> Option<Result<(Toolchain, String)>> {
+        ) -> Option<Result<(Toolchain, String, PathBuf)>> {
             return match self
                 .custom_toolchain_paths
                 .lock()
                 .unwrap()
                 .get_mut(compiler_path)
             {
-                Some((custom_tc, Some(tc))) => {
-                    Some(Ok((tc.clone(), custom_tc.compiler_executable.clone())))
-                }
+                Some((custom_tc, Some(tc))) => Some(Ok((
+                    tc.clone(),
+                    custom_tc.compiler_executable.clone(),
+                    custom_tc.archive.clone(),
+                ))),
                 Some((custom_tc, maybe_tc @ None)) => {
                     let archive_id = match path_key(&custom_tc.archive) {
                         Ok(archive_id) => archive_id,
@@ -250,7 +252,11 @@ mod client {
                             )
                         }
                     }
-                    Some(Ok((tc, custom_tc.compiler_executable.clone())))
+                    Some(Ok((
+                        tc,
+                        custom_tc.compiler_executable.clone(),
+                        custom_tc.archive.clone(),
+                    )))
                 }
                 None => None,
             };
@@ -308,7 +314,7 @@ mod client {
                 1024,
                 &[config::DistToolchainConfig::PathOverride {
                     compiler_executable: "/my/compiler".into(),
-                    archive: ct1,
+                    archive: ct1.clone(),
                     archive_compiler_executable: "/my/compiler/in_archive".into(),
                 }],
             )
@@ -321,7 +327,7 @@ mod client {
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
-            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+            assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
 
         #[test]
@@ -349,7 +355,7 @@ mod client {
                     // Uses the same archive, but a maps a different external compiler to the same achive compiler as the first
                     config::DistToolchainConfig::PathOverride {
                         compiler_executable: "/my/compiler3".into(),
-                        archive: ct1,
+                        archive: ct1.clone(),
                         archive_compiler_executable: "/my/compiler/in_archive".into(),
                     },
                 ],
@@ -363,7 +369,7 @@ mod client {
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
-            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+            assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
                     "/my/compiler2".as_ref(),
@@ -371,7 +377,7 @@ mod client {
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
-            assert!(newpath.unwrap() == "/my/compiler2/in_archive");
+            assert!(newpath.unwrap() == ("/my/compiler2/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
                     "/my/compiler3".as_ref(),
@@ -379,7 +385,7 @@ mod client {
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
-            assert!(newpath.unwrap() == "/my/compiler/in_archive");
+            assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
 
         #[test]

@@ -746,6 +746,6 @@ pub trait Client {
         compiler_path: &Path,
         weak_key: &str,
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
-    ) -> SFuture<(Toolchain, Option<String>)>;
+    ) -> SFuture<(Toolchain, Option<(String, std::path::PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
 }

@@ -483,13 +483,15 @@ where
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
             dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager)
                 .and_then(|(dist_toolchain, maybe_dist_compile_executable)| {
-                    if let Some(dist_compile_executable) = maybe_dist_compile_executable {
+                    let mut tc_archive = None;
+                    if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
                         dist_compile_cmd.executable = dist_compile_executable;
+                        tc_archive = Some(archive_path);
                     }
-                    Ok((dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths))
+                    Ok((dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths, tc_archive))
                 })
         })
-        .and_then(move |(dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths)| {
+        .and_then(move |(dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths, tc_archive)| {
             debug!("[{}]: Requesting allocation", compile_out_pretty3);
             dist_client.do_alloc_job(dist_toolchain.clone())
                 .and_then(move |jares| {
@@ -566,7 +568,11 @@ where
 
                         assert!(count == len);
                     }
-                    try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths)
+                    let extra_inputs = match tc_archive {
+                        Some(p) => vec![p],
+                        None => vec![],
+                    };
+                    try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths, &extra_inputs)
                         .chain_err(|| "failed to rewrite outputs from compile"));
                     Ok((DistType::Ok(server_id), jc.output.into()))
                 })
@@ -636,6 +642,7 @@ pub trait OutputsRewriter {
         self: Box<Self>,
         path_transformer: &dist::PathTransformer,
         output_paths: &[PathBuf],
+        extra_inputs: &[PathBuf],
     ) -> Result<()>;
 }
 
@@ -647,6 +654,7 @@ impl OutputsRewriter for NoopOutputsRewriter {
         self: Box<Self>,
         _path_transformer: &dist::PathTransformer,
         _output_paths: &[PathBuf],
+        _extra_inputs: &[PathBuf],
     ) -> Result<()> {
         Ok(())
     }
@@ -1732,7 +1740,7 @@ mod test_dist {
         SubmitToolchainResult, Toolchain,
     };
     use std::cell::Cell;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use crate::errors::*;
@@ -1767,7 +1775,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             f_err("put toolchain failure")
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1812,7 +1820,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1873,7 +1881,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1936,8 +1944,14 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
-            f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+            f_ok((
+                self.tc.clone(),
+                Some((
+                    "/overridden/compiler".to_owned(),
+                    PathBuf::from("somearchiveid"),
+                )),
+            ))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -2020,8 +2034,14 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<String>)> {
-            f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+            f_ok((
+                self.tc.clone(),
+                Some((
+                    "/overridden/compiler".to_owned(),
+                    PathBuf::from("somearchiveid"),
+                )),
+            ))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
