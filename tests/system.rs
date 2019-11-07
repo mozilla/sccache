@@ -390,6 +390,10 @@ fn find_compilers() -> Vec<Compiler> {
     }]
 }
 
+// TODO: This runs multiple test cases, for multiple compilers. It should be
+// split up to run them individually. In the current form, it is hard to see
+// which sub test cases are executed, and if one fails, the remaining tests
+// are not run.
 #[test]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command() {
