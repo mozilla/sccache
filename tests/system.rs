@@ -81,6 +81,16 @@ const INPUT: &'static str = "test.c";
 const INPUT_ERR: &'static str = "test_err.c";
 const OUTPUT: &'static str = "test.o";
 
+// Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
+fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
+    for f in inputs {
+        let original_source_file = Path::new(file!()).parent().unwrap().join(f.clone());
+        let source_file = tempdir.join(f);
+        trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
+        fs::copy(&original_source_file, &source_file).unwrap();
+    }
+}
+
 fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -89,13 +99,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
-    // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
-    for f in &[INPUT, INPUT_ERR] {
-        let original_source_file = Path::new(file!()).parent().unwrap().join(f);
-        let source_file = tempdir.join(f);
-        trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
-        fs::copy(&original_source_file, &source_file).unwrap();
-    }
+    copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
     let out_file = tempdir.join("test.o");
     trace!("compile");
@@ -151,11 +155,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
         env_vars,
     } = compiler;
     trace!("test_noncacheable_stats: {}", name);
-    // Copy the source file into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
-    let original_source_file = Path::new(file!()).parent().unwrap().join(INPUT);
-    let source_file = tempdir.join(INPUT);
-    trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
-    fs::copy(&original_source_file, &source_file).unwrap();
+    copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
     Command::main_binary()
