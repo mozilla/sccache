@@ -79,6 +79,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
 
 const INPUT: &'static str = "test.c";
 const INPUT_ERR: &'static str = "test_err.c";
+const INPUT_MACRO_EXPANSION: &'static str = "test_macro_expansion.c";
 const OUTPUT: &'static str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -315,6 +316,32 @@ int main(int argc, char** argv) {
     });
 }
 
+fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("test_gcc_clang_no_warnings_from_macro_expansion: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_MACRO_EXPANSION], tempdir);
+
+    trace!("compile");
+    sccache_command()
+        .args(
+            [
+                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT)[..],
+                &vec_from!(OsString, "-Wunreachable-code")[..],
+            ]
+            .concat(),
+        )
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("warning:").from_utf8().not());
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     test_basic_compile(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
@@ -323,6 +350,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang" || compiler.name == "gcc" {
+        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
     }
 }
 
