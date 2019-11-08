@@ -82,6 +82,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
 const INPUT: &'static str = "test.c";
 const INPUT_ERR: &'static str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &'static str = "test_macro_expansion.c";
+const INPUT_WITH_DEFINE: &'static str = "test_with_define.c";
 const OUTPUT: &'static str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -344,8 +345,35 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
+fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("test_compile_with_define: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_WITH_DEFINE], tempdir);
+
+    trace!("compile");
+    sccache_command()
+        .args(
+            [
+                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT)[..],
+                &vec_from!(OsString, "-DSCCACHE_TEST_DEFINE")[..],
+            ]
+            .concat(),
+        )
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("warning:").from_utf8().not());
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     test_basic_compile(compiler.clone(), tempdir);
+    test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
     }
