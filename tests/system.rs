@@ -64,6 +64,8 @@ macro_rules! vec_from {
     };
 }
 
+// TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
+// default case on Fedora, e.g.
 fn compile_cmdline<T: AsRef<OsStr>>(
     compiler: &str,
     exe: T,
