@@ -421,8 +421,9 @@ impl<T: ArgumentValue> ArgInfo<T> {
                 let mut len = s.len();
                 debug_assert_eq!(&arg[..len], s);
                 if let Some(d) = d {
-                    debug_assert_eq!(arg.as_bytes()[len], d);
-                    len += 1;
+                    if arg.as_bytes().get(len) == Some(&d) {
+                        len += 1;
+                    }
                 }
                 Argument::WithValue(
                     s,
@@ -1022,6 +1023,12 @@ mod tests {
         assert_eq!(Vec::from_iter(arg.iter_os_strings()), ovec!["-foo", "bar"]);
     }
 
+    #[test]
+    fn test_arginfo_process_take_concat_arg_delim_doesnt_crash() {
+        let _ = take_arg!("-foo", OsString, Concatenated('='), Foo)
+            .process("-foo", || None);
+    }
+
     #[cfg(debug_assertions)]
     mod assert_tests {
         use super::*;
@@ -1053,14 +1060,6 @@ mod tests {
         fn test_arginfo_process_take_concat_arg_delim() {
             take_arg!("-foo", OsString, Concatenated('='), Foo)
                 .process("-bar", || None)
-                .unwrap();
-        }
-
-        #[test]
-        #[should_panic]
-        fn test_arginfo_process_take_concat_arg_delim_same() {
-            take_arg!("-foo", OsString, Concatenated('='), Foo)
-                .process("-foo", || None)
                 .unwrap();
         }
 
