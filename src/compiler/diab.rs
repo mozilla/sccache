@@ -18,7 +18,7 @@ use crate::compiler::args::{
     NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
 };
 use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use crate::compiler::{Cacheable, CompileCommand, CompilerArguments};
+use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments};
 use crate::dist;
 use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
@@ -259,6 +259,8 @@ where
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
+        // FIXME: Implement me.
+        color_mode: ColorMode::Auto,
     })
 }
 
@@ -667,6 +669,7 @@ mod test {
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
+            color_mode: ColorMode::Auto,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
