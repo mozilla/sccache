@@ -107,7 +107,8 @@ chrono = "0.4"
 escargot = "0.3"
 itertools = "0.7"
 predicates = "0.9.0"
-selenium-rs = "0.1"
+# Waiting for #15 to make it into a release
+selenium-rs = { git = "https://github.com/saresend/selenium-rs.git", rev = "0314a2420da78cce7454a980d862995750771722" }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.3"
