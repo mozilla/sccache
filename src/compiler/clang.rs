@@ -79,10 +79,11 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--target", OsString, Separated, PassThrough),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
-    flag!("-fcolor-diagnostics", PassThroughFlag),
+    flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     flag!("-fmodules", TooHardFlag),
+    flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated('='), ExtraHashFile),
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Can be either -fprofile-instr-use or -fprofile-instr-use=path
@@ -249,5 +250,17 @@ mod test {
         println!("A {:#?}", a);
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
         assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
+    }
+
+    #[test]
+    fn test_parse_color_diags() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fcolor-diagnostics");
+        assert_eq!(a.color_mode, ColorMode::On);
+
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-fno-color-diagnostics");
+        assert_eq!(a.color_mode, ColorMode::Off);
+
+        let a = parses!("-c", "foo.c", "-o", "foo.o");
+        assert_eq!(a.color_mode, ColorMode::Auto);
     }
 }

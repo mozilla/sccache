@@ -14,7 +14,9 @@
 
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use crate::compiler::{clang, gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
+use crate::compiler::{
+    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
+};
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
@@ -349,9 +351,11 @@ pub fn parse_arguments(
                 Argument::Raw(_) | Argument::UnknownFlag(_) => &mut common_args,
                 _ => unreachable!(),
             },
-            Some(PassThroughFlag) | Some(PassThrough(_)) | Some(PassThroughPath(_)) => {
-                &mut common_args
-            }
+            Some(DiagnosticsColor(_))
+            | Some(DiagnosticsColorFlag)
+            | Some(NoDiagnosticsColorFlag)
+            | Some(PassThrough(_))
+            | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(path.clone());
                 &mut common_args
@@ -421,6 +425,8 @@ pub fn parse_arguments(
         extra_hash_files: extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate: false,
+        // FIXME: implement color_mode for msvc.
+        color_mode: ColorMode::Auto,
     })
 }
 
@@ -906,6 +912,7 @@ mod test {
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
+            color_mode: ColorMode::Auto,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -946,6 +953,7 @@ mod test {
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
+            color_mode: ColorMode::Auto,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.

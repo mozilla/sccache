@@ -92,6 +92,8 @@ pub struct ParsedArguments {
     pub msvc_show_includes: bool,
     /// Whether the compilation is generating profiling or coverage data.
     pub profile_generate: bool,
+    /// The color mode.
+    pub color_mode: ColorMode,
 }
 
 impl ParsedArguments {
@@ -356,8 +358,7 @@ where
     }
 
     fn color_mode(&self) -> ColorMode {
-        //TODO: actually implement this for C compilers
-        ColorMode::Auto
+        self.parsed_args.color_mode
     }
 
     fn output_pretty(&self) -> Cow<'_, str> {

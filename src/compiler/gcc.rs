@@ -14,7 +14,7 @@
 
 use crate::compiler::args::*;
 use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
-use crate::compiler::{clang, Cacheable, CompileCommand, CompilerArguments};
+use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
@@ -74,9 +74,11 @@ impl CCompilerImpl for GCC {
 ArgData! { pub
     TooHardFlag,
     TooHard(OsString),
+    DiagnosticsColor(OsString),
+    DiagnosticsColorFlag,
+    NoDiagnosticsColorFlag,
     // Should only be necessary for -Xclang flags - unknown flags not hidden behind
     // that are assumed to not affect compilation
-    PassThroughFlag,
     PassThrough(OsString),
     PassThroughPath(PathBuf),
     PreprocessorArgumentFlag,
@@ -136,6 +138,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
     take_arg!("-dependency-file", PathBuf, Separated, PreprocessorArgumentPath),
+    take_arg!("-fdiagnostics-color", OsString, Concatenated('='), DiagnosticsColor),
+    flag!("-fno-diagnostics-color", NoDiagnosticsColorFlag),
     flag!("-fno-working-directory", PreprocessorArgumentFlag),
     flag!("-fplugin=libcc1plugin", TooHardFlag),
     flag!("-fprofile-arcs", ProfileGenerate),
@@ -201,6 +205,7 @@ where
     let mut profile_generate = false;
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
+    let mut color_mode = ColorMode::Auto;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -240,6 +245,15 @@ where
                 outputs_gcno = true;
                 profile_generate = true;
             }
+            Some(DiagnosticsColorFlag) => color_mode = ColorMode::On,
+            Some(NoDiagnosticsColorFlag) => color_mode = ColorMode::Off,
+            Some(DiagnosticsColor(value)) => {
+                color_mode = match value.to_str().unwrap_or("auto") {
+                    "" | "always" => ColorMode::On,
+                    "never" => ColorMode::Off,
+                    _ => ColorMode::Auto,
+                };
+            }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => need_explicit_dep_target = true,
             Some(DepTarget(s)) => dep_target = Some(s.clone()),
@@ -247,7 +261,6 @@ where
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
-            | Some(PassThroughFlag)
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => {}
             Some(Language(lang)) => {
@@ -276,7 +289,9 @@ where
             | Some(ProfileGenerate)
             | Some(TestCoverage)
             | Some(Coverage)
-            | Some(PassThroughFlag)
+            | Some(DiagnosticsColor(_))
+            | Some(DiagnosticsColorFlag)
+            | Some(NoDiagnosticsColorFlag)
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
@@ -330,9 +345,11 @@ where
                 }
                 _ => unreachable!(),
             },
-            Some(PassThroughFlag) | Some(PassThrough(_)) | Some(PassThroughPath(_)) => {
-                &mut common_args
-            }
+            Some(DiagnosticsColor(_))
+            | Some(DiagnosticsColorFlag)
+            | Some(NoDiagnosticsColorFlag)
+            | Some(PassThrough(_))
+            | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(path.clone());
                 &mut common_args
@@ -408,6 +425,7 @@ where
         extra_hash_files: extra_hash_files,
         msvc_show_includes: false,
         profile_generate,
+        color_mode,
     })
 }
 
@@ -625,7 +643,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -652,7 +670,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -668,12 +686,9 @@ mod test {
     #[test]
     fn test_parse_arguments_default_outputdir() {
         let args = stringvec!["-c", "/tmp/foo.c"];
-        let ParsedArguments {
-            outputs,
-            ..
-        } = match _parse_arguments(&args) {
+        let ParsedArguments { outputs, .. } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
     }
@@ -692,7 +707,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cpp"), input.to_str());
@@ -722,9 +737,10 @@ mod test {
             common_args,
             extra_hash_files: _,
             profile_generate,
+            color_mode: _,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cpp"), input.to_str());
@@ -755,9 +771,10 @@ mod test {
             common_args,
             extra_hash_files: _,
             profile_generate,
+            color_mode: _,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cpp"), input.to_str());
@@ -788,9 +805,10 @@ mod test {
             common_args,
             extra_hash_files: _,
             profile_generate,
+            color_mode: _,
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cpp"), input.to_str());
@@ -818,7 +836,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cc"), input.to_str());
@@ -847,7 +865,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.cxx"), input.to_str());
@@ -874,7 +892,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -902,7 +920,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -931,7 +949,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -948,6 +966,23 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_diagnostics_color() {
+        fn get_color_mode(color_flag: &str) -> ColorMode {
+            let args = stringvec!["-c", "foo.c", color_flag];
+            match _parse_arguments(&args) {
+                CompilerArguments::Ok(args) => args.color_mode,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            }
+        }
+
+        assert_eq!(get_color_mode("-fdiagnostics-color=always"), ColorMode::On);
+        assert_eq!(get_color_mode("-fdiagnostics-color=never"), ColorMode::Off);
+        assert_eq!(get_color_mode("-fdiagnostics-color=auto"), ColorMode::Auto);
+        assert_eq!(get_color_mode("-fno-diagnostics-color"), ColorMode::Off);
+        assert_eq!(get_color_mode("-fdiagnostics-color"), ColorMode::On);
+    }
+
+    #[test]
     fn test_parse_arguments_dep_target_needed() {
         let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
         let ParsedArguments {
@@ -961,7 +996,7 @@ mod test {
             ..
         } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -1059,7 +1094,7 @@ mod test {
             ..
         } = match _parse_arguments(&[arg]) {
             CompilerArguments::Ok(args) => args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
@@ -1086,6 +1121,7 @@ mod test {
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
+            color_mode: ColorMode::Auto,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
