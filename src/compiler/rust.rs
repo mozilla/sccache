@@ -996,7 +996,6 @@ where
         pool: &CpuPool,
     ) -> SFuture<HashResult> {
         let me = *self;
-        #[rustfmt::skip] // https://github.com/rust-lang/rustfmt/issues/3759
         let RustHasher {
             executable,
             host,
