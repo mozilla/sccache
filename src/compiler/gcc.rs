@@ -668,10 +668,7 @@ mod test {
     #[test]
     fn test_parse_arguments_default_outputdir() {
         let args = stringvec!["-c", "/tmp/foo.c"];
-        let ParsedArguments {
-            outputs,
-            ..
-        } = match _parse_arguments(&args) {
+        let ParsedArguments { outputs, .. } = match _parse_arguments(&args) {
             CompilerArguments::Ok(args) => args,
             o @ _ => panic!("Got unexpected parse result: {:?}", o),
         };

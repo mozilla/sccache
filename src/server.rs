@@ -58,9 +58,9 @@ use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_serde_bincode::{ReadBincode, WriteBincode};
-use tokio_service::Service;
 use tokio_tcp::TcpListener;
-use tokio_timer::{Delay, Timeout}; //::fmt_duration_as_secs;
+use tokio_timer::{Delay, Timeout};
+use tower::Service;
 
 use crate::errors::*;
 
@@ -647,16 +647,15 @@ pub enum ServerMessage {
     Shutdown,
 }
 
-impl<C> Service for SccacheService<C>
+impl<C> Service<SccacheRequest> for SccacheService<C>
 where
     C: CommandCreatorSync + 'static,
 {
-    type Request = SccacheRequest;
     type Response = SccacheResponse;
     type Error = Error;
     type Future = SFuture<Self::Response>;
 
-    fn call(&self, req: Self::Request) -> Self::Future {
+    fn call(&mut self, req: SccacheRequest) -> Self::Future {
         trace!("handle_client");
 
         // Opportunistically let channel know that we've received a request. We
@@ -701,6 +700,10 @@ where
 
         Box::new(res.map(Message::WithoutBody))
     }
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(Async::Ready(()))
+    }
 }
 
 impl<C> SccacheService<C>
@@ -718,16 +721,16 @@ where
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
             dist_client: Rc::new(dist_client),
-            storage: storage,
+            storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
-            pool: pool,
+            pool,
             creator: C::new(client),
-            tx: tx,
-            info: info,
+            tx,
+            info,
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl Future<Item = (), Error = Error>
+    fn bind<T>(mut self, socket: T) -> impl Future<Item = (), Error = Error>
     where
         T: AsyncRead + AsyncWrite + 'static,
     {
