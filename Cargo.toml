@@ -139,7 +139,7 @@ dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
 dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
-dist-tests = []
+dist-tests = ["dist-client", "dist-server"]
 
 [workspace]
 exclude = ["tests/test-crate"]
