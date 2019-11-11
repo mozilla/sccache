@@ -261,6 +261,8 @@ impl DistSystem {
         let mut child = Command::new("docker")
             .args(&["build", "-q", "-t", DIST_IMAGE, "-"])
             .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         child
@@ -667,8 +669,8 @@ fn make_container_name(tag: &str) -> String {
 
 fn check_output(output: &Output) {
     if !output.status.success() {
-        println!("[BEGIN OUTPUT]\n===========\n{}\n==========\n\n\n\n=========\n{}\n===============\n[FIN OUTPUT]\n\n",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        println!("{}\n\n[BEGIN STDOUT]\n===========\n{}\n===========\n[FIN STDOUT]\n\n[BEGIN STDERR]\n===========\n{}\n===========\n[FIN STDERR]\n\n",
+            output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
         panic!()
     }
 }
