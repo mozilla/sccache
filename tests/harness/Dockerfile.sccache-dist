@@ -10,6 +10,6 @@ RUN cd /bubblewrap-0.3.1 && \
 
 FROM aidanhs/ubuntu-docker:18.04-17.03.2-ce
 RUN apt-get update && \
-    apt-get install libcap2 libssl1.0.0 && \
+    apt-get install libcap2 libssl1.1 && \
     apt-get clean
 COPY --from=bwrap-build /bubblewrap-0.3.1/bwrap /bwrap
