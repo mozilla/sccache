@@ -62,6 +62,9 @@ const RLIB_PREFIX: &str = "lib";
 #[cfg(feature = "dist-client")]
 const RLIB_EXTENSION: &str = "rlib";
 
+#[cfg(feature = "dist-client")]
+const RMETA_EXTENSION: &str = "rmeta";
+
 /// Directory in the sysroot containing binary to which rustc is linked.
 #[cfg(feature = "dist-client")]
 const BINS_DIR: &str = "bin";
@@ -1001,7 +1004,6 @@ where
             host,
             sysroot,
             compiler_shlibs_digests,
-            #[cfg(feature = "dist-client")]
             rlib_dep_reader,
             parsed_args:
                 ParsedArguments {
@@ -1488,7 +1490,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                         "Cannot distribute dylib input {} on this platform",
                         input_path.display()
                     )
-                } else if ext == RLIB_EXTENSION {
+                } else if ext == RLIB_EXTENSION || ext == RMETA_EXTENSION {
                     if let Some((ref rlib_dep_reader, ref mut dep_crate_names)) =
                         rlib_dep_reader_and_names
                     {
@@ -1559,6 +1561,9 @@ impl pkg::InputsPackager for RustInputsPackager {
                             (&libname[DLL_PREFIX.len()..], ext)
                         }
                         Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RLIB_EXTENSION => {
+                            (&libname[RLIB_PREFIX.len()..], ext)
+                        }
+                        Some(ext) if libname.starts_with(RLIB_PREFIX) && ext == RMETA_EXTENSION => {
                             (&libname[RLIB_PREFIX.len()..], ext)
                         }
                         _ => continue,
