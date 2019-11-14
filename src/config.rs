@@ -199,6 +199,7 @@ pub struct RedisCacheConfig {
 pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
+    pub use_ssl: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -453,7 +454,15 @@ fn config_from_env() -> EnvConfig {
                 _ => format!("{}.s3.amazonaws.com", bucket),
             },
         };
-        S3CacheConfig { bucket, endpoint }
+        let use_ssl = match env::var("SCCACHE_S3_USE_SSL") {
+            Ok(ref value) if value != "off" => true,
+            _ => false,
+        };
+        S3CacheConfig {
+            bucket,
+            endpoint,
+            use_ssl,
+        }
     });
 
     let redis = env::var("SCCACHE_REDIS")

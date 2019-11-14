@@ -35,7 +35,7 @@ pub struct S3Cache {
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str) -> Result<S3Cache> {
+    pub fn new(bucket: &str, endpoint: &str, use_ssl: bool) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().ok_or("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -48,8 +48,11 @@ impl S3Cache {
         ];
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
-        //TODO: configurable SSL
-        let bucket = Rc::new(Bucket::new(bucket, endpoint, Ssl::No)?);
+        let ssl_mode = match use_ssl {
+            true => Ssl::Yes,
+            false => Ssl::No,
+        };
+        let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
         Ok(S3Cache {
             bucket: bucket,
             provider: provider,
