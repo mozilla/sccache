@@ -51,21 +51,30 @@ impl Digest {
         Self::reader(path.as_ref().to_owned(), pool)
     }
 
+    /// Calculate the SHA-512 digest of the contents read from `reader`.
+    pub fn reader_sync<R: Read>(reader: R) -> Result<String> {
+        let mut m = Digest::new();
+        let mut reader = BufReader::new(reader);
+        loop {
+            // A buffer of 128KB should give us the best performance.
+            // See https://eklitzke.org/efficient-file-copying-on-linux.
+            let mut buffer = [0; 128 * 1024];
+            let count = reader.read(&mut buffer[..])?;
+            if count == 0 {
+                break;
+            }
+            m.update(&buffer[..count]);
+        }
+        Ok(m.finish())
+    }
+
+    /// Calculate the SHA-512 digest of the contents of `path`, running
+    /// the actual hash computation on a background thread in `pool`.
     pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
-            let rdr = File::open(&path)
+            let reader = File::open(&path)
                 .chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
-            let mut m = Digest::new();
-            let mut reader = BufReader::new(rdr);
-            loop {
-                let mut buffer = [0; 1024];
-                let count = reader.read(&mut buffer[..])?;
-                if count == 0 {
-                    break;
-                }
-                m.update(&buffer[..count]);
-            }
-            Ok(m.finish())
+            Digest::reader_sync(reader)
         }))
     }
 
@@ -94,8 +103,8 @@ pub fn hex(bytes: &[u8]) -> String {
     }
 }
 
-/// Calculate the SHA-1 digest of each file in `files` on background threads
-/// in `pool`.
+/// Calculate the digest of each file in `files` on background threads in
+/// `pool`.
 pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();

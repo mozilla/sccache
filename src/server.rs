@@ -397,7 +397,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
     let runtime = Runtime::new()?;
-    let pool = CpuPool::new(20);
+    let pool = CpuPool::new(std::cmp::max(20, 2 * num_cpus::get()));
     let dist_client = DistClientContainer::new(config, &pool);
     let storage = storage_from_config(config, &pool);
     let res = SccacheServer::<ProcessCommandCreator>::new(
