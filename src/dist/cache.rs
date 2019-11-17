@@ -1,16 +1,16 @@
 use crate::dist::Toolchain;
-use crate::util;
 use lru_disk_cache::Result as LruResult;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
-use ring::digest::{Context, SHA512};
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::errors::*;
 
 #[cfg(feature = "dist-client")]
 pub use self::client::ClientToolchains;
+use std::io::Read;
+use crate::util::Digest;
 
 #[cfg(feature = "dist-client")]
 mod client {
@@ -485,25 +485,11 @@ impl TcCache {
 fn path_key(path: &Path) -> Result<String> {
     file_key(fs::File::open(path)?)
 }
-fn file_key<RS: ReadSeek + 'static>(rs: RS) -> Result<String> {
-    hash_reader(rs)
+
+fn file_key<R: Read>(rdr: R) -> Result<String> {
+    Digest::reader_sync(rdr)
 }
 /// Make a path to the cache entry with key `key`.
 fn make_lru_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
-}
-
-// Partially copied from util.rs
-fn hash_reader<R: Read + Send + 'static>(rdr: R) -> Result<String> {
-    let mut m = Context::new(&SHA512);
-    let mut reader = BufReader::new(rdr);
-    loop {
-        let mut buffer = [0; 1024];
-        let count = reader.read(&mut buffer[..])?;
-        if count == 0 {
-            break;
-        }
-        m.update(&buffer[..count]);
-    }
-    Ok(util::hex(m.finish().as_ref()))
 }
