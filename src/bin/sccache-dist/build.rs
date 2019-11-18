@@ -26,6 +26,7 @@ use std::iter;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::Mutex;
+use std::time::Instant;
 use version_compare::Version;
 
 use crate::errors::*;
@@ -93,10 +94,17 @@ struct OverlaySpec {
     toolchain_dir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct DeflatedToolchain {
+    path: PathBuf,
+    build_count: u64,
+    ctime: Instant,
+}
+
 pub struct OverlayBuilder {
     bubblewrap: PathBuf,
     dir: PathBuf,
-    toolchain_dir_map: Mutex<HashMap<Toolchain, (PathBuf, u64)>>, // toolchain_dir, num_builds
+    toolchain_dir_map: Mutex<HashMap<Toolchain, DeflatedToolchain>>,
 }
 
 impl OverlayBuilder {
@@ -163,19 +171,23 @@ impl OverlayBuilder {
         tc: &Toolchain,
         tccache: &Mutex<TcCache>,
     ) -> Result<OverlaySpec> {
-        let (toolchain_dir, id) = {
+        let DeflatedToolchain {
+            path: toolchain_dir,
+            build_count: id,
+            ctime: _,
+        } = {
             let mut toolchain_dir_map = self.toolchain_dir_map.lock().unwrap();
             // Create the toolchain dir (if necessary) while we have an exclusive lock
-            if toolchain_dir_map.contains_key(tc) {
+            let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
+            if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
                 // TODO: use if let when sccache can use NLL
                 let entry = toolchain_dir_map
                     .get_mut(tc)
                     .expect("Key missing after checking");
-                entry.1 += 1;
+                entry.build_count += 1;
                 entry.clone()
             } else {
                 trace!("Creating toolchain directory for {}", tc.archive_id);
-                let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
                 fs::create_dir(&toolchain_dir)?;
 
                 let mut tccache = tccache.lock().unwrap();
@@ -203,10 +215,24 @@ impl OverlayBuilder {
                         Err(Error::from(e))
                     })?;
 
-                let entry = (toolchain_dir, 1);
-                assert!(toolchain_dir_map
-                    .insert(tc.clone(), entry.clone())
-                    .is_none());
+                let entry = DeflatedToolchain {
+                    path: toolchain_dir,
+                    build_count: 1,
+                    ctime: Instant::now(),
+                };
+
+                toolchain_dir_map.insert(tc.clone(), entry.clone());
+                if toolchain_dir_map.len() > tccache.len() {
+                    let dir_map = toolchain_dir_map.clone();
+                    let mut entries: Vec<_> = dir_map.iter().collect();
+                    entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
+                    if let Some((tc, _)) = entries.first() {
+                        warn!("Removing old un-compressed toolchain: {:?}", tc);
+                        assert!(toolchain_dir_map.remove(tc).is_some());
+                        fs::remove_dir_all(&self.dir.join("toolchains").join(&tc.archive_id))
+                            .chain_err(|| "Failed to remove old toolchain directory")?;
+                    }
+                }
                 entry
             }
         };

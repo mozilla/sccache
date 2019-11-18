@@ -471,6 +471,10 @@ impl TcCache {
         self.inner.get(make_lru_key_path(&tc.archive_id))
     }
 
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     pub fn remove(&mut self, tc: &Toolchain) -> LruResult<()> {
         self.inner.remove(make_lru_key_path(&tc.archive_id))
     }
