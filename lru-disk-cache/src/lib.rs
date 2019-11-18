@@ -150,6 +150,11 @@ impl LruDiskCache {
         self.lru.size()
     }
 
+    /// Return the count of entries in the cache.
+    pub fn len(&self) -> usize {
+        self.lru.len()
+    }
+
     /// Return the maximum size of the cache.
     pub fn capacity(&self) -> u64 {
         self.lru.capacity()
@@ -400,6 +405,7 @@ mod tests {
         f.create_file("file2", 10);
         let c = LruDiskCache::new(f.tmp(), 20).unwrap();
         assert_eq!(c.size(), 20);
+        assert_eq!(c.len(), 2);
     }
 
     #[test]
@@ -410,6 +416,7 @@ mod tests {
         set_mtime_back(f.create_file("file2", 10), 5);
         let c = LruDiskCache::new(f.tmp(), 15).unwrap();
         assert_eq!(c.size(), 10);
+        assert_eq!(c.len(), 1);
         assert!(!c.contains_key("file1"));
         assert!(c.contains_key("file2"));
     }
@@ -519,7 +526,9 @@ mod tests {
         let p3 = f.create_file("file3", 10);
         let mut c = LruDiskCache::new(f.tmp().join("cache"), 25).unwrap();
         c.insert_file("file1", &p1).unwrap();
+        assert_eq!(c.len(), 1);
         c.insert_file("file2", &p2).unwrap();
+        assert_eq!(c.len(), 2);
         // Get the file to bump its LRU status.
         assert_eq!(
             read_all(&mut c.get("file1").unwrap()).unwrap(),
@@ -527,6 +536,7 @@ mod tests {
         );
         // Adding this third file should put the cache above the limit.
         c.insert_file("file3", &p3).unwrap();
+        assert_eq!(c.len(), 2);
         assert_eq!(c.size(), 20);
         // The least-recently-used file should have been removed.
         assert!(!c.contains_key("file2"));
@@ -546,6 +556,7 @@ mod tests {
         c.insert_file("file2", &p2).unwrap();
         c.remove("file1").unwrap();
         c.insert_file("file3", &p3).unwrap();
+        assert_eq!(c.len(), 2);
         assert_eq!(c.size(), 20);
 
         // file1 should have been removed.
@@ -559,6 +570,7 @@ mod tests {
 
         let p4 = f.create_file("file1", 10);
         c.insert_file("file1", &p4).unwrap();
+        assert_eq!(c.len(), 2);
         // file2 should have been removed.
         assert!(c.contains_key("file1"));
         assert!(!c.contains_key("file2"));
