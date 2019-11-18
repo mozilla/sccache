@@ -9,8 +9,8 @@ use crate::errors::*;
 
 #[cfg(feature = "dist-client")]
 pub use self::client::ClientToolchains;
-use std::io::Read;
 use crate::util::Digest;
+use std::io::Read;
 
 #[cfg(feature = "dist-client")]
 mod client {
@@ -469,6 +469,10 @@ impl TcCache {
 
     pub fn get(&mut self, tc: &Toolchain) -> LruResult<Box<dyn ReadSeek>> {
         self.inner.get(make_lru_key_path(&tc.archive_id))
+    }
+
+    pub fn remove(&mut self, tc: &Toolchain) -> LruResult<()> {
+        self.inner.remove(make_lru_key_path(&tc.archive_id))
     }
 
     #[cfg(feature = "dist-client")]

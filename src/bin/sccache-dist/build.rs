@@ -190,7 +190,18 @@ impl OverlayBuilder {
                         )
                     }
                 };
-                tar::Archive::new(GzDecoder::new(toolchain_rdr)).unpack(&toolchain_dir)?;
+
+                tar::Archive::new(GzDecoder::new(toolchain_rdr))
+                    .unpack(&toolchain_dir)
+                    .or_else(|e| {
+                        warn!("Failed to unpack toolchain: {:?}", e);
+                        fs::remove_dir_all(&toolchain_dir)
+                            .chain_err(|| "Failed to remove unpacked toolchain")?;
+                        tccache
+                            .remove(tc)
+                            .chain_err(|| "Failed to remove corrupt toolchain")?;
+                        Err(Error::from(e))
+                    })?;
 
                 let entry = (toolchain_dir, 1);
                 assert!(toolchain_dir_map
