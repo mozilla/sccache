@@ -302,6 +302,20 @@ impl LruDiskCache {
     pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
+
+    /// Remove the given key from the cache.
+    pub fn remove<K: AsRef<OsStr>>(&mut self, key: K) -> Result<()> {
+        match self.lru.remove(key.as_ref()) {
+            Some(_) => {
+                let path = self.rel_to_abs_path(key.as_ref());
+                fs::remove_file(&path).map_err(|e| {
+                    error!("Error removing file from cache: `{:?}`: {}", path, e);
+                    Into::into(e)
+                })
+            }
+            None => Ok(()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -519,5 +533,36 @@ mod tests {
         assert!(!p1.exists());
         assert!(!p2.exists());
         assert!(!p3.exists());
+    }
+
+    #[test]
+    fn test_remove() {
+        let f = TestFixture::new();
+        let p1 = f.create_file("file1", 10);
+        let p2 = f.create_file("file2", 10);
+        let p3 = f.create_file("file3", 10);
+        let mut c = LruDiskCache::new(f.tmp().join("cache"), 25).unwrap();
+        c.insert_file("file1", &p1).unwrap();
+        c.insert_file("file2", &p2).unwrap();
+        c.remove("file1").unwrap();
+        c.insert_file("file3", &p3).unwrap();
+        assert_eq!(c.size(), 20);
+
+        // file1 should have been removed.
+        assert!(!c.contains_key("file1"));
+        assert!(!f.tmp().join("cache").join("file1").exists());
+        assert!(f.tmp().join("cache").join("file2").exists());
+        assert!(f.tmp().join("cache").join("file3").exists());
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(!p3.exists());
+
+        let p4 = f.create_file("file1", 10);
+        c.insert_file("file1", &p4).unwrap();
+        // file2 should have been removed.
+        assert!(c.contains_key("file1"));
+        assert!(!c.contains_key("file2"));
+        assert!(!f.tmp().join("cache").join("file2").exists());
+        assert!(!p4.exists());
     }
 }
