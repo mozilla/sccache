@@ -137,6 +137,7 @@ where
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
         pool: &CpuPool,
+        rewrite_includes_only: bool,
     ) -> SFuture<HashResult>;
 
     /// Return the state of any `--color` option passed to the compiler.
@@ -162,7 +163,18 @@ where
             Ok(Some(_)) => true,
             _ => false,
         };
-        let result = self.generate_hash_key(&creator, cwd.clone(), env_vars, may_dist, &pool);
+        let rewrite_includes_only = match dist_client {
+            Ok(Some(ref client)) => client.rewrite_includes_only(),
+            _ => false,
+        };
+        let result = self.generate_hash_key(
+            &creator,
+            cwd.clone(),
+            env_vars,
+            may_dist,
+            &pool,
+            rewrite_includes_only,
+        );
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!(
                 "[{}]: generate_hash_key took {}",
@@ -390,7 +402,7 @@ where
 {
     let mut path_transformer = dist::PathTransformer::new();
     let compile_commands = compilation
-        .generate_compile_commands(&mut path_transformer)
+        .generate_compile_commands(&mut path_transformer, true)
         .chain_err(|| "Failed to generate compile commands");
     let (compile_cmd, _dist_compile_cmd, cacheable) = match compile_commands {
         Ok(cmds) => cmds,
@@ -420,9 +432,13 @@ where
     use futures::future;
     use std::io;
 
+    let rewrite_includes_only = match dist_client {
+        Ok(Some(ref client)) => client.rewrite_includes_only(),
+        _ => false,
+    };
     let mut path_transformer = dist::PathTransformer::new();
     let compile_commands = compilation
-        .generate_compile_commands(&mut path_transformer)
+        .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
         .chain_err(|| "Failed to generate compile commands");
     let (compile_cmd, dist_compile_cmd, cacheable) = match compile_commands {
         Ok(cmds) => cmds,
@@ -585,6 +601,7 @@ pub trait Compilation {
     fn generate_compile_commands(
         &self,
         path_transformer: &mut dist::PathTransformer,
+        rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 
     /// Create a function that will create the inputs used to perform a distributed compilation
@@ -1748,6 +1765,9 @@ mod test_dist {
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_err("put toolchain failure")
         }
+        fn rewrite_includes_only(&self) -> bool {
+            false
+        }
     }
 
     pub struct ErrorAllocJobClient {
@@ -1789,6 +1809,9 @@ mod test_dist {
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), None))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
         }
     }
 
@@ -1847,6 +1870,9 @@ mod test_dist {
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), None))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
         }
     }
 
@@ -1907,6 +1933,9 @@ mod test_dist {
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
         }
     }
 
@@ -1988,6 +2017,9 @@ mod test_dist {
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<String>)> {
             f_ok((self.tc.clone(), Some("/overridden/compiler".to_owned())))
+        }
+        fn rewrite_includes_only(&self) -> bool {
+            false
         }
     }
 }

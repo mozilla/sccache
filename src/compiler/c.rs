@@ -173,6 +173,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
+        rewrite_includes_only: bool,
     ) -> SFuture<process::Output>
     where
         T: CommandCreatorSync;
@@ -185,6 +186,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
+        rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)>;
 }
 
@@ -250,6 +252,7 @@ where
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
         pool: &CpuPool,
+        rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
         let me = *self;
         let CCompilerHasher {
@@ -265,6 +268,7 @@ where
             &cwd,
             &env_vars,
             may_dist,
+            rewrite_includes_only,
         );
         let out_pretty = parsed_args.output_pretty().into_owned();
         let result = result.map_err(move |e| {
@@ -373,6 +377,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     fn generate_compile_commands(
         &self,
         path_transformer: &mut dist::PathTransformer,
+        rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
         let CCompilation {
             ref parsed_args,
@@ -382,7 +387,14 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
             ref env_vars,
             ..
         } = *self;
-        compiler.generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
+        compiler.generate_compile_commands(
+            path_transformer,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            rewrite_includes_only,
+        )
     }
 
     #[cfg(feature = "dist-client")]

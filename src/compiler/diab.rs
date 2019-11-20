@@ -54,6 +54,7 @@ impl CCompilerImpl for Diab {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
+        _rewrite_includes_only: bool,
     ) -> SFuture<process::Output>
     where
         T: CommandCreatorSync,
@@ -68,6 +69,7 @@ impl CCompilerImpl for Diab {
         parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
+        _rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
         generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
     }

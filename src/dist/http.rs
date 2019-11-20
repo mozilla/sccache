@@ -1087,6 +1087,7 @@ mod client {
         client_async: Arc<Mutex<reqwest::r#async::Client>>,
         pool: CpuPool,
         tc_cache: Arc<cache::ClientToolchains>,
+        rewrite_includes_only: bool,
     }
 
     impl Client {
@@ -1097,6 +1098,7 @@ mod client {
             cache_size: u64,
             toolchain_configs: &[config::DistToolchainConfig],
             auth_token: String,
+            rewrite_includes_only: bool,
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
@@ -1121,6 +1123,7 @@ mod client {
                 client_async: Arc::new(Mutex::new(client_async)),
                 pool: pool.clone(),
                 tc_cache: Arc::new(client_toolchains),
+                rewrite_includes_only: rewrite_includes_only,
             })
         }
 
@@ -1299,6 +1302,10 @@ mod client {
             Box::new(self.pool.spawn_fn(move || {
                 tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
             }))
+        }
+
+        fn rewrite_includes_only(&self) -> bool {
+            self.rewrite_includes_only
         }
     }
 }

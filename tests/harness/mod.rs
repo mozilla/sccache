@@ -194,6 +194,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             cache_dir: tmpdir.join(dist_cache_relpath),
             toolchains: vec![],
             toolchain_cache_size: TC_CACHE_SIZE,
+            rewrite_includes_only: false, // TODO
         },
     }
 }
