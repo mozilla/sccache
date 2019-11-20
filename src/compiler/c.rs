@@ -267,7 +267,6 @@ where
             may_dist,
         );
         let out_pretty = parsed_args.output_pretty().into_owned();
-        let env_vars = env_vars.to_vec();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
