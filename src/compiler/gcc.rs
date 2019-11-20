@@ -52,6 +52,7 @@ impl CCompilerImpl for GCC {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
+        rewrite_includes_only: bool,
     ) -> SFuture<process::Output>
     where
         T: CommandCreatorSync,
@@ -64,6 +65,7 @@ impl CCompilerImpl for GCC {
             env_vars,
             may_dist,
             self.kind(),
+            rewrite_includes_only,
         )
     }
 
@@ -74,8 +76,16 @@ impl CCompilerImpl for GCC {
         parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
+        rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
-        generate_compile_commands(path_transformer, executable, parsed_args, cwd, env_vars)
+        generate_compile_commands(
+            path_transformer,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            rewrite_includes_only,
+        )
     }
 }
 
@@ -445,6 +455,7 @@ pub fn preprocess<T>(
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
     kind: CCompilerKind,
+    rewrite_includes_only: bool,
 ) -> SFuture<process::Output>
 where
     T: CommandCreatorSync,
@@ -465,14 +476,16 @@ where
     if !may_dist && !parsed_args.profile_generate {
         cmd.arg("-P");
     }
-    match kind {
-        CCompilerKind::Clang => {
-            cmd.arg("-frewrite-includes");
+    if rewrite_includes_only {
+        match kind {
+            CCompilerKind::Clang => {
+                cmd.arg("-frewrite-includes");
+            }
+            CCompilerKind::GCC => {
+                cmd.arg("-fdirectives-only");
+            }
+            _ => (),
         }
-        CCompilerKind::GCC => {
-            cmd.arg("-fdirectives-only");
-        }
-        _ => (),
     }
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
@@ -493,6 +506,7 @@ pub fn generate_compile_commands(
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
+    rewrite_includes_only: bool,
 ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
     #[cfg(not(feature = "dist-client"))]
     let _ = path_transformer;
@@ -534,12 +548,16 @@ pub fn generate_compile_commands(
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let language = match parsed_args.language {
+        let mut language: String = match parsed_args.language {
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objective-c",
             Language::ObjectiveCxx => "objective-c++",
-        };
+        }
+        .into();
+        if !rewrite_includes_only {
+            language.push_str("-cpp-output");
+        }
         let mut arguments: Vec<String> = vec![
             "-x".into(),
             language.into(),
@@ -1150,6 +1168,7 @@ mod test {
             &parsed_args,
             f.tempdir.path(),
             &[],
+            false,
         )
         .unwrap();
         #[cfg(feature = "dist-client")]

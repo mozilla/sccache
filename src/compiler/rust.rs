@@ -997,6 +997,7 @@ where
         env_vars: Vec<(OsString, OsString)>,
         _may_dist: bool,
         pool: &CpuPool,
+        _rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
         let me = *self;
         #[rustfmt::skip] // https://github.com/rust-lang/rustfmt/issues/3759
@@ -1260,6 +1261,7 @@ impl Compilation for RustCompilation {
     fn generate_compile_commands(
         &self,
         path_transformer: &mut dist::PathTransformer,
+        _rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
         let RustCompilation {
             ref executable,
@@ -2692,6 +2694,7 @@ c:/foo/bar.rs:
                 .to_vec(),
                 false,
                 &pool,
+                false,
             )
             .wait()
             .unwrap();
@@ -2777,6 +2780,7 @@ c:/foo/bar.rs:
                 env_vars.to_owned(),
                 false,
                 &pool,
+                false,
             )
             .wait()
             .unwrap()

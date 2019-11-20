@@ -147,6 +147,7 @@ struct DistClientConfig {
     cache_dir: PathBuf,
     toolchain_cache_size: u64,
     toolchains: Vec<config::DistToolchainConfig>,
+    rewrite_includes_only: bool,
 }
 
 #[cfg(feature = "dist-client")]
@@ -196,6 +197,7 @@ impl DistClientContainer {
             cache_dir: config.dist.cache_dir.clone(),
             toolchain_cache_size: config.dist.toolchain_cache_size,
             toolchains: config.dist.toolchains.clone(),
+            rewrite_includes_only: config.dist.rewrite_includes_only,
         };
         let state = Self::create_state(config);
         Self {
@@ -348,6 +350,7 @@ impl DistClientContainer {
                     config.toolchain_cache_size,
                     &config.toolchains,
                     auth_token,
+                    config.rewrite_includes_only,
                 );
                 let dist_client = try_or_retry_later!(
                     dist_client.chain_err(|| "failure during dist client creation")

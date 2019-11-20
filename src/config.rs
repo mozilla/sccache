@@ -383,6 +383,7 @@ pub struct DistConfig {
     pub cache_dir: PathBuf,
     pub toolchains: Vec<DistToolchainConfig>,
     pub toolchain_cache_size: u64,
+    pub rewrite_includes_only: bool,
 }
 
 impl Default for DistConfig {
@@ -393,6 +394,7 @@ impl Default for DistConfig {
             cache_dir: default_dist_cache_dir(),
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
+            rewrite_includes_only: true,
         }
     }
 }

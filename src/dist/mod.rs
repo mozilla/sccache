@@ -747,4 +747,5 @@ pub trait Client {
         weak_key: &str,
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
     ) -> SFuture<(Toolchain, Option<String>)>;
+    fn rewrite_includes_only(&self) -> bool;
 }

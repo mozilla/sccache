@@ -59,6 +59,7 @@ fn config_with_dist_auth(
             cache_dir: tmpdir.join("unused-cache"),
             toolchains: vec![],
             toolchain_cache_size: 0,
+            rewrite_includes_only: true,
         },
     }
 }
