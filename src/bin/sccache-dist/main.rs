@@ -1,4 +1,3 @@
-extern crate arraydeque;
 extern crate base64;
 #[macro_use]
 extern crate clap;
@@ -25,7 +24,6 @@ extern crate syslog;
 extern crate tar;
 extern crate void;
 
-use arraydeque::ArrayDeque;
 use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::RngCore;
 use sccache::config::{
@@ -487,9 +485,6 @@ struct JobDetail {
 pub struct Scheduler {
     job_count: AtomicUsize,
 
-    // Circular buffer of most recently completed jobs
-    finished_jobs: Mutex<ArrayDeque<[(JobId, JobDetail); 1024], arraydeque::Wrapping>>,
-
     // Currently running jobs, can never be Complete
     jobs: Mutex<BTreeMap<JobId, JobDetail>>,
 
@@ -513,7 +508,6 @@ impl Scheduler {
         Scheduler {
             job_count: AtomicUsize::new(0),
             jobs: Mutex::new(BTreeMap::new()),
-            finished_jobs: Mutex::new(ArrayDeque::new()),
             servers: Mutex::new(HashMap::new()),
         }
     }
@@ -814,7 +808,6 @@ impl SchedulerIncoming for Scheduler {
         job_state: JobState,
     ) -> Result<UpdateJobStateResult> {
         // LOCKS
-        let mut finished_jobs = self.finished_jobs.lock().unwrap();
         let mut jobs = self.jobs.lock().unwrap();
         let mut servers = self.servers.lock().unwrap();
 
@@ -846,8 +839,7 @@ impl SchedulerIncoming for Scheduler {
                     entry.get_mut().state = job_state
                 }
                 (JobState::Started, JobState::Complete) => {
-                    let (job_id, job_entry) = entry.remove_entry();
-                    finished_jobs.push_back((job_id, job_entry));
+                    let (job_id, _) = entry.remove_entry();
                     if let Some(entry) = server_details {
                         assert!(entry.jobs_assigned.remove(&job_id))
                     } else {
