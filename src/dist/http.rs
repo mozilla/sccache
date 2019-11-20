@@ -836,6 +836,10 @@ mod server {
                 trace!("Res {}: {:?}", req_id, response);
                 response
             }).map_err(|e| Error::with_boxed_chain(e, ErrorKind::Msg("Failed to start http server for sccache scheduler".to_owned())))?;
+            // This limit is rouille's default for `start_server_with_pool`, which
+            // we would use, except that interface doesn't permit any sort of
+            // error handling to be done.
+            let server = server.pool_size(num_cpus::get() * 8);
             server.run();
 
             panic!("Rouille server terminated")
@@ -1008,6 +1012,10 @@ mod server {
                 trace!("Res {}: {:?}", req_id, response);
                 response
             }, cert_pem, privkey_pem).map_err(|e| Error::with_boxed_chain(e, ErrorKind::Msg("Failed to start http server for sccache server".to_owned())))?;
+            // This limit is rouille's default for `start_server_with_pool`, which
+            // we would use, except that interface doesn't permit any sort of
+            // error handling to be done.
+            let server = server.pool_size(num_cpus::get() * 8);
             server.run();
 
             panic!("Rouille server terminated")
