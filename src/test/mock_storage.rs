@@ -14,6 +14,7 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
+use crate::server::ServerStats;
 use futures::future;
 use std::cell::RefCell;
 use std::time::Duration;
@@ -57,5 +58,11 @@ impl Storage for MockStorage {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
+    }
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        Box::new(future::ok(None))
+    }
+    fn save_stats(&self, _stats: ServerStats) -> SFuture<()> {
+        f_ok(())
     }
 }
