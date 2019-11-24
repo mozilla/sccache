@@ -721,8 +721,13 @@ where
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
+        let stats = storage
+            .get_stats()
+            .wait()
+            .unwrap_or_default()
+            .unwrap_or_default();
         SccacheService {
-            stats: Rc::new(RefCell::new(ServerStats::default())),
+            stats: Rc::new(RefCell::new(stats)),
             dist_client: Rc::new(dist_client),
             storage,
             compilers: Rc::new(RefCell::new(HashMap::new())),
@@ -803,6 +808,10 @@ where
     /// Zero stats about the cache.
     fn zero_stats(&self) {
         *self.stats.borrow_mut() = ServerStats::default();
+    }
+
+    fn save_stats_to_storage(&self) -> SFuture<()> {
+        self.storage.save_stats(self.stats.borrow().clone())
     }
 
     /// Handle a compile request from a client.
@@ -1081,6 +1090,12 @@ where
         tokio::runtime::current_thread::TaskExecutor::current()
             .spawn_local(Box::new(task))
             .unwrap();
+    }
+}
+
+impl<C: CommandCreatorSync> Drop for SccacheService<C> {
+    fn drop(&mut self) {
+        let _ = self.save_stats_to_storage().wait();
     }
 }
 
