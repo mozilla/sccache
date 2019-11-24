@@ -24,6 +24,8 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
+use crate::errors::*;
+use crate::server::ServerStats;
 use futures_cpupool::CpuPool;
 use std::fmt;
 #[cfg(feature = "gcs")]
@@ -33,8 +35,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
-
-use crate::errors::*;
 
 /// Result of a cache lookup.
 pub enum Cache {
@@ -159,6 +159,12 @@ pub trait Storage {
 
     /// Get the maximum storage size, if applicable.
     fn max_size(&self) -> SFuture<Option<u64>>;
+
+    /// Get the stats from storage.
+    fn get_stats(&self) -> SFuture<Option<ServerStats>>;
+
+    /// Save the stats into storage
+    fn save_stats(&self, stats: ServerStats) -> SFuture<Duration>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.
