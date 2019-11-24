@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::errors::*;
+use crate::server::ServerStats;
 use futures_cpupool::CpuPool;
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::LruDiskCache;
@@ -20,8 +22,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use crate::errors::*;
 
 /// A cache that stores entries at local disk paths.
 #[derive(Clone)]
@@ -98,5 +98,40 @@ impl Storage for DiskCache {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         f_ok(Some(self.lru.lock().unwrap().capacity()))
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        trace!("getting stats from storage");
+        let lru = self.lru.clone();
+        Box::new(self.pool.spawn_fn(move || {
+            let mut lru = lru.lock().unwrap();
+            let f = match lru.get(super::STATS_KEY) {
+                Ok(f) => f,
+                Err(LruError::FileNotInCache) => {
+                    trace!("DiskCache::get_stats(): StatsNotInCache");
+                    return Ok(None);
+                }
+                Err(LruError::Io(e)) => {
+                    trace!("DiskCache::get_stats(): IoError: {:?}", e);
+                    return Err(e.into());
+                }
+                Err(_) => panic!("Unexpected error!"),
+            };
+            let encoded_stats = bincode::deserialize_from(f)?;
+            Ok(Some(encoded_stats))
+        }))
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        trace!("saving sats to storage");
+        let lru = self.lru.clone();
+
+        Box::new(self.pool.spawn_fn(move || {
+            let encoded_stats = bincode::serialize(&stats)?;
+            lru.lock()
+                .unwrap()
+                .insert_bytes(super::STATS_KEY, &encoded_stats)?;
+            Ok(())
+        }))
     }
 }

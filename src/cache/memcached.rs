@@ -15,6 +15,7 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
+use crate::server::ServerStats;
 use futures_cpupool::CpuPool;
 use memcached::client::Client;
 use memcached::proto::NoReplyOperation;
@@ -96,5 +97,27 @@ impl Storage for MemcachedCache {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        let me = self.clone();
+        Box::new(self.pool.spawn_fn(move || {
+            me.exec(|c| c.get(super::STATS_KEY.as_bytes()))
+                .map(|(d, _)| {
+                    bincode::deserialize_from(d.as_slice())
+                        .map_err(From::from)
+                        .map(Some)
+                })
+                .unwrap_or(Ok(None))
+        }))
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        let me = self.clone();
+        Box::new(self.pool.spawn_fn(move || {
+            let d = bincode::serialize(&stats)?;
+            me.exec(|c| c.set_noreply(super::STATS_KEY.as_bytes(), &d, 0, 0))?;
+            Ok(())
+        }))
     }
 }

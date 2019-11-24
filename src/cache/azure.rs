@@ -16,12 +16,12 @@
 use crate::azure::BlobContainer;
 use crate::azure::*;
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::errors::*;
+use crate::server::ServerStats;
 use futures::future::Future;
 use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-
-use crate::errors::*;
 
 pub struct AzureBlobCache {
     container: Rc<BlobContainer>,
@@ -92,5 +92,33 @@ impl Storage for AzureBlobCache {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        Box::new(
+            self.container
+                .get(super::STATS_KEY, &self.credentials)
+                .then(|result| match result {
+                    Ok(data) => Ok(Some(bincode::deserialize_from(data.as_slice())?)),
+                    Err(e) => {
+                        warn!("Got Azure error: {:?}", e);
+                        Ok(None)
+                    }
+                }),
+        )
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        let data = match bincode::serialize(&stats) {
+            Ok(data) => data,
+            Err(e) => return f_err(e),
+        };
+
+        let response = self
+            .container
+            .put(super::STATS_KEY, data, &self.credentials)
+            .chain_err(|| "Failed to put stats in Azure");
+
+        Box::new(response.map(|_| ()))
     }
 }

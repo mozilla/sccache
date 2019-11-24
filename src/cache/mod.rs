@@ -26,3 +26,5 @@ pub mod redis;
 pub mod s3;
 
 pub use crate::cache::cache::*;
+
+const STATS_KEY: &'static str = "STATS_KEY";

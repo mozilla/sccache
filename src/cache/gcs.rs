@@ -18,6 +18,7 @@ use std::{cell::RefCell, fmt, io, rc::Rc, time};
 use crate::{
     cache::{Cache, CacheRead, CacheWrite, Storage},
     errors::*,
+    server::ServerStats,
     util::HeadersExt,
 };
 use futures::{
@@ -536,6 +537,40 @@ impl Storage for GCSCache {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        Box::new(
+            self.bucket
+                .get(super::STATS_KEY, &self.credential_provider)
+                .then(|result| match result {
+                    Ok(data) => {
+                        let encoded_stats = bincode::deserialize_from(data.as_slice())?;
+                        Ok(Some(encoded_stats))
+                    }
+                    Err(e) => {
+                        warn!("Got GCS error: {:?}", e);
+                        Ok(None)
+                    }
+                }),
+        )
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        if let RWMode::ReadOnly = self.rw_mode {
+            return Box::new(future::ok(()));
+        }
+
+        let data = match bincode::serialize(&stats) {
+            Ok(data) => data,
+            Err(e) => return f_err(e),
+        };
+        let bucket = self.bucket.clone();
+        let response = bucket
+            .put(&super::STATS_KEY, data, &self.credential_provider)
+            .chain_err(|| "failed to put cache entry in GCS");
+
+        Box::new(response.map(|_| ()))
     }
 }
 

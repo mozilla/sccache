@@ -15,6 +15,7 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
+use crate::server::ServerStats;
 use futures::{future, Future};
 use redis::r#async::Connection;
 use redis::{cmd, Client, InfoDict};
@@ -111,6 +112,40 @@ impl Storage for RedisCache {
                     h.get("maxmemory")
                         .and_then(|&s| if s != 0 { Some(s as u64) } else { None })
                 }),
+        )
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        let me = self.clone();
+        Box::new(
+            me.connect()
+                .and_then(|c| cmd("GET").arg(super::STATS_KEY).query_async(c).from_err())
+                .and_then(|(_, d): (_, Vec<u8>)| {
+                    if d.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(bincode::deserialize_from(d.as_slice())?))
+                    }
+                }),
+        )
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        let me = self.clone();
+        Box::new(
+            me.connect()
+                .and_then(move |c| {
+                    future::result(bincode::serialize(&stats))
+                        .map_err(From::from)
+                        .and_then(|d| {
+                            cmd("SET")
+                                .arg(super::STATS_KEY)
+                                .arg(d)
+                                .query_async(c)
+                                .from_err()
+                        })
+                })
+                .map(|(_, ())| ()),
         )
     }
 }

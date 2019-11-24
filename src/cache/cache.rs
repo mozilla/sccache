@@ -164,7 +164,7 @@ pub trait Storage {
     fn get_stats(&self) -> SFuture<Option<ServerStats>>;
 
     /// Save the stats into storage
-    fn save_stats(&self, stats: ServerStats) -> SFuture<Duration>;
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.

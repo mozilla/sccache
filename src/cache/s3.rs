@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::errors::*;
+use crate::server::ServerStats;
 use crate::simples3::{
     AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
@@ -22,8 +24,6 @@ use futures::future::Future;
 use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-
-use crate::errors::*;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
@@ -125,5 +125,55 @@ impl Storage for S3Cache {
     }
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
+    }
+
+    fn get_stats(&self) -> SFuture<Option<ServerStats>> {
+        let key = normalize_key(super::STATS_KEY);
+
+        let result_cb = |result: Result<Vec<u8>>| match result {
+            Ok(data) => {
+                let encoded_stats = bincode::deserialize_from(data.as_slice())?;
+                Ok(Some(encoded_stats))
+            }
+            Err(e) => {
+                warn!("Got AWS error: {:?}", e);
+                Ok(None)
+            }
+        };
+
+        let bucket = self.bucket.clone();
+        let response = self
+            .provider
+            .credentials()
+            .then(move |credentials| match credentials {
+                Ok(creds) => bucket.get(&key, Some(&creds)),
+                Err(e) => {
+                    debug!("Could not load AWS creds: {}", e);
+                    bucket.get(&key, None)
+                }
+            })
+            .then(result_cb);
+        Box::new(response)
+    }
+
+    fn save_stats(&self, stats: ServerStats) -> SFuture<()> {
+        let key = normalize_key(super::STATS_KEY);
+        let data = match bincode::serialize(&stats) {
+            Ok(data) => data,
+            Err(e) => return f_err(e),
+        };
+        let credentials = self
+            .provider
+            .credentials()
+            .chain_err(|| "failed to get AWS credentials");
+
+        let bucket = self.bucket.clone();
+        let response = credentials.and_then(move |credentials| {
+            bucket
+                .put(&key, data, &credentials)
+                .chain_err(|| "failed to put cache entry in s3")
+        });
+
+        Box::new(response.map(|_| ()))
     }
 }
