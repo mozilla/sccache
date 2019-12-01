@@ -1221,6 +1221,14 @@ impl ServerStats {
             }};
         }
 
+        macro_rules! set_stat_precentage {
+            ($vec:ident, $count:expr, $sum:expr, $name:expr) => {
+                let ratio = $count as f64 / $sum as f64;
+                // name, value, suffix length
+                $vec.push(($name.to_string(), format!("{:.2} %", ratio*100.0), 2));
+            }
+        }
+
         macro_rules! set_lang_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 $vec.push(($name.to_string(), $var.all().to_string(), 0));
@@ -1254,6 +1262,23 @@ impl ServerStats {
         );
         set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
         set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+
+        set_stat_precentage!(stats_vec, self.cache_hits.all(), self.cache_misses.all() + self.cache_hits.all(), "Cache hits rate");
+
+        let mut sorted_stats_hits: Vec<_> = self.cache_hits.counts.iter().collect();
+        sorted_stats_hits.sort_by_key(|v| v.0);
+        let mut sorted_stats_misses: Vec<_> = self.cache_misses.counts.iter().collect();
+        sorted_stats_misses.sort_by_key(|v| v.0);
+
+        for ((lang_hits, &count_hits), (lang_misses, &count_misses)) in sorted_stats_hits.into_iter().zip(sorted_stats_misses.into_iter()) {
+            // TODO: Should we assert they're equal?
+            if lang_hits == lang_misses {
+                set_stat_precentage!(stats_vec, count_hits, count_hits + count_misses, format!("Cache hits rate ({})", lang_hits));
+            } else {
+                error!("Sorted cache_hits and cache_misses have mismatching langs: {} != {}", lang_hits, lang_misses);
+            }
+        }
+
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
