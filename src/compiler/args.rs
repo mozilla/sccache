@@ -183,12 +183,15 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
             Argument::WithValue(s, ref v, ref d) => match (self.emitted, d) {
                 (0, &ArgDisposition::CanBeSeparated(d)) | (0, &ArgDisposition::Concatenated(d)) => {
                     let mut s = OsString::from(s);
+                    let v = v.clone().into_arg_os_string();
                     if let Some(d) = d {
-                        s.push(OsString::from(
-                            str::from_utf8(&[d]).expect("delimiter should be ascii"),
-                        ));
+                        if !v.is_empty() {
+                            s.push(OsString::from(
+                                str::from_utf8(&[d]).expect("delimiter should be ascii"),
+                            ));
+                        }
                     }
-                    s.push(v.clone().into_arg_os_string());
+                    s.push(v);
                     Some(s)
                 }
                 (0, &ArgDisposition::Separated) | (0, &ArgDisposition::CanBeConcatenated(_)) => {
@@ -231,15 +234,16 @@ impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterS
             Argument::WithValue(s, ref v, ref d) => match (self.emitted, d) {
                 (0, &ArgDisposition::CanBeSeparated(d)) | (0, &ArgDisposition::Concatenated(d)) => {
                     let mut s = s.to_owned();
+                    let v = match v.clone().into_arg_string(&mut self.path_transformer) {
+                        Ok(s) => s,
+                        Err(e) => return Some(Err(e)),
+                    };
                     if let Some(d) = d {
-                        s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
+                        if !v.is_empty() {
+                            s.push_str(str::from_utf8(&[d]).expect("delimiter should be ascii"));
+                        }
                     }
-                    s.push_str(
-                        &match v.clone().into_arg_string(&mut self.path_transformer) {
-                            Ok(s) => s,
-                            Err(e) => return Some(Err(e)),
-                        },
-                    );
+                    s.push_str(&v);
                     Some(Ok(s))
                 }
                 (0, &ArgDisposition::Separated) | (0, &ArgDisposition::CanBeConcatenated(_)) => {
