@@ -1018,6 +1018,17 @@ mod test {
     }
 
     #[test]
+    fn color_mode_preprocess() {
+        let args = stringvec!["-c", "foo.c", "-fdiagnostics-color"];
+        let args = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+
+        assert!(args.common_args.contains(&"-fdiagnostics-color".into()));
+    }
+
+    #[test]
     fn test_parse_arguments_dep_target_needed() {
         let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
         let ParsedArguments {
