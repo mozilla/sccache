@@ -225,8 +225,13 @@ impl OverlayBuilder {
                 if toolchain_dir_map.len() > tccache.len() {
                     let dir_map = toolchain_dir_map.clone();
                     let mut entries: Vec<_> = dir_map.iter().collect();
+                    // In the pathological case, creation time for unpacked
+                    // toolchains could be the opposite of the least recently
+                    // recently used, so we clear out half of the accumulated
+                    // toolchains to prevent repeated sort/delete cycles.
                     entries.sort_by(|a, b| (a.1).ctime.cmp(&(b.1).ctime));
-                    if let Some((tc, _)) = entries.first() {
+                    entries.truncate(entries.len() / 2);
+                    for (tc, _) in entries {
                         warn!("Removing old un-compressed toolchain: {:?}", tc);
                         assert!(toolchain_dir_map.remove(tc).is_some());
                         fs::remove_dir_all(&self.dir.join("toolchains").join(&tc.archive_id))
