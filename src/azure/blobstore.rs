@@ -280,7 +280,7 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::runtime::current_thread::Runtime;
+    use tokio01::runtime::current_thread::Runtime;
 
     #[test]
     fn test_signing() {
