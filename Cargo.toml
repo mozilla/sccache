@@ -36,7 +36,7 @@ env_logger = "0.5"
 error-chain = { version = "0.12.1", default-features = false }
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
-futures = { version = "0.3", features = ["compat"] }
+futures = { version = "0.3", features = ["compat", "io-compat"] }
 futures01 = "0.1"
 futures-cpupool = "0.1"
 hmac = { version = "0.7", optional = true }
@@ -71,6 +71,7 @@ tar = "0.4"
 tempdir = "0.3.4"
 tempfile = "3"
 time = "0.1.35"
+tokio = { version = "0.2", features=["full"] }
 tokio01 = { version = "0.1.11", package = "tokio" }
 tokio-io = "0.1"
 tokio-process = "0.2"
