@@ -403,7 +403,7 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
+    use futures01::Future;
     use std::fs::File;
     use std::io::Write;
     use tempdir::TempDir;

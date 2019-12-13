@@ -1,7 +1,7 @@
 use error_chain::ChainedError;
-use futures::future;
-use futures::prelude::*;
-use futures::sync::oneshot;
+use futures01::future;
+use futures01::prelude::*;
+use futures01::sync::oneshot;
 use http::StatusCode;
 use hyper::body::Payload;
 use hyper::server::conn::AddrIncoming;
@@ -128,8 +128,8 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
-    use futures::sync::oneshot;
+    use futures01::future;
+    use futures01::sync::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::RngCore;
     use sha2::{Digest, Sha256};
@@ -321,8 +321,8 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
-    use futures::sync::oneshot;
+    use futures01::future;
+    use futures01::sync::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use std::collections::HashMap;
     use std::sync::mpsc;

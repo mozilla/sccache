@@ -656,7 +656,7 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
+    use futures01::Future;
     use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {

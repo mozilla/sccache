@@ -17,8 +17,8 @@ use crate::simples3::{
     AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
 use directories::UserDirs;
-use futures::future;
-use futures::future::Future;
+use futures01::future;
+use futures01::future::Future;
 use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant};

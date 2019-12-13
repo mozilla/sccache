@@ -14,7 +14,7 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures::future;
+use futures01::future;
 use std::cell::RefCell;
 use std::time::Duration;
 

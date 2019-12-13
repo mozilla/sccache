@@ -23,7 +23,7 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures::Future;
+use futures01::Future;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -75,7 +75,7 @@ fn read_server_startup_status<R: AsyncRead>(
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::Stream;
+    use futures01::Stream;
     use std::time::Duration;
     use tempdir::TempDir;
 
@@ -146,7 +146,7 @@ fn redirect_error_log() -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::future;
+    use futures01::future;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;

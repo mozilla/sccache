@@ -22,8 +22,8 @@ use std::process;
 
 #[cfg(feature = "jsonwebtoken")]
 use crate::jwt;
-use futures::future;
-use futures::Future;
+use futures01::future;
+use futures01::Future;
 
 error_chain! {
     foreign_links {
@@ -104,7 +104,7 @@ macro_rules! ftry {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
+            Err(e) => return Box::new($crate::futures01::future::err(e.into())) as SFuture<_>,
         }
     };
 }
@@ -114,7 +114,7 @@ macro_rules! ftry_send {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFutureSend<_>,
+            Err(e) => return Box::new($crate::futures01::future::err(e.into())) as SFutureSend<_>,
         }
     };
 }

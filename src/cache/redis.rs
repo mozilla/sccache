@@ -15,7 +15,7 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
-use futures::{future, Future};
+use futures01::{future, Future};
 use redis::r#async::Connection;
 use redis::{cmd, Client, InfoDict};
 use std::collections::HashMap;

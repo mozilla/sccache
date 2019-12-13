@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use futures::{Future, Stream};
+use futures01::{Future, Stream};
 use hmac::{Hmac, Mac};
 use hyper::header::HeaderValue;
 use hyper::Method;

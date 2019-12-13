@@ -47,7 +47,7 @@
 
 use crate::errors::*;
 use crate::jobserver::{Acquired, Client};
-use futures::future::{self, Future};
+use futures01::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -551,7 +551,7 @@ mod test {
     use super::*;
     use crate::jobserver::Client;
     use crate::test::utils::*;
-    use futures::Future;
+    use futures01::Future;
     use std::ffi::OsStr;
     use std::io;
     use std::process::{ExitStatus, Output};

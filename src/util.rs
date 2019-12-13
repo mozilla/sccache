@@ -14,7 +14,7 @@
 
 use crate::mock_command::{CommandChild, RunCommand};
 use byteorder::{BigEndian, ByteOrder};
-use futures::{future, Future};
+use futures01::{future, Future};
 use futures_cpupool::CpuPool;
 use ring::digest::{Context, SHA512};
 use serde::Serialize;

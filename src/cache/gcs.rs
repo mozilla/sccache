@@ -20,7 +20,7 @@ use crate::{
     errors::*,
     util::HeadersExt,
 };
-use futures::{
+use futures01::{
     future::{self, Shared},
     Async, Future, Stream,
 };

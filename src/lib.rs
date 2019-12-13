@@ -22,7 +22,7 @@ extern crate counted_array;
 #[macro_use]
 extern crate error_chain;
 #[macro_use]
-extern crate futures;
+extern crate futures01;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
 #[macro_use]
