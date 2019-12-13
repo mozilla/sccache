@@ -1,6 +1,5 @@
 use error_chain::ChainedError;
-use futures01::future;
-use futures01::prelude::*;
+use futures01::future::{self as future01, Future as Future01, IntoFuture as IntoFuture01};
 use futures01::sync::oneshot;
 use http::StatusCode;
 use hyper::body::Payload;
@@ -31,14 +30,14 @@ const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
 
 trait ServeFn:
-    Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
+    Fn(Request<Body>) -> Box<dyn Future01<Item = Response<Body>, Error = hyper::Error> + Send>
     + Copy
     + Send
     + 'static
 {
 }
 impl<T> ServeFn for T where
-    T: Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
+    T: Fn(Request<Body>) -> Box<dyn Future01<Item = Response<Body>, Error = hyper::Error> + Send>
         + Copy
         + Send
         + 'static
@@ -62,7 +61,7 @@ fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> imp
                 .set_header(ContentLength(len as u64))
                 .body(body.into())
                 .unwrap())
-        })) as Box<dyn Future<Item = _, Error = _> + Send>
+        })) as Box<dyn Future01<Item = _, Error = _> + Send>
     }
 }
 
@@ -469,7 +468,7 @@ mod implicit {
 fn service_fn<F, R, S>(f: F) -> ServiceFn<F, R>
 where
     F: Fn(Request<R>) -> S,
-    S: IntoFuture,
+    S: IntoFuture01,
 {
     ServiceFn {
         f,
@@ -486,7 +485,7 @@ impl<F, ReqBody, Ret, ResBody> Service for ServiceFn<F, ReqBody>
 where
     F: Fn(Request<ReqBody>) -> Ret,
     ReqBody: Payload,
-    Ret: IntoFuture<Item = Response<ResBody>>,
+    Ret: IntoFuture01<Item = Response<ResBody>>,
     Ret::Error: Into<Box<dyn StdError + Send + Sync>>,
     ResBody: Payload,
 {
@@ -500,13 +499,13 @@ where
     }
 }
 
-impl<F, R> IntoFuture for ServiceFn<F, R> {
-    type Future = future::FutureResult<Self::Item, Self::Error>;
+impl<F, R> IntoFuture01 for ServiceFn<F, R> {
+    type Future = future01::FutureResult<Self::Item, Self::Error>;
     type Item = Self;
     type Error = hyper::Error;
 
     fn into_future(self) -> Self::Future {
-        future::ok(self)
+        future01::ok(self)
     }
 }
 

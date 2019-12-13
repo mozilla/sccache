@@ -2,8 +2,8 @@ use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
-use futures01::future;
-use futures01::prelude::*;
+use futures01::{Stream as _};
+use futures01::future::{self, Future as _};
 use futures01::sync::mpsc;
 use futures01::sync::oneshot;
 
