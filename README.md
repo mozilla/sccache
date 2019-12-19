@@ -43,7 +43,9 @@ We recommend you install Rust via [Rustup](https://rustup.rs/). The generated bi
 Build
 -----
 
-> $ cargo build [--features=all|redis|s3|gcs] [--release]
+```bash
+cargo build [--features=all|redis|s3|gcs] [--release]
+```
 
 ### Building portable binaries
 
@@ -53,7 +55,7 @@ When building with the `gcs` feature, `sccache` will depend on OpenSSL, which ca
 
 You will need to download and build OpenSSL with `-fPIC` in order to statically link against it.
 
-```
+```bash
 ./config -fPIC --prefix=/usr/local --openssldir=/usr/local/ssl
 make
 make install
@@ -68,7 +70,7 @@ Build with `cargo` and use `ldd` to check that the resulting binary does not dep
 
 Just setting the below environment variable will enable static linking.
 
-```
+```bash
 export OPENSSL_STATIC=yes
 ```
 
@@ -80,7 +82,7 @@ On Windows it is fairly straight forward to just ship the required `libcrypto` a
 
 It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
 
-```
+```toml
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-Ctarget-feature=+crt-static"]
 ```
@@ -105,13 +107,17 @@ set OPENSSL_LIBS=libcrypto64MT:libssl64MT
 
 ### With Rust
 
-`$ cargo install sccache`
+```bash
+cargo install sccache
+```
 
 ### Windows
 
 sccache can also be installed via [scoop](https://scoop.sh/)
 
-`> scoop install sccache`
+```
+scoop install sccache
+```
 
 ---
 
@@ -120,11 +126,27 @@ Usage
 
 Running sccache is like running ccache: wrap your compilation commands with it, like so:
 
-> $ sccache gcc -o foo.o -c foo.c
+```bash
+sccache gcc -o foo.o -c foo.c
+```
 
-or use it with rust, like so:
+If you want to use sccache for your rust builds you can define `build.rustc-wrapper` in the
+[cargo configuration file](https://doc.rust-lang.org/cargo/reference/config.html).  For example, you can set it globally
+in `$HOME/.cargo/config` by adding:
 
-> $ RUSTC_WRAPPER=[path to sccache] cargo build
+```toml
+[build]
+rustc-wrapper = "/path/to/sccache"
+```
+
+Note that you need to use cargo 1.40 or newer for this to work.  (In cargo 1.40 you will see a warning about this
+configuration not being used.  This is a false positive.  The warning will go away in future releases.)
+
+Alternatively you can use the environment variable `RUSTC_WRAPPER`:
+
+```bash
+RUSTC_WRAPPER=/path/to/sccache cargo build
+```
 
 Sccache (tries to) support gcc, clang, [diab](https://www.windriver.com/products/development-tools/#diab_compiler) and MSVC. If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
