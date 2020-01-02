@@ -36,6 +36,7 @@ use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
+use which::which;
 
 use crate::errors::*;
 
@@ -544,12 +545,13 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 output.stdout.pop();
             }
 
-            // Create our PathBuf from the raw bytes, and return if absolute.
+            // Create our PathBuf from the raw bytes.  Assume that relative
+            // paths can be found via PATH.
             let path: PathBuf = OsString::from_vec(output.stdout).into();
             if path.is_absolute() {
                 Some(path)
             } else {
-                None
+                which(path).ok()
             }
         };
 
