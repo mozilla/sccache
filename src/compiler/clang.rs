@@ -87,6 +87,7 @@ impl CCompilerImpl for Clang {
             parsed_args,
             cwd,
             env_vars,
+            self.kind(),
             rewrite_includes_only,
         )
     }
