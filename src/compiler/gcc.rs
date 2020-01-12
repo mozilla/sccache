@@ -84,6 +84,7 @@ impl CCompilerImpl for GCC {
             parsed_args,
             cwd,
             env_vars,
+            self.kind(),
             rewrite_includes_only,
         )
     }
@@ -484,7 +485,7 @@ where
             CCompilerKind::GCC => {
                 cmd.arg("-fdirectives-only");
             }
-            _ => (),
+            _ => {},
         }
     }
     cmd.arg(&parsed_args.input)
@@ -506,10 +507,13 @@ pub fn generate_compile_commands(
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
+    kind: CCompilerKind,
     rewrite_includes_only: bool,
 ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
     #[cfg(not(feature = "dist-client"))]
     let _ = path_transformer;
+    #[cfg(not(feature = "dist-client"))]
+    let _ = kind;
 
     trace!("compile");
 
@@ -566,6 +570,25 @@ pub fn generate_compile_commands(
             "-o".into(),
             path_transformer.to_dist(out_file)?,
         ];
+        if let CCompilerKind::GCC = kind {
+            // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
+            //
+            // -fdirectives-only
+            //
+            //     [...]
+            //
+            //     With -fpreprocessed, predefinition of command line and most
+            //     builtin macros is disabled. Macros such as __LINE__, which
+            //     are contextually dependent, are handled normally. This
+            //     enables compilation of files previously preprocessed with -E
+            //     -fdirectives-only.
+            //
+            // Which is exactly what we do :-)
+            if rewrite_includes_only {
+                arguments.push("-fdirectives-only".into());
+            }
+            arguments.push("-fpreprocessed".into());
+        }
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
             executable: path_transformer.to_dist(&executable)?,
@@ -1179,6 +1202,7 @@ mod test {
             &parsed_args,
             f.tempdir.path(),
             &[],
+            CCompilerKind::GCC,
             false,
         )
         .unwrap();
