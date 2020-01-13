@@ -213,7 +213,7 @@ mod client {
             Ok((tc, None))
         }
 
-        fn get_custom_toolchain(
+        pub fn get_custom_toolchain(
             &self,
             compiler_path: &Path,
         ) -> Option<Result<(Toolchain, String, PathBuf)>> {

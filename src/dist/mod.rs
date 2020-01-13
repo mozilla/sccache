@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
 #[cfg(feature = "dist-server")]
@@ -746,6 +746,7 @@ pub trait Client {
         compiler_path: &Path,
         weak_key: &str,
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
-    ) -> SFuture<(Toolchain, Option<(String, std::path::PathBuf)>)>;
+    ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
+    fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;
 }

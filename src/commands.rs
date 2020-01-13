@@ -663,7 +663,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let pool = CpuPool::new(1);
             let out_file = File::create(out)?;
 
-            let compiler = compiler::get_compiler_info(&creator, &executable, &env, &pool);
+            let compiler = compiler::get_compiler_info(&creator, &executable, &env, &pool, None);
             let packager = compiler.map(|c| c.get_toolchain_packager());
             let res = packager.and_then(|p| p.write_pkg(out_file));
             runtime.block_on(res)?
