@@ -864,6 +864,7 @@ fn detect_compiler<T>(
     executable: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
+    dist_archive: Option<PathBuf>,
 ) -> SFuture<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
@@ -901,8 +902,15 @@ where
         Some(Ok(rustc_verbose_version)) => {
             debug!("Found rustc");
             Box::new(
-                Rust::new(creator, executable, &env, &rustc_verbose_version, pool)
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                Rust::new(
+                    creator,
+                    executable,
+                    &env,
+                    &rustc_verbose_version,
+                    dist_archive,
+                    pool,
+                )
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
             )
         }
         Some(Err(e)) => f_err(e),
@@ -1026,12 +1034,13 @@ pub fn get_compiler_info<T>(
     executable: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
+    dist_archive: Option<PathBuf>,
 ) -> SFuture<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, env, &pool)
+    detect_compiler(creator, executable, env, &pool, dist_archive)
 }
 
 #[cfg(test)]
@@ -1060,7 +1069,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
@@ -1075,7 +1084,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
@@ -1104,7 +1113,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
@@ -1138,7 +1147,7 @@ LLVM version: 6.0",
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(&creator, &rustc, &[], &pool)
+        let c = detect_compiler(&creator, &rustc, &[], &pool, None)
             .wait()
             .unwrap();
         assert_eq!(CompilerKind::Rust, c.kind());
@@ -1153,7 +1162,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool)
+        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
@@ -1167,9 +1176,11 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
-        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
-            .wait()
-            .is_err());
+        assert!(
+            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+                .wait()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1177,9 +1188,11 @@ LLVM version: 6.0",
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
-        assert!(detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool)
-            .wait()
-            .is_err());
+        assert!(
+            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+                .wait()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1189,7 +1202,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         // sha-1 digest of an empty file.
@@ -1207,7 +1220,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         // The preprocessor invocation.
@@ -1311,7 +1324,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         // The preprocessor invocation.
@@ -1411,7 +1424,7 @@ LLVM version: 6.0",
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         // The preprocessor invocation.
@@ -1485,7 +1498,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
@@ -1598,7 +1611,7 @@ LLVM version: 6.0",
             f.write_all(b"file contents")?;
             Ok(MockChild::new(exit_status(0), "gcc", ""))
         });
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         // We should now have a fake object file.
@@ -1659,7 +1672,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
+        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
         const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
@@ -1781,6 +1794,9 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
+        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+            None
+        }
     }
 
     pub struct ErrorAllocJobClient {
@@ -1825,6 +1841,9 @@ mod test_dist {
         }
         fn rewrite_includes_only(&self) -> bool {
             false
+        }
+        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+            None
         }
     }
 
@@ -1886,6 +1905,9 @@ mod test_dist {
         }
         fn rewrite_includes_only(&self) -> bool {
             false
+        }
+        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+            None
         }
     }
 
@@ -1955,6 +1977,9 @@ mod test_dist {
         }
         fn rewrite_includes_only(&self) -> bool {
             false
+        }
+        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+            None
         }
     }
 
@@ -2045,6 +2070,9 @@ mod test_dist {
         }
         fn rewrite_includes_only(&self) -> bool {
             false
+        }
+        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+            None
         }
     }
 }

@@ -613,7 +613,11 @@ struct SccacheService<C: CommandCreatorSync> {
     storage: Arc<dyn Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<HashMap<PathBuf, Option<(Box<dyn Compiler<C>>, FileTime)>>>>,
+    compilers: Rc<
+        RefCell<
+            HashMap<PathBuf, Option<(Box<dyn Compiler<C>>, FileTime, Option<(PathBuf, FileTime)>)>>,
+        >,
+    >,
 
     /// Thread pool to execute work in
     pool: CpuPool,
@@ -831,12 +835,33 @@ where
     ) -> SFuture<Result<Box<dyn Compiler<C>>>> {
         trace!("compiler_info");
         let mtime = ftry!(metadata(&path).map(|attr| FileTime::from_last_modification_time(&attr)));
+        let dist_info = match self.dist_client.get_client() {
+            Ok(Some(ref client)) => {
+                if let Some(archive) = client.get_custom_toolchain(&path) {
+                    match metadata(&archive)
+                        .map(|attr| FileTime::from_last_modification_time(&attr))
+                    {
+                        Ok(mtime) => Some((archive, mtime)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         //TODO: properly handle rustup overrides. Currently this will
         // cache based on the rustup rustc path, ignoring overrides.
         // https://github.com/mozilla/sccache/issues/87
         let result = match self.compilers.borrow().get(&path) {
-            // It's a hit only if the mtime matches.
-            Some(&Some((ref c, ref cached_mtime))) if *cached_mtime == mtime => Some(c.clone()),
+            // It's a hit only if the mtime and dist archive data matches.
+            Some(&Some((ref c, ref cached_mtime, ref cached_dist_info))) => {
+                if *cached_mtime == mtime && *cached_dist_info == dist_info {
+                    Some(c.clone())
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
         match result {
@@ -851,10 +876,16 @@ where
                 // so do it asynchronously.
                 let me = self.clone();
 
-                let info = get_compiler_info(&self.creator, &path, env, &self.pool);
+                let info = get_compiler_info(
+                    &self.creator,
+                    &path,
+                    env,
+                    &self.pool,
+                    dist_info.clone().map(|(p, _)| p),
+                );
                 Box::new(info.then(move |info| {
                     let map_info = match info {
-                        Ok(ref c) => Some((c.clone(), mtime)),
+                        Ok(ref c) => Some((c.clone(), mtime, dist_info)),
                         Err(_) => None,
                     };
                     me.compilers.borrow_mut().insert(path, map_info);

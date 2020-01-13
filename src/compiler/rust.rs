@@ -342,6 +342,7 @@ impl Rust {
         executable: PathBuf,
         env_vars: &[(OsString, OsString)],
         rustc_verbose_version: &str,
+        dist_archive: Option<PathBuf>,
         pool: CpuPool,
     ) -> SFuture<Rust>
     where
@@ -384,6 +385,10 @@ impl Rust {
                     })
                 })
                 .collect::<Vec<_>>();
+            if let Some(path) = dist_archive {
+                trace!("Hashing {:?} along with rustc libs.", path);
+                libs.push(path.to_path_buf());
+            };
             libs.sort();
             Ok((sysroot, libs))
         });

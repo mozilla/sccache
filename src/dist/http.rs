@@ -1062,7 +1062,7 @@ mod client {
     use futures_cpupool::CpuPool;
     use std::collections::HashMap;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1295,7 +1295,7 @@ mod client {
             compiler_path: &Path,
             weak_key: &str,
             toolchain_packager: Box<dyn ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, std::path::PathBuf)>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
@@ -1306,6 +1306,12 @@ mod client {
 
         fn rewrite_includes_only(&self) -> bool {
             self.rewrite_includes_only
+        }
+        fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf> {
+            match self.tc_cache.get_custom_toolchain(exe) {
+                Some(Ok((_, _, path))) => Some(path),
+                _ => None,
+            }
         }
     }
 }
