@@ -116,8 +116,8 @@ scheduler_url = "https://192.168.1.1"
 # Used for mapping local toolchains to remote cross-compile toolchains. Empty in
 # this example where the client and build server are both Linux.
 toolchains = []
-# Size of the local toolchain cache, in bytes.
-toolchain_cache_size = 1073741824
+# Size of the local toolchain cache, in bytes (5GB here, 10GB if unspecified).
+toolchain_cache_size = 5368709120
 
 [dist.auth]
 type = "token"
