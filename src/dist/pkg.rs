@@ -262,7 +262,22 @@ mod toolchain_imp {
                 // "linux-vdso.so.1 =>  (0x00007ffeb41f6000)"
                 (Some(_libname), Some(&"=>"), None) => continue,
                 // "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6877b85000)"
-                (Some(_libname), Some(&"=>"), Some(libpath)) => PathBuf::from(libpath),
+                (Some(libname), Some(&"=>"), Some(libpath)) => {
+                    // ldd (version 2.30) will output something like this:
+                    //   ...
+                    //   /lib64/ld-linux-x86-64.so.2 => /usr/lib64/ld-linux-x86-64.so.2
+                    //   ...
+                    // We need to add /lib64/ld-linux-x86-64.so.2 to deps, else we'll get error "No
+                    // such file or directory".
+                    //
+                    // Workaround: add libname to deps if it's abusolute and exists.
+                    let libname_path = PathBuf::from(libname);
+                    if libname_path.is_absolute() && libname_path.exists() {
+                        libs.push(libname_path)
+                    }
+
+                    PathBuf::from(libpath)
+                }
                 // "/lib64/ld-linux-x86-64.so.2 (0x00007f6878171000)"
                 (Some(libpath), None, None) => PathBuf::from(libpath),
                 _ => continue,
@@ -274,6 +289,7 @@ mod toolchain_imp {
 
             libs.push(libpath)
         }
+
         libs
     }
 
