@@ -519,7 +519,7 @@ where
                             debug!("[{}]: Running job", compile_out_pretty3);
                             dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
                                 .map(move |res| ((job_id, server_id), res))
-                                .chain_err(|| "could not run distributed compilation job")
+                                .chain_err(move || format!("could not run distributed compilation job on {:?}", server_id))
                         })
                 })
                 .and_then(move |((job_id, server_id), (jres, path_transformer))| {
