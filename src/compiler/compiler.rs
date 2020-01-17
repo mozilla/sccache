@@ -27,6 +27,7 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use futures::Future;
 use futures_cpupool::CpuPool;
+use lru_disk_cache::Error as LruError;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -466,6 +467,7 @@ where
     let compile_out_pretty3 = out_pretty.clone();
     let compile_out_pretty4 = out_pretty.clone();
     let local_executable = compile_cmd.executable.clone();
+    let local_executable2 = local_executable.clone();
     // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
     Box::new(future::result(dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into()))
         .and_then(move |dist_compile_cmd| {
@@ -575,9 +577,12 @@ where
                 errmsg.push_str(": ");
                 errmsg.push_str(&cause.to_string());
             }
-            // Client errors are considered fatal.
             match e {
                 Error(ErrorKind::HttpClientError(_), _) => f_err(e),
+                Error(ErrorKind::Lru(LruError::FileTooLarge), _) => f_err(format!(
+                    "Could not cache dist toolchain for {:?} locally.
+                     Increase `toolchain_cache_size` or decrease the toolchain archive size.",
+                    local_executable2)),
                 _ => {
                     warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
                     Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
