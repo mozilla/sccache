@@ -16,7 +16,7 @@ use crate::mock_command::{CommandChild, RunCommand};
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
 use futures_cpupool::CpuPool;
-use ring::digest::{Context, SHA512};
+use blake3::Hasher as blake3_Hasher;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -32,17 +32,17 @@ use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Digest {
-    inner: Context,
+    inner: blake3_Hasher,
 }
 
 impl Digest {
     pub fn new() -> Digest {
         Digest {
-            inner: Context::new(&SHA512),
+            inner: blake3_Hasher::new(),
         }
     }
 
-    /// Calculate the SHA-512 digest of the contents of `path`, running
+    /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
     pub fn file<T>(path: T, pool: &CpuPool) -> SFuture<String>
     where
@@ -51,7 +51,7 @@ impl Digest {
         Self::reader(path.as_ref().to_owned(), pool)
     }
 
-    /// Calculate the SHA-512 digest of the contents read from `reader`.
+    /// Calculate the BLAKE3 digest of the contents read from `reader`.
     pub fn reader_sync<R: Read>(reader: R) -> Result<String> {
         let mut m = Digest::new();
         let mut reader = BufReader::new(reader);
@@ -68,7 +68,7 @@ impl Digest {
         Ok(m.finish())
     }
 
-    /// Calculate the SHA-512 digest of the contents of `path`, running
+    /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
     pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
@@ -83,7 +83,7 @@ impl Digest {
     }
 
     pub fn finish(self) -> String {
-        hex(self.inner.finish().as_ref())
+        hex(self.inner.finalize().as_bytes())
     }
 }
 
