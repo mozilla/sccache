@@ -85,7 +85,7 @@ pub struct Rust {
     host: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
-    /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
+    /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
@@ -101,7 +101,7 @@ pub struct RustHasher {
     host: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
-    /// The SHA-1 digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
+    /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
     compiler_shlibs_digests: Vec<String>,
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
