@@ -1179,7 +1179,7 @@ LLVM version: 6.0",
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool)
             .wait()
             .unwrap();
-        // sha-1 digest of an empty file.
+        // digest of an empty file.
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
 
