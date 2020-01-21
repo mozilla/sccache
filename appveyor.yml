@@ -35,7 +35,7 @@ for:
         target: x86_64-pc-windows-msvc
       - channel: nightly
         target: x86_64-pc-windows-msvc
-      - channel: 1.31.1 # Oldest supported version. Keep in sync with README.md.
+      - channel: 1.36.0 # Oldest supported version. Keep in sync with README.md.
         target: x86_64-pc-windows-msvc
         # Build a release build on master to make sure it builds.
       - channel: stable
