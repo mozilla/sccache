@@ -560,7 +560,10 @@ pub fn generate_compile_commands(
         }
         .into();
         if !rewrite_includes_only {
-            language.push_str("-cpp-output");
+            match parsed_args.language {
+                Language::C => language = "cpp-output".into(),
+                _ => language.push_str("-cpp-output"),
+            }
         }
         let mut arguments: Vec<String> = vec![
             "-x".into(),
