@@ -61,8 +61,8 @@ impl Client {
 
     /// Returns a future that represents an acquired jobserver token.
     ///
-    /// This should be invoked before any "work" is spawend (for whatever the
-    /// defnition of "work" is) to ensure that the system is properly
+    /// This should be invoked before any "work" is spawned (for whatever the
+    /// definition of "work" is) to ensure that the system is properly
     /// rate-limiting itself.
     pub fn acquire(&self) -> SFuture<Acquired> {
         let (helper, tx) = match (self.helper.as_ref(), self.tx.as_ref()) {
