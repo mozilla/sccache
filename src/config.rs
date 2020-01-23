@@ -394,7 +394,7 @@ impl Default for DistConfig {
             cache_dir: default_dist_cache_dir(),
             toolchains: Default::default(),
             toolchain_cache_size: default_toolchain_cache_size(),
-            rewrite_includes_only: true,
+            rewrite_includes_only: false,
         }
     }
 }
