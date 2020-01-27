@@ -25,8 +25,8 @@ The scheduler is a daemon that manages compile request from clients and parcels 
 
 Create a scheduler.conf file to configure client/server authentication. A minimal example looks like:
 ```toml
-# The socket address the scheduler will listen on. It's strongly recommended to listen
-# on localhost and put a HTTPS server in front of it.
+# The socket address the scheduler will listen on. It's strongly recommended
+# to listen on localhost and put a HTTPS server in front of it.
 public_addr = "127.0.0.1:10600"
 
 [client_auth]
