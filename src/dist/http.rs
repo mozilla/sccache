@@ -1254,7 +1254,7 @@ mod client {
             inputs_packager: Box<dyn InputsPackager>,
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
-            let mut req = self.client.lock().unwrap().post(url);
+            let client = self.client.clone();
 
             Box::new(self.pool.spawn_fn(move || {
                 let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
@@ -1284,7 +1284,7 @@ mod client {
                         .finish()
                         .chain_err(|| "failed to finish compressor")?;
                 }
-
+                let mut req = client.lock().unwrap().post(url);
                 req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
                 bincode_req(req).map(|res| (res, path_transformer))
             }))
