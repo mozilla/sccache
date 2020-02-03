@@ -1165,6 +1165,26 @@ where
                         &env_vars,
                     )
                     .map(move |mut outputs| {
+                        // metadata / dep-info don't ever generate binaries, but
+                        // rustc still makes them appear in the --print
+                        // file-names output (see
+                        // https://github.com/rust-lang/rust/pull/68799).
+                        //
+                        // So if we see a binary in the rustc output and figure
+                        // out that we're not _actually_ generating it, then we
+                        // can avoid generating everything that isn't an rlib /
+                        // rmeta.
+                        //
+                        // This can go away once the above rustc PR makes it in.
+                        let emit_generates_only_metadata =
+                            !emit.is_empty() && emit.iter().all(|e| e == "metadata" || e == "dep-info");
+
+                        if emit_generates_only_metadata {
+                            outputs.retain(|o| {
+                                o.ends_with(".rlib") || o.ends_with(".rmeta")
+                            });
+                        }
+
                         if emit.contains("metadata") {
                             // rustc currently does not report rmeta outputs with --print file-names
                             // --emit metadata the rlib is printed, and with --emit metadata,link
@@ -1186,8 +1206,11 @@ where
                                 }
                             }
                         }
+
                         let output_dir = PathBuf::from(output_dir);
-                        // Convert output files into a map of basename -> full path.
+                        // Convert output files into a map of basename -> full
+                        // path, and remove some unneeded / non-existing ones,
+                        // see https://github.com/rust-lang/rust/pull/68799.
                         let mut outputs = outputs
                             .into_iter()
                             .map(|o| {
@@ -1223,10 +1246,10 @@ where
                             compilation: Box::new(RustCompilation {
                                 executable: executable,
                                 host,
-                                sysroot: sysroot,
-                                arguments: arguments,
-                                inputs: inputs,
-                                outputs: outputs,
+                                sysroot,
+                                arguments,
+                                inputs,
+                                outputs,
                                 crate_link_paths,
                                 crate_name,
                                 crate_types,
@@ -2673,7 +2696,7 @@ c:/foo/bar.rs:
                     staticlib: false,
                 },
                 dep_info: None,
-                emit: emit,
+                emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
             },
