@@ -329,6 +329,29 @@ mod toolchain_imp {
             assert_eq!(parse_ldd_output(static_output).len(), 0)
         }
     }
+
+    #[test]
+    fn test_ldd_parse_v2_30() {
+        let archlinux_ls_output = "\tlinux-vdso.so.1 (0x00007ffddc1f6000)
+\tlibcap.so.2 => /usr/lib/libcap.so.2 (0x00007f4980989000)
+\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f69ca6a1000)
+\tlibc.so.6 => /usr/lib/libc.so.6 (0x00007f49807c2000)
+\t/lib64/ld-linux-x86-64.so.2 => /usr/lib64/ld-linux-x86-64.so.2 (0x00007f49809e9000)
+";
+        assert_eq!(
+            parse_ldd_output(archlinux_ls_output)
+                .iter()
+                .map(|p| p.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            &[
+                "/usr/lib/libcap.so.2",
+                "/lib/x86_64-linux-gnu/libc.so.6",
+                "/usr/lib/libc.so.6",
+                "/lib64/ld-linux-x86-64.so.2",
+                "/usr/lib64/ld-linux-x86-64.so.2",
+            ]
+        )
+    }
 }
 
 pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
