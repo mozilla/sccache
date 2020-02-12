@@ -107,6 +107,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fprofile-instr-generate", ProfileGenerate),
     // Can be either -fprofile-instr-use or -fprofile-instr-use=path
     take_arg!("-fprofile-instr-use", OsString, Concatenated, TooHard),
+    take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
@@ -269,6 +270,19 @@ mod test {
         println!("A {:#?}", a);
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
         assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
+    }
+
+    #[test]
+    fn test_parse_fsanitize_blacklist() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize-blacklist=list.txt"
+        );
+        assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], a.common_args);
+        assert_eq!(ovec!["list.txt"], a.extra_hash_files);
     }
 
     #[test]
