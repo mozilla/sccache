@@ -21,7 +21,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use std::sync::{Arc, Mutex};
-use tempdir::TempDir;
+use tempfile::TempDir;
 
 use crate::errors::*;
 use crate::jobserver::Client;
@@ -192,7 +192,10 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 
 impl TestFixture {
     pub fn new() -> TestFixture {
-        let tempdir = TempDir::new("sccache_test").unwrap();
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test")
+            .tempdir()
+            .unwrap();
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
         let mut paths = vec![];

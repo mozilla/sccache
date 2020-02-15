@@ -53,7 +53,6 @@ use std::process;
 #[cfg(feature = "dist-client")]
 use std::sync::{Arc, Mutex};
 use std::time;
-use tempdir::TempDir;
 
 use crate::errors::*;
 
@@ -204,7 +203,10 @@ where
 {
     let start = time::Instant::now();
     // Get the full list of source files from rustc's dep-info.
-    let temp_dir = ftry!(TempDir::new("sccache").chain_err(|| "Failed to create temp dir"));
+    let temp_dir = ftry!(tempfile::Builder::new()
+        .prefix("sccache")
+        .tempdir()
+        .chain_err(|| "Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
@@ -1871,7 +1873,9 @@ struct RlibDepReader {
 #[cfg(feature = "dist-client")]
 impl RlibDepReader {
     fn new_with_check(executable: PathBuf, env_vars: &[(OsString, OsString)]) -> Result<Self> {
-        let temp_dir = TempDir::new("sccache-rlibreader")
+        let temp_dir = tempfile::Builder::new()
+            .prefix("sccache-rlibreader")
+            .tempdir()
             .chain_err(|| "Could not create temporary directory for rlib output")?;
         let temp_rlib = temp_dir.path().join("x.rlib");
 

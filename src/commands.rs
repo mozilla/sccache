@@ -77,10 +77,9 @@ fn read_server_startup_status<R: AsyncRead>(
 fn run_server_process() -> Result<ServerStartup> {
     use futures::Stream;
     use std::time::Duration;
-    use tempdir::TempDir;
 
     trace!("run_server_process");
-    let tempdir = TempDir::new("sccache")?;
+    let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
     let mut runtime = Runtime::new()?;
     let listener = tokio_uds::UnixListener::bind(&socket_path)?;

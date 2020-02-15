@@ -41,8 +41,7 @@ use std::process::{self, Stdio};
 use std::str;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tempdir::TempDir;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 use tokio_timer::Timeout;
 
 use crate::errors::*;
@@ -849,7 +848,7 @@ pub fn write_temp_file(
 ) -> SFuture<(TempDir, PathBuf)> {
     let path = path.to_owned();
     pool.spawn_fn(move || -> Result<_> {
-        let dir = TempDir::new("sccache")?;
+        let dir = tempfile::Builder::new().prefix("sccache").tempdir()?;
         let src = dir.path().join(path);
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;

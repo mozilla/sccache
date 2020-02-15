@@ -29,7 +29,6 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use std::io::Write;
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use tempdir::TempDir;
 
     fn sccache_command() -> Command {
         CargoBuild::new()
@@ -75,7 +74,10 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // Ensure there's no existing sccache server running.
     stop();
     // Create a temp directory to use for the disk cache.
-    let tempdir = TempDir::new("sccache_test_rust_cargo").unwrap();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test_rust_cargo")
+        .tempdir()
+        .unwrap();
     let cache_dir = tempdir.path().join("cache");
     fs::create_dir(&cache_dir).unwrap();
     let cargo_dir = tempdir.path().join("cargo");

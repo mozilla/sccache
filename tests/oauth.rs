@@ -10,7 +10,6 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tempdir::TempDir;
 
 const LOCAL_AUTH_BASE_URL: &str = "http://localhost:12731/";
 
@@ -235,7 +234,10 @@ fn test_auth() {
 }
 
 fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
-    let conf_dir = TempDir::new("sccache-test-conf").unwrap();
+    let conf_dir = tempfile::Builder::new()
+        .prefix("sccache-test-conf")
+        .tempdir()
+        .unwrap();
     let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
     let sccache_config_path = conf_dir.path().join("sccache-config.json");
     fs::File::create(&sccache_config_path)
