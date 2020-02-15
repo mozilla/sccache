@@ -285,7 +285,6 @@ mod client {
         use crate::config;
         use crate::test::utils::create_file;
         use std::io::Write;
-        use tempdir::TempDir;
 
         use super::ClientToolchains;
 
@@ -304,7 +303,10 @@ mod client {
 
         #[test]
         fn test_client_toolchains_custom() {
-            let td = TempDir::new("sccache").unwrap();
+            let td = tempfile::Builder::new()
+                .prefix("sccache")
+                .tempdir()
+                .unwrap();
 
             let ct1 =
                 create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();
@@ -332,7 +334,10 @@ mod client {
 
         #[test]
         fn test_client_toolchains_custom_multiuse_archive() {
-            let td = TempDir::new("sccache").unwrap();
+            let td = tempfile::Builder::new()
+                .prefix("sccache")
+                .tempdir()
+                .unwrap();
 
             let ct1 =
                 create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();
@@ -390,7 +395,10 @@ mod client {
 
         #[test]
         fn test_client_toolchains_nodist() {
-            let td = TempDir::new("sccache").unwrap();
+            let td = tempfile::Builder::new()
+                .prefix("sccache")
+                .tempdir()
+                .unwrap();
 
             let client_toolchains = ClientToolchains::new(
                 &td.path().join("cache"),
@@ -412,7 +420,10 @@ mod client {
 
         #[test]
         fn test_client_toolchains_custom_nodist_conflict() {
-            let td = TempDir::new("sccache").unwrap();
+            let td = tempfile::Builder::new()
+                .prefix("sccache")
+                .tempdir()
+                .unwrap();
 
             let ct1 =
                 create_file(td.path(), "ct1", |mut f| f.write_all(b"toolchain_contents")).unwrap();

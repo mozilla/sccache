@@ -406,7 +406,6 @@ mod test {
     use futures::Future;
     use std::fs::File;
     use std::io::Write;
-    use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -617,7 +616,10 @@ mod test {
 
     #[test]
     fn test_at_signs_file_not_readable() {
-        let td = TempDir::new("sccache").unwrap();
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
         let arg = format!("-@{}", td.path().join("foo").display());
         // File foo doesn't exist.
         assert_eq!(
@@ -628,7 +630,10 @@ mod test {
 
     #[test]
     fn test_at_signs_file() {
-        let td = TempDir::new("sccache").unwrap();
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
         File::create(td.path().join("foo"))
             .unwrap()
             .write_all(b"-c foo.c -o foo.o")

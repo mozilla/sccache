@@ -485,7 +485,7 @@ where
             CCompilerKind::GCC => {
                 cmd.arg("-fdirectives-only");
             }
-            _ => {},
+            _ => {}
         }
     }
     cmd.arg(&parsed_args.input)
@@ -683,7 +683,6 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use futures::Future;
-    use tempdir::TempDir;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -1145,7 +1144,10 @@ mod test {
 
     #[test]
     fn at_signs() {
-        let td = TempDir::new("sccache").unwrap();
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
         File::create(td.path().join("foo"))
             .unwrap()
             .write_all(

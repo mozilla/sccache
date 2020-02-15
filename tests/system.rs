@@ -36,7 +36,6 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
-use tempdir::TempDir;
 use which::which_in;
 
 mod harness;
@@ -431,7 +430,10 @@ fn test_sccache_command() {
         Ok(_) => {}
         Err(_) => {}
     }
-    let tempdir = TempDir::new("sccache_system_test").unwrap();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
     let compilers = find_compilers();
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");

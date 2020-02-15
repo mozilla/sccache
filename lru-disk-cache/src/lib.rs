@@ -331,7 +331,7 @@ mod tests {
     use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     struct TestFixture {
         /// Temp directory.
@@ -370,7 +370,10 @@ mod tests {
     impl TestFixture {
         pub fn new() -> TestFixture {
             TestFixture {
-                tempdir: TempDir::new("lru-disk-cache-test").unwrap(),
+                tempdir: tempfile::Builder::new()
+                    .prefix("lru-disk-cache-test")
+                    .tempdir()
+                    .unwrap(),
             }
         }
 

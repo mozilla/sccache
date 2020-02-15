@@ -7,7 +7,6 @@ extern crate error_chain;
 extern crate log;
 extern crate sccache;
 extern crate serde_json;
-extern crate tempdir;
 
 use crate::harness::{
     get_stats, sccache_command, start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
@@ -20,7 +19,6 @@ use sccache::dist::{
 };
 use std::ffi::OsStr;
 use std::path::Path;
-use tempdir::TempDir;
 
 use sccache::errors::*;
 
@@ -63,7 +61,10 @@ pub fn dist_test_sccache_client_cfg(
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_basic() {
-    let tmpdir = TempDir::new("sccache_dist_test").unwrap();
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
     let tmpdir = tmpdir.path();
     let sccache_dist = harness::sccache_dist_path();
 
@@ -93,7 +94,10 @@ fn test_dist_basic() {
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_restartedserver() {
-    let tmpdir = TempDir::new("sccache_dist_test").unwrap();
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
     let tmpdir = tmpdir.path();
     let sccache_dist = harness::sccache_dist_path();
 
@@ -126,7 +130,10 @@ fn test_dist_restartedserver() {
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_nobuilder() {
-    let tmpdir = TempDir::new("sccache_dist_test").unwrap();
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
     let tmpdir = tmpdir.path();
     let sccache_dist = harness::sccache_dist_path();
 
@@ -189,7 +196,10 @@ impl ServerIncoming for FailingServer {
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_failingserver() {
-    let tmpdir = TempDir::new("sccache_dist_test").unwrap();
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
     let tmpdir = tmpdir.path();
     let sccache_dist = harness::sccache_dist_path();
 
