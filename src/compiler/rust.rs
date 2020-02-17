@@ -15,7 +15,7 @@
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult,
+    CompilerKind, CompilerProxy, HashResult,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -25,6 +25,7 @@ use crate::dist::pkg;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
+use filetime::FileTime;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use log::Level::Trace;
@@ -95,7 +96,7 @@ pub struct Rust {
 /// A struct on which to hang a `CompilerHasher` impl.
 #[derive(Debug, Clone)]
 pub struct RustHasher {
-    /// The path to the rustc executable.
+    /// The path to the rustc executable, not the rustup proxy.
     executable: PathBuf,
     /// The host triple for this rustc.
     host: String,
@@ -109,6 +110,14 @@ pub struct RustHasher {
     /// Parsed arguments from the rustc invocation
     parsed_args: ParsedArguments,
 }
+
+/// a lookup proxy for determining the actual compiler used per file or directory
+#[derive(Debug,Clone)]
+pub struct RustupProxy {
+    proxy_executable: PathBuf,
+    filetime: FileTime,
+}
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
@@ -140,7 +149,7 @@ pub struct ParsedArguments {
 /// A struct on which to hang a `Compilation` impl.
 #[derive(Debug, Clone)]
 pub struct RustCompilation {
-    /// The path to the rustc executable.
+    /// The path to the rustc executable, not the rustup proxy.
     executable: PathBuf,
     /// The host triple for this rustc.
     host: String,
@@ -358,6 +367,7 @@ impl Rust {
             .ok_or_else(|| Error::from("rustc verbose version didn't have a line for `host:`")))
         .to_string();
 
+        // it's fine to use the `executable` directly no matter if proxied or not
         let mut cmd = creator.new_command_sync(&executable);
         cmd.stdout(process::Stdio::piped())
             .stderr(process::Stdio::null())
@@ -465,7 +475,7 @@ where
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
-                executable: self.executable.clone(),
+                executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
                 host: self.host.clone(),
                 sysroot: self.sysroot.clone(),
                 compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
@@ -482,6 +492,99 @@ where
 
     fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
+    }
+}
+
+
+
+impl<T> CompilerProxy<T> for RustupProxy
+where
+    T: CommandCreatorSync,
+{
+    fn resolve_proxied_executable(
+        &self,
+        mut creator: T,
+        _cwd: PathBuf,
+        env: &[(OsString,OsString)],
+    ) -> SFuture<Option<(PathBuf, FileTime)>> {
+
+        let proxy_executable = self.proxy_executable.clone(); // XXX is there a better way to do this?
+
+        let mut child = creator.new_command_sync(&proxy_executable);
+        child.env_clear().envs(ref_env(env)).args(&["which", "rustc"]);
+
+        let lookup =
+            run_input_output(child, None)
+                .map(move |output| {
+                    String::from_utf8(output.stdout.clone())
+                        .and_then(|stdout| {
+                            let proxied_compiler = PathBuf::from(stdout.trim());
+                            trace!("rustup which rustc produced: {:?}", &proxied_compiler);
+                            let opt = fs::metadata(proxied_compiler.as_path())
+                            .map(|attr| { FileTime::from_last_modification_time(&attr) })
+                            .map(|filetime| {(proxied_compiler, filetime)})
+                            .ok();
+                        Ok(opt)
+                    }).ok().flatten()
+                });
+
+        Box::new(lookup)
+
+    }
+
+    fn box_clone(&self) -> Box<dyn CompilerProxy<T>> {
+        Box::new((*self).clone())
+    }
+}
+
+impl RustupProxy
+{
+    pub fn new<P>(proxy_executable : P) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let filetime = fs::metadata(proxy_executable.as_ref())
+            .map(|attr| { FileTime::from_last_modification_time(&attr) })?;
+        let proxy_executable = proxy_executable.as_ref().to_owned();
+        Ok(Self {
+            proxy_executable,
+            filetime,
+        })
+    }
+
+    pub fn find_proxy_executable<T>(
+        name : &str,
+        mut creator: T,
+        env: &[(OsString,OsString)],
+    ) -> SFuture<Result<Self>>
+    where
+        T: CommandCreatorSync,
+    {
+        match which::which(name) {
+            Ok(proxy_executable) => {
+                let mut child = creator.new_command_sync(proxy_executable.to_owned());
+                child.env_clear().envs(ref_env(env)).args(&["--version"]);
+                let rustup =
+                run_input_output(child, None)
+                    .map(move |output| {
+                        String::from_utf8(output.stdout.clone())
+                        .map_err(|_e| { "Nope TODO 2".into() })
+                        .and_then(|stdout| {
+                                if stdout.trim().starts_with("rustup ") {
+                                    trace!("PROXY rustup --version produced: {}", &stdout);
+                                    Self::new(&proxy_executable)
+                                } else {
+                                    Err("Unexpected output".into())
+                                }
+                        })
+                });
+                Box::new(rustup)
+            },
+            Err(e) => {
+                trace!("rustup not present");
+                f_err(ErrorKind::Which(e))
+            }
+        }
     }
 }
 
