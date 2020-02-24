@@ -94,10 +94,6 @@ syslog = { version = "4.0.1", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.10", optional = true }
 
-[patch.crates-io]
-# Waiting for #151 to make it into a release
-tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680de" }
-
 [dev-dependencies]
 assert_cmd = "0.9"
 cc = "1.0"
