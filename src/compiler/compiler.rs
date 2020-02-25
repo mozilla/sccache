@@ -1165,7 +1165,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &cwd, &[], &pool, None)
+        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
@@ -1180,7 +1180,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &cwd, &[], &pool, None)
+        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
@@ -1209,7 +1209,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &cwd, &[], &pool, None)
+        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
@@ -1243,7 +1243,7 @@ LLVM version: 6.0",
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(&creator, &rustc, &[], &pool, None)
+        let c = detect_compiler(creator.clone(), &rustc, f.tempdir.path(),&[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::Rust, c.kind());
@@ -1258,7 +1258,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
+        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
@@ -1266,6 +1266,7 @@ LLVM version: 6.0",
 
     #[test]
     fn test_detect_compiler_kind_unknown() {
+        let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(
@@ -1273,7 +1274,7 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
         assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+            detect_compiler(creator.clone(), "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1281,11 +1282,12 @@ LLVM version: 6.0",
 
     #[test]
     fn test_detect_compiler_kind_process_fail() {
+        let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+            detect_compiler(creator, "/foo/bar".as_ref(), f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1298,7 +1300,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // digest of an empty file.
@@ -1316,7 +1318,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // The preprocessor invocation.
@@ -1420,9 +1422,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // The preprocessor invocation.
         next_command(
             &creator,
@@ -1520,9 +1522,9 @@ LLVM version: 6.0",
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // The preprocessor invocation.
         next_command(
             &creator,
@@ -1594,9 +1596,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";
         const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
@@ -1707,9 +1709,9 @@ LLVM version: 6.0",
             f.write_all(b"file contents")?;
             Ok(MockChild::new(exit_status(0), "gcc", ""))
         });
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // We should now have a fake object file.
         assert_eq!(fs::metadata(&obj).is_ok(), true);
         // The preprocessor invocation.
@@ -1768,9 +1770,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";
         const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing

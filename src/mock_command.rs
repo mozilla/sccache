@@ -533,6 +533,7 @@ impl CommandCreator for MockCommandCreator {
     }
 }
 
+
 /// To simplify life for using a `CommandCreator` across multiple threads.
 impl<T: CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
     type Cmd = T::Cmd;
