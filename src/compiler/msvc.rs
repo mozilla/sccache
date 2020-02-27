@@ -227,29 +227,43 @@ ArgData! {
 
 use self::ArgData::*;
 
-counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("-D", OsString, Concatenated, PreprocessorArgument),
-    take_arg!("-FA", OsString, Concatenated, TooHard),
-    take_arg!("-FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    take_arg!("-FR", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fa", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fd", PathBuf, Concatenated, ProgramDatabase),
-    take_arg!("-Fe", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fi", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fm", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fo", PathBuf, Concatenated, Output),
-    take_arg!("-Fp", PathBuf, Concatenated, TooHardPath),
-    take_arg!("-Fr", PathBuf, Concatenated, TooHardPath),
-    flag!("-Fx", TooHardFlag),
-    take_arg!("-I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    take_arg!("-U", OsString, Concatenated, PreprocessorArgument),
-    take_arg!("-Xclang", OsString, Separated, XClang),
-    flag!("-Zi", DebugInfo),
-    flag!("-c", DoCompilation),
-    take_arg!("-deps", PathBuf, Concatenated, DepFile),
-    flag!("-fsyntax-only", TooHardFlag),
-    take_arg!("-o", PathBuf, Separated, Output), // Deprecated but valid
-    flag!("-showIncludes", ShowIncludes),
+macro_rules! msvc_args {
+    (static ARGS: [$t:ty; _] = [$($macro:ident ! ($($v:tt)*),)*]) => {
+        counted_array!(static ARGS: [$t; _] = [$(msvc_args!(@one "-", $macro!($($v)*)),)*]);
+        counted_array!(static SLASH_ARGS: [$t; _] = [$(msvc_args!(@one "/", $macro!($($v)*)),)*]);
+    };
+    (@one $prefix:expr, msvc_take_arg!($s:expr, $($t:tt)*)) => {
+        take_arg!(concat!($prefix, $s), $($t)+)
+    };
+    (@one $prefix:expr, msvc_flag!($s:expr, $($t:tt)+)) => {
+        flag!(concat!($prefix, $s), $($t)+)
+    };
+    (@one $prefix:expr, $other:expr) => { $other };
+}
+
+msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
+    msvc_take_arg!("D", OsString, Concatenated, PreprocessorArgument),
+    msvc_take_arg!("FA", OsString, Concatenated, TooHard),
+    msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
+    msvc_take_arg!("Fe", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fm", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
+    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
+    msvc_flag!("Fx", TooHardFlag),
+    msvc_take_arg!("I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    msvc_take_arg!("U", OsString, Concatenated, PreprocessorArgument),
+    msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_flag!("Zi", DebugInfo),
+    msvc_flag!("c", DoCompilation),
+    msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
+    msvc_flag!("fsyntax-only", TooHardFlag),
+    msvc_take_arg!("o", PathBuf, Separated, Output), // Deprecated but valid
+    msvc_flag!("showIncludes", ShowIncludes),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
@@ -270,18 +284,7 @@ pub fn parse_arguments(
     let mut show_includes = false;
     let mut xclangs: Vec<OsString> = vec![];
 
-    // First convert all `/foo` arguments to `-foo` to accept both styles
-    let it = arguments.iter().map(|i| {
-        if let Some(arg) = i.split_prefix("/") {
-            let mut dash = OsString::from("-");
-            dash.push(&arg);
-            dash
-        } else {
-            i.clone()
-        }
-    });
-
-    for arg in ArgsIter::new(it, &ARGS[..]) {
+    for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
