@@ -1811,7 +1811,10 @@ src/bin/sccache-dist/build.rs:
 src/bin/sccache-dist/token_check.rs:
 ", prefix="c:");
 
-    let tempdir = TempDir::new("sccache_test").unwrap();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
     let tempdir = tempdir.path();
     let depinfo_file = create_file(tempdir, "depinfo.d", |mut f| {
         f.write_all(depinfo_data.as_bytes())
