@@ -514,6 +514,7 @@ struct CToolchainPackager {
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::os::unix::ffi::OsStringExt;
+        use which::which;
 
         info!("Generating toolchain {}", self.executable.display());
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
