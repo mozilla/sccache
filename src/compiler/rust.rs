@@ -504,14 +504,17 @@ where
     fn resolve_proxied_executable(
         &self,
         mut creator: T,
-        _cwd: PathBuf,
+        cwd: PathBuf,
         env: &[(OsString,OsString)],
     ) -> SFuture<Option<(PathBuf, FileTime)>> {
 
-        let proxy_executable = self.proxy_executable.clone(); // XXX is there a better way to do this?
+        let proxy_executable = self.proxy_executable.clone();
 
         let mut child = creator.new_command_sync(&proxy_executable);
-        child.env_clear().envs(ref_env(env)).args(&["which", "rustc"]);
+        child.current_dir(&cwd)
+            .env_clear()
+            .envs(ref_env(&env))
+            .args(&["which", "rustc"]);
 
         let lookup =
             run_input_output(child, None)
@@ -519,7 +522,7 @@ where
                     String::from_utf8(output.stdout.clone())
                         .and_then(|stdout| {
                             let proxied_compiler = PathBuf::from(stdout.trim());
-                            trace!("rustup which rustc produced: {:?}", &proxied_compiler);
+                            trace!("proxy: rustup which rustc produced: {:?}", &proxied_compiler);
                             let opt = fs::metadata(proxied_compiler.as_path())
                             .map(|attr| { FileTime::from_last_modification_time(&attr) })
                             .map(|filetime| {(proxied_compiler, filetime)})

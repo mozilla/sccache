@@ -864,15 +864,8 @@ where
     ) -> SFuture<Result<Box<dyn Compiler<C>>>> {
         trace!("compiler_info");
 
-
-        let env = env.iter().cloned().collect::<Vec<(OsString,OsString)>>();
-
         let me = self.clone();
         let me1 = self.clone();
-        // TODO make the cache hold Box<dyn CompilerProxy>>
-        // TODO make everything else dependent on that result
-        // TODO and use it's methods as needed to resolve
-        // TODO to the actual compiler path
 
         // lookup if compiler proxy exists for the current compiler path
         let compiler_proxies_borrow = self.compiler_proxies.borrow();
