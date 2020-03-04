@@ -1165,7 +1165,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
         );
-        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
@@ -1180,7 +1180,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
         );
-        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
@@ -1209,7 +1209,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
@@ -1243,7 +1243,7 @@ LLVM version: 6.0",
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(creator.clone(), &rustc, f.tempdir.path(),&[], &pool, None)
+        let c = detect_compiler(creator, &rustc, f.tempdir.path(),&[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::Rust, c.kind());
@@ -1258,7 +1258,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
         );
-        let c = detect_compiler(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
@@ -1274,7 +1274,7 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
         assert!(
-            detect_compiler(creator.clone(), "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None)
+            detect_compiler(creator, "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1389,13 +1389,13 @@ LLVM version: 6.0",
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
                     Ok(None),
-                    creator.clone(),
-                    storage.clone(),
+                    creator,
+                    storage,
                     arguments,
                     cwd.to_path_buf(),
                     vec![],
                     CacheControl::Default,
-                    pool.clone(),
+                    pool,
                 )
             }))
             .unwrap();
@@ -1557,13 +1557,13 @@ LLVM version: 6.0",
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
                     Ok(None),
-                    creator.clone(),
-                    storage.clone(),
+                    creator,
+                    storage,
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
                     CacheControl::Default,
-                    pool.clone(),
+                    pool,
                 )
             }))
             .unwrap();
