@@ -604,18 +604,18 @@ type CompilerMap<C> =
 struct CompilerCacheEntry<C : CommandCreatorSync> {
     /// compiler argument trait obj
     pub compiler : Box<dyn Compiler<C>>,
-    /// when did this entry get inserted into the cache
+    /// modification time of the compilers executable file
     pub mtime : FileTime,
     /// distributed compilation extra info
     pub dist_info : Option<(PathBuf, FileTime)>,
 }
 
-impl<C> From<(Box<dyn Compiler<C>>, FileTime, Option<(PathBuf, FileTime)>)> for CompilerCacheEntry<C> where C: CommandCreatorSync {
-    fn from(triplet: (Box<dyn Compiler<C>>, FileTime, Option<(PathBuf, FileTime)>)) -> Self {
-        CompilerCacheEntry {
-            compiler : triplet.0,
-            mtime : triplet.1,
-            dist_info : triplet.2,
+impl<C> CompilerCacheEntry<C> where C: CommandCreatorSync {
+    fn new(compiler : Box<dyn Compiler<C>>, mtime : FileTime, dist_info : Option<(PathBuf, FileTime)>) -> Self {
+        Self {
+            compiler,
+            mtime,
+            dist_info,
         }
     }
 }
@@ -990,7 +990,7 @@ where
                                     // TODO the same as the resolved compiler binary
 
                                     // cache
-                                    let map_info = CompilerCacheEntry::from((c.clone(), mtime, dist_info));
+                                    let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
                                     trace!("Inserting POSSIBLY PROXIED cache map info for {:?}", &resolved_compiler_path);
                                     me.compilers.borrow_mut().insert(resolved_compiler_path, Some(map_info));
                                 },
