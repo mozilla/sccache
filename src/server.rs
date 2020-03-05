@@ -955,9 +955,8 @@ where
                         // finished. This generally involves invoking the compiler,
                         // so do it asynchronously.
 
-                        // this must be done with the passed `path`, since that is the proxy
-                        // only this will work in all cases
-
+                        // the compiler path might be compiler proxy, so it is important to use
+                        // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
                         let x = get_compiler_info::<C>(
                             me.creator.clone(),
                             &path1,
