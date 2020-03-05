@@ -82,7 +82,8 @@ untrusted = { version = "0.6.0", optional = true }
 url = { version = "1.0", optional = true }
 uuid = { version = "0.7", features = ["v4"] }
 walkdir = "1.0.7"
-which = "2"
+# by default which pulls in an outdated failure version
+which = { version = "3", default-features = false }
 zip = { version = "0.4", default-features = false, features = ["deflate"] }
 
 # dist-server only
