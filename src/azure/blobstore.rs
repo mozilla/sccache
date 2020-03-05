@@ -24,7 +24,7 @@ use reqwest::r#async::{Client, Request};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use rouille::url::Url;
+use url::Url;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
@@ -74,7 +74,7 @@ impl BlobContainer {
 
     pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
-        let uri = Url::from_str(&url_string).unwrap();
+        let uri = reqwest::Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
 
         let canonical_headers = format!("x-ms-date:{}\nx-ms-version:{}\n", date, BLOB_API_VERSION);
@@ -85,7 +85,7 @@ impl BlobContainer {
             "", // content_md5
             "", // content_type
             &canonical_headers,
-            &uri,
+            &{url::Url::parse(uri.clone().as_str()).unwrap()},
             creds,
         );
 
@@ -137,7 +137,7 @@ impl BlobContainer {
                                     len
                                 ));
                             } else {
-                                info!("Read {} bytes from {}", bytes.len(), uri_second_copy);
+                                info!("Read {} bytes from {}", bytes.len(), uri_second_copy.as_str());
                             }
                         }
                         Ok(bytes)
@@ -148,7 +148,7 @@ impl BlobContainer {
 
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
         let url_string = format!("{}{}", self.url, key);
-        let uri = Url::from_str(&url_string).unwrap();
+        let uri = reqwest::Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
         let content_type = "application/octet-stream";
         let content_md5 = md5(&content);
@@ -170,7 +170,7 @@ impl BlobContainer {
             &content_md5,
             content_type,
             &canonical_headers,
-            &uri,
+            &{url::Url::parse(uri.clone().as_str()).unwrap()},
             creds,
         );
 
