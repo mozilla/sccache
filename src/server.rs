@@ -585,7 +585,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
         runtime
-            .block_on(Timeout::new(wait, Duration::new(10, 0)))
+            .block_on(Timeout::new(wait, Duration::new(30, 0)))
             .map_err(|e| {
                 if e.is_inner() {
                     e.into_inner().unwrap()
