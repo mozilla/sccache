@@ -872,6 +872,7 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
+        let env = env.into_iter().cloned().collect::<Vec<(OsString,OsString)>>();
 
         let resolve_w_proxy = if let Some((compiler_proxy, filetime)) = compiler_proxies_borrow.get(&path) {
             let fut = compiler_proxy.resolve_proxied_executable(
