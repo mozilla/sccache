@@ -120,14 +120,6 @@ where
         cwd: &Path,
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<dyn Compiler<T>>;
-
-    /// in case the executable is a proxy binary, and not the actual binary
-    /// proxied paths returns a proxy path resolver
-    ///
-    /// i.e. rustup installs a rustc dummy binary, which resolves to actual rustc
-    /// compilers depending on a lookup based on the current working directory
-    /// see https://github.com/mozilla/sccache/issues/87 for details
-    fn proxy(&self) -> Option<Box<dyn CompilerProxy<T>>> { None }
 }
 
 impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
