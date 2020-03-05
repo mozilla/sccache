@@ -1845,19 +1845,24 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.9.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0c747d743d48233f9bc3ed3fb00cb84c1d98d8c7f54ed2d4cca9adf461a7ef3"
+checksum = "292057bfe9f60d877816c916630c957460fbe30b15f26103702f6ac2a2358a35"
 dependencies = [
  "bytes",
  "combine",
+ "dtoa",
  "futures",
+ "itoa",
+ "percent-encoding 2.1.0",
  "sha1",
  "tokio-codec",
  "tokio-executor",
  "tokio-io",
+ "tokio-sync",
  "tokio-tcp",
- "url 1.7.2",
+ "tokio-uds",
+ "url 2.1.1",
 ]
 
 [[package]]
