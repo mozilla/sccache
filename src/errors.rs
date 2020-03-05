@@ -61,6 +61,23 @@ error_chain! {
         Which(err: which::Error) {
             display("{}", err)
         }
+        CryptoError(msg : String) {
+            display("Cryptographic ops failed: {}", msg)
+        }
+    }
+}
+
+
+
+impl From<ring::error::Unspecified> for Error {
+    fn from(e: ring::error::Unspecified) -> Self {
+        Error::from(ErrorKind::CryptoError(e.to_string()))
+    }
+}
+
+impl From<ring::error::KeyRejected> for Error {
+    fn from(e: ring::error::KeyRejected) -> Self {
+        Error::from(ErrorKind::CryptoError(e.to_string()))
     }
 }
 

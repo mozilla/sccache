@@ -312,12 +312,14 @@ fn sign_rsa(
     alg: &'static dyn signature::RsaEncoding,
 ) -> Result<String> {
     let key_pair = signature::RsaKeyPair::from_pkcs8(key)
+        .map_err(|e| -> Error { Error::from(e) })
         .chain_err(|| "failed to deserialize rsa key")?;
 
     let mut signature = vec![0; key_pair.public_modulus_len()];
     let rng = ring::rand::SystemRandom::new();
     key_pair
         .sign(alg, &rng, signing_input.as_bytes(), &mut signature)
+        .map_err(|e| -> Error { Error::from(e) })
         .chain_err(|| "failed to sign JWT claim")?;
 
     Ok(base64::encode_config(&signature, base64::URL_SAFE_NO_PAD))
