@@ -30,8 +30,21 @@ use reqwest::r#async::{Client, Request};
 use serde::de;
 use url::{
     form_urlencoded,
-    percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
 };
+use percent_encoding::{AsciiSet, utf8_percent_encode, CONTROLS};
+
+/// FRAGMENT as defined in url spec
+/// https://url.spec.whatwg.org/#query-state
+const FRAGMENT_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'`').add(b'<').add(b'>');
+
+/// PATH as defined in url spec
+/// https://url.spec.whatwg.org/#query-state
+const PATH_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'{').add(b'}').add(b'?').add(b'#');
+
+/// defined compatible to url 1.x
+const QUERY_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'<').add(b'>');
+/// defined compatible to url 1.x
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &PATH_ENCODE_SET.add(b'/').add(b'%');
 
 /// GCS bucket
 struct Bucket {
@@ -55,8 +68,8 @@ impl Bucket {
     fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<Vec<u8>> {
         let url = format!(
             "https://www.googleapis.com/download/storage/v1/b/{}/o/{}?alt=media",
-            percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
-            percent_encode(key.as_bytes(), PATH_SEGMENT_ENCODE_SET)
+            utf8_percent_encode(&self.name, PATH_SEGMENT_ENCODE_SET),
+            utf8_percent_encode(key, PATH_SEGMENT_ENCODE_SET)
         );
 
         let client = self.client.clone();
@@ -110,8 +123,8 @@ impl Bucket {
     ) -> SFuture<()> {
         let url = format!(
             "https://www.googleapis.com/upload/storage/v1/b/{}/o?name={}&uploadType=media",
-            percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
-            percent_encode(key.as_bytes(), QUERY_ENCODE_SET)
+            utf8_percent_encode(&self.name, PATH_SEGMENT_ENCODE_SET),
+            utf8_percent_encode(key, QUERY_ENCODE_SET)
         );
 
         let client = self.client.clone();

@@ -24,7 +24,7 @@ use reqwest::r#async::{Client, Request};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use url::Url;
+use rouille::url::Url;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
