@@ -706,7 +706,6 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
@@ -810,7 +809,6 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
