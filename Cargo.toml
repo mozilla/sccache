@@ -45,7 +45,7 @@ hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
 lazy_static = "1.4"
-libc = "0.2.10"
+libc = "^0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
 rsa = "0.3"
