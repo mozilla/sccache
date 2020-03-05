@@ -706,6 +706,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
+
         assert!(true, "Parsed ok");
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
@@ -782,6 +783,42 @@ mod test {
         assert_eq!(2, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-gsplit-dwarf"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_linker_options() {
+        let args = stringvec![
+            // is basically the same as `-z deps`
+            "-Wl,--unresolved-symbols=report-all",
+            "-z", "call-nop=suffix-nop",
+            "-z", "deps",
+            "-c", "foo.c",
+            "-o", "foo.o"
+        ];
+
+        let ParsedArguments {
+            input,
+            language,
+            depfile: _,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match _parse_arguments(&args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+
+        assert!(true, "Parsed ok");
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(3, common_args.len());
         assert!(!msvc_show_includes);
     }
 
