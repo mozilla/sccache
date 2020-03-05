@@ -111,6 +111,14 @@ set OPENSSL_LIBS=libcrypto64MT:libssl64MT
 cargo install sccache
 ```
 
+### macOS
+
+sccache can also be installed via [Homebrew](https://brew.sh/)
+
+```
+brew install sccache
+```
+
 ### Windows
 
 sccache can also be installed via [scoop](https://scoop.sh/)
