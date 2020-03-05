@@ -190,6 +190,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-trigraphs", PreprocessorArgumentFlag),
     take_arg!("-u", OsString, CanBeSeparated, PassThrough),
     take_arg!("-x", OsString, CanBeSeparated, Language),
+    take_arg!("-z", OsString, CanBeSeparated, PassThrough),
     take_arg!("@", OsString, Concatenated, TooHard),
 ]);
 
