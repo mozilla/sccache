@@ -288,7 +288,7 @@ fn create_jwt_server_token(
     header: &jwt::Header,
     key: &[u8],
 ) -> Result<String> {
-    jwt::encode(&header, &ServerJwt { server_id }, key).map_err(Into::into)
+    jwt::encode(&header, &ServerJwt { server_id }, &jwt::EncodingKey::from_secret(key)).map_err(Into::into)
 }
 fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
     jwt::dangerous_unsafe_decode::<ServerJwt>(&server_token)
@@ -300,7 +300,7 @@ fn check_jwt_server_token(
     key: &[u8],
     validation: &jwt::Validation,
 ) -> Option<ServerId> {
-    jwt::decode::<ServerJwt>(server_token, key, validation)
+    jwt::decode::<ServerJwt>(server_token, &jwt::DecodingKey::from_secret(key), validation)
         .map(|res| res.claims.server_id)
         .ok()
 }

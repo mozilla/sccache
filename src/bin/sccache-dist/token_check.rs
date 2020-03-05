@@ -359,12 +359,12 @@ impl ValidJWTCheck {
             .get(&kid)
             .chain_err(|| "kid not found in jwks")?;
         let mut validation = jwt::Validation::new(header.alg);
-        validation.set_audience(&self.audience);
+        validation.set_audience(&[&self.audience]);
         validation.iss = Some(self.issuer.clone());
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
+        let _tokendata = jwt::decode::<Claims>(token, &jwt::DecodingKey::from_rsa_der(pkcs1), &validation)
             .chain_err(|| "Unable to validate and decode jwt")?;
         Ok(())
     }
