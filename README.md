@@ -36,7 +36,7 @@ Table of Contents (ToC)
 Build Requirements
 ------------------
 
-Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.36.0**.
+Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.41.1**.
 
 We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very [portable](#building-portable-binaries). By default `sccache` supports a local disk cache. To build `sccache` with support for `S3` and/or `Redis` cache backends, add `--features=all` or select a specific feature by passing `s3`, `gcs`, and/or `redis`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
 
@@ -147,8 +147,7 @@ in `$HOME/.cargo/config` by adding:
 rustc-wrapper = "/path/to/sccache"
 ```
 
-Note that you need to use cargo 1.40 or newer for this to work.  (In cargo 1.40 you will see a warning about this
-configuration not being used.  This is a false positive.  The warning will go away in future releases.)
+Note that you need to use cargo 1.40 or newer for this to work.
 
 Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 
