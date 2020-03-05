@@ -571,20 +571,20 @@ impl RustupProxy
                 run_input_output(child, None)
                     .map(move |output| {
                         String::from_utf8(output.stdout.clone())
-                        .map_err(|_e| { "Nope TODO 2".into() })
+                        .map_err(|_e| { "Response of `rustup --version` is not valid UTF-8".into() })
                         .and_then(|stdout| {
                                 if stdout.trim().starts_with("rustup ") {
                                     trace!("PROXY rustup --version produced: {}", &stdout);
                                     Self::new(&proxy_executable)
                                 } else {
-                                    Err("Unexpected output".into())
+                                    Err("Unexpected output or `rustup --version`".into())
                                 }
                         })
                 });
                 Box::new(rustup)
             },
             Err(e) => {
-                trace!("rustup not present");
+                trace!("rustup is not present");
                 f_err(ErrorKind::Which(e))
             }
         }
