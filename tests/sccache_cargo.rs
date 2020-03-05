@@ -5,20 +5,20 @@
 
 #![deny(rust_2018_idioms)]
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[macro_use]
 extern crate log;
 
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.
 #[test]
-#[cfg(not(target_os = "macos"))] // test currently fails on macos
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo() {
     test_rust_cargo_cmd("check");
     test_rust_cargo_cmd("build");
 }
 
-#[cfg(not(target_os = "macos"))] // test currently fails on macos
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo_cmd(cmd: &str) {
     use assert_cmd::prelude::*;
     use chrono::Local;
