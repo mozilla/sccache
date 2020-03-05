@@ -868,28 +868,27 @@ where
         let me1 = self.clone();
 
         // lookup if compiler proxy exists for the current compiler path
-        let compiler_proxies_borrow = self.compiler_proxies.borrow();
 
         let path2 = path.clone();
         let path1 = path.clone();
         let env = env.into_iter().cloned().collect::<Vec<(OsString,OsString)>>();
 
-        let resolve_w_proxy = if let Some((compiler_proxy, filetime)) = compiler_proxies_borrow.get(&path) {
-            let fut = compiler_proxy.resolve_proxied_executable(
-                self.creator.clone(),
-                cwd.clone(),
-                env.as_slice(),
-            );
-            Box::new(fut)
-        } else {
-            f_ok(None)
+        let resolve_w_proxy = {
+            let compiler_proxies_borrow = self.compiler_proxies.borrow();
+
+            if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
+                let fut = compiler_proxy.resolve_proxied_executable(
+                    self.creator.clone(),
+                    cwd.clone(),
+                    env.as_slice(),
+                );
+                Box::new(fut)
+            } else {
+                f_ok(None)
+            }
         };
 
-        drop(compiler_proxies_borrow);
-
         // use the supplied compiler path as fallback, lookup it's modification time too
-        //
-        // TODO figure out a better way so in the transition phase with warmed caches this does
         let w_fallback = resolve_w_proxy
             .then(move |res: Result<Option<(PathBuf, FileTime)>>| {
                 let opt = match res {
