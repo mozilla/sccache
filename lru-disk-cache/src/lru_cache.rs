@@ -80,7 +80,7 @@ impl<K, V> Meter<K, V> for Count {
     type Measure = ();
 
     /// Don't actually count anything either.
-    fn measure<Q: ?Sized>(&self, _: &Q, _: &V) -> ()
+    fn measure<Q: ?Sized>(&self, _: &Q, _: &V)
     where
         K: Borrow<Q>,
     {
@@ -248,7 +248,7 @@ impl<K: Eq + Hash, V, M: CountableMeter<K, V>> LruCache<K, V, RandomState, M> {
             map: LinkedHashMap::new(),
             current_measure: Default::default(),
             max_capacity: capacity,
-            meter: meter,
+            meter,
         }
     }
 }
@@ -337,7 +337,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
             map: LinkedHashMap::with_hasher(hash_builder),
             current_measure: Default::default(),
             max_capacity: capacity,
-            meter: meter,
+            meter,
         }
     }
 

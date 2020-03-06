@@ -101,7 +101,7 @@ fn run_server_process() -> Result<ServerStartup> {
         if err.is_elapsed() {
             Ok(ServerStartup::TimedOut)
         } else if err.is_inner() {
-            Err(err.into_inner().unwrap().into())
+            Err(err.into_inner().unwrap())
         } else {
             Err(err.into_timer().unwrap().into())
         }
@@ -333,7 +333,7 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
 fn request_compile<W, X, Y>(
     conn: &mut ServerConnection,
     exe: W,
-    args: &Vec<X>,
+    args: &[X],
     cwd: Y,
     env_vars: Vec<(OsString, OsString)>,
 ) -> Result<CompileResponse>
@@ -346,7 +346,7 @@ where
         exe: exe.as_ref().to_owned().into(),
         cwd: cwd.as_ref().to_owned().into(),
         args: args.iter().map(|a| a.as_ref().to_owned()).collect(),
-        env_vars: env_vars,
+        env_vars,
     });
     trace!("request_compile: {:?}", req);
     //TODO: better error mapping?
@@ -440,6 +440,7 @@ fn handle_compile_finished(
 ///
 /// If the server returned `UnhandledCompile`, run the compilation command
 /// locally using `creator` and return the result.
+#[allow(clippy::too_many_arguments)]
 fn handle_compile_response<T>(
     mut creator: T,
     runtime: &mut Runtime,
@@ -464,12 +465,10 @@ where
                 }
                 Ok(_) => bail!("unexpected response from server"),
                 Err(Error(ErrorKind::Io(ref e), _)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    writeln!(
-                        io::stderr(),
+                    eprintln!(
                         "warning: sccache server looks like it shut down \
                          unexpectedly, compiling locally instead"
-                    )
-                    .unwrap();
+                    );
                 }
                 Err(e) => {
                     return Err(e).chain_err(|| {
@@ -512,6 +511,7 @@ where
 /// The first entry in `cmdline` will be looked up in `path` if it is not
 /// an absolute path.
 /// See `request_compile` and `handle_compile_response`.
+#[allow(clippy::too_many_arguments)]
 pub fn do_compile<T>(
     creator: T,
     runtime: &mut Runtime,

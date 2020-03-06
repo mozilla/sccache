@@ -145,6 +145,7 @@ where
 
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
+    #[allow(clippy::too_many_arguments)]
     fn get_cached_or_compile(
         self: Box<Self>,
         dist_client: Result<Option<Arc<dyn dist::Client>>>,
@@ -245,8 +246,8 @@ where
                         });
                         let output = process::Output {
                             status: exit_status(0),
-                            stdout: stdout,
-                            stderr: stderr,
+                            stdout,
+                            stderr,
                         };
                         let result = CompileResult::CacheHit(duration);
                         return Box::new(write.map(|_| (result, output))) as SFuture<_>;
@@ -360,7 +361,7 @@ where
                                         }
                                         res.map(|duration| CacheWriteInfo {
                                             object_file_pretty: out_pretty,
-                                            duration: duration,
+                                            duration,
                                         })
                                     });
                                     let future = Box::new(future);
@@ -464,7 +465,7 @@ where
     let compile_out_pretty = out_pretty.clone();
     let compile_out_pretty2 = out_pretty.clone();
     let compile_out_pretty3 = out_pretty.clone();
-    let compile_out_pretty4 = out_pretty.clone();
+    let compile_out_pretty4 = out_pretty;
     let local_executable = compile_cmd.executable.clone();
     let local_executable2 = local_executable.clone();
     // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK

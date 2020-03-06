@@ -48,15 +48,9 @@ impl S3Cache {
         ];
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
-        let ssl_mode = match use_ssl {
-            true => Ssl::Yes,
-            false => Ssl::No,
-        };
+        let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
         let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
-        Ok(S3Cache {
-            bucket: bucket,
-            provider: provider,
-        })
+        Ok(S3Cache { bucket, provider })
     }
 }
 

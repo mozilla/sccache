@@ -68,7 +68,7 @@ impl Storage for DiskCache {
                     trace!("DiskCache::get({}): IoError: {:?}", key, e);
                     return Err(e.into());
                 }
-                Err(_) => panic!("Unexpected error!"),
+                Err(_) => unreachable!(),
             };
             let hit = CacheRead::from(f)?;
             Ok(Cache::Hit(hit))

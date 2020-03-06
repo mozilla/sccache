@@ -261,19 +261,16 @@ impl DistClientContainer {
             DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => Ok(None),
             DistClientState::FailWithMessage(_, msg) => Err(Error::from(msg.clone())),
         };
-        match res {
-            Err(_) => {
-                let config = match mem::replace(state, DistClientState::Disabled) {
-                    DistClientState::FailWithMessage(config, _) => config,
-                    _ => unreachable!(),
-                };
-                // The client is most likely mis-configured, make sure we
-                // re-create on our next attempt.
-                *state =
-                    DistClientState::RetryCreateAt(config, Instant::now() - Duration::from_secs(1));
-            }
-            _ => (),
-        };
+        if res.is_err() {
+            let config = match mem::replace(state, DistClientState::Disabled) {
+                DistClientState::FailWithMessage(config, _) => config,
+                _ => unreachable!(),
+            };
+            // The client is most likely mis-configured, make sure we
+            // re-create on our next attempt.
+            *state =
+                DistClientState::RetryCreateAt(config, Instant::now() - Duration::from_secs(1));
+        }
         res
     }
 
@@ -329,15 +326,10 @@ impl DistClientContainer {
                 info!("Enabling distributed sccache to {}", url);
                 let auth_token = match &config.auth {
                     config::DistAuth::Token { token } => Ok(token.to_owned()),
-                    config::DistAuth::Oauth2CodeGrantPKCE {
-                        client_id: _,
-                        auth_url,
-                        token_url: _,
+                    config::DistAuth::Oauth2CodeGrantPKCE { auth_url, .. }
+                    | config::DistAuth::Oauth2Implicit { auth_url, .. } => {
+                        Self::get_cached_config_auth_token(auth_url)
                     }
-                    | config::DistAuth::Oauth2Implicit {
-                        client_id: _,
-                        auth_url,
-                    } => Self::get_cached_config_auth_token(auth_url),
                 };
                 let auth_token = try_or_fail_with_message!(auth_token.chain_err(|| {
                     "could not load client auth token, run |sccache --dist-auth|"
@@ -457,12 +449,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 
         Ok(SccacheServer {
-            runtime: runtime,
-            listener: listener,
-            rx: rx,
-            service: service,
+            runtime,
+            listener,
+            rx,
+            service,
             timeout: Duration::from_secs(get_idle_timeout()),
-            wait: wait,
+            wait,
         })
     }
 
@@ -556,7 +548,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         ];
 
         let shutdown_idle = ShutdownOrInactive {
-            rx: rx,
+            rx,
             timeout: if timeout != Duration::new(0, 0) {
                 Some(Delay::new(Instant::now() + timeout))
             } else {
@@ -1069,11 +1061,11 @@ where
 
                     error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                    let mut error = format!("sccache: encountered fatal error\n");
-                    drop(writeln!(error, "sccache: error : {}", err));
+                    let mut error = "sccache: encountered fatal error\n".to_string();
+                    let _ = writeln!(error, "sccache: error : {}", err);
                     for e in err.iter() {
                         error!("[{:?}] \t{}", out_pretty, e);
-                        drop(writeln!(error, "sccache:  cause: {}", e));
+                        let _ = writeln!(error, "sccache:  cause: {}", e);
                     }
                     stats.cache_errors.increment(&kind);
                     //TODO: figure out a better way to communicate this?
@@ -1115,14 +1107,14 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PerLanguageCount {
     counts: HashMap<String, u64>,
 }
 
 impl PerLanguageCount {
     fn increment(&mut self, kind: &CompilerKind) {
-        let key = kind.lang_kind().clone();
+        let key = kind.lang_kind();
         let count = match self.counts.get(&key) {
             Some(v) => v + 1,
             None => 1,
@@ -1139,9 +1131,7 @@ impl PerLanguageCount {
     }
 
     pub fn new() -> PerLanguageCount {
-        PerLanguageCount {
-            counts: HashMap::new(),
-        }
+        Self::default()
     }
 }
 
@@ -1353,7 +1343,7 @@ impl ServerStats {
                 stat_width = stat_width + suffix_len
             );
         }
-        if self.dist_compiles.len() > 0 {
+        if !self.dist_compiles.is_empty() {
             println!("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
             counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
@@ -1380,7 +1370,7 @@ impl ServerStats {
                     stat_width = stat_width
                 );
             }
-            println!("");
+            println!();
         }
         (name_width, stat_width)
     }
@@ -1400,7 +1390,7 @@ impl ServerInfo {
             ("Cache size", &self.cache_size),
             ("Max cache size", &self.max_cache_size),
         ] {
-            if let &Some(val) = val {
+            if let Some(val) = *val {
                 let (val, suffix) = match binary_prefix(val as f64) {
                     Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
                     Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
@@ -1489,7 +1479,7 @@ impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
             error!("SccacheTransport::poll failed: {}", e);
             io::Error::new(io::ErrorKind::Other, e)
         }));
-        Ok(msg.map(|m| Message::WithoutBody(m)).into())
+        Ok(msg.map(Message::WithoutBody).into())
     }
 }
 
@@ -1501,10 +1491,9 @@ impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
         match item {
             Frame::Message { message, body } => match self.inner.start_send(message)? {
                 AsyncSink::Ready => Ok(AsyncSink::Ready),
-                AsyncSink::NotReady(message) => Ok(AsyncSink::NotReady(Frame::Message {
-                    message: message,
-                    body: body,
-                })),
+                AsyncSink::NotReady(message) => {
+                    Ok(AsyncSink::NotReady(Frame::Message { message, body }))
+                }
             },
             Frame::Body { chunk: Some(chunk) } => match self.inner.start_send(chunk)? {
                 AsyncSink::Ready => Ok(AsyncSink::Ready),
@@ -1581,10 +1570,7 @@ impl WaitUntilZero {
             blocker: None,
         }));
 
-        (
-            WaitUntilZero { info: info.clone() },
-            ActiveInfo { info: info },
-        )
+        (WaitUntilZero { info: info.clone() }, ActiveInfo { info })
     }
 }
 

@@ -203,7 +203,7 @@ impl<'a, T: ArgumentValue> Iterator for Iter<'a, T> {
                 _ => None,
             },
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
@@ -255,7 +255,7 @@ impl<'a, T: ArgumentValue, F: FnMut(&Path) -> Option<String>> Iterator for IterS
                 _ => None,
             },
         };
-        if let Some(_) = result {
+        if result.is_some() {
             self.emitted += 1;
         }
         result
@@ -489,7 +489,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
 /// function. This implementation is tweaked to handle the case where the
 /// comparison function does prefix matching, where multiple items in the array
 /// might match, but the last match is the one actually matching.
-fn bsearch<'a, K, T, F>(key: K, items: &'a [T], cmp: F) -> Option<&'a T>
+fn bsearch<K, T, F>(key: K, items: &[T], cmp: F) -> Option<&T>
 where
     F: Fn(&T, &K) -> Ordering,
 {
@@ -589,8 +589,8 @@ where
         #[cfg(debug_assertions)]
         debug_assert!(arg_info.check());
         ArgsIter {
-            arguments: arguments,
-            arg_info: arg_info,
+            arguments,
+            arg_info,
             phantom: PhantomData,
         }
     }
@@ -610,7 +610,7 @@ where
             let arguments = &mut self.arguments;
             Some(match self.arg_info.search(&s[..]) {
                 Some(i) => i.clone().process(&s[..], || arguments.next()),
-                None => Ok(if s.starts_with("-") {
+                None => Ok(if s.starts_with('-') {
                     Argument::UnknownFlag(arg.clone())
                 } else {
                     Argument::Raw(arg.clone())

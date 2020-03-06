@@ -86,16 +86,16 @@ impl fmt::Display for Error {
 
 impl StdError for Error {
     fn description(&self) -> &str {
-        match self {
-            &Error::FileTooLarge => "File too large",
-            &Error::FileNotInCache => "File not in cache",
-            &Error::Io(ref e) => e.description(),
+        match *self {
+            Error::FileTooLarge => "File too large",
+            Error::FileNotInCache => "File not in cache",
+            Error::Io(ref e) => e.description(),
         }
     }
 
     fn cause(&self) -> Option<&dyn StdError> {
-        match self {
-            &Error::Io(ref e) => Some(e),
+        match *self {
+            Error::Io(ref e) => Some(e),
             _ => None,
         }
     }
@@ -153,6 +153,10 @@ impl LruDiskCache {
     /// Return the count of entries in the cache.
     pub fn len(&self) -> usize {
         self.lru.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lru.len() == 0
     }
 
     /// Return the maximum size of the cache.

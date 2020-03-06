@@ -87,6 +87,12 @@ impl Digest {
     }
 }
 
+impl Default for Digest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
@@ -112,7 +118,7 @@ pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
     Box::new(
         future::join_all(
             files
-                .into_iter()
+                .iter()
                 .map(move |f| Digest::file(f, &pool))
                 .collect::<Vec<_>>(),
         )
@@ -129,11 +135,7 @@ pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
 
 /// Format `duration` as seconds with a fractional component.
 pub fn fmt_duration_as_secs(duration: &Duration) -> String {
-    format!(
-        "{}.{:03} s",
-        duration.as_secs(),
-        duration.subsec_nanos() / 1000_000
-    )
+    format!("{}.{:03} s", duration.as_secs(), duration.subsec_millis())
 }
 
 /// If `input`, write it to `child`'s stdin while also reading `child`'s stdout and stderr, then wait on `child` and return its status and output.
@@ -167,7 +169,7 @@ where
         let stdout = out.map(|p| p.1);
         let stderr = err.map(|p| p.1);
         process::Output {
-            status: status,
+            status,
             stdout: stdout.unwrap_or_default(),
             stderr: stderr.unwrap_or_default(),
         }
@@ -507,15 +509,15 @@ pub fn daemonize() -> Result<()> {
         }
 
         unsafe {
-            drop(writeln!(Stderr, "signal {} received", signum));
+            let _ = writeln!(Stderr, "signal {} received", signum);
 
             // Configure the old handler and then resume the program. This'll
             // likely go on to create a runtime dump if one's configured to be
             // created.
             match signum {
-                libc::SIGBUS => libc::sigaction(signum, &*PREV_SIGBUS, 0 as *mut _),
-                libc::SIGILL => libc::sigaction(signum, &*PREV_SIGILL, 0 as *mut _),
-                _ => libc::sigaction(signum, &*PREV_SIGSEGV, 0 as *mut _),
+                libc::SIGBUS => libc::sigaction(signum, &*PREV_SIGBUS, std::ptr::null_mut()),
+                libc::SIGILL => libc::sigaction(signum, &*PREV_SIGILL, std::ptr::null_mut()),
+                _ => libc::sigaction(signum, &*PREV_SIGSEGV, std::ptr::null_mut()),
             };
         }
     }

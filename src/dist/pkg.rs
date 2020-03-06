@@ -381,9 +381,9 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     }
 
     // tar-rs imposes that `set_path` takes a relative path
-    assert!(dest.starts_with("/"));
-    let dest = dest.trim_start_matches("/");
-    assert!(!dest.starts_with("/"));
+    assert!(dest.starts_with('/'));
+    let dest = dest.trim_start_matches('/');
+    assert!(!dest.starts_with('/'));
     // `set_path` converts its argument to a Path and back to bytes on Windows, so this is
     // a bit of an inefficient round-trip. Windows path separators will also be normalised
     // to be like Unix, and the path is (now) relative so there should be no funny results

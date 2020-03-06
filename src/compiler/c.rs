@@ -121,8 +121,8 @@ impl Language {
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
-        match *self {
+    pub fn as_str(self) -> &'static str {
+        match self {
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objc",
@@ -166,6 +166,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments>;
     /// Run the C preprocessor with the specified set of arguments.
+    #[allow(clippy::too_many_arguments)]
     fn preprocess<T>(
         &self,
         creator: &T,
@@ -198,9 +199,9 @@ where
     pub fn new(compiler: I, executable: PathBuf, pool: &CpuPool) -> SFuture<CCompiler<I>> {
         Box::new(
             Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
-                executable: executable,
+                executable,
                 executable_digest: digest,
-                compiler: compiler,
+                compiler,
             }),
         )
     }
@@ -317,7 +318,7 @@ where
                                 ..output
                             }))
                         }
-                        e @ _ => Err(e),
+                        e => Err(e),
                     }
                 })
                 .and_then(move |preprocessor_result| {
@@ -344,13 +345,13 @@ where
                         let weak_toolchain_key =
                             format!("{}-{}", executable.to_string_lossy(), executable_digest);
                         Ok(HashResult {
-                            key: key,
+                            key,
                             compilation: Box::new(CCompilation {
-                                parsed_args: parsed_args,
+                                parsed_args,
                                 #[cfg(feature = "dist-client")]
                                 preprocessed_input: preprocessor_result.stdout,
-                                executable: executable,
-                                compiler: compiler,
+                                executable,
+                                compiler,
                                 cwd,
                                 env_vars,
                             }),

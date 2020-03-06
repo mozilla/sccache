@@ -17,6 +17,7 @@ mod args;
 mod c;
 mod clang;
 #[macro_use]
+#[allow(clippy::module_inception)]
 mod compiler;
 mod diab;
 mod gcc;

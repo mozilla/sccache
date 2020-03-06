@@ -14,6 +14,7 @@
 
 #[cfg(feature = "azure")]
 pub mod azure;
+#[allow(clippy::module_inception)]
 pub mod cache;
 pub mod disk;
 #[cfg(feature = "gcs")]
