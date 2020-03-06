@@ -413,7 +413,7 @@ impl Rust {
             };
             hash_all(&libs, &pool).map(move |digests| {
                 Rust {
-                    executable: executable,
+                    executable,
                     host,
                     sysroot,
                     compiler_shlibs_digests: digests,
@@ -425,7 +425,7 @@ impl Rust {
         #[cfg(not(feature = "dist-client"))]
         return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
             hash_all(&libs, &pool).map(move |digests| Rust {
-                executable: executable,
+                executable,
                 host,
                 sysroot,
                 compiler_shlibs_digests: digests,
@@ -509,7 +509,7 @@ impl FromArg for ArgCrateTypes {
             staticlib: false,
             others: HashSet::new(),
         };
-        for ty in arg.split(",") {
+        for ty in arg.split(',') {
             match ty {
                 // It is assumed that "lib" always refers to "rlib", which
                 // is true right now but may not be in the future
@@ -708,7 +708,7 @@ impl IntoArg for ArgTarget {
         match self {
             ArgTarget::Name(s) => s.into(),
             ArgTarget::Path(p) => p.into(),
-            ArgTarget::Unsure(s) => s.into(),
+            ArgTarget::Unsure(s) => s,
         }
     }
     fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
@@ -848,7 +848,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             }
             Some(CrateName(value)) => crate_name = Some(value.clone()),
             Some(OutDir(value)) => output_dir = Some(value.clone()),
-            Some(Extern(ArgExtern { name: _, path })) => externs.push(path.clone()),
+            Some(Extern(ArgExtern { path, .. })) => externs.push(path.clone()),
             Some(CodeGen(ArgCodegen { opt, value })) => {
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
@@ -982,10 +982,10 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         arguments: args,
         output_dir: output_dir.into(),
         crate_types,
-        externs: externs,
+        externs,
         crate_link_paths,
-        staticlibs: staticlibs,
-        crate_name: crate_name.to_string(),
+        staticlibs,
+        crate_name,
         dep_info: dep_info.map(|s| s.into()),
         emit,
         color_mode,
@@ -1026,8 +1026,8 @@ where
                     crate_types,
                     dep_info,
                     emit,
-                    color_mode: _,
                     has_json,
+                    ..
                 },
         } = me;
         trace!("[{}]: generate_hash_key", crate_name);
@@ -1249,7 +1249,7 @@ where
                         HashResult {
                             key: m.finish(),
                             compilation: Box::new(RustCompilation {
-                                executable: executable,
+                                executable,
                                 host,
                                 sysroot,
                                 arguments,
@@ -2806,7 +2806,7 @@ c:/foo/bar.rs:
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
-            parsed_args: parsed_args,
+            parsed_args,
         });
 
         let creator = new_creator();

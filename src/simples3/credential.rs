@@ -52,8 +52,8 @@ impl AwsCredentials {
         AwsCredentials {
             key: key.into(),
             secret: secret.into(),
-            token: token,
-            expires_at: expires_at,
+            token,
+            expires_at,
         }
     }
 
@@ -203,7 +203,7 @@ impl ProvideAwsCredentials for ProfileProvider {
         let result = result.and_then(|mut profiles| {
             profiles
                 .remove(self.profile())
-                .ok_or("profile not found".into())
+                .ok_or_else(|| "profile not found".into())
         });
         Box::new(future::result(result))
     }
@@ -234,14 +234,11 @@ fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredent
 
         // handle the opening of named profile blocks
         if profile_regex.is_match(&unwrapped_line) {
-            if profile_name.is_some() && access_key.is_some() && secret_key.is_some() {
-                let creds = AwsCredentials::new(
-                    access_key.unwrap(),
-                    secret_key.unwrap(),
-                    None,
-                    in_ten_minutes(),
-                );
-                profiles.insert(profile_name.unwrap(), creds);
+            if let (Some(profile_name), Some(access_key), Some(secret_key)) =
+                (profile_name, access_key, secret_key)
+            {
+                let creds = AwsCredentials::new(access_key, secret_key, None, in_ten_minutes());
+                profiles.insert(profile_name, creds);
             }
 
             access_key = None;
@@ -270,14 +267,11 @@ fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredent
         // we could potentially explode here to indicate that the file is invalid
     }
 
-    if profile_name.is_some() && access_key.is_some() && secret_key.is_some() {
-        let creds = AwsCredentials::new(
-            access_key.unwrap(),
-            secret_key.unwrap(),
-            None,
-            in_ten_minutes(),
-        );
-        profiles.insert(profile_name.unwrap(), creds);
+    if let (Some(profile_name), Some(access_key), Some(secret_key)) =
+        (profile_name, access_key, secret_key)
+    {
+        let creds = AwsCredentials::new(access_key, secret_key, None, in_ten_minutes());
+        profiles.insert(profile_name, creds);
     }
 
     if profiles.is_empty() {
@@ -533,9 +527,7 @@ impl ChainProvider {
 
     /// Create a new `ChainProvider` using the provided `ProfileProvider`s.
     pub fn with_profile_providers(profile_providers: Vec<ProfileProvider>) -> ChainProvider {
-        ChainProvider {
-            profile_providers: profile_providers,
-        }
+        ChainProvider { profile_providers }
     }
 }
 

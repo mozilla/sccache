@@ -294,7 +294,7 @@ mod path_transform {
 
 pub fn osstrings_to_strings(osstrings: &[OsString]) -> Option<Vec<String>> {
     osstrings
-        .into_iter()
+        .iter()
         .map(|arg| arg.clone().into_string().ok())
         .collect::<Option<_>>()
 }
@@ -302,7 +302,7 @@ pub fn osstring_tuples_to_strings(
     osstring_tuples: &[(OsString, OsString)],
 ) -> Option<Vec<(String, String)>> {
     osstring_tuples
-        .into_iter()
+        .iter()
         .map(|(k, v)| Some((k.clone().into_string().ok()?, v.clone().into_string().ok()?)))
         .collect::<Option<_>>()
 }
@@ -493,8 +493,7 @@ impl OutputData {
     #[cfg(feature = "dist-client")]
     pub fn into_reader(self) -> impl Read {
         use flate2::read::ZlibDecoder as ZlibReadDecoder;
-        let decompressor = ZlibReadDecoder::new(io::Cursor::new(self.0));
-        decompressor
+        ZlibReadDecoder::new(io::Cursor::new(self.0))
     }
 }
 pub struct OutputDataLens {

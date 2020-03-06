@@ -217,7 +217,7 @@ mod client {
             &self,
             compiler_path: &Path,
         ) -> Option<Result<(Toolchain, String, PathBuf)>> {
-            return match self
+            match self
                 .custom_toolchain_paths
                 .lock()
                 .unwrap()
@@ -259,7 +259,7 @@ mod client {
                     )))
                 }
                 None => None,
-            };
+            }
         }
 
         fn weak_to_strong(&self, weak_key: &str) -> Option<String> {

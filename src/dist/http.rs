@@ -1123,7 +1123,7 @@ mod client {
                 client_async: Arc::new(Mutex::new(client_async)),
                 pool: pool.clone(),
                 tc_cache: Arc::new(client_toolchains),
-                rewrite_includes_only: rewrite_includes_only,
+                rewrite_includes_only,
             })
         }
 
@@ -1264,7 +1264,7 @@ mod client {
                 let mut body = vec![];
                 body.write_u32::<BigEndian>(bincode_length as u32)
                     .expect("Infallible write of bincode length to vec failed");
-                body.write(&bincode)
+                body.write_all(&bincode)
                     .expect("Infallible write of bincode body to vec failed");
                 let path_transformer;
                 {

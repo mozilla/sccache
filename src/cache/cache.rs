@@ -134,6 +134,12 @@ impl CacheWrite {
     }
 }
 
+impl Default for CacheWrite {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// An interface to cache storage.
 pub trait Storage {
     /// Get a cache entry by `key`.
