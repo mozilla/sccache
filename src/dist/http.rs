@@ -428,18 +428,7 @@ mod server {
         }
     }
     impl std::error::Error for RouilleBincodeError {
-        fn description(&self) -> &str {
-            match *self {
-                RouilleBincodeError::BodyAlreadyExtracted => {
-                    "the body of the request was already extracted"
-                }
-                RouilleBincodeError::WrongContentType => {
-                    "the request didn't have a binary content type"
-                }
-                RouilleBincodeError::ParseError(_) => "error while parsing the bincode body",
-            }
-        }
-        fn cause(&self) -> Option<&dyn std::error::Error> {
+        fn source(&self) -> Option<&(dyn std::error::Error +'static)>{
             match *self {
                 RouilleBincodeError::ParseError(ref e) => Some(e),
                 _ => None,
@@ -451,7 +440,17 @@ mod server {
             &self,
             fmt: &mut std::fmt::Formatter<'_>,
         ) -> std::result::Result<(), std::fmt::Error> {
-            write!(fmt, "{}", std::error::Error::description(self))
+            write!(fmt, "{}",
+                match *self {
+                    RouilleBincodeError::BodyAlreadyExtracted => {
+                        "the body of the request was already extracted"
+                    }
+                    RouilleBincodeError::WrongContentType => {
+                        "the request didn't have a binary content type"
+                    }
+                    RouilleBincodeError::ParseError(_) => "error while parsing the bincode body",
+                }
+            )
         }
     }
     fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError>
@@ -475,16 +474,16 @@ mod server {
 
     // Based on try_or_400 in rouille, but with logging
     #[derive(Serialize)]
-    pub struct ErrJson<'a> {
-        description: &'a str,
-        cause: Option<Box<ErrJson<'a>>>,
+    pub struct ErrJson {
+        description: String,
+        cause: Option<Box<ErrJson>>,
     }
 
-    impl<'a> ErrJson<'a> {
-        fn from_err<E: ?Sized + std::error::Error>(err: &'a E) -> ErrJson<'a> {
+    impl ErrJson {
+        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson{
             let cause = err.source().map(ErrJson::from_err).map(Box::new);
             ErrJson {
-                description: err.description(),
+                description: err.to_string(),
                 cause,
             }
         }
@@ -503,7 +502,7 @@ mod server {
                     let mut maybe_cause = err.source();
                     while let Some(cause) = maybe_cause {
                         err_msg.push_str(", caused by: ");
-                        err_msg.push_str(cause.description());
+                        err_msg.push_str(&cause.to_string());
                         maybe_cause = cause.source();
                     }
 
