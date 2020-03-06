@@ -956,7 +956,7 @@ mod tests {
             "-quxbar", // -quxbar is not -qux with a value of bar
             "-qux=value",
         ];
-        let iter = ArgsIter::new(args.into_iter().map(OsString::from), &ARGS[..]);
+        let iter = ArgsIter::new(args.iter().map(OsString::from), &ARGS[..]);
         let expected = vec![
             arg!(UnknownFlag("-nomatch")),
             arg!(WithValue("-foo", ArgData::Foo("value"), Separated)),
@@ -1029,8 +1029,7 @@ mod tests {
 
     #[test]
     fn test_arginfo_process_take_concat_arg_delim_doesnt_crash() {
-        let _ = take_arg!("-foo", OsString, Concatenated('='), Foo)
-            .process("-foo", || None);
+        let _ = take_arg!("-foo", OsString, Concatenated('='), Foo).process("-foo", || None);
     }
 
     #[cfg(debug_assertions)]

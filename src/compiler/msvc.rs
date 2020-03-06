@@ -19,7 +19,7 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::run_input_output;
 use futures::future::Future;
 use futures_cpupool::CpuPool;
 use local_encoding::{Encoder, Encoding};

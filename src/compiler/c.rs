@@ -36,7 +36,6 @@ use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
-use which::which;
 
 use crate::errors::*;
 
@@ -551,7 +550,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
             if path.is_absolute() {
                 Some(path)
             } else {
-                which(path).ok()
+                which::which(path).ok()
             }
         };
 
