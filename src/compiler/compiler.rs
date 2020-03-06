@@ -1235,6 +1235,8 @@ LLVM version: 6.0",
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
         let c = detect_compiler(creator, &rustc, f.tempdir.path(),&[], &pool, None)
             .wait()
             .unwrap().0;
