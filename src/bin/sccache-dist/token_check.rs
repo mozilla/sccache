@@ -202,7 +202,7 @@ fn check_mozilla_profile(user: &str, required_groups: &[String], profile: &str) 
 #[test]
 fn test_auth_verify_check_mozilla_profile() {
     // A successful response
-    let profile =  r#"{
+    let profile = r#"{
         "sub": "ad|Mozilla-LDAP|asayers",
         "https://sso.mozilla.com/claim/groups": [
             "everyone",
