@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::mock_command::{CommandChild, RunCommand};
+use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
 use futures_cpupool::CpuPool;
-use blake3::Hasher as blake3_Hasher;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
