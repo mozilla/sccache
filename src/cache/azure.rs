@@ -45,7 +45,7 @@ impl AzureBlobCache {
 
         Ok(AzureBlobCache {
             container: Rc::new(container),
-            credentials: credentials,
+            credentials,
         })
     }
 }

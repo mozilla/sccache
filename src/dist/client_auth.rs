@@ -233,7 +233,7 @@ mod code_grant_pkce {
         }
         // Calculate ASAP the actual time at which the token will expire
         let expires_at = Instant::now() + Duration::from_secs(res.expires_in);
-        Ok((token.to_owned(), expires_at))
+        Ok((token, expires_at))
     }
 
     const SUCCESS_AFTER_REDIRECT: &str = r##"<!doctype html>

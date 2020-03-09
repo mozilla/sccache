@@ -177,11 +177,7 @@ impl SeleniumContainer {
 
 impl Drop for SeleniumContainer {
     fn drop(&mut self) {
-        let Output {
-            status: _,
-            stdout,
-            stderr,
-        } = Command::new("docker")
+        let Output { stdout, stderr, .. } = Command::new("docker")
             .args(&["logs", &self.cid])
             .output()
             .unwrap();

@@ -34,7 +34,7 @@ const BLOB_API_VERSION: &str = "2017-04-17";
 fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
     hmac.input(data);
-    hmac.result().code().iter().map(|b| *b).collect::<Vec<u8>>()
+    hmac.result().code().iter().copied().collect::<Vec<u8>>()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
@@ -117,7 +117,7 @@ impl BlobContainer {
                             .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
                     }
                 })
                 .and_then(|(body, content_length)| {
@@ -207,7 +207,7 @@ impl BlobContainer {
                     Ok(())
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status().clone()).into())
+                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
                 }
             }
             Err(e) => {
@@ -336,12 +336,12 @@ mod test {
 
         let container = BlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
 
-        let put_future = container.put("foo", "barbell".as_bytes().to_vec(), &creds);
+        let put_future = container.put("foo", b"barbell".to_vec(), &creds);
         runtime.block_on(put_future).unwrap();
 
         let get_future = container.get("foo", &creds);
         let result = runtime.block_on(get_future).unwrap();
 
-        assert_eq!("barbell".as_bytes().to_vec(), result);
+        assert_eq!(b"barbell".to_vec(), result);
     }
 }

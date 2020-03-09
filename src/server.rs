@@ -24,7 +24,6 @@ use crate::compiler::{
 use crate::config;
 use crate::config::Config;
 use crate::dist;
-use crate::dist::Client as DistClient;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -153,11 +152,11 @@ struct DistClientConfig {
 #[cfg(feature = "dist-client")]
 enum DistClientState {
     #[cfg(feature = "dist-client")]
-    Some(DistClientConfig, Arc<dyn dist::Client>),
+    Some(Box<DistClientConfig>, Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
-    FailWithMessage(DistClientConfig, String),
+    FailWithMessage(Box<DistClientConfig>, String),
     #[cfg(feature = "dist-client")]
-    RetryCreateAt(DistClientConfig, Instant),
+    RetryCreateAt(Box<DistClientConfig>, Instant),
     Disabled,
 }
 
@@ -165,7 +164,7 @@ enum DistClientState {
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
     fn new(config: &Config, _: &CpuPool) -> Self {
-        if let Some(_) = config.dist.scheduler_url {
+        if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
         Self {}
@@ -284,7 +283,7 @@ impl DistClientContainer {
                 _ => unreachable!(),
             };
             info!("Attempting to recreate the dist client");
-            *state = Self::create_state(config)
+            *state = Self::create_state(*config)
         }
     }
 
@@ -298,7 +297,7 @@ impl DistClientContainer {
                         use error_chain::ChainedError;
                         error!("{}", e.display_chain());
                         return DistClientState::RetryCreateAt(
-                            config,
+                            Box::new(config),
                             Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
                         );
                     }
@@ -314,7 +313,10 @@ impl DistClientContainer {
                         use error_chain::ChainedError;
                         let errmsg = e.display_chain();
                         error!("{}", errmsg);
-                        return DistClientState::FailWithMessage(config, errmsg.to_string());
+                        return DistClientState::FailWithMessage(
+                            Box::new(config),
+                            errmsg.to_string(),
+                        );
                     }
                 }
             }};
@@ -347,18 +349,19 @@ impl DistClientContainer {
                 let dist_client = try_or_retry_later!(
                     dist_client.chain_err(|| "failure during dist client creation")
                 );
+                use crate::dist::Client;
                 match dist_client.do_get_status().wait() {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
                             res.num_cpus, res.num_servers
                         );
-                        DistClientState::Some(config, Arc::new(dist_client))
+                        DistClientState::Some(Box::new(config), Arc::new(dist_client))
                     }
                     Err(_) => {
                         warn!("Scheduler address configured, but could not communicate with scheduler");
                         DistClientState::RetryCreateAt(
-                            config,
+                            Box::new(config),
                             Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
                         )
                     }
@@ -592,6 +595,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     }
 }
 
+type CompilerMap<C> =
+    HashMap<PathBuf, Option<(Box<dyn Compiler<C>>, FileTime, Option<(PathBuf, FileTime)>)>>;
+
 /// Service implementation for sccache
 #[derive(Clone)]
 struct SccacheService<C: CommandCreatorSync> {
@@ -605,11 +611,7 @@ struct SccacheService<C: CommandCreatorSync> {
     storage: Arc<dyn Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<
-        RefCell<
-            HashMap<PathBuf, Option<(Box<dyn Compiler<C>>, FileTime, Option<(PathBuf, FileTime)>)>>,
-        >,
-    >,
+    compilers: Rc<RefCell<CompilerMap<C>>>,
 
     /// Thread pool to execute work in
     pool: CpuPool,
@@ -670,7 +672,7 @@ where
             }
             Request::GetStats => {
                 debug!("handle_client: get_stats");
-                Box::new(self.get_info().map(Response::Stats))
+                Box::new(self.get_info().map(|i| Response::Stats(Box::new(i))))
             }
             Request::DistStatus => {
                 debug!("handle_client: dist_status");
@@ -679,7 +681,7 @@ where
             Request::ZeroStats => {
                 debug!("handle_client: zero_stats");
                 self.zero_stats();
-                Box::new(self.get_info().map(Response::Stats))
+                Box::new(self.get_info().map(|i| Response::Stats(Box::new(i))))
             }
             Request::Shutdown => {
                 debug!("handle_client: shutdown");
@@ -689,11 +691,9 @@ where
                     .send(ServerMessage::Shutdown)
                     .then(|_| Ok(()));
                 let info_future = self.get_info();
-                return Box::new(
-                    future
-                        .join(info_future)
-                        .map(move |(_, info)| Message::WithoutBody(Response::ShuttingDown(info))),
-                );
+                return Box::new(future.join(info_future).map(move |(_, info)| {
+                    Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
+                }));
             }
         };
 

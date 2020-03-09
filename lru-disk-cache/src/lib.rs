@@ -80,23 +80,16 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.description())
+        write!(f, "{}", self.to_string())
     }
 }
 
 impl StdError for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::FileTooLarge => "File too large",
-            Error::FileNotInCache => "File not in cache",
-            Error::Io(ref e) => e.description(),
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn StdError> {
-        match *self {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::FileTooLarge => None,
+            Error::FileNotInCache => None,
             Error::Io(ref e) => Some(e),
-            _ => None,
         }
     }
 }

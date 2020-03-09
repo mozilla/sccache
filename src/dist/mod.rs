@@ -101,13 +101,13 @@ mod path_transform {
                 dist_to_local_path: HashMap::new(),
             }
         }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn as_dist_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() {
                 return None;
             }
-            self.to_dist(p)
+            self.as_dist(p)
         }
-        pub fn to_dist(&mut self, p: &Path) -> Option<String> {
+        pub fn as_dist(&mut self, p: &Path) -> Option<String> {
             let mut components = p.components();
 
             // Extract the prefix (e.g. "C:/") if present
@@ -187,14 +187,14 @@ mod path_transform {
 
     #[test]
     fn test_basic() {
-        let mut pt = PathTransformer::new();
-        assert_eq!(pt.to_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
+        let mut pt = PathTransformer::default();
+        assert_eq!(pt.as_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(
-            pt.to_dist(Path::new(r#"C:\a\b.c"#)).unwrap(),
+            pt.as_dist(Path::new(r#"C:\a\b.c"#)).unwrap(),
             "/prefix/disk-C/a/b.c"
         );
         assert_eq!(
-            pt.to_dist(Path::new("X:/other.c")).unwrap(),
+            pt.as_dist(Path::new("X:/other.c")).unwrap(),
             "/prefix/disk-X/other.c"
         );
         let mut disk_mappings: Vec<_> = pt.disk_mappings().collect();
@@ -219,20 +219,20 @@ mod path_transform {
 
     #[test]
     fn test_relative_paths() {
-        let mut pt = PathTransformer::new();
-        assert_eq!(pt.to_dist(Path::new("a/b")).unwrap(), "a/b");
-        assert_eq!(pt.to_dist(Path::new(r#"a\b"#)).unwrap(), "a/b");
+        let mut pt = PathTransformer::default();
+        assert_eq!(pt.as_dist(Path::new("a/b")).unwrap(), "a/b");
+        assert_eq!(pt.as_dist(Path::new(r#"a\b"#)).unwrap(), "a/b");
         assert_eq!(pt.to_local("a/b").unwrap(), Path::new("a/b"));
     }
 
     #[test]
     fn test_verbatim_disks() {
-        let mut pt = PathTransformer::new();
+        let mut pt = PathTransformer::default();
         assert_eq!(
-            pt.to_dist(Path::new("X:/other.c")).unwrap(),
+            pt.as_dist(Path::new("X:/other.c")).unwrap(),
             "/prefix/disk-X/other.c"
         );
-        pt.to_dist(Path::new(r#"\\?\X:\out\other.o"#));
+        pt.as_dist(Path::new(r#"\\?\X:\out\other.o"#));
         assert_eq!(
             pt.to_local("/prefix/disk-X/other.c").unwrap(),
             Path::new("X:/other.c")
@@ -254,9 +254,9 @@ mod path_transform {
 
     #[test]
     fn test_slash_directions() {
-        let mut pt = PathTransformer::new();
-        assert_eq!(pt.to_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
-        assert_eq!(pt.to_dist(Path::new("C:\\a")).unwrap(), "/prefix/disk-C/a");
+        let mut pt = PathTransformer::default();
+        assert_eq!(pt.as_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
+        assert_eq!(pt.as_dist(Path::new("C:\\a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(pt.to_local("/prefix/disk-C/a").unwrap(), Path::new("C:/a"));
         assert_eq!(pt.disk_mappings().count(), 1);
     }
@@ -267,20 +267,17 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub struct PathTransformer;
 
     impl PathTransformer {
-        pub fn new() -> Self {
-            PathTransformer
-        }
-        pub fn to_dist_abs(&mut self, p: &Path) -> Option<String> {
+        pub fn as_dist_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() {
                 return None;
             }
-            self.to_dist(p)
+            self.as_dist(p)
         }
-        pub fn to_dist(&mut self, p: &Path) -> Option<String> {
+        pub fn as_dist(&mut self, p: &Path) -> Option<String> {
             p.as_os_str().to_str().map(Into::into)
         }
         pub fn disk_mappings(&self) -> impl Iterator<Item = (PathBuf, String)> {

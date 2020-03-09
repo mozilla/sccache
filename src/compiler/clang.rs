@@ -129,16 +129,16 @@ mod test {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
+    fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Clang.parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
         ( $( $s:expr ),* ) => {
-            match _parse_arguments(&[ $( $s.to_string(), )* ]) {
+            match parse_arguments_(vec![ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
-                o @ _ => panic!("Got unexpected parse result: {:?}", o),
+                o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
     }
@@ -188,11 +188,11 @@ mod test {
     fn test_parse_arguments_clangmodules() {
         assert_eq!(
             CompilerArguments::CannotCache("-fcxx-modules", None),
-            _parse_arguments(&stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"])
+            parse_arguments_(stringvec!["-c", "foo.c", "-fcxx-modules", "-o", "foo.o"])
         );
         assert_eq!(
             CompilerArguments::CannotCache("-fmodules", None),
-            _parse_arguments(&stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"])
+            parse_arguments_(stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"])
         );
     }
 
@@ -200,13 +200,13 @@ mod test {
     fn test_parse_xclang_invalid() {
         assert_eq!(
             CompilerArguments::CannotCache("Can't handle Raw arguments with -Xclang", None),
-            _parse_arguments(&stringvec![
+            parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "broken"
             ])
         );
         assert_eq!(
             CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
-            _parse_arguments(&stringvec![
+            parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"
             ])
         );
@@ -215,9 +215,7 @@ mod test {
                 "argument parse",
                 Some("Unexpected end of args".to_string())
             ),
-            _parse_arguments(&stringvec![
-                "-c", "foo.c", "-o", "foo.o", "-Xclang", "-load"
-            ])
+            parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "-Xclang", "-load"])
         );
     }
 

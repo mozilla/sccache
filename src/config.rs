@@ -78,7 +78,7 @@ pub fn parse_size(val: &str) -> Option<u64> {
         .and_then(|caps| {
             caps.get(1)
                 .and_then(|size| u64::from_str(size.as_str()).ok())
-                .and_then(|size| Some((size, caps.get(2))))
+                .map(|size| (size, caps.get(2)))
         })
         .and_then(|(size, suffix)| match suffix.map(|s| s.as_str()) {
             Some("K") => Some(1024 * size),
@@ -477,7 +477,7 @@ fn config_from_env() -> EnvConfig {
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
         let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
-        let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(|p| PathBuf::from(p));
+        let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
         if url.is_some() && cred_path.is_some() {
             warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
@@ -549,7 +549,7 @@ impl Config {
         let env_conf = config_from_env();
 
         let file_conf_path = env::var_os("SCCACHE_CONF")
-            .map(|p| PathBuf::from(p))
+            .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
                     .expect("Unable to get config directory");
@@ -856,9 +856,9 @@ fn test_gcs_credentials_url() {
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
-            cred_path: _,
             ref url,
             rw_mode,
+            ..
         }) => {
             assert_eq!(bucket, "my-bucket");
             match url {
@@ -867,6 +867,6 @@ fn test_gcs_credentials_url() {
             };
             assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
         }
-        None => assert!(false),
+        None => unreachable!(),
     };
 }

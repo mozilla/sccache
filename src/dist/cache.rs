@@ -92,7 +92,7 @@ mod client {
             // Load in toolchain configuration
             let mut custom_toolchain_paths = HashMap::new();
             let mut disabled_toolchains = HashSet::new();
-            for ct in toolchain_configs.into_iter() {
+            for ct in toolchain_configs.iter() {
                 match ct {
                     config::DistToolchainConfig::PathOverride {
                         compiler_executable,
@@ -490,6 +490,10 @@ impl TcCache {
 
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn remove(&mut self, tc: &Toolchain) -> LruResult<()> {

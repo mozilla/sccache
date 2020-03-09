@@ -23,11 +23,11 @@ pub enum Response {
     /// Response for `Request::Compile`.
     Compile(CompileResponse),
     /// Response for `Request::GetStats`, containing server statistics.
-    Stats(ServerInfo),
+    Stats(Box<ServerInfo>),
     /// Response for `Request::DistStatus`, containing client info.
     DistStatus(DistInfo),
     /// Response for `Request::Shutdown`, containing server statistics.
-    ShuttingDown(ServerInfo),
+    ShuttingDown(Box<ServerInfo>),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
 }

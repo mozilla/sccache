@@ -17,7 +17,7 @@ use crate::compiler::{
     CompilerKind, HashResult,
 };
 #[cfg(feature = "dist-client")]
-use crate::compiler::{NoopOutputsRewriter, OutputsRewriter};
+use crate::compiler::{DistPackagers, NoopOutputsRewriter};
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
@@ -27,7 +27,6 @@ use futures::Future;
 use futures_cpupool::CpuPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::env::consts::DLL_EXTENSION;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -402,11 +401,7 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
     fn into_dist_packagers(
         self: Box<Self>,
         path_transformer: dist::PathTransformer,
-    ) -> Result<(
-        Box<dyn pkg::InputsPackager>,
-        Box<dyn pkg::ToolchainPackager>,
-        Box<dyn OutputsRewriter>,
-    )> {
+    ) -> Result<DistPackagers> {
         let CCompilation {
             parsed_args,
             cwd,
@@ -460,7 +455,7 @@ impl pkg::InputsPackager for CInputsPackager {
         {
             let input_path = pkg::simplify_path(&input_path)?;
             let dist_input_path = path_transformer
-                .to_dist(&input_path)
+                .as_dist(&input_path)
                 .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
 
             let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
@@ -475,7 +470,7 @@ impl pkg::InputsPackager for CInputsPackager {
             if !super::CAN_DIST_DYLIBS
                 && input_path
                     .extension()
-                    .map_or(false, |ext| ext == DLL_EXTENSION)
+                    .map_or(false, |ext| ext == std::env::consts::DLL_EXTENSION)
             {
                 bail!(
                     "Cannot distribute dylib input {} on this platform",
@@ -484,7 +479,7 @@ impl pkg::InputsPackager for CInputsPackager {
             }
 
             let dist_input_path = path_transformer
-                .to_dist(&input_path)
+                .as_dist(&input_path)
                 .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
 
             let mut file = io::BufReader::new(fs::File::open(&input_path)?);
@@ -515,7 +510,6 @@ struct CToolchainPackager {
 impl pkg::ToolchainPackager for CToolchainPackager {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()> {
         use std::os::unix::ffi::OsStringExt;
-        use which::which;
 
         info!("Generating toolchain {}", self.executable.display());
         let mut package_builder = pkg::ToolchainPackageBuilder::new();
@@ -658,7 +652,7 @@ mod test {
     #[test]
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
             hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED),
             hash_key("wxyz", Language::C, &args, &[], &[], &PREPROCESSED)
@@ -672,7 +666,7 @@ mod test {
         let xyz = ovec!["x", "y", "z"];
         let ab = ovec!["a", "b"];
         let a = ovec!["a"];
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
             hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED),
             hash_key(digest, Language::C, &xyz, &[], &[], &PREPROCESSED)
@@ -702,7 +696,7 @@ mod test {
     fn test_hash_key_env_var_differs() {
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
             let h1 = hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
@@ -718,7 +712,7 @@ mod test {
     fn test_extra_hash_data() {
         let args = ovec!["a", "b", "c"];
         let digest = "abcd";
-        const PREPROCESSED: &'static [u8] = b"hello world";
+        const PREPROCESSED: &[u8] = b"hello world";
         let extra_data = stringvec!["hello", "world"];
 
         assert_neq!(

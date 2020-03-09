@@ -50,7 +50,7 @@ const BUILD_DIR_CONTAINER_PATH: &str = "/sccache-bits/build-dir";
 const SCHEDULER_PORT: u16 = 10500;
 const SERVER_PORT: u16 = 12345; // arbitrary
 
-const TC_CACHE_SIZE: u64 = 1 * 1024 * 1024 * 1024; // 1 gig
+const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
