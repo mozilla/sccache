@@ -49,11 +49,11 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &'static [&'static str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
-const COMPILERS: &'static [&'static str] = &["clang"];
+const COMPILERS: &[&str] = &["clang"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -78,16 +78,16 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     }
 }
 
-const INPUT: &'static str = "test.c";
-const INPUT_ERR: &'static str = "test_err.c";
-const INPUT_MACRO_EXPANSION: &'static str = "test_macro_expansion.c";
-const INPUT_WITH_DEFINE: &'static str = "test_with_define.c";
-const OUTPUT: &'static str = "test.o";
+const INPUT: &str = "test.c";
+const INPUT_ERR: &str = "test_err.c";
+const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
+const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
 fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
     for f in inputs {
-        let original_source_file = Path::new(file!()).parent().unwrap().join(f.clone());
+        let original_source_file = Path::new(file!()).parent().unwrap().join(&*f);
         let source_file = tempdir.join(f);
         trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
         fs::copy(&original_source_file, &source_file).unwrap();
@@ -131,7 +131,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success();
     assert_eq!(
@@ -167,7 +167,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
         .arg("-E")
         .arg(INPUT)
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success();
     trace!("request stats");
@@ -192,7 +192,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&args)
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success();
     // Check the contents
@@ -226,7 +226,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&args)
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .failure()
         .stderr(
@@ -307,7 +307,7 @@ int main(int argc, char** argv) {
     sccache_command()
         .args(&args)
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success();
     get_stats(|info| {
@@ -338,7 +338,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
             .concat(),
         )
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success()
         .stderr(predicates::str::contains("warning:").from_utf8().not());
@@ -364,7 +364,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
             .concat(),
         )
         .current_dir(tempdir)
-        .envs(env_vars.clone())
+        .envs(env_vars)
         .assert()
         .success()
         .stderr(predicates::str::contains("warning:").from_utf8().not());
@@ -381,7 +381,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
-        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+        test_gcc_clang_no_warnings_from_macro_expansion(compiler, tempdir);
     }
 }
 
@@ -426,10 +426,7 @@ fn find_compilers() -> Vec<Compiler> {
 #[test]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command() {
-    match env_logger::try_init() {
-        Ok(_) => {}
-        Err(_) => {}
-    }
+    let _ = env_logger::try_init();
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_system_test")
         .tempdir()

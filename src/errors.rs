@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO error_chain needs to be upgraded, it uses deprecated APIs.
+#![allow(deprecated)]
 #![allow(renamed_and_removed_lints)]
 
 use std::boxed::Box;

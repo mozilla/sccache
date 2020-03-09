@@ -631,8 +631,8 @@ mod test {
         creator.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
         let output = spawn_output_command(&mut creator, "foo").unwrap();
         assert_eq!(0, output.status.code().unwrap());
-        assert_eq!("hello".as_bytes().to_vec(), output.stdout);
-        assert_eq!("error".as_bytes().to_vec(), output.stderr);
+        assert_eq!(b"hello".to_vec(), output.stdout);
+        assert_eq!(b"error".to_vec(), output.stderr);
     }
 
     #[test]
@@ -642,8 +642,8 @@ mod test {
         creator.next_command_calls(|_| Ok(MockChild::new(exit_status(0), "hello", "error")));
         let output = spawn_output_command(&mut creator, "foo").unwrap();
         assert_eq!(0, output.status.code().unwrap());
-        assert_eq!("hello".as_bytes().to_vec(), output.stdout);
-        assert_eq!("error".as_bytes().to_vec(), output.stderr);
+        assert_eq!(b"hello".to_vec(), output.stdout);
+        assert_eq!(b"error".to_vec(), output.stderr);
     }
 
     #[test]
@@ -675,6 +675,6 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "hello", "error")),
         );
-        assert_eq!(exit_status(0), spawn_on_thread(creator.clone(), true));
+        assert_eq!(exit_status(0), spawn_on_thread(creator, true));
     }
 }

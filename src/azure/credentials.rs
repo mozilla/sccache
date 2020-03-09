@@ -32,7 +32,7 @@ impl AzureCredentials {
         account_key: &str,
         container_name: String,
     ) -> AzureCredentials {
-        let endpoint = if blob_endpoint.ends_with("/") {
+        let endpoint = if blob_endpoint.ends_with('/') {
             blob_endpoint.to_owned()
         } else {
             blob_endpoint.to_owned() + "/"
@@ -42,7 +42,7 @@ impl AzureCredentials {
             blob_endpoint: endpoint,
             account_name: account_name.to_owned(),
             account_key: account_key.to_owned(),
-            container_name: container_name,
+            container_name,
         }
     }
 
@@ -92,7 +92,7 @@ fn parse_connection_string(conn: &str, container_name: String) -> Result<AzureCr
     let mut account_key = String::default();
     let mut endpoint_suffix = String::default();
 
-    let split = conn.split(";");
+    let split = conn.split(';');
     for part in split {
         if part.starts_with("BlobEndpoint=") {
             blob_endpoint = substr(part, "BlobEndpoint=".len()).to_owned();

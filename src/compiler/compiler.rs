@@ -27,7 +27,6 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use futures::Future;
 use futures_cpupool::CpuPool;
-use lru_disk_cache::Error as LruError;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -95,6 +94,13 @@ impl CompilerKind {
         .to_string()
     }
 }
+
+#[cfg(feature = "dist-client")]
+pub type DistPackagers = (
+    Box<dyn pkg::InputsPackager>,
+    Box<dyn pkg::ToolchainPackager>,
+    Box<dyn OutputsRewriter>,
+);
 
 /// An interface to a compiler for argument parsing.
 pub trait Compiler<T>: Send + 'static
@@ -401,7 +407,7 @@ fn dist_or_local_compile<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut path_transformer = dist::PathTransformer::new();
+    let mut path_transformer = dist::PathTransformer::default();
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, true)
         .chain_err(|| "Failed to generate compile commands");
@@ -437,7 +443,7 @@ where
         Ok(Some(ref client)) => client.rewrite_includes_only(),
         _ => false,
     };
-    let mut path_transformer = dist::PathTransformer::new();
+    let mut path_transformer = dist::PathTransformer::default();
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
         .chain_err(|| "Failed to generate compile commands");
@@ -473,7 +479,7 @@ where
         .and_then(move |dist_compile_cmd| {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
-                .map(|(_key, path)| path_transformer.to_dist_abs(&cwd.join(path)))
+                .map(|(_key, path)| path_transformer.as_dist_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .ok_or_else(|| Error::from("Failed to adapt an output path for distributed compile"))?;
             compilation.into_dist_packagers(path_transformer)
@@ -585,7 +591,7 @@ where
             }
             match e {
                 Error(ErrorKind::HttpClientError(_), _) => f_err(e),
-                Error(ErrorKind::Lru(LruError::FileTooLarge), _) => f_err(format!(
+                Error(ErrorKind::Lru(lru_disk_cache::Error::FileTooLarge), _) => f_err(format!(
                     "Could not cache dist toolchain for {:?} locally.
                      Increase `toolchain_cache_size` or decrease the toolchain archive size.",
                     local_executable2)),
@@ -620,13 +626,7 @@ pub trait Compilation {
     fn into_dist_packagers(
         self: Box<Self>,
         _path_transformer: dist::PathTransformer,
-    ) -> Result<(
-        Box<dyn pkg::InputsPackager>,
-        Box<dyn pkg::ToolchainPackager>,
-        Box<dyn OutputsRewriter>,
-    )> {
-        bail!("distributed compilation not implemented")
-    }
+    ) -> Result<DistPackagers>;
 
     /// Returns an iterator over the results of this compilation.
     ///
@@ -763,14 +763,14 @@ impl Default for ColorMode {
 /// Can't derive(Debug) because of `CacheWriteFuture`.
 impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            &CompileResult::Error => write!(f, "CompileResult::Error"),
-            &CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
-            &CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
+        match *self {
+            CompileResult::Error => write!(f, "CompileResult::Error"),
+            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
-            &CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
-            &CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
+            CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
+            CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
         }
     }
 }
@@ -1229,8 +1229,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
@@ -1247,7 +1247,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1333,8 +1333,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         // Dist client will do the compilation
         let dist_client = Some(test_dist::OneshotClient::new(
@@ -1346,7 +1346,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1433,8 +1433,8 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
         );
         // The compiler invocation.
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         let obj = f.tempdir.path().join("foo.o");
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
@@ -1451,7 +1451,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
         storage.next_get(f_err("Some Error"));
@@ -1501,8 +1501,8 @@ LLVM version: 6.0",
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
         // recaching.
         let obj = f.tempdir.path().join("foo.o");
@@ -1529,7 +1529,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
@@ -1617,7 +1617,7 @@ LLVM version: 6.0",
         // We should now have a fake object file.
         assert_eq!(fs::metadata(&obj).is_ok(), true);
         // The preprocessor invocation.
-        const PREPROCESSOR_STDERR: &'static [u8] = b"something went wrong";
+        const PREPROCESSOR_STDERR: &[u8] = b"something went wrong";
         next_command(
             &creator,
             Ok(MockChild::new(
@@ -1630,7 +1630,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
@@ -1675,8 +1675,8 @@ LLVM version: 6.0",
         let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
             .wait()
             .unwrap();
-        const COMPILER_STDOUT: &'static [u8] = b"compiler stdout";
-        const COMPILER_STDERR: &'static [u8] = b"compiler stderr";
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
         // recaching.
         let obj = f.tempdir.path().join("foo.o");
@@ -1703,7 +1703,7 @@ LLVM version: 6.0",
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let hasher = match c.parse_arguments(&arguments, ".".as_ref()) {
             CompilerArguments::Ok(h) => h,
-            o @ _ => panic!("Bad result from parse_arguments: {:?}", o),
+            o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // All these dist clients will fail, but should still result in successful compiles
         for dist_client in dist_clients {
@@ -1760,6 +1760,7 @@ mod test_dist {
 
     pub struct ErrorPutToolchainClient;
     impl ErrorPutToolchainClient {
+        #[allow(clippy::new_ret_no_self)]
         pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(ErrorPutToolchainClient)
         }
@@ -1803,6 +1804,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorAllocJobClient {
+        #[allow(clippy::new_ret_no_self)]
         pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 tc: Toolchain {
@@ -1852,6 +1854,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorSubmitToolchainClient {
+        #[allow(clippy::new_ret_no_self)]
         pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),
@@ -1916,6 +1919,7 @@ mod test_dist {
         tc: Toolchain,
     }
     impl ErrorRunJobClient {
+        #[allow(clippy::new_ret_no_self)]
         pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),
@@ -1990,6 +1994,7 @@ mod test_dist {
     }
 
     impl OneshotClient {
+        #[allow(clippy::new_ret_no_self)]
         pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: Cell::new(false),

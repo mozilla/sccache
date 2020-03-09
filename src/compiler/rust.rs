@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-#[cfg(feature = "dist-client")]
-use crate::compiler::OutputsRewriter;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult,
 };
+#[cfg(feature = "dist-client")]
+use crate::compiler::{DistPackagers, OutputsRewriter};
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
@@ -182,7 +182,7 @@ lazy_static! {
         "link",
         "metadata",
         "dep-info",
-    ].iter().map(|s| *s).collect();
+    ].iter().copied().collect();
 }
 
 /// Version number for cache key.
@@ -310,7 +310,7 @@ where
 fn get_compiler_outputs<T>(
     creator: &T,
     executable: &Path,
-    arguments: &[OsString],
+    arguments: Vec<OsString>,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
 ) -> SFuture<Vec<String>>
@@ -389,7 +389,7 @@ impl Rust {
                 .collect::<Vec<_>>();
             if let Some(path) = dist_archive {
                 trace!("Hashing {:?} along with rustc libs.", path);
-                libs.push(path.to_path_buf());
+                libs.push(path);
             };
             libs.sort();
             Ok((sysroot, libs))
@@ -800,7 +800,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     let mut color_mode = ColorMode::Auto;
     let mut has_json = false;
 
-    for arg in ArgsIter::new(arguments.iter().map(|s| s.clone()), &ARGS[..]) {
+    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
@@ -829,7 +829,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                     // We don't support passing --emit more than once.
                     cannot_cache!("more than one --emit");
                 }
-                emit = Some(value.split(",").map(str::to_owned).collect())
+                emit = Some(value.split(',').map(str::to_owned).collect())
             }
             Some(CrateType(ArgCrateTypes {
                 rlib,
@@ -980,7 +980,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     externs.sort();
     CompilerArguments::Ok(ParsedArguments {
         arguments: args,
-        output_dir: output_dir.into(),
+        output_dir,
         crate_types,
         externs,
         crate_link_paths,
@@ -1054,7 +1054,7 @@ where
                 }
             })
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
-            .map(|a| a.clone())
+            .cloned()
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
@@ -1161,13 +1161,13 @@ where
                 // Turn arguments into a simple Vec<OsString> to calculate outputs.
                 let flat_os_string_arguments: Vec<OsString> = os_string_arguments
                     .into_iter()
-                    .flat_map(|(arg, val)| iter::once(arg).into_iter().chain(val))
+                    .flat_map(|(arg, val)| iter::once(arg).chain(val))
                     .collect();
                 Box::new(
                     get_compiler_outputs(
                         &creator,
                         &executable,
-                        &flat_os_string_arguments,
+                        flat_os_string_arguments,
                         &cwd,
                         &env_vars,
                     )
@@ -1212,7 +1212,6 @@ where
                             }
                         }
 
-                        let output_dir = PathBuf::from(output_dir);
                         // Convert output files into a map of basename -> full
                         // path, and remove some unneeded / non-existing ones,
                         // see https://github.com/rust-lang/rust/pull/68799.
@@ -1301,8 +1300,14 @@ impl Compilation for RustCompilation {
             ref sysroot,
             ..
         } = *self;
+
+        // Ignore unused variables
         #[cfg(not(feature = "dist-client"))]
-        let _ = path_transformer;
+        {
+            let _ = path_transformer;
+            let _ = host;
+            let _ = sysroot;
+        }
 
         trace!("[{}]: compile", crate_name);
 
@@ -1337,7 +1342,7 @@ impl Compilation for RustCompilation {
 
             // flat_map would be nice but the lifetimes don't work out
             for argument in arguments.iter() {
-                let path_transformer_fn = &mut |p: &Path| path_transformer.to_dist(p);
+                let path_transformer_fn = &mut |p: &Path| path_transformer.as_dist(p);
                 if let Argument::Raw(input_path) = argument {
                     // Need to explicitly handle the input argument as it's not parsed as a path
                     let input_path = Path::new(input_path).to_owned();
@@ -1367,7 +1372,7 @@ impl Compilation for RustCompilation {
                 match k.as_str() {
                     // We round-tripped from path to string and back to path, but it should be lossless
                     "OUT_DIR" => {
-                        let dist_out_dir = path_transformer.to_dist(Path::new(v))?;
+                        let dist_out_dir = path_transformer.as_dist(Path::new(v))?;
                         if dist_out_dir != *v {
                             changed_out_dir = Some(v.to_owned().into());
                         }
@@ -1378,7 +1383,7 @@ impl Compilation for RustCompilation {
                         *v = "".to_string();
                     }
                     "CARGO" | "CARGO_MANIFEST_DIR" => {
-                        *v = path_transformer.to_dist(Path::new(v))?
+                        *v = path_transformer.as_dist(Path::new(v))?
                     }
                     _ => (),
                 }
@@ -1414,10 +1419,10 @@ impl Compilation for RustCompilation {
                 .with_extension(EXE_EXTENSION);
 
             Some(dist::CompileCommand {
-                executable: path_transformer.to_dist(&sysroot_executable)?,
+                executable: path_transformer.as_dist(&sysroot_executable)?,
                 arguments: dist_arguments,
                 env_vars,
-                cwd: path_transformer.to_dist_abs(cwd)?,
+                cwd: path_transformer.as_dist_abs(cwd)?,
             })
         })();
 
@@ -1428,11 +1433,7 @@ impl Compilation for RustCompilation {
     fn into_dist_packagers(
         self: Box<Self>,
         path_transformer: dist::PathTransformer,
-    ) -> Result<(
-        Box<dyn pkg::InputsPackager>,
-        Box<dyn pkg::ToolchainPackager>,
-        Box<dyn OutputsRewriter>,
-    )> {
+    ) -> Result<DistPackagers> {
         let RustCompilation {
             inputs,
             crate_link_paths,
@@ -1490,6 +1491,7 @@ struct RustInputsPackager {
 
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
+    #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
     fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
         debug!("Packaging compile inputs for compile");
         let RustInputsPackager {
@@ -1537,7 +1539,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 }
             }
             let dist_input_path = path_transformer
-                .to_dist(&input_path)
+                .as_dist(&input_path)
                 .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
             tar_inputs.push((input_path, dist_input_path))
         }
@@ -1618,7 +1620,7 @@ impl pkg::InputsPackager for RustInputsPackager {
 
                 // This is a lib that may be of interest during compilation
                 let dist_path = path_transformer
-                    .to_dist(&path)
+                    .as_dist(&path)
                     .chain_err(|| format!("unable to transform lib path {}", path.display()))?;
                 tar_crate_libs.push((path, dist_path))
             }
@@ -1736,7 +1738,7 @@ impl OutputsRewriter for RustOutputsRewriter {
         trace!("Pondering on rewriting dep file {:?}", self.dep_info);
         if let Some(dep_info) = self.dep_info {
             let extra_input_str = extra_inputs
-                .into_iter()
+                .iter()
                 .fold(String::new(), |s, p| s + " " + &p.to_string_lossy());
             for dep_info_local_path in output_paths {
                 trace!("Comparing with {}", dep_info_local_path.display());
@@ -1763,7 +1765,7 @@ impl OutputsRewriter for RustOutputsRewriter {
                         let re = regex::Regex::new(&re_str).expect("Invalid regex");
                         deps = re.replace_all(&deps, local_path_str).into_owned();
                     }
-                    if extra_inputs.len() > 0 {
+                    if !extra_inputs.is_empty() {
                         deps = deps.replace(": ", &format!(":{} ", extra_input_str));
                     }
                     // Write the depinfo file
@@ -1787,8 +1789,8 @@ fn test_rust_outputs_rewriter() {
     use crate::test::utils::create_file;
     use std::io::Write;
 
-    let mut pt = dist::PathTransformer::new();
-    pt.to_dist(Path::new("c:\\")).unwrap();
+    let mut pt = dist::PathTransformer::default();
+    pt.as_dist(Path::new("c:\\")).unwrap();
     let mappings: Vec<_> = pt.disk_mappings().collect();
     assert!(mappings.len() == 1);
     let linux_prefix = &mappings[0].1;
@@ -2064,7 +2066,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         dep_names.push(libname);
     }
 
-    while let Some(line) = lines.next() {
+    for line in lines {
         if line != "" {
             bail!("Trailing non-blank lines in rustc -Z ls output")
         }
@@ -2095,7 +2097,7 @@ mod test {
         ( $( $s:expr ),* ) => {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
-                o @ _ => panic!("Got unexpected parse result: {:?}", o),
+                o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
     }
@@ -2105,12 +2107,13 @@ mod test {
             match _parse_arguments(&[ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(_) => panic!("Should not have parsed ok: `{}`", stringify!($( $s, )*)),
 
-                o @ _ => o,
+                o => o,
             }
         }
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn test_parse_arguments_simple() {
         let h = parses!(
             "--emit",
@@ -2501,7 +2504,7 @@ mod test {
         let outputs = get_compiler_outputs(
             &creator,
             "rustc".as_ref(),
-            &ovec!("a", "b"),
+            ovec!("a", "b"),
             "cwd".as_ref(),
             &[],
         )
@@ -2517,7 +2520,7 @@ mod test {
         assert!(get_compiler_outputs(
             &creator,
             "rustc".as_ref(),
-            &ovec!("a", "b"),
+            ovec!("a", "b"),
             "cwd".as_ref(),
             &[]
         )
@@ -2637,7 +2640,7 @@ c:/foo/bar.rs:
         // a dep-info file.
         let mut sorted_deps = dep_srcs
             .iter()
-            .map(|s| s.to_string())
+            .map(|s| (*s).to_string())
             .collect::<Vec<String>>();
         sorted_deps.sort();
         next_command_calls(creator, move |args| {
@@ -2675,7 +2678,7 @@ c:/foo/bar.rs:
     fn test_generate_hash_key() {
         drop(env_logger::try_init());
         let f = TestFixture::new();
-        const FAKE_DIGEST: &'static str = "abcd1234";
+        const FAKE_DIGEST: &str = "abcd1234";
         // We'll just use empty files for each of these.
         for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
             f.touch(s).unwrap();
@@ -2694,13 +2697,13 @@ c:/foo/bar.rs:
                 arguments: vec![
                     Argument::Raw("a".into()),
                     Argument::WithValue(
-                        "--cfg".into(),
+                        "--cfg",
                         ArgData::PassThrough("xyz".into()),
                         ArgDisposition::Separated,
                     ),
                     Argument::Raw("b".into()),
                     Argument::WithValue(
-                        "--cfg".into(),
+                        "--cfg",
                         ArgData::PassThrough("abc".into()),
                         ArgDisposition::Separated,
                     ),
@@ -2777,18 +2780,19 @@ c:/foo/bar.rs:
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
 
-    fn hash_key<'a, F>(
+    fn hash_key<F>(
         f: &TestFixture,
-        args: &[OsString],
+        args: &[&'static str],
         env_vars: &[(OsString, OsString)],
         pre_func: F,
     ) -> String
     where
         F: Fn(&Path) -> Result<()>,
     {
-        let parsed_args = match parse_arguments(args, &f.tempdir.path()) {
+        let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
+        let parsed_args = match parse_arguments(&oargs, &f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
-            o @ _ => panic!("Got unexpected parse result: {:?}", o),
+            o => panic!("Got unexpected parse result: {:?}", o),
         };
         // Just use empty files for sources.
         for src in ["foo.rs"].iter() {
@@ -2846,7 +2850,7 @@ c:/foo/bar.rs:
         assert_eq!(
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--emit",
                     "link",
                     "foo.rs",
@@ -2861,12 +2865,12 @@ c:/foo/bar.rs:
                     "--extern",
                     "b=b.rlib"
                 ],
-                &vec![],
+                &[],
                 &mk_files
             ),
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--extern",
                     "b=b.rlib",
                     "--emit",
@@ -2881,7 +2885,7 @@ c:/foo/bar.rs:
                     "--crate-type",
                     "lib"
                 ],
-                &vec![],
+                &[],
                 &mk_files
             )
         );
@@ -2893,7 +2897,7 @@ c:/foo/bar.rs:
         assert_eq!(
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--emit",
                     "link",
                     "-L",
@@ -2908,12 +2912,12 @@ c:/foo/bar.rs:
                     "-L",
                     "y=y"
                 ],
-                &vec![],
+                &[],
                 nothing
             ),
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "-L",
                     "y=y",
                     "--emit",
@@ -2928,7 +2932,7 @@ c:/foo/bar.rs:
                     "--crate-type",
                     "lib"
                 ],
-                &vec![],
+                &[],
                 nothing
             )
         );
@@ -2940,7 +2944,7 @@ c:/foo/bar.rs:
         assert_eq!(
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--emit",
                     "link",
                     "-L",
@@ -2957,12 +2961,12 @@ c:/foo/bar.rs:
                     "-L",
                     "y=y"
                 ],
-                &vec![],
+                &[],
                 nothing
             ),
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "-L",
                     "y=a",
                     "--emit",
@@ -2979,7 +2983,7 @@ c:/foo/bar.rs:
                     "--crate-type",
                     "lib"
                 ],
-                &vec![],
+                &[],
                 nothing
             )
         );
@@ -2991,7 +2995,7 @@ c:/foo/bar.rs:
         assert_eq!(
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--emit",
                     "link",
                     "--cfg",
@@ -3006,12 +3010,12 @@ c:/foo/bar.rs:
                     "--cfg",
                     "feature=b"
                 ],
-                &vec![],
+                &[],
                 nothing
             ),
             hash_key(
                 &f,
-                &ovec![
+                &[
                     "--cfg",
                     "feature=b",
                     "--emit",
@@ -3026,7 +3030,7 @@ c:/foo/bar.rs:
                     "--crate-type",
                     "lib"
                 ],
-                &vec![],
+                &[],
                 nothing
             )
         );

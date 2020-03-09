@@ -168,6 +168,7 @@ pub trait Storage {
 }
 
 /// Get a suitable `Storage` implementation from configuration.
+#[allow(clippy::cognitive_complexity)] // TODO simplify!
 pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
@@ -216,7 +217,7 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> 
 
                             service_account_key_res
                                 .ok()
-                                .map(|account_key| ServiceAccountInfo::AccountKey(account_key))
+                                .map(ServiceAccountInfo::AccountKey)
                         } else if let Some(ref url) = *url {
                             Some(ServiceAccountInfo::URL(url.clone()))
                         } else {
@@ -265,14 +266,10 @@ pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> 
                     Err(e) => warn!("Failed to create RedisCache: {:?}", e),
                 }
             }
-            CacheType::S3(config::S3CacheConfig {
-                ref bucket,
-                ref endpoint,
-                use_ssl,
-            }) => {
-                debug!("Trying S3Cache({}, {})", bucket, endpoint);
+            CacheType::S3(ref c) => {
+                debug!("Trying S3Cache({}, {})", c.bucket, c.endpoint);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&bucket, &endpoint, use_ssl) {
+                match S3Cache::new(&c.bucket, &c.endpoint, c.use_ssl) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);

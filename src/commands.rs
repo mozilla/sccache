@@ -283,7 +283,7 @@ pub fn request_zero_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
         "failed to send zero statistics command to server or failed to receive respone"
     })?;
     if let Response::Stats(stats) = response {
-        Ok(stats)
+        Ok(*stats)
     } else {
         bail!("Unexpected server response!")
     }
@@ -296,7 +296,7 @@ pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
         .request(Request::GetStats)
         .chain_err(|| "Failed to send data to or receive data from server")?;
     if let Response::Stats(stats) = response {
-        Ok(stats)
+        Ok(*stats)
     } else {
         bail!("Unexpected server response!")
     }
@@ -323,7 +323,7 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
         .request(Request::Shutdown)
         .chain_err(|| "Failed to send data to or receive data from server")?;
     if let Response::ShuttingDown(stats) = response {
-        Ok(stats)
+        Ok(*stats)
     } else {
         bail!("Unexpected server response!")
     }

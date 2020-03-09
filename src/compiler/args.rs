@@ -713,6 +713,7 @@ mod tests {
     use self::ArgData::*;
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn test_arginfo_cmp() {
         let info = flag!("-foo", FooFlag);
         assert_eq!(info.cmp("-foo"), Ordering::Equal);
@@ -783,7 +784,7 @@ mod tests {
             ArgParseError::UnexpectedEndOfArgs
         );
         assert_eq!(
-            info.clone().process("-foo", || Some("bar".into())).unwrap(),
+            info.process("-foo", || Some("bar".into())).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), Separated))
         );
 
@@ -793,7 +794,7 @@ mod tests {
             arg!(WithValue("-foo", Foo(""), Concatenated))
         );
         assert_eq!(
-            info.clone().process("-foobar", || None).unwrap(),
+            info.process("-foobar", || None).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), Concatenated))
         );
 
@@ -803,7 +804,7 @@ mod tests {
             arg!(WithValue("-foo", Foo(""), Concatenated('=')))
         );
         assert_eq!(
-            info.clone().process("-foo=bar", || None).unwrap(),
+            info.process("-foo=bar", || None).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), Concatenated('=')))
         );
 
@@ -817,7 +818,7 @@ mod tests {
             arg!(WithValue("-foo", Foo("bar"), CanBeSeparated))
         );
         assert_eq!(
-            info.clone().process("-foo", || Some("bar".into())).unwrap(),
+            info.process("-foo", || Some("bar".into())).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated))
         );
 
@@ -835,7 +836,7 @@ mod tests {
             arg!(WithValue("-foo", Foo("bar"), CanBeSeparated('=')))
         );
         assert_eq!(
-            info.clone().process("-foo", || Some("bar".into())).unwrap(),
+            info.process("-foo", || Some("bar".into())).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated('=')))
         );
     }
