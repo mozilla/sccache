@@ -790,10 +790,14 @@ mod test {
         let args = stringvec![
             // is basically the same as `-z deps`
             "-Wl,--unresolved-symbols=report-all",
-            "-z", "call-nop=suffix-nop",
-            "-z", "deps",
-            "-c", "foo.c",
-            "-o", "foo.o"
+            "-z",
+            "call-nop=suffix-nop",
+            "-z",
+            "deps",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
         ];
 
         let ParsedArguments {
