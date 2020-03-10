@@ -61,14 +61,13 @@ impl fmt::Display for BlobContainer {
 }
 
 impl BlobContainer {
-    pub fn new(base_url: &str, container_name: &Option<String>) -> Result<BlobContainer> {
-        let container_url = match container_name {
-            &Some(ref name) => format!("{}{}/", base_url, name), // base_url is assumed to end in a trailing slash
-            &None => base_url.to_owned(),
-        };
-
+    pub fn new(base_url: &str, container_name: &str) -> Result<BlobContainer> {
+        assert!(
+            base_url.ends_with('/'),
+            "base_url is assumed to end in a trailing slash"
+        );
         Ok(BlobContainer {
-            url: container_url,
+            url: format!("{}{}/", base_url, container_name),
             client: Client::new(),
         })
     }
@@ -325,17 +324,17 @@ mod test {
         let client_name = "devstoreaccount1";
         let client_key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
-        let container_name = Some("sccache".to_owned());
+        let container_name = "sccache";
         let creds = AzureCredentials::new(
             &blob_endpoint,
             &client_name,
             &client_key,
-            container_name.clone(),
+            container_name.to_string(),
         );
 
         let mut runtime = Runtime::new().unwrap();
 
-        let container = BlobContainer::new(creds.azure_blob_endpoint(), &container_name).unwrap();
+        let container = BlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
 
         let put_future = container.put("foo", "barbell".as_bytes().to_vec(), &creds);
         runtime.block_on(put_future).unwrap();
