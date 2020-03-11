@@ -606,10 +606,10 @@ impl RustupProxy
         let find_candidate = run_input_output(child, None)
             .map(move |output| {
                 if output.status.success() {
-                    trace!("Found a compiler proxy managed by rustup");
+                    trace!("proxy: Found a compiler proxy managed by rustup");
                     ProxyPath::ToBeDiscovered
                 } else {
-                    trace!("Found a regular compiler");
+                    trace!("proxy: Found a regular compiler");
                     ProxyPath::None
                 }
             })
@@ -624,6 +624,7 @@ impl RustupProxy
                                 parent.push(proxy_name1);
                                 let proxy_candidate = parent;
                                 if proxy_candidate.exists() {
+                                    trace!("proxy: Found a compiler proxy at {}", proxy_candidate.display());
                                     ProxyPath::Candidate(proxy_candidate)
                                 } else {
                                     ProxyPath::ToBeDiscovered
@@ -643,11 +644,11 @@ impl RustupProxy
                         // still no rustup found, use which crate to find one
                         match which::which(&proxy_name2) {
                             Ok(proxy_candidate) => {
-                                warn!("{} found, but not where it was expected (next to rustc {})", proxy_name2, compiler_executable2.display());
+                                warn!("proxy: rustup found, but not where it was expected (next to rustc {})", compiler_executable2.display());
                                 Ok(ProxyPath::Candidate(proxy_candidate))
                             },
                             Err(e) => {
-                                trace!("rustup is not present: {}", e);
+                                trace!("proxy: rustup is not present: {}", e);
                                 Ok(ProxyPath::ToBeDiscovered)
                             },
                         }
