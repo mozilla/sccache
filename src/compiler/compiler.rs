@@ -931,10 +931,10 @@ where
                 debug!("Found rustc");
 
                 Box::new(
-                    RustupProxy::find_proxy_executable::<T>("rustup", creator, &env1)
-                        .and_then(move |proxy : Result<RustupProxy>| -> SFuture<(Option<RustupProxy>, PathBuf)> {
+                    RustupProxy::find_proxy_executable::<T>(&executable2,"rustup", creator, &env1)
+                        .and_then(move |proxy : Result<Option<RustupProxy>>| -> SFuture<(Option<RustupProxy>, PathBuf)> {
                             match proxy {
-                                Ok(proxy) => {
+                                Ok(Some(proxy)) => {
                                     trace!("Found rustup proxy executable");
                                     let fut =
                                         proxy
@@ -954,10 +954,14 @@ where
                                             });
                                     Box::new(fut)
                                 },
-                                Err(e) => {
-                                    trace!("Did not find rustup {:?}", e);
+                                Ok(None) => {
+                                    trace!("Did not find rustup");
                                     f_ok((None, executable))
-                                }
+                                },
+                                Err(e) => {
+                                    trace!("Did not find rustup due to {}", e);
+                                    f_ok((None, executable))
+                                },
                             }
                         })
                         .then(move |res: Result<(Option<RustupProxy>, PathBuf)>| {
