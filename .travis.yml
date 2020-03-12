@@ -10,7 +10,6 @@ matrix:
     - rust: 1.36.0 # oldest supported version, keep in sync with README.md
     - rust: 1.36.0
       env: DIST_SCCACHE=1
-    - rust: beta
     - rust: nightly
 
     # deployments
