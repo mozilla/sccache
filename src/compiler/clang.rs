@@ -98,6 +98,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--target", OsString, Separated, PassThrough),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
+    take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
@@ -254,6 +255,26 @@ mod test {
         );
         assert_eq!(
             ovec!["-Xclang", "-add-plugin", "-Xclang", "foo"],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_xclang_llvm_stuff() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-mllvm",
+            "-Xclang",
+            "-instcombine-lower-dbg-declare=0",
+            "-Xclang",
+            "-debug-info-kind=constructor"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-mllvm", "-Xclang", "-instcombine-lower-dbg-declare=0", "-Xclang", "-debug-info-kind=constructor"],
             a.common_args
         );
     }
