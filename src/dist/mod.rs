@@ -90,7 +90,7 @@ mod path_transform {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
     }
