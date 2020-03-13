@@ -93,7 +93,7 @@ rouille = { version = "2.2", optional = true, default-features = false, features
 syslog = { version = "4.0.1", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.10", optional = true }
-quote = "=1.0.2"
+quote = "1.0.2"
 
 [patch.crates-io]
 # Waiting for #151 to make it into a release
