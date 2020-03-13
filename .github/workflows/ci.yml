@@ -29,8 +29,9 @@ jobs:
           rustup component add clippy
           rustup component add rustfmt
 
-      - name: check formatting
-        run: cargo fmt -- --check
+     # Travis doesn't enforce this yet.
+     # - name: check formatting
+     #   run: cargo fmt -- --check
 
       - name: build and test
         run: cargo test --locked --all-targets
