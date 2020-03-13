@@ -272,7 +272,14 @@ mod test {
             "-debug-info-kind=constructor"
         );
         assert_eq!(
-            ovec!["-Xclang", "-mllvm", "-Xclang", "-instcombine-lower-dbg-declare=0", "-Xclang", "-debug-info-kind=constructor"],
+            ovec![
+                "-Xclang",
+                "-mllvm",
+                "-Xclang",
+                "-instcombine-lower-dbg-declare=0",
+                "-Xclang",
+                "-debug-info-kind=constructor"
+            ],
             a.common_args
         );
     }
