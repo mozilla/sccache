@@ -364,8 +364,9 @@ impl ValidJWTCheck {
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, &jwt::DecodingKey::from_rsa_der(pkcs1), &validation)
-            .chain_err(|| "Unable to validate and decode jwt")?;
+        let _tokendata =
+            jwt::decode::<Claims>(token, &jwt::DecodingKey::from_rsa_der(pkcs1), &validation)
+                .chain_err(|| "Unable to validate and decode jwt")?;
         Ok(())
     }
 }

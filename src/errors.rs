@@ -67,16 +67,14 @@ error_chain! {
     }
 }
 
-
-
-#[cfg(feature="gcs")]
+#[cfg(feature = "gcs")]
 impl From<ring::error::Unspecified> for Error {
     fn from(e: ring::error::Unspecified) -> Self {
         Error::from(ErrorKind::CryptoError(e.to_string()))
     }
 }
 
-#[cfg(feature="gcs")]
+#[cfg(feature = "gcs")]
 impl From<ring::error::KeyRejected> for Error {
     fn from(e: ring::error::KeyRejected) -> Self {
         Error::from(ErrorKind::CryptoError(e.to_string()))

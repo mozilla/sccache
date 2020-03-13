@@ -428,7 +428,7 @@ mod server {
         }
     }
     impl std::error::Error for RouilleBincodeError {
-        fn source(&self) -> Option<&(dyn std::error::Error +'static)>{
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match *self {
                 RouilleBincodeError::ParseError(ref e) => Some(e),
                 _ => None,
@@ -440,7 +440,9 @@ mod server {
             &self,
             fmt: &mut std::fmt::Formatter<'_>,
         ) -> std::result::Result<(), std::fmt::Error> {
-            write!(fmt, "{}",
+            write!(
+                fmt,
+                "{}",
                 match *self {
                     RouilleBincodeError::BodyAlreadyExtracted => {
                         "the body of the request was already extracted"
@@ -480,7 +482,7 @@ mod server {
     }
 
     impl ErrJson {
-        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson{
+        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson {
             let cause = err.source().map(ErrJson::from_err).map(Box::new);
             ErrJson {
                 description: err.to_string(),
@@ -607,22 +609,30 @@ mod server {
     impl dist::JobAuthorizer for JWTJobAuthorizer {
         fn generate_token(&self, job_id: JobId) -> StdResult<String, String> {
             let claims = JobJwt { job_id };
-            jwt::encode(&JWT_HEADER, &claims, &jsonwebtoken::EncodingKey::from_secret(&self.server_key))
-                .map_err(|e| format!("Failed to create JWT for job: {}", e))
+            jwt::encode(
+                &JWT_HEADER,
+                &claims,
+                &jsonwebtoken::EncodingKey::from_secret(&self.server_key),
+            )
+            .map_err(|e| format!("Failed to create JWT for job: {}", e))
         }
         fn verify_token(&self, job_id: JobId, token: &str) -> StdResult<(), String> {
             let valid_claims = JobJwt { job_id };
-            jwt::decode(&token, &jsonwebtoken::DecodingKey::from_secret(&self.server_key), &JWT_VALIDATION)
-                .map_err(|e| format!("JWT decode failed: {}", e))
-                .and_then(|res| {
-                    fn identical_t<T>(_: &T, _: &T) {}
-                    identical_t(&res.claims, &valid_claims);
-                    if res.claims == valid_claims {
-                        Ok(())
-                    } else {
-                        Err("mismatched claims".to_owned())
-                    }
-                })
+            jwt::decode(
+                &token,
+                &jsonwebtoken::DecodingKey::from_secret(&self.server_key),
+                &JWT_VALIDATION,
+            )
+            .map_err(|e| format!("JWT decode failed: {}", e))
+            .and_then(|res| {
+                fn identical_t<T>(_: &T, _: &T) {}
+                identical_t(&res.claims, &valid_claims);
+                if res.claims == valid_claims {
+                    Ok(())
+                } else {
+                    Err("mismatched claims".to_owned())
+                }
+            })
         }
     }
 

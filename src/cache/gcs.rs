@@ -26,12 +26,10 @@ use futures::{
 };
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use reqwest::r#async::{Client, Request};
 use serde::de;
-use url::{
-    form_urlencoded,
-};
-use percent_encoding::{AsciiSet, utf8_percent_encode, CONTROLS};
+use url::form_urlencoded;
 
 /// FRAGMENT as defined in url spec
 /// https://url.spec.whatwg.org/#query-state
