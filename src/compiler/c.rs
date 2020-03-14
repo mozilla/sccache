@@ -512,7 +512,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
         use std::os::unix::ffi::OsStringExt;
 
         info!("Generating toolchain {}", self.executable.display());
-        let mut package_builder = pkg::ToolchainPackageBuilder::new();
+        let mut package_builder = pkg::ToolchainPackageBuilder::default();
         package_builder.add_common()?;
         package_builder.add_executable_and_deps(self.executable.clone())?;
 

@@ -646,7 +646,7 @@ impl DockerBuilder {
                         continue;
                     }
                 }
-                lastpath = Some(changepath.clone());
+                lastpath = Some(&(*changepath));
                 if let Err(e) = Command::new("docker")
                     .args(&["exec", &cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
@@ -810,7 +810,7 @@ impl DockerBuilder {
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
         for (k, v) in env_vars {
-            if k.contains("=") {
+            if k.contains('=') {
                 warn!("Skipping environment variable: {:?}", k);
                 continue;
             }
@@ -819,7 +819,7 @@ impl DockerBuilder {
             env.push_str(&v);
             cmd.arg("-e").arg(env);
         }
-        let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
+        let shell_cmd = r#"cd "$1" && shift && exec "$@""#;
         cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
         cmd.arg(&executable);
         cmd.arg(cwd);

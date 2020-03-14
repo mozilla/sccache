@@ -1701,7 +1701,7 @@ impl pkg::ToolchainPackager for RustToolchainPackager {
         );
         let RustToolchainPackager { sysroot } = *self;
 
-        let mut package_builder = pkg::ToolchainPackageBuilder::new();
+        let mut package_builder = pkg::ToolchainPackageBuilder::default();
         package_builder.add_common()?;
 
         let bins_path = sysroot.join(BINS_DIR);

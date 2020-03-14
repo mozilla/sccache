@@ -33,7 +33,12 @@ before_script:
   - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server"; fi
 
 script:
-  - cargo build --verbose --features="all ${EXTRA_FEATURES}" || exit 1
+  - set -e # stop executing if any of the following fail
+  - rustup component add clippy
+  - rustup component add rustfmt
+  - cargo fmt -- --check
+  - cargo clippy --features="all ${EXTRA_FEATURES}"
+  - cargo build --verbose --features="all ${EXTRA_FEATURES}"
   - RUST_BACKTRACE=1 cargo test --all --verbose --no-default-features --features="${EXTRA_FEATURES}" 
   - RUST_BACKTRACE=1 cargo test --all --verbose --features="all ${EXTRA_FEATURES}"
   # Requires PR #321

@@ -343,7 +343,7 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
+                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, in_progress: 0, .. })
                 {
                     Ok(())
                 } else {
@@ -452,14 +452,14 @@ impl DistSystem {
 
     pub fn restart_server(&mut self, handle: &ServerHandle) {
         match handle {
-            ServerHandle::Container { cid, url: _ } => {
+            ServerHandle::Container { cid, .. } => {
                 let output = Command::new("docker")
                     .args(&["restart", cid])
                     .output()
                     .unwrap();
                 check_output(&output);
             }
-            ServerHandle::Process { pid: _, url: _ } => {
+            ServerHandle::Process { .. } => {
                 // TODO: pretty easy, just no need yet
                 panic!("restart not yet implemented for pids")
             }
@@ -469,15 +469,13 @@ impl DistSystem {
 
     pub fn wait_server_ready(&mut self, handle: &ServerHandle) {
         let url = match handle {
-            ServerHandle::Container { cid: _, url } | ServerHandle::Process { pid: _, url } => {
-                url.clone()
-            }
+            ServerHandle::Container { url, .. } | ServerHandle::Process { url, .. } => url.clone(),
         };
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
+                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, in_progress: 0, .. })
                 {
                     Ok(())
                 } else {

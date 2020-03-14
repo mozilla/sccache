@@ -64,6 +64,7 @@ mod toolchain_imp {
 
     use crate::errors::*;
 
+    #[derive(Default)]
     pub struct ToolchainPackageBuilder {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)
         dir_set: BTreeMap<PathBuf, PathBuf>,
@@ -71,13 +72,6 @@ mod toolchain_imp {
     }
 
     impl ToolchainPackageBuilder {
-        pub fn new() -> Self {
-            ToolchainPackageBuilder {
-                dir_set: BTreeMap::new(),
-                file_set: BTreeMap::new(),
-            }
-        }
-
         pub fn add_common(&mut self) -> Result<()> {
             self.add_dir(PathBuf::from("/tmp"))
         }
@@ -218,9 +212,9 @@ mod toolchain_imp {
                 _ => bail!("Invalid endianness in elf header"),
             };
             let e_type = if little_endian {
-                (elf_bytes[0x11] as u16) << 8 | elf_bytes[0x10] as u16
+                u16::from(elf_bytes[0x11]) << 8 | u16::from(elf_bytes[0x10])
             } else {
-                (elf_bytes[0x10] as u16) << 8 | elf_bytes[0x11] as u16
+                u16::from(elf_bytes[0x10]) << 8 | u16::from(elf_bytes[0x11])
             };
             if e_type != 0x02 {
                 bail!("ldd failed on a non-ET_EXEC elf")

@@ -391,7 +391,7 @@ fn run(command: Command) -> Result<i32> {
             };
 
             daemonize()?;
-            let scheduler = Scheduler::new();
+            let scheduler = Scheduler::default();
             let http_scheduler = dist::http::Scheduler::new(
                 public_addr,
                 scheduler,
@@ -482,6 +482,7 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
+#[derive(Default)]
 pub struct Scheduler {
     job_count: AtomicUsize,
 
@@ -504,14 +505,6 @@ struct ServerDetails {
 }
 
 impl Scheduler {
-    pub fn new() -> Self {
-        Scheduler {
-            job_count: AtomicUsize::new(0),
-            jobs: Mutex::new(BTreeMap::new()),
-            servers: Mutex::new(HashMap::new()),
-        }
-    }
-
     fn prune_servers(
         &self,
         servers: &mut MutexGuard<HashMap<ServerId, ServerDetails>>,
@@ -739,7 +732,7 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
-                if stale_jobs.len() > 0 {
+                if !stale_jobs.is_empty() {
                     warn!(
                         "The following stale jobs will be de-allocated: {:?}",
                         stale_jobs

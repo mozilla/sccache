@@ -764,6 +764,7 @@ mod server {
             let server = rouille::Server::new(public_addr, move |request| {
                 let req_id = request_count.fetch_add(1, atomic::Ordering::SeqCst);
                 trace!("Req {} ({}): {:?}", req_id, request.remote_addr(), request);
+                #[allow(clippy::cognitive_complexity)] // TODO Simplify!
                 let response = (|| router!(request,
                     (POST) (/api/v1/scheduler/alloc_job) => {
                         let bearer_auth = match bearer_http_auth(request) {
