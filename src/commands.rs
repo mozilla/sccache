@@ -166,7 +166,7 @@ fn run_server_process() -> Result<ServerStartup> {
     let mut runtime = Runtime::new()?;
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
     let server = runtime.block_on(future::lazy(|| {
-        NamedPipe::new(&pipe_name, &Handle::default())
+        NamedPipe::new(&pipe_name, &Handle::current())
     }))?;
 
     // Connect a client to our server, and we'll wait below if it's still in
