@@ -21,7 +21,8 @@ use crate::errors::*;
 pub struct AzureCredentials {
     blob_endpoint: String,
     account_name: String,
-    account_key: String,
+    /// Account key can be omitted to enable anonymous reads.
+    account_key: Option<String>,
     container_name: String,
 }
 
@@ -29,7 +30,7 @@ impl AzureCredentials {
     pub fn new(
         blob_endpoint: &str,
         account_name: &str,
-        account_key: &str,
+        account_key: Option<String>,
         container_name: String,
     ) -> AzureCredentials {
         let endpoint = if blob_endpoint.ends_with('/') {
@@ -54,7 +55,7 @@ impl AzureCredentials {
         &self.account_name
     }
 
-    pub fn azure_account_key(&self) -> &str {
+    pub fn azure_account_key(&self) -> &Option<String> {
         &self.account_key
     }
 
@@ -89,7 +90,7 @@ fn parse_connection_string(conn: &str, container_name: String) -> Result<AzureCr
     let mut blob_endpoint = String::default();
     let mut default_endpoint_protocol: String = "https".to_owned();
     let mut account_name = String::default();
-    let mut account_key = String::default();
+    let mut account_key = None;
     let mut endpoint_suffix = String::default();
 
     let split = conn.split(';');
@@ -110,7 +111,7 @@ fn parse_connection_string(conn: &str, container_name: String) -> Result<AzureCr
         }
 
         if part.starts_with("AccountKey=") {
-            account_key = substr(part, "AccountKey=".len()).to_owned();
+            account_key = Some(substr(part, "AccountKey=".len()).to_owned());
             continue;
         }
 
@@ -133,8 +134,8 @@ fn parse_connection_string(conn: &str, container_name: String) -> Result<AzureCr
         }
     }
 
-    if blob_endpoint.is_empty() || account_name.is_empty() || account_key.is_empty() {
-        bail!("Azure connection string missing at least one of BlobEndpoint (or DefaultEndpointProtocol and EndpointSuffix), AccountName, or AccountKey.");
+    if blob_endpoint.is_empty() || account_name.is_empty() {
+        bail!("Azure connection string missing at least one of BlobEndpoint (or DefaultEndpointProtocol and EndpointSuffix), or AccountName.");
     }
 
     if !blob_endpoint.starts_with("http") {
@@ -144,7 +145,7 @@ fn parse_connection_string(conn: &str, container_name: String) -> Result<AzureCr
     Ok(AzureCredentials::new(
         &blob_endpoint,
         &account_name,
-        &account_key,
+        account_key,
         container_name,
     ))
 }
@@ -170,7 +171,21 @@ mod test {
             creds.azure_blob_endpoint()
         );
         assert_eq!("devstoreaccount1", creds.azure_account_name());
-        assert_eq!("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==", creds.azure_account_key());
+        assert_eq!("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==", creds.azure_account_key().as_ref().unwrap());
+        assert_eq!("container", creds.blob_container_name());
+    }
+
+    #[test]
+    fn test_parse_connection_string_without_account_key() {
+        let conn = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
+
+        let creds = parse_connection_string(&conn, "container".to_string()).unwrap();
+        assert_eq!(
+            "http://127.0.0.1:10000/devstoreaccount1/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("devstoreaccount1", creds.azure_account_name());
+        assert!(creds.azure_account_key().is_none());
         assert_eq!("container", creds.blob_container_name());
     }
 
@@ -184,6 +199,6 @@ mod test {
             creds.azure_blob_endpoint()
         );
         assert_eq!("foo", creds.azure_account_name());
-        assert_eq!("bar", creds.azure_account_key());
+        assert_eq!("bar", creds.azure_account_key().as_ref().unwrap());
     }
 }
