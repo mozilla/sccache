@@ -237,13 +237,16 @@ where
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     let crate_name = crate_name.to_owned();
+    let cargo_toml = cwd.join("Cargo.toml");
+    trace!("[{}]: add cargo_toml: {:?}", crate_name, cargo_toml.display());
+
     Box::new(dep_info.and_then(move |_| -> SFuture<_> {
         let name2 = crate_name.clone();
         let parsed = pool.spawn_fn(move || {
             parse_dep_file(&dep_file, &cwd)
                 .chain_err(|| format!("Failed to parse dep info for {}", name2))
         });
-        Box::new(parsed.map(move |files| {
+        Box::new(parsed.map(move |mut files| {
             trace!(
                 "[{}]: got {} source files from dep-info in {}",
                 crate_name,
@@ -252,6 +255,7 @@ where
             );
             // Just to make sure we capture temp_dir.
             drop(temp_dir);
+            files.push(cargo_toml);
             files
         }))
     }))
@@ -3134,7 +3138,7 @@ c:/foo/bar.rs:
         let f = TestFixture::new();
         const FAKE_DIGEST: &str = "abcd1234";
         // We'll just use empty files for each of these.
-        for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a"].iter() {
+        for s in ["foo.rs", "bar.rs", "bar.rlib", "libbaz.a", "Cargo.toml"].iter() {
             f.touch(s).unwrap();
         }
         let mut emit = HashSet::new();
@@ -3216,6 +3220,8 @@ c:/foo/bar.rs:
         m.update(empty_digest.as_bytes());
         // libbaz.a (static library, from staticlibs)
         m.update(empty_digest.as_bytes());
+        // Cargo.toml
+        m.update(empty_digest.as_bytes());
         // Env vars
         OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
         m.update(b"=");
@@ -3250,7 +3256,7 @@ c:/foo/bar.rs:
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         // Just use empty files for sources.
-        for src in ["foo.rs"].iter() {
+        for src in ["foo.rs", "Cargo.toml"].iter() {
             let s = format!("Failed to create {}", src);
             f.touch(src).expect(&s);
         }
