@@ -56,7 +56,7 @@ impl Display for ArgToStringError {
 }
 
 impl Error for ArgToStringError {
-    fn cause(&self) -> Option<&dyn Error> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
     }
 }

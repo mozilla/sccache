@@ -199,7 +199,7 @@ fn test_server_unsupported_compiler() {
     );
     match res {
         Ok(_) => panic!("do_compile should have failed!"),
-        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.description()),
+        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
     }
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());

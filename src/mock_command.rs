@@ -652,7 +652,7 @@ mod test {
         let mut creator = MockCommandCreator::new(&client);
         creator.next_command_spawns(Err("error".into()));
         let e = spawn_command(&mut creator, "foo").err().unwrap();
-        assert_eq!("error", e.description());
+        assert_eq!("error", e.to_string());
     }
 
     #[test]
@@ -664,7 +664,7 @@ mod test {
             "error",
         ))));
         let e = spawn_wait_command(&mut creator, "foo").err().unwrap();
-        assert_eq!("error", e.description());
+        assert_eq!("error", e.to_string());
     }
 
     #[test]
