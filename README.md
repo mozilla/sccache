@@ -38,7 +38,9 @@ Build Requirements
 
 Sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.36.0**.
 
-We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very [portable](#building-portable-binaries). By default `sccache` supports a local disk cache. To build `sccache` with support for `S3` and/or `Redis` cache backends, add `--features=all` or select a specific feature by passing `s3`, `gcs`, and/or `redis`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
+We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very [portable](#building-portable-binaries). By default `sccache` supports a local disk cache, `gcs`, `azure`, `s3`, `redis` and `memchached` as cache backends. To build `sccache` with fewer dependencies use i.e. `--no-default-features --features=s3` for `S3` cache backend and add specific features by passing `azure`, `memcached`, `gcs`, and/or `redis`. Refer to the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
+
+Features `all` is the default and covers all available features.
 
 Build
 -----
