@@ -1156,7 +1156,6 @@ mod test {
         let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
-        let cwd : PathBuf = "/tmp".into();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),

@@ -637,6 +637,8 @@ struct SccacheService<C: CommandCreatorSync> {
     /// map the cwd with compiler proxy path to a proxy resolver, which
     /// will dynamically resolve the input compiler for the current context
     /// (usually file or current working directory)
+    /// the associated `FileTime` is the modification time of
+    /// the compiler proxy, in order to track updates of the proxy itself
     compiler_proxies: Rc<
         RefCell<
             HashMap<
@@ -888,7 +890,7 @@ where
             }
         };
 
-        // use the supplied compiler path as fallback, lookup it's modification time too
+        // use the supplied compiler path as fallback, lookup its modification time too
         let w_fallback = resolve_w_proxy
             .then(move |res: Result<Option<(PathBuf, FileTime)>>| {
                 let opt = match res {
