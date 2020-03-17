@@ -884,7 +884,7 @@ where
                     cwd.clone(),
                     env.as_slice(),
                 );
-                Box::new(fut)
+                Box::new(fut.then(|res : Result<_>| { Ok(res.ok()) }))
             } else {
                 f_ok(None)
             }

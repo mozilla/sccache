@@ -506,7 +506,7 @@ where
         mut creator: T,
         cwd: PathBuf,
         env: &[(OsString,OsString)],
-    ) -> SFuture<Option<(PathBuf, FileTime)>> {
+    ) -> SFuture<(PathBuf, FileTime)> {
 
         let proxy_executable = self.proxy_executable.clone();
 
@@ -518,17 +518,25 @@ where
 
         let lookup =
             run_input_output(child, None)
-                .map(move |output| {
+                .map_err(|e| { format!("Failed to execute rustup which rustc: {}", e).into() })
+                .and_then(move |output| {
                     String::from_utf8(output.stdout.clone())
+                        .map_err(|e| { format!("Failed to parse output of rustup which rustc: {}", e).into() })
                         .and_then(|stdout| {
                             let proxied_compiler = PathBuf::from(stdout.trim());
                             trace!("proxy: rustup which rustc produced: {:?}", &proxied_compiler);
-                            let opt = fs::metadata(proxied_compiler.as_path())
-                            .map(|attr| { FileTime::from_last_modification_time(&attr) })
-                            .map(|filetime| {(proxied_compiler, filetime)})
-                            .ok();
-                        Ok(opt)
-                    }).ok().flatten()
+                            let res = fs::metadata(proxied_compiler.as_path())
+                            .map_err(|e| { format!("Failed to obtain metadata of the resolved, true rustc: {}", e).into() })
+                            .and_then(|attr| {
+                                if attr.is_file() {
+                                    Ok(FileTime::from_last_modification_time(&attr))
+                                } else {
+                                    Err("proxy: rustup resolved compiler is not of type file".into())
+                                }
+                            })
+                            .map(|filetime| {(proxied_compiler, filetime)});
+                            res
+                        })
                 });
 
         Box::new(lookup)

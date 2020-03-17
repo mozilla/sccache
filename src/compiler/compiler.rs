@@ -132,15 +132,17 @@ pub trait CompilerProxy<T>: Send + 'static
 where
     T: CommandCreatorSync + Sized,
 {
-    /// maps the executable to be used in `cwd` to the true, proxied compiler
+    /// Maps the executable to be used in `cwd` to the true, proxied compiler.
     ///
-    /// returns the absolute path to the true compiler
+    /// Returns the absolute path to the true compiler and the timestamp of
+    /// timestamp of the true compiler. Iff the resolution fails,
+    /// the returned future resolves to an error with more information.
     fn resolve_proxied_executable(
         &self,
         creator: T,
         cwd: PathBuf,
         env_vars: &[(OsString,OsString)],
-    ) -> SFuture<Option<(PathBuf, FileTime)>>;
+    ) -> SFuture<(PathBuf, FileTime)>;
 
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
@@ -939,16 +941,16 @@ where
                                     let fut =
                                         proxy
                                             .resolve_proxied_executable(creator1, cwd, &env2)
-                                            .map(move |opt| {
-                                                // tale the pathbuf for rustc as resolved by th proxy
-                                                match opt {
-                                                    Some((resolved_path, _time)) => {
+                                            .then(move |res| {
+                                                // take the pathbuf for rustc as resolved by the proxy
+                                                match res {
+                                                    Ok((resolved_path, _time)) => {
                                                         trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                                                        (Some(proxy), resolved_path)
+                                                        f_ok((Some(proxy), resolved_path))
                                                     },
-                                                    None => {
-                                                        trace!("Could not resolve compiler with rustup proxy");
-                                                        (None, executable)
+                                                    Err(e) => {
+                                                        trace!("Could not resolve compiler with rustup proxy: {}", e);
+                                                        f_ok((None, executable))
                                                     },
                                                 }
                                             });
