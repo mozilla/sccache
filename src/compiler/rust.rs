@@ -237,8 +237,6 @@ where
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     let crate_name = crate_name.to_owned();
-    let cargo_toml = cwd.join("Cargo.toml");
-    trace!("[{}]: add cargo_toml: {:?}", crate_name, cargo_toml.display());
 
     Box::new(dep_info.and_then(move |_| -> SFuture<_> {
         let name2 = crate_name.clone();
@@ -246,7 +244,7 @@ where
             parse_dep_file(&dep_file, &cwd)
                 .chain_err(|| format!("Failed to parse dep info for {}", name2))
         });
-        Box::new(parsed.map(move |mut files| {
+        Box::new(parsed.map(move |files| {
             trace!(
                 "[{}]: got {} source files from dep-info in {}",
                 crate_name,
@@ -255,7 +253,6 @@ where
             );
             // Just to make sure we capture temp_dir.
             drop(temp_dir);
-            files.push(cargo_toml);
             files
         }))
     }))
@@ -1513,11 +1510,20 @@ where
         // local files, such as a .git HEAD reference, a Cargo.toml
         // i.e. https://github.com/mozilla/sccache/issues/696
 
-        let _ = blacklist.as_ref().check_update_of_cargo_toml(&cwd);
+        let additives = if let Ok(Some(
+		CargoTomlEssenceExtract {
+			additives,
+			..
+		})) = blacklist.as_ref().check_update_of_cargo_toml(&cwd)
+	{
+		additives				
+	} else {
+		Vec::new()
+	};
 
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
-        let abs_externs = externs.into_iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
+        let abs_externs = externs.iter().map(|e| cwd.join(e)).chain(additives).collect::<Vec<_>>();
         let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
@@ -1687,6 +1693,7 @@ where
                             .into_iter()
                             .chain(abs_externs)
                             .chain(abs_staticlibs)
+                            .chain(vec![cargo_toml])
                             .collect();
 
                         let compilation = RustCompilation {
@@ -3219,8 +3226,6 @@ c:/foo/bar.rs:
         // bar.rlib (extern crate, from externs)
         m.update(empty_digest.as_bytes());
         // libbaz.a (static library, from staticlibs)
-        m.update(empty_digest.as_bytes());
-        // Cargo.toml
         m.update(empty_digest.as_bytes());
         // Env vars
         OsStr::new("CARGO_BLAH").hash(&mut HashToDigest { digest: &mut m });
