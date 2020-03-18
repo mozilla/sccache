@@ -1148,7 +1148,6 @@ mod test {
     use futures_cpupool::CpuPool;
     use std::fs::{self, File};
     use std::io::Write;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
