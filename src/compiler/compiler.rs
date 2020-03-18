@@ -144,6 +144,7 @@ where
         env_vars: &[(OsString,OsString)],
     ) -> SFuture<(PathBuf, FileTime)>;
 
+    /// Create a clone of `Self` and puts it in a `Box`
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
 
