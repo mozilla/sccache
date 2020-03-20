@@ -44,6 +44,9 @@ pub enum Cache {
     Miss,
     /// Cache entry should be ignored, force compilation.
     Recache,
+    /// Cache entry should be ignored, force compilation,
+    /// but the result shall not be stored in the cache either.
+    Blacklisted,
 }
 
 impl fmt::Debug for Cache {
@@ -52,6 +55,7 @@ impl fmt::Debug for Cache {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
             Cache::Recache => write!(f, "Cache::Recache"),
+            Cache::Blacklisted => write!(f, "Cache::Blacklisted"),
         }
     }
 }

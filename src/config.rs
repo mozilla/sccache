@@ -1,3 +1,4 @@
+
 // Copyright 2016 Mozilla Foundation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -164,6 +165,10 @@ impl Default for DiskCacheConfig {
     }
 }
 
+// pub trait FromEnv<T> where T: Sized {
+//     fn from_env(env: &[&OsString,&OsString]) -> Self;
+// }
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum GCSCacheRWMode {
@@ -279,6 +284,8 @@ impl CacheConfigs {
         }
     }
 }
+
+
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -399,13 +406,167 @@ impl Default for DistConfig {
     }
 }
 
-// TODO: fields only pub for tests
+
+#[derive(Default,Eq,PartialEq,Debug,Serialize, Deserialize, Clone)]
+pub struct CrateName(String);
+
+impl FromStr for CrateName {
+    type Err = Error;
+    fn from_str(s: &str) -> std::result::Result<Self,Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl CrateName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::string::ToString for CrateName {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct RustBlacklistConfig {
+    pub crates : Vec<CrateName>,
+    pub files : Vec<PathBuf>,
+    pub build_script: bool,
+    // TODO regular expressions for crates+files
+}
+
+impl Default for RustBlacklistConfig {
+    fn default() -> Self {
+        Self {
+            crates : vec![],
+            files : vec![],
+            build_script : false,
+        }
+    }
+}
+
+impl RustBlacklistConfig {
+    /// Load the blacklist configuration from environment variables.
+    pub fn from_env() -> Self {
+        let (mut files, mut crates) = env::var("SCCACHE_BLACKLIST_RUST")
+            .map(|s|{
+                Self::parse_tagged_mixed(s.as_str(), "SCCACHE_BLACKLIST_RUST").unwrap_or_default()
+            }).unwrap_or_default();
+
+        if let Ok(val) = env::var("SCCACHE_BLACKLIST_RUST_CRATES") {
+            val.split(',').filter_map(|item| { CrateName::from_str(item).ok() } )
+            .for_each(|crate_name| {
+                crates.push(crate_name);
+            });
+        }
+
+
+        if let Ok(val) = env::var("SCCACHE_BLACKLIST_RUST_FILES") {
+            val.split(',').map(|item| { PathBuf::from(item) } )
+            .for_each(|file| {
+                files.push(file);
+            })
+        }
+
+        let build_script = env::var("SCCACHE_BLACKLIST_RUST_BUILD_SCRIPT").map(|val| {
+            match val.as_str() {
+                "1" | "true" | "yes" => true,
+                "0" | "false"| "no" | "nope" => false,
+                _ => false,
+            }
+        }).unwrap_or(true);
+
+        Self {
+            crates,
+            files,
+            build_script,
+        }
+    }
+
+    fn parse_tagged_mixed<'a>(s :&'a str, env_var_name: &str) -> Result<(Vec<PathBuf>,Vec<CrateName>)> {
+        let mut files = Vec::<PathBuf>::with_capacity(10);
+        let mut crates = Vec::<CrateName>::with_capacity(10);
+        s.split(',').try_for_each::<_,Result<_>>(|item| {
+            let kv : Vec<&str> = item.split(':').collect();
+            if kv.len() != 2 {
+                return Err("Invalid fmt".to_string().into());
+            }
+
+            match kv[0] {
+                "file" => {
+                    let file = PathBuf::from(kv[1]);
+                    files.push(file);
+                },
+                "crate" => {
+                    let crate_name = CrateName::from_str(kv[1]).map_err(|_e| "Failed to convert string to crate name".to_string())?;
+                    crates.push(crate_name);
+                },
+                prefix => { return Err(format!("Failed to parse env var {} with list item prefix {}", env_var_name, prefix).into()) }
+            }
+            Ok(())
+        })?;
+        Ok((files,crates))
+    }
+
+    pub fn merge(&mut self, mut other : Self) {
+        self.crates.append(&mut other.crates);
+        self.files.append(&mut other.files);
+        self.build_script = other.build_script || self.build_script;
+    }
+}
+
+
+
+#[derive(Default, Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct CxxBlacklistConfig {
+    pub files : Vec<PathBuf>,
+    // TODO regular expressions for files
+}
+
+impl CxxBlacklistConfig {
+    pub fn from_env() -> Self {
+        Self::default()
+    }
+    pub fn merge(&mut self, mut other: Self) {
+        self.files.append(&mut other.files);
+    }
+}
+
+// Configuration description for which files to blacklist
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlacklistConfig {
+    pub rust : RustBlacklistConfig,
+    pub cxx : CxxBlacklistConfig,
+}
+
+impl BlacklistConfig {
+    pub fn from_env() -> Self {
+        Self {
+            rust : RustBlacklistConfig::from_env(),
+            cxx : CxxBlacklistConfig::from_env(),
+        }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.rust.merge(other.rust);
+        self.cxx.merge(other.cxx);
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
+    pub blacklist: BlacklistConfig,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -443,6 +604,7 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 #[derive(Debug)]
 pub struct EnvConfig {
     cache: CacheConfigs,
+    blacklist: BlacklistConfig,
 }
 
 fn config_from_env() -> EnvConfig {
@@ -488,8 +650,6 @@ fn config_from_env() -> EnvConfig {
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
-            // TODO: unsure if these should warn during the configuration loading
-            // or at the time when they're actually used to connect to GCS
             Ok(_) => {
                 warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
                 GCSCacheRWMode::ReadOnly
@@ -534,7 +694,10 @@ fn config_from_env() -> EnvConfig {
         s3,
     };
 
-    EnvConfig { cache }
+
+    let blacklist = BlacklistConfig::from_env();
+
+    EnvConfig { cache, blacklist }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -542,6 +705,7 @@ pub struct Config {
     pub caches: Vec<CacheType>,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
+    pub blacklist: BlacklistConfig,
 }
 
 impl Config {
@@ -563,19 +727,23 @@ impl Config {
     }
 
     fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
-        let mut conf_caches: CacheConfigs = Default::default();
+        let mut conf_caches = CacheConfigs::default();
+        let mut blacklist_merged = BlacklistConfig::default();
 
-        let FileConfig { cache, dist } = file_conf;
+        let FileConfig { cache, dist , blacklist} = file_conf;
         conf_caches.merge(cache);
+        blacklist_merged.merge(blacklist);
 
-        let EnvConfig { cache } = env_conf;
+        let EnvConfig { cache, blacklist } = env_conf;
         conf_caches.merge(cache);
+        blacklist_merged.merge(blacklist);
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
         Config {
             caches,
             fallback_cache,
             dist,
+            blacklist: blacklist_merged,
         }
     }
 }
@@ -806,6 +974,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
+        blacklist: Default::default(),
     };
 
     let file_conf = FileConfig {
@@ -822,7 +991,7 @@ fn config_overrides() {
             }),
             ..Default::default()
         },
-        dist: Default::default(),
+        .. Default::default()
     };
 
     assert_eq!(
@@ -841,7 +1010,7 @@ fn config_overrides() {
                 dir: "/env-cache".into(),
                 size: 5,
             },
-            dist: Default::default(),
+            .. Default::default()
         }
     );
 }
@@ -869,4 +1038,34 @@ fn test_gcs_credentials_url() {
         }
         None => unreachable!(),
     };
+}
+
+
+#[test]
+fn test_rust_blacklist_cfg() {
+    env::set_var("SCCACHE_BLACKLIST_RUST", "crate:syn,crate:env_logger,file:fx.rs");
+    env::set_var("SCCACHE_BLACKLIST_RUST_CRATES", "zzz");
+    env::set_var("SCCACHE_BLACKLIST_RUST_FILES", "pewpew.rs");
+    env::set_var("SCCACHE_BLACKLIST_RUST_BUILD_SCRIPT", "1");
+
+    let env_cfg = config_from_env();
+
+    let RustBlacklistConfig {
+        ref files,
+        ref crates,
+        build_script,
+        ..
+    } = env_cfg.blacklist.rust;
+
+    assert!(build_script);
+
+    assert!(files.contains(&PathBuf::from_str("pewpew.rs").unwrap()));
+    assert!(files.contains(&PathBuf::from_str("fx.rs").unwrap()));
+
+    assert!(crates.contains(&CrateName::from_str("syn").unwrap()));
+    assert!(crates.contains(&CrateName::from_str("zzz").unwrap()));
+    assert!(crates.contains(&CrateName::from_str("env_logger").unwrap()));
+
+
+
 }

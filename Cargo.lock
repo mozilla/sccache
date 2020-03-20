@@ -981,15 +981,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.7.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d47946d458e94a1b7bcabbf6521ea7c037062c81f534615abcad76e84d4970d"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2083,7 +2074,6 @@ dependencies = [
  "http",
  "hyper",
  "hyperx",
- "itertools",
  "jobserver",
  "jsonwebtoken",
  "lazy_static",
@@ -2113,6 +2103,7 @@ dependencies = [
  "serde_json",
  "sha-1",
  "sha2",
+ "spin",
  "strip-ansi-escapes",
  "syslog",
  "tar",

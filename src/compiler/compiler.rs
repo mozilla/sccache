@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::blacklist::Blacklist;
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
@@ -209,7 +210,7 @@ where
                 out_pretty,
                 fmt_duration_as_secs(&start.elapsed())
             );
-            let (key, compilation, weak_toolchain_key) = match res {
+            let (key, compilation, weak_toolchain_key, status) = match res {
                 Err(Error(ErrorKind::ProcessError(output), _)) => {
                     return f_ok((CompileResult::Error, output));
                 }
@@ -218,15 +219,16 @@ where
                     key,
                     compilation,
                     weak_toolchain_key,
-                }) => (key, compilation, weak_toolchain_key),
+                    status,
+                }) => (key, compilation, weak_toolchain_key, status),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
-            let cache_status = if cache_control == CacheControl::ForceRecache {
-                f_ok(Cache::Recache)
-            } else {
-                storage.get(&key)
+            let cache_status = match cache_control {
+                _ if status.is_blacklisted() => f_ok(Cache::Blacklisted),
+                CacheControl::ForceRecache => f_ok(Cache::Recache),
+                _ => storage.get(&key)
             };
 
             // Set a maximum time limit for the cache to respond before we forge
@@ -295,6 +297,14 @@ where
                         );
                         MissType::ForcedRecache
                     }
+                    Ok(Cache::Blacklisted) => {
+                        debug!(
+                            "[{}]: Cache blacklisted in {}",
+                            out_pretty,
+                            fmt_duration_as_secs(&duration)
+                        );
+                        MissType::Blacklisted
+                    }
                     Err(err) => {
                         if err.is_elapsed() {
                             debug!(
@@ -318,14 +328,28 @@ where
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = dist_or_local_compile(
-                    dist_client,
-                    creator,
-                    cwd,
-                    compilation,
-                    weak_toolchain_key,
-                    out_pretty.clone(),
-                );
+                let compile = 
+
+                match miss_type {
+                    MissType::Blacklisted =>
+                        Box::new(local_compile(
+                            creator,
+                            compilation,
+                            out_pretty.clone(),
+                        ).map(|(_cacheable,dist_type, process_output)| 
+                            (Cacheable::No, dist_type, process_output)
+                        )),
+
+                    _ => 
+                        dist_or_local_compile(
+                            dist_client,
+                            creator,
+                            cwd,
+                            compilation,
+                            weak_toolchain_key,
+                            out_pretty.clone(),
+                        ) as Box<dyn futures::Future<Error = Error, Item = (Cacheable, DistType, std::process::Output)>>,
+                };
 
                 Box::new(
                     compile.and_then(move |(cacheable, dist_type, compiler_result)| {
@@ -416,13 +440,9 @@ where
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
 }
 
-#[cfg(not(feature = "dist-client"))]
-fn dist_or_local_compile<T>(
-    _dist_client: Result<Option<Arc<dyn dist::Client>>>,
+fn local_compile<T>(
     creator: T,
-    _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
-    _weak_toolchain_key: String,
     out_pretty: String,
 ) -> SFuture<(Cacheable, DistType, process::Output)>
 where
@@ -444,6 +464,22 @@ where
             .map(move |o| (cacheable, DistType::NoDist, o)),
     )
 }
+
+#[cfg(not(feature = "dist-client"))]
+fn dist_or_local_compile<T>(
+    _dist_client: Result<Option<Arc<dyn dist::Client>>>,
+    creator: T,
+    _cwd: PathBuf,
+    compilation: Box<dyn Compilation>,
+    _weak_toolchain_key: String,
+    out_pretty: String,
+) -> SFuture<(Cacheable, DistType, process::Output)>
+where
+    T: CommandCreatorSync,
+{
+    local_compile(creator, compilation, out_pretty)
+}
+
 
 #[cfg(feature = "dist-client")]
 fn dist_or_local_compile<T>(
@@ -681,6 +717,36 @@ impl OutputsRewriter for NoopOutputsRewriter {
     }
 }
 
+
+/// Determines the status of the HashResult
+/// 
+/// Utilizied to act upon blacklisting i.e.
+/// or other late conditions that are imposed
+/// when compiling.
+pub enum HashResultStatus {
+    Blacklisted(String),
+    Passed,
+}
+
+impl PartialEq for HashResultStatus {
+    fn eq(&self, other: &Self) -> bool {
+        match (self,other) {
+            (Self::Blacklisted(_),Self::Blacklisted(_)) | (Self::Passed, Self::Passed) => true,
+            _ => false,
+        }
+    }
+}
+
+impl HashResultStatus {
+    pub fn is_blacklisted(&self) -> bool {
+        if let Self::Blacklisted(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Result of generating a hash from a compiler command.
 pub struct HashResult {
     /// The hash key of the inputs.
@@ -689,9 +755,18 @@ pub struct HashResult {
     pub compilation: Box<dyn Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
+    /// Determines the above information can be executed
+    /// in a distributed fashion and cached or neither
+    pub status: HashResultStatus,
+
 }
 
 /// Possible results of parsing compiler arguments.
+/// 
+/// Blacklisting happens at a later point of time,
+/// since the inputs at this point are not parsed
+/// yet and execution can not be asynchronous at
+/// this point of execution.
 #[derive(Debug, PartialEq)]
 pub enum CompilerArguments<T> {
     /// Commandline can be handled.
@@ -742,6 +817,8 @@ pub enum MissType {
     TimedOut,
     /// Error reading from cache
     CacheReadError,
+    /// Blacklisted caching for a particular compile.
+    Blacklisted,
 }
 
 /// Information about a successful cache write.
@@ -852,6 +929,8 @@ pub enum CacheControl {
     Default,
     /// Ignore existing cache entries, force recompilation.
     ForceRecache,
+    // /// Blacklisted compilation will not be fetched from cache or pushed there.
+    // Blacklisted,
 }
 
 /// Creates a future that will write `contents` to `path` inside of a temporary
@@ -888,6 +967,7 @@ fn detect_compiler<T>(
     env: &[(OsString, OsString)],
     pool: &CpuPool,
     dist_archive: Option<PathBuf>,
+    blacklist: Blacklist,
 ) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
@@ -990,6 +1070,7 @@ where
                                 &rustc_verbose_version,
                                 dist_archive,
                                 pool,
+                                blacklist,
                             )
                             .map(|c| {
                                 (
@@ -1128,12 +1209,13 @@ pub fn get_compiler_info<T>(
     env: &[(OsString, OsString)],
     pool: &CpuPool,
     dist_archive: Option<PathBuf>,
+    blacklist: Blacklist,
 ) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, cwd, env, &pool, dist_archive)
+    detect_compiler(creator, executable, cwd, env, &pool, dist_archive, blacklist)
 }
 
 #[cfg(test)]

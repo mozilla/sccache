@@ -28,6 +28,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+use crate::blacklist::*;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::task::{self, Task};
@@ -405,6 +406,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         client,
         dist_client,
         storage,
+        config.blacklist.clone(),
     );
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
@@ -441,6 +443,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
+        blacklist_config: config::BlacklistConfig,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = TcpListener::bind(&SocketAddr::V4(addr))?;
@@ -449,7 +452,15 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let service = SccacheService::new(
+            dist_client,
+            storage,
+            &client,
+            pool,
+            tx,
+            info,
+            Blacklist::from_config(&blacklist_config),
+        );
 
         Ok(SccacheServer {
             runtime,
@@ -643,6 +654,8 @@ struct SccacheService<C: CommandCreatorSync> {
     /// the compiler proxy, in order to track updates of the proxy itself
     compiler_proxies: Rc<RefCell<CompilerProxyMap<C>>>,
 
+
+
     /// Thread pool to execute work in
     pool: CpuPool,
 
@@ -661,6 +674,10 @@ struct SccacheService<C: CommandCreatorSync> {
 
     /// Information tracking how many services (connected clients) are active.
     info: ActiveInfo,
+
+    /// Configuration information for blacklisting certain compiles from
+    /// caching and distributed compilation.
+    blacklist: Blacklist,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
@@ -735,6 +752,7 @@ where
     }
 }
 
+
 impl<C> SccacheService<C>
 where
     C: CommandCreatorSync,
@@ -746,6 +764,7 @@ where
         pool: CpuPool,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
+        blacklist: Blacklist,
     ) -> SccacheService<C> {
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
@@ -757,6 +776,7 @@ where
             creator: C::new(client),
             tx,
             info,
+            blacklist,
         }
     }
 
@@ -846,7 +866,9 @@ where
 
         Box::new(
             self.compiler_info(exe.into(), cwd.clone(), &env_vars)
-                .map(move |info| me.check_compiler(info, cmd, cwd, env_vars)),
+                .map(move |info| {
+                    me.check_compiler(info, cmd, cwd, env_vars)
+                }),
         )
     }
 
@@ -962,6 +984,7 @@ where
                             env.as_slice(),
                             &me.pool,
                             dist_info.clone().map(|(p, _)| p),
+                            me.blacklist.clone(),
                         );
 
                         Box::new(
@@ -1129,6 +1152,7 @@ where
                                 MissType::CacheReadError => {
                                     stats.cache_errors.increment(&kind);
                                 }
+                                MissType::Blacklisted => {}
                             }
                             stats.cache_misses.increment(&kind);
                             stats.cache_read_miss_duration += duration;

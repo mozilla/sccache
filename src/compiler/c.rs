@@ -14,7 +14,7 @@
 
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult,
+    CompilerKind, HashResult, HashResultStatus,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -354,6 +354,7 @@ where
                                 env_vars,
                             }),
                             weak_toolchain_key,
+                            status : HashResultStatus::Passed,
                         })
                     }))
                 }),

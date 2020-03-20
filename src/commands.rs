@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::blacklist::Blacklist;
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -540,6 +541,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
     // it early and loudly.
     let config = &Config::load()?;
+    let blacklist = Blacklist::from_config(&config.blacklist);
 
     match cmd {
         Command::ShowStats(fmt) => {
@@ -663,7 +665,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
-            let compiler = compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
+            let compiler = compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None, blacklist);
             let packager = compiler.map(|c| c.0.get_toolchain_packager());
             let res = packager.and_then(|p| p.write_pkg(out_file));
             runtime.block_on(res)?
