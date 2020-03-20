@@ -661,9 +661,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let env: Vec<_> = env::vars_os().collect();
             let pool = CpuPool::new(1);
             let out_file = File::create(out)?;
+            let cwd = env::current_dir().expect("A current working dir should exist");
 
-            let compiler = compiler::get_compiler_info(&creator, &executable, &env, &pool, None);
-            let packager = compiler.map(|c| c.get_toolchain_packager());
+            let compiler = compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
+            let packager = compiler.map(|c| c.0.get_toolchain_packager());
             let res = packager.and_then(|p| p.write_pkg(out_file));
             runtime.block_on(res)?
         }

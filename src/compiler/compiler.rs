@@ -19,12 +19,13 @@ use crate::compiler::diab::Diab;
 use crate::compiler::gcc::GCC;
 use crate::compiler::msvc;
 use crate::compiler::msvc::MSVC;
-use crate::compiler::rust::Rust;
+use crate::compiler::rust::{Rust, RustupProxy};
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
+use filetime::FileTime;
 use futures::Future;
 use futures_cpupool::CpuPool;
 use std::borrow::Cow;
@@ -125,6 +126,26 @@ impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
     fn clone(&self) -> Box<dyn Compiler<T>> {
         self.box_clone()
     }
+}
+
+pub trait CompilerProxy<T>: Send + 'static
+where
+    T: CommandCreatorSync + Sized,
+{
+    /// Maps the executable to be used in `cwd` to the true, proxied compiler.
+    ///
+    /// Returns the absolute path to the true compiler and the timestamp of
+    /// timestamp of the true compiler. Iff the resolution fails,
+    /// the returned future resolves to an error with more information.
+    fn resolve_proxied_executable(
+        &self,
+        creator: T,
+        cwd: PathBuf,
+        env_vars: &[(OsString,OsString)],
+    ) -> SFuture<(PathBuf, FileTime)>;
+
+    /// Create a clone of `Self` and puts it in a `Box`
+    fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
 
 /// An interface to a compiler for hash key generation, the result of
@@ -858,14 +879,16 @@ pub fn write_temp_file(
     .chain_err(|| "failed to write temporary file")
 }
 
+
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
 fn detect_compiler<T>(
-    creator: &T,
+    creator: T,
     executable: &Path,
+    cwd: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
     dist_archive: Option<PathBuf>,
-) -> SFuture<Box<dyn Compiler<T>>>
+) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
@@ -894,28 +917,97 @@ where
         f_ok(None)
     };
 
-    let creator = creator.clone();
+
+    let creator1 = creator.clone();
+    let creator2 = creator.clone();
     let executable = executable.to_owned();
-    let env = env.to_owned();
+    let executable2 = executable.clone();
+    let env1 = env.to_owned();
+    let env2 = env.to_owned();
+    let env3 = env.to_owned();
     let pool = pool.clone();
-    Box::new(rustc_vv.and_then(move |rustc_vv| match rustc_vv {
-        Some(Ok(rustc_verbose_version)) => {
-            debug!("Found rustc");
-            Box::new(
-                Rust::new(
-                    creator,
-                    executable,
-                    &env,
-                    &rustc_verbose_version,
-                    dist_archive,
-                    pool,
+    let cwd = cwd.to_owned().clone();
+    Box::new(
+        rustc_vv
+            .and_then(move |rustc_vv| match rustc_vv {
+            Some(Ok(rustc_verbose_version)) => {
+                debug!("Found rustc");
+
+                Box::new(
+                    RustupProxy::find_proxy_executable::<T>(&executable2,"rustup", creator, &env1)
+                        .and_then(move |proxy : Result<Option<RustupProxy>>| -> SFuture<(Option<RustupProxy>, PathBuf)> {
+                            match proxy {
+                                Ok(Some(proxy)) => {
+                                    trace!("Found rustup proxy executable");
+                                    let fut =
+                                        proxy
+                                            .resolve_proxied_executable(creator1, cwd, &env2)
+                                            .then(move |res| {
+                                                // take the pathbuf for rustc as resolved by the proxy
+                                                match res {
+                                                    Ok((resolved_path, _time)) => {
+                                                        trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                                        f_ok((Some(proxy), resolved_path))
+                                                    },
+                                                    Err(e) => {
+                                                        trace!("Could not resolve compiler with rustup proxy: {}", e);
+                                                        f_ok((None, executable))
+                                                    },
+                                                }
+                                            });
+                                    Box::new(fut)
+                                },
+                                Ok(None) => {
+                                    trace!("Did not find rustup");
+                                    f_ok((None, executable))
+                                },
+                                Err(e) => {
+                                    trace!("Did not find rustup due to {}", e);
+                                    f_ok((None, executable))
+                                },
+                            }
+                        })
+                        .then(move |res: Result<(Option<RustupProxy>, PathBuf)>| {
+                            let (proxy, resolved_rustc) : (_, PathBuf)
+                                = res
+                                    .map(|(proxy,resolved_compiler_executable)| {
+                                        (
+                                            proxy.map(Box::new).map(|x : Box<RustupProxy>| {
+                                                x as Box<dyn CompilerProxy<T>>
+                                            }),
+                                            resolved_compiler_executable
+                                        )
+                                    })
+                                    .unwrap_or_else(|_e| {
+                                        trace!("Compiling rust without proxy");
+                                        (None, executable2)
+                                    });
+
+                            Rust::new(
+                                creator2,
+                                resolved_rustc,
+                                &env3,
+                                &rustc_verbose_version,
+                                dist_archive,
+                                pool,
+                            )
+                            .map(|c| {
+                                (
+                                    Box::new(c) as Box<dyn Compiler<T> >,
+                                    proxy as Option<Box<dyn CompilerProxy<T>>>
+                                )
+                            })
+                    }
                 )
-                .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
             )
-        }
-        Some(Err(e)) => f_err(e),
-        None => detect_c_compiler(creator, executable, env, pool),
-    }))
+            }
+            Some(Err(e)) => f_err(e),
+            None => {
+                let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool);
+                Box::new(cc.map(|c : Box<dyn Compiler<T>>| { (c, None ) }))
+            },
+        })
+    )
 }
 
 fn detect_c_compiler<T>(
@@ -1030,17 +1122,18 @@ diab
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
 pub fn get_compiler_info<T>(
-    creator: &T,
+    creator: T,
     executable: &Path,
+    cwd: &Path,
     env: &[(OsString, OsString)],
     pool: &CpuPool,
     dist_archive: Option<PathBuf>,
-) -> SFuture<Box<dyn Compiler<T>>>
+) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, env, &pool, dist_archive)
+    detect_compiler(creator, executable, cwd, env, &pool, dist_archive)
 }
 
 #[cfg(test)]
@@ -1069,9 +1162,9 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
 
@@ -1084,9 +1177,9 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
     }
 
@@ -1113,9 +1206,9 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
     }
 
@@ -1147,9 +1240,11 @@ LLVM version: 6.0",
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(&creator, &rustc, &[], &pool, None)
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        let c = detect_compiler(creator, &rustc, f.tempdir.path(),&[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         assert_eq!(CompilerKind::Rust, c.kind());
     }
 
@@ -1162,14 +1257,15 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
         );
-        let c = detect_compiler(&creator, &f.bins[0], &[], &pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
     }
 
     #[test]
     fn test_detect_compiler_kind_unknown() {
+        let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(
@@ -1177,7 +1273,7 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
         assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+            detect_compiler(creator, "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1185,11 +1281,12 @@ LLVM version: 6.0",
 
     #[test]
     fn test_detect_compiler_kind_process_fail() {
+        let f = TestFixture::new();
         let creator = new_creator();
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         assert!(
-            detect_compiler(&creator, "/foo/bar".as_ref(), &[], &pool, None)
+            detect_compiler(creator, "/foo/bar".as_ref(), f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1202,9 +1299,9 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // digest of an empty file.
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
     }
@@ -1220,9 +1317,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // The preprocessor invocation.
         next_command(
             &creator,
@@ -1291,13 +1388,13 @@ LLVM version: 6.0",
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
                     Ok(None),
-                    creator.clone(),
-                    storage.clone(),
+                    creator,
+                    storage,
                     arguments,
                     cwd.to_path_buf(),
                     vec![],
                     CacheControl::Default,
-                    pool.clone(),
+                    pool,
                 )
             }))
             .unwrap();
@@ -1324,9 +1421,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // The preprocessor invocation.
         next_command(
             &creator,
@@ -1424,9 +1521,9 @@ LLVM version: 6.0",
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // The preprocessor invocation.
         next_command(
             &creator,
@@ -1459,13 +1556,13 @@ LLVM version: 6.0",
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
                     Ok(None),
-                    creator.clone(),
-                    storage.clone(),
+                    creator,
+                    storage,
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
                     CacheControl::Default,
-                    pool.clone(),
+                    pool,
                 )
             }))
             .unwrap();
@@ -1498,9 +1595,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";
         const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
@@ -1611,9 +1708,9 @@ LLVM version: 6.0",
             f.write_all(b"file contents")?;
             Ok(MockChild::new(exit_status(0), "gcc", ""))
         });
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         // We should now have a fake object file.
         assert_eq!(fs::metadata(&obj).is_ok(), true);
         // The preprocessor invocation.
@@ -1672,9 +1769,9 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(&creator, &f.bins[0], &[], &pool, None)
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
-            .unwrap();
+            .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";
         const COMPILER_STDERR: &[u8] = b"compiler stderr";
         // The compiler should be invoked twice, since we're forcing
