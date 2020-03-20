@@ -81,7 +81,15 @@ where
 
         let runtime = Runtime::new().unwrap();
         let client = unsafe { Client::new() };
-        let srv = SccacheServer::new(0, pool, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(
+            0,
+            pool,
+            runtime,
+            client,
+            dist_client,
+            storage,
+            Default::default(),
+        ).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {

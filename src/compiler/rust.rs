@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::blacklist::*;
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, HashResult,
+    CompilerKind, CompilerProxy, HashResult, HashResultStatus,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -31,9 +32,10 @@ use futures_cpupool::CpuPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
-#[cfg(feature = "dist-client")]
+use spin;
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
+#[cfg(feature = "dist-client")]
 use std::borrow::Cow;
 #[cfg(feature = "dist-client")]
 use std::collections::hash_map::RandomState;
@@ -91,6 +93,8 @@ pub struct Rust {
     /// A shared, caching reader for rlib dependencies
     #[cfg(feature = "dist-client")]
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
+    /// A shared blacklist
+    blacklist: Arc<RustCompilationBlacklist>,
 }
 
 /// A struct on which to hang a `CompilerHasher` impl.
@@ -109,6 +113,8 @@ pub struct RustHasher {
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
     /// Parsed arguments from the rustc invocation
     parsed_args: ParsedArguments,
+    /// rust compilation blacklist
+    blacklist: Arc<RustCompilationBlacklist>,
 }
 
 /// a lookup proxy for determining the actual compiler used per file or directory
@@ -355,6 +361,7 @@ impl Rust {
         rustc_verbose_version: &str,
         dist_archive: Option<PathBuf>,
         pool: CpuPool,
+        blacklist: Blacklist,
     ) -> SFuture<Rust>
     where
         T: CommandCreatorSync,
@@ -405,6 +412,8 @@ impl Rust {
             Ok((sysroot, libs))
         });
 
+        let blacklist = blacklist.get_rust_blacklist();
+
         #[cfg(feature = "dist-client")]
         let rlib_dep_reader = {
             let executable = executable.clone();
@@ -428,19 +437,23 @@ impl Rust {
                     sysroot,
                     compiler_shlibs_digests: digests,
                     rlib_dep_reader,
+                    blacklist,
                 }
             })
         }));
 
         #[cfg(not(feature = "dist-client"))]
-        return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
-            hash_all(&libs, &pool).map(move |digests| Rust {
-                executable,
-                host,
-                sysroot,
-                compiler_shlibs_digests: digests,
-            })
-        }));
+        {
+            return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
+                hash_all(&libs, &pool).map(move |digests| Rust {
+                    executable,
+                    host,
+                    sysroot,
+                    compiler_shlibs_digests: digests,
+                    blacklist,
+                })
+            }));
+        }
     }
 }
 
@@ -474,19 +487,21 @@ where
         cwd: &Path,
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match parse_arguments(arguments, cwd) {
-            CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
-                executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
-                host: self.host.clone(),
-                sysroot: self.sysroot.clone(),
-                compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
-                #[cfg(feature = "dist-client")]
-                rlib_dep_reader: self.rlib_dep_reader.clone(),
-                parsed_args: args,
-            })),
+            CompilerArguments::Ok(args) => {
+                let hasher = RustHasher {
+                    executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
+                    host: self.host.clone(),
+                    sysroot: self.sysroot.clone(),
+                    compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
+                    #[cfg(feature = "dist-client")]
+                    rlib_dep_reader: self.rlib_dep_reader.clone(),
+                    parsed_args: args,
+                    blacklist: self.blacklist.clone(),
+                };
+                CompilerArguments::Ok(Box::new(hasher))
+            },
             CompilerArguments::NotCompilation => CompilerArguments::NotCompilation,
-            CompilerArguments::CannotCache(why, extra_info) => {
-                CompilerArguments::CannotCache(why, extra_info)
-            }
+            CompilerArguments::CannotCache(why, extra_info) => CompilerArguments::CannotCache(why, extra_info),
         }
     }
 
@@ -699,6 +714,176 @@ impl RustupProxy
 
         Box::new(f)
 
+    }
+}
+
+#[derive(Debug,Clone,Default)]
+pub struct RustCompilationBlacklist {
+    cargo_build_script_tracking_enabled: bool,
+    // map Cargo.toml to optional build command script path and Cargo.toml modification time
+    cargo_build_script_cache: Arc<spin::RwLock<HashMap<PathBuf,(Option<PathBuf>,SystemTime)>>>,
+    // list of disallowed paths from env/cfg
+    disallowed_crates: HashSet<String>,
+    // list of disallowed paths from env/cfg
+    disallowed_files: HashSet<PathBuf>,
+    // // list of disallowed paths based on a regex match on the file relative to the CWD
+    // disallowed_crates_regex: Vec<Regex>,
+    // // list of disallowed paths based on a regex match on the file relative to the CWD
+    // disallowed_files_regex: Vec<Regex>,
+}
+
+/// information provided by `RustCompilationBlacklist::check_update_of_cargo_toml()`
+#[derive(Debug,Clone,Default)]
+pub struct CargoTomlEssenceExtract {
+    /// path to the Cargo.toml, if there is any
+    pub build_script : Option<PathBuf>,
+    /// additional files to include in the hash (i.e. Cargo.toml)
+    pub additives : Vec<PathBuf>,
+}
+
+
+impl RustCompilationBlacklist {
+    fn is_listed(&self, compile_info : &RustCompilation) -> BlacklistCheckResult {
+        let RustCompilation {
+            executable: _,
+            host: _,
+            sysroot: _,
+            arguments: _,
+            inputs,
+            outputs: _,
+            crate_link_paths: _,
+            crate_name,
+            crate_types: _,
+            dep_info: _,
+            cwd,
+            env_vars: _,
+            #[cfg(feature = "dist-client")]
+            rlib_dep_reader: _,
+        } = compile_info.clone();
+
+        if self.disallowed_crates.contains(&crate_name) {
+            return BlacklistCheckResult::Blacklisted(format!("crate name is enlisted: {}", crate_name))
+        }
+
+        let cargo_toml = cwd.join("Cargo.toml");
+
+        if let Some(rule) = inputs.iter().filter_map(|input| {
+            if self.disallowed_files.contains(input) {
+                Some("Disallowed files")
+            } else if self.cargo_build_script_tracking_enabled {
+                let cargo_build_script_cache = self.cargo_build_script_cache.as_ref().read();
+
+                cargo_build_script_cache
+                    .get(cargo_toml.as_path())
+                    .map(|x| {
+                       x.0.as_ref()
+                    })
+                    .flatten()
+                    .map(|build_script| {
+                        if input == build_script {
+                            Some("Buildscript")
+                        } else {
+                            None
+                        }
+                    }).flatten()
+            } else {
+                None
+            }
+        }).next() {
+            BlacklistCheckResult::Blacklisted(rule.to_owned())
+        } else {
+            BlacklistCheckResult::Passed
+        }
+    }
+
+
+    pub fn refresh_context(&self, cwd: &Path) -> Result<()> {
+        let _ = self.check_update_of_cargo_toml(cwd)?;
+        Ok(())
+    }
+
+    /// returns current information based on cargo toml or uses cached information
+    ///
+    /// Returns an error if the mtime can not be obtained
+    /// For the case where no Cargo.toml exists, Ok(None) is returned
+    pub fn check_update_of_cargo_toml(&self, cwd: &Path) -> Result<Option<CargoTomlEssenceExtract>> {
+
+        let cargo_toml = cwd.join("Cargo.toml");
+
+        match fs::metadata(&cargo_toml) {
+            Err(_e) => return Ok(None),
+            Ok(meta) => {
+                // check if there is a Cargo.toml file
+                if !meta.is_file() {
+                    return Ok(None)
+                }
+                let cargo_toml_mod_time = meta.modified()
+                    .map_err(|e| format!("Failed to obtain mtime of {}: {}", cargo_toml.display(), e))?;
+
+                // extract the build= which is added to a blacklists
+                let mut cargo_build_script_cache = self.cargo_build_script_cache.as_ref().write();
+
+                // obtain a buildscript - cached or freshly obtained
+                let cargo_build_script_path : Option<PathBuf> =
+                    match cargo_build_script_cache.entry(cargo_toml.clone()) {
+                        hash_map::Entry::Occupied(mut occupancy) => {
+                            // if we have cached time, check if the mtime changed compared to the current
+                            if cargo_toml_mod_time != occupancy.get().1 {
+                                let build_script_path_update = extract_build_script(cargo_toml.as_path(), cwd).ok().flatten();
+                                // if so, update the cache
+                                let _ = occupancy.insert((build_script_path_update.clone(), cargo_toml_mod_time));
+                                build_script_path_update
+                            } else {
+                                occupancy.get().0.clone()
+                            }
+                        },
+                        hash_map::Entry::Vacant(vacancy) => {
+                            let build_script_path_update=  extract_build_script(cargo_toml.as_path(), cwd).ok().flatten();
+                            // insert
+                            let _ = vacancy.insert((build_script_path_update.clone(), cargo_toml_mod_time));
+                            build_script_path_update
+                        },
+                    };
+                Ok(
+                    Some(
+                        CargoTomlEssenceExtract {
+                            build_script : cargo_build_script_path,
+                            additives : vec![cargo_toml],
+                        }
+                    )
+                )
+            }
+        }
+
+    }
+
+    /// Adds a file to the blacklist.
+    ///
+    /// Must be a full path
+    pub fn enlist_file<P>(&mut self, path : &P) where P: AsRef<Path> {
+        self.disallowed_files.insert(path.as_ref().to_owned());
+    }
+
+    /// Adds a crate to the blacklist.
+    pub fn enlist_crate<C>(&mut self, crate_name : &C) where C: ToString {
+        self.disallowed_crates.insert(crate_name.to_string());
+    }
+
+    /// Clone as a box.
+    pub fn box_clone(&self) -> Box<Self> {
+        Box::new(self.clone())
+    }
+
+    /// Track buildscripts set in Cargo.toml and add them to the ignored set.
+    pub fn enlist_build_script(&mut self) {
+        self.cargo_build_script_tracking_enabled = true;
+    }
+
+    pub fn new() -> Self {
+        Self {
+            cargo_build_script_cache : Arc::new(spin::RwLock::new(HashMap::with_capacity(3))),
+            .. Default::default()
+        }
     }
 }
 
@@ -1210,6 +1395,27 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     })
 }
 
+use std::collections::hash_map;
+use std::time::SystemTime;
+
+use toml::{self};
+type CargoToml = HashMap<String, toml::Value>;
+
+
+
+// extraction helper to obtain the build script from Cargo.toml
+pub(crate) fn extract_build_script(cargo_toml_path: &Path, cwd: &Path) -> Result<Option<PathBuf>> {
+    let cargo_toml_content: String = std::fs::read_to_string(cargo_toml_path)
+        .map_err(|e| format!("Failed to open {}: {:?}", cargo_toml_path.display(), e))?;
+    let mut cargo_toml_content : CargoToml = toml::from_str(cargo_toml_content.as_str())
+        .map_err(|e| format!("Failed to parse {}: {:?}", cargo_toml_path.display(), e))?;
+    let cargo_build_opt: Option<PathBuf> = cargo_toml_content
+        .remove("build")
+        .map(|p| { cwd.join(p.as_str().unwrap()) });
+    Ok(cargo_build_opt)
+}
+
+
 impl<T> CompilerHasher<T> for RustHasher
 where
     T: CommandCreatorSync,
@@ -1244,6 +1450,7 @@ where
                     has_json,
                     ..
                 },
+            blacklist,
         } = *self;
         trace!("[{}]: generate_hash_key", crate_name);
         // TODO: this doesn't produce correct arguments if they
@@ -1272,6 +1479,7 @@ where
             .flat_map(|(arg, val)| Some(arg).into_iter().chain(val))
             .cloned()
             .collect::<Vec<_>>();
+
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files = get_source_files(
@@ -1287,9 +1495,25 @@ where
             hash_all(&source_files, &source_hashes_pool)
                 .map(|source_hashes| (source_files, source_hashes))
         });
+
+        let crate_name = crate_name.to_owned();
+        let cargo_toml = cwd.join("Cargo.toml");
+        trace!("[{}]: add cargo_toml: {:?}", &crate_name, cargo_toml.display());
+
+
+        // check if there is a Cargo.toml
+        // if so, extract the build= which is added to a blacklists
+        // (currently the ony item in that blacklist)
+        // and add build script to the blacklist
+        // it might potentially launch another cargo compilation or require other
+        // local files, such as a .git HEAD reference, a Cargo.toml
+        // i.e. https://github.com/mozilla/sccache/issues/696
+
+        let _ = blacklist.as_ref().check_update_of_cargo_toml(&cwd);
+
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
-        let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
+        let abs_externs = externs.into_iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
         let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
@@ -1461,25 +1685,39 @@ where
                             .chain(abs_staticlibs)
                             .collect();
 
+                        let compilation = RustCompilation {
+                            executable,
+                            host,
+                            sysroot,
+                            arguments,
+                            inputs,
+                            outputs,
+                            crate_link_paths,
+                            crate_name,
+                            crate_types,
+                            dep_info,
+                            cwd,
+                            env_vars,
+                            #[cfg(feature = "dist-client")]
+                            rlib_dep_reader,
+                        };
+
+                        let status = if let BlacklistCheckResult::Blacklisted(ref rule) = blacklist.is_listed(&compilation) {
+                            trace!(
+                                "blacklist(rust)> blacklist matched with rule: {}",
+                                rule,
+                            );
+                            HashResultStatus::Blacklisted(format!("Blacklisted compilation: {}", rule))
+                        } else {
+                            trace!("blacklist(rust)> blacklist did not match");
+                            HashResultStatus::Passed
+                        };
+
                         HashResult {
                             key: m.finish(),
-                            compilation: Box::new(RustCompilation {
-                                executable,
-                                host,
-                                sysroot,
-                                arguments,
-                                inputs,
-                                outputs,
-                                crate_link_paths,
-                                crate_name,
-                                crate_types,
-                                dep_info,
-                                cwd,
-                                env_vars,
-                                #[cfg(feature = "dist-client")]
-                                rlib_dep_reader,
-                            }),
+                            compilation: Box::new(compilation),
                             weak_toolchain_key,
+                            status,
                         }
                     }),
                 )
@@ -2938,6 +3176,7 @@ c:/foo/bar.rs:
                 color_mode: ColorMode::Auto,
                 has_json: false,
             },
+            blacklist : Arc::new(RustCompilationBlacklist::new()),
         });
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
@@ -3029,6 +3268,7 @@ c:/foo/bar.rs:
             #[cfg(feature = "dist-client")]
             rlib_dep_reader: None,
             parsed_args,
+            blacklist : Arc::new(RustCompilationBlacklist::new()),
         });
 
         let creator = new_creator();

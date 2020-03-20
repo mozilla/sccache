@@ -22,6 +22,6 @@ mod compiler;
 mod diab;
 mod gcc;
 mod msvc;
-mod rust;
+pub mod rust;
 
-pub use crate::compiler::compiler::*;
+pub use compiler::*;
