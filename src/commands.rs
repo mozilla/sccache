@@ -135,7 +135,7 @@ fn redirect_stderr(f: File) -> Result<()> {
 /// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
 fn redirect_error_log() -> Result<()> {
     let name = match env::var("SCCACHE_ERROR_LOG") {
-        Ok(filename) => filename,
+        Ok(filename) if !filename.is_empty() => filename,
         _ => return Ok(()),
     };
     let f = OpenOptions::new().create(true).append(true).open(name)?;
