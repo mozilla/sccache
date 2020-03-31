@@ -67,6 +67,7 @@ pub enum Language {
     Cxx,
     ObjectiveC,
     ObjectiveCxx,
+    Cuda,
 }
 
 /// The results of parsing a compiler commandline.
@@ -114,6 +115,7 @@ impl Language {
             Some("C") | Some("cc") | Some("cpp") | Some("cxx") => Some(Language::Cxx),
             Some("m") => Some(Language::ObjectiveC),
             Some("mm") => Some(Language::ObjectiveCxx),
+            Some("cu") => Some(Language::Cuda),
             e => {
                 trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                 None
@@ -127,6 +129,7 @@ impl Language {
             Language::Cxx => "c++",
             Language::ObjectiveC => "objc",
             Language::ObjectiveCxx => "objc++",
+            Language::Cuda => "cuda",
         }
     }
 }
@@ -153,6 +156,8 @@ pub enum CCompilerKind {
     Diab,
     /// Microsoft Visual C++
     MSVC,
+    /// NVIDIA cuda compiler
+    NVCC,
 }
 
 /// An interface to a specific C compiler.
@@ -594,6 +599,15 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_prog(&mut package_builder, "cc1plus")?;
                 add_named_file(&mut package_builder, "specs")?;
                 add_named_file(&mut package_builder, "liblto_plugin.so")?;
+            }
+
+            CCompilerKind::NVCC => {
+                // Various programs called by the nvcc front end.
+                // presumes the underlying host compiler is consistent
+                add_named_file(&mut package_builder, "cudafe++")?;
+                add_named_file(&mut package_builder, "fatbinary")?;
+                add_named_prog(&mut package_builder, "nvlink")?;
+                add_named_prog(&mut package_builder, "ptxas")?;
             }
 
             _ => unreachable!(),
