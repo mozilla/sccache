@@ -293,6 +293,7 @@ where
                     "c++" => Some(Language::Cxx),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
+                    "cu" => Some(Language::Cuda),
                     _ => cannot_cache!("-x"),
                 };
             }
@@ -474,6 +475,7 @@ where
         Language::Cxx => "c++",
         Language::ObjectiveC => "objective-c",
         Language::ObjectiveCxx => "objective-c++",
+        Language::Cuda => "cu",
     };
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language).arg("-E");
@@ -539,6 +541,7 @@ pub fn generate_compile_commands(
         Language::Cxx => "c++",
         Language::ObjectiveC => "objective-c",
         Language::ObjectiveCxx => "objective-c++",
+        Language::Cuda => "cu",
     };
     let mut arguments: Vec<OsString> = vec![
         "-x".into(),
@@ -567,6 +570,7 @@ pub fn generate_compile_commands(
             Language::Cxx => "c++",
             Language::ObjectiveC => "objective-c",
             Language::ObjectiveCxx => "objective-c++",
+            Language::Cuda => "cu",
         }
         .into();
         if !rewrite_includes_only {

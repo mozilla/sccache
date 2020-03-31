@@ -19,6 +19,7 @@ use crate::compiler::diab::Diab;
 use crate::compiler::gcc::GCC;
 use crate::compiler::msvc;
 use crate::compiler::msvc::MSVC;
+use crate::compiler::nvcc::NVCC;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::dist;
 #[cfg(feature = "dist-client")]
@@ -1021,7 +1022,11 @@ where
 {
     trace!("detect_c_compiler");
 
-    let test = b"#if defined(_MSC_VER) && defined(__clang__)
+//NVCC needs to be first as msvc, clang, or gcc could
+//be the underlying host compiler for nvcc
+    let test = b"#if defined(__NVCC__)
+nvcc
+#elif defined(_MSC_VER) && defined(__clang__)
 msvc-clang
 #elif defined(_MSC_VER)
 msvc
@@ -1106,6 +1111,13 @@ diab
                         )
                         .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
                     }));
+                }
+                "nvcc" => {
+                    debug!("Found NVCC");
+                    return Box::new(
+                        CCompiler::new(NVCC, executable, &pool)
+                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                    );
                 }
                 _ => (),
             }
@@ -1210,6 +1222,21 @@ mod test {
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_nvcc() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let pool = CpuPool::new(1);
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "nvcc\nfoo", "")),
+        );
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
+            .wait()
+            .unwrap().0;
+        assert_eq!(CompilerKind::C(CCompilerKind::NVCC), c.kind());
     }
 
     #[test]
