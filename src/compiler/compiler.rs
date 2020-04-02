@@ -926,7 +926,7 @@ where
     let env2 = env.to_owned();
     let env3 = env.to_owned();
     let pool = pool.clone();
-    let cwd = cwd.to_owned().clone();
+    let cwd = cwd.to_owned();
     Box::new(
         rustc_vv
             .and_then(move |rustc_vv| match rustc_vv {
