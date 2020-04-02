@@ -1224,8 +1224,6 @@ where
         pool: &ThreadPool,
         _rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
-        let me = *self;
-        #[rustfmt::skip] // https://github.com/rust-lang/rustfmt/issues/3759
         let RustHasher {
             executable,
             host,
@@ -1247,9 +1245,10 @@ where
                     has_json,
                     ..
                 },
-        } = me;
+        } = *self;
         trace!("[{}]: generate_hash_key", crate_name);
-        // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
+        // TODO: this doesn't produce correct arguments if they
+        // TODO: should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments
             .iter()
             .map(|arg| {

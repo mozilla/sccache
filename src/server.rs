@@ -128,7 +128,9 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 #[cfg(unix)]
 fn get_signal(status: ExitStatus) -> i32 {
     use std::os::unix::prelude::*;
-    status.signal().expect("Signals must exist on unix platforms. Q.E.D.")
+    status
+        .signal()
+        .expect("Signals must exist on unix platforms. qed")
 }
 #[cfg(windows)]
 fn get_signal(_status: ExitStatus) -> i32 {
@@ -599,7 +601,6 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         Ok(())
     }
 }
-
 
 /// maps a compiler proxy path to a compiler proxy and it's last modification time
 type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>;
