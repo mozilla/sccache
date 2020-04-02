@@ -128,11 +128,11 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 #[cfg(unix)]
 fn get_signal(status: ExitStatus) -> i32 {
     use std::os::unix::prelude::*;
-    status.signal().expect("must have signal")
+    status.signal().expect("Signals must exist on unix platforms. Q.E.D.")
 }
 #[cfg(windows)]
 fn get_signal(_status: ExitStatus) -> i32 {
-    panic!("no signals on windows")
+    unreachable!("Signals do not exists on windows. Q.E.D.")
 }
 
 pub struct DistClientContainer {
