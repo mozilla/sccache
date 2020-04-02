@@ -151,6 +151,7 @@ where
 {
     let mut common_args = vec![];
     let mut compilation = false;
+    let mut compilation_flag = OsString::new();
     let mut input_arg = None;
     let mut multiple_input = false;
     let mut output_arg = None;
@@ -186,7 +187,10 @@ where
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
-            Some(DoCompilation) => compilation = true,
+            Some(DoCompilation) => {
+                compilation = true;
+                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+            }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentFlag)
@@ -254,6 +258,7 @@ where
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language,
+        compilation_flag,
         depfile: None,
         outputs,
         preprocessor_args,
@@ -307,7 +312,7 @@ pub fn generate_compile_commands(
     };
 
     let mut arguments: Vec<OsString> = vec![
-        "-c".into(),
+        parsed_args.compilation_flag.clone(),
         parsed_args.input.clone().into(),
         "-o".into(),
         out_file.into(),
@@ -657,6 +662,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
             language: Language::C,
+            compilation_flag: "-c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec![],

@@ -77,6 +77,8 @@ pub struct ParsedArguments {
     pub input: PathBuf,
     /// The type of language used in the input source file.
     pub language: Language,
+    /// The flag required to compile for the given language
+    pub compilation_flag: OsString,
     /// The file in which to generate dependencies.
     pub depfile: Option<PathBuf>,
     /// Output files, keyed by a simple name, like "obj".
