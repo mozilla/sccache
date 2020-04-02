@@ -1247,7 +1247,8 @@ where
                 },
         } = *self;
         trace!("[{}]: generate_hash_key", crate_name);
-        // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
+        // TODO: this doesn't produce correct arguments if they
+        // TODO: should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments
             .iter()
             .map(|arg| {
