@@ -278,6 +278,7 @@ pub fn parse_arguments(
     let mut preprocessor_args = vec![];
     let mut extra_hash_files = vec![];
     let mut compilation = false;
+    let mut compilation_flag = OsString::new();
     let mut debug_info = false;
     let mut pdb = None;
     let mut depfile = None;
@@ -290,7 +291,10 @@ pub fn parse_arguments(
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
-            Some(DoCompilation) => compilation = true,
+            Some(DoCompilation) => {
+                compilation = true;
+                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+            }
             Some(ShowIncludes) => show_includes = true,
             Some(Output(out)) => {
                 output_arg = Some(out.clone());
@@ -423,6 +427,7 @@ pub fn parse_arguments(
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language,
+        compilation_flag,
         depfile,
         outputs,
         preprocessor_args,
@@ -601,7 +606,9 @@ fn generate_compile_commands(
     let mut fo = OsString::from("-Fo");
     fo.push(&out_file);
 
-    let mut arguments: Vec<OsString> = vec!["-c".into(), parsed_args.input.clone().into(), fo];
+    let mut arguments: Vec<OsString> = vec![ parsed_args.compilation_flag.clone(),
+                                             parsed_args.input.clone().into(),
+                                             fo];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
@@ -622,7 +629,7 @@ fn generate_compile_commands(
         fo.push_str(&path_transformer.as_dist(out_file)?);
 
         let mut arguments: Vec<String> = vec![
-            "-c".into(),
+            parsed_args.compilation_flag.clone().into_string().ok()?,
             path_transformer.as_dist(&parsed_args.input)?,
             fo,
         ];
@@ -688,6 +695,7 @@ mod test {
         let ParsedArguments {
             input,
             language,
+            compilation_flag,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -699,6 +707,34 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_compile_flag() {
+        let args = ovec!["/c", "foo.c", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_eq!(Some("/c"), compilation_flag.to_str());
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -898,6 +934,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
             language: Language::C,
+            compilation_flag: "-c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
             preprocessor_args: vec![],
@@ -937,6 +974,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
             language: Language::C,
+            compilation_flag: "/c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.obj".into()), ("pdb", pdb)]
                 .into_iter()

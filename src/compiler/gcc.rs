@@ -222,6 +222,7 @@ where
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
     let mut language = None;
+    let mut compilation_flag = OsString::new();
     let mut profile_generate = false;
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
@@ -258,7 +259,10 @@ where
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(SplitDwarf) => split_dwarf = true,
-            Some(DoCompilation) => compilation = true,
+            Some(DoCompilation) => {
+                compilation = true;
+                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+            }
             Some(ProfileGenerate) => profile_generate = true,
             Some(TestCoverage) => outputs_gcno = true,
             Some(Coverage) => {
@@ -438,6 +442,7 @@ where
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language,
+        compilation_flag,
         depfile: None,
         outputs,
         preprocessor_args,
@@ -538,7 +543,7 @@ pub fn generate_compile_commands(
     let mut arguments: Vec<OsString> = vec![
         "-x".into(),
         language.into(),
-        "-c".into(),
+        parsed_args.compilation_flag.clone(),
         parsed_args.input.clone().into(),
         "-o".into(),
         out_file.into(),
@@ -573,7 +578,7 @@ pub fn generate_compile_commands(
         let mut arguments: Vec<String> = vec![
             "-x".into(),
             language,
-            "-c".into(),
+            parsed_args.compilation_flag.clone().into_string().ok()?,
             path_transformer.as_dist(&parsed_args.input)?,
             "-o".into(),
             path_transformer.as_dist(out_file)?,
@@ -700,6 +705,7 @@ mod test {
         let ParsedArguments {
             input,
             language,
+            compilation_flag,
             outputs,
             preprocessor_args,
             msvc_show_includes,
@@ -711,6 +717,7 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
@@ -1201,6 +1208,7 @@ mod test {
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
             language: Language::C,
+            compilation_flag: "-c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
             preprocessor_args: vec![],
