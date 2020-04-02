@@ -520,7 +520,7 @@ where
             run_input_output(child, None)
                 .map_err(|e| { format!("Failed to execute rustup which rustc: {}", e).into() })
                 .and_then(move |output| {
-                    String::from_utf8(output.stdout.clone())
+                    String::from_utf8(output.stdout)
                         .map_err(|e| { format!("Failed to parse output of rustup which rustc: {}", e).into() })
                         .and_then(|stdout| {
                             let proxied_compiler = PathBuf::from(stdout.trim());
@@ -680,12 +680,12 @@ impl RustupProxy
                         let rustup_candidate_check =
                         run_input_output(child, None)
                             .map(move |output| {
-                                String::from_utf8(output.stdout.clone())
+                                String::from_utf8(output.stdout)
                                 .map_err(|_e| { "Response of `rustup --version` is not valid UTF-8".into() })
                                 .and_then(|stdout| {
                                         if stdout.trim().starts_with("rustup ") {
                                             trace!("PROXY rustup --version produced: {}", &stdout);
-                                            Self::new(&proxy_executable).map(|proxy| Some(proxy))
+                                            Self::new(&proxy_executable).map(Some)
                                         } else {
                                             Err("Unexpected output or `rustup --version`".into())
                                         }
@@ -1223,8 +1223,6 @@ where
         pool: &CpuPool,
         _rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
-        let me = *self;
-        #[rustfmt::skip] // https://github.com/rust-lang/rustfmt/issues/3759
         let RustHasher {
             executable,
             host,
@@ -1246,9 +1244,10 @@ where
                     has_json,
                     ..
                 },
-        } = me;
+        } = *self;
         trace!("[{}]: generate_hash_key", crate_name);
-        // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
+        // TODO: this doesn't produce correct arguments if they
+        // TODO: should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments
             .iter()
             .map(|arg| {

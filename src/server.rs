@@ -869,7 +869,7 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
-        let env = env.into_iter().cloned().collect::<Vec<(OsString,OsString)>>();
+        let env = env.to_vec();
 
         let resolve_w_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
@@ -897,7 +897,7 @@ where
                         .map(|attr| FileTime::from_last_modification_time(&attr))
                         .ok()
                         .map(move |filetime| {
-                            (path2.clone(),filetime)
+                            (path2,filetime)
                         })
                     }
                 };
@@ -999,7 +999,7 @@ where
             });
 
 
-        return Box::new(obtain);
+        Box::new(obtain)
 
     }
 
