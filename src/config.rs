@@ -165,10 +165,6 @@ impl Default for DiskCacheConfig {
     }
 }
 
-// pub trait FromEnv<T> where T: Sized {
-//     fn from_env(env: &[&OsString,&OsString]) -> Self;
-// }
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum GCSCacheRWMode {
@@ -478,7 +474,7 @@ impl RustBlacklistConfig {
                 "0" | "false"| "no" | "nope" => false,
                 _ => false,
             }
-        }).unwrap_or(true);
+        }).unwrap_or(false);
 
         Self {
             crates,
@@ -542,21 +538,37 @@ impl CxxBlacklistConfig {
 #[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlacklistConfig {
-    pub rust : RustBlacklistConfig,
-    pub cxx : CxxBlacklistConfig,
+    pub rust : Option<RustBlacklistConfig>,
+    pub cxx : Option<CxxBlacklistConfig>,
 }
 
 impl BlacklistConfig {
     pub fn from_env() -> Self {
         Self {
-            rust : RustBlacklistConfig::from_env(),
-            cxx : CxxBlacklistConfig::from_env(),
+            rust : Some(RustBlacklistConfig::from_env()),
+            cxx : Some(CxxBlacklistConfig::from_env()),
         }
     }
 
     pub fn merge(&mut self, other: Self) {
-        self.rust.merge(other.rust);
-        self.cxx.merge(other.cxx);
+        let rust = self.rust.clone();
+        self.rust = match (rust, other.rust) {
+            (Some(mut rust), Some(rust2)) => {
+                rust.merge(rust2);
+                Some(rust)
+            },
+            (None, None) => None,
+            (None, rust) | (rust, None) => rust,
+        };
+        let cxx = self.cxx.clone();
+        self.cxx = match (cxx, other.cxx) {
+            (Some(mut cxx), Some(cxx2)) => {
+                cxx.merge(cxx2);
+                Some(cxx)
+            },
+            (None, None) => None,
+            (None, cxx) | (cxx, None) => cxx,
+        };
     }
 }
 

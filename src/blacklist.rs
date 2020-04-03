@@ -18,23 +18,25 @@ impl Blacklist {
     pub fn from_config(cfg: &config::BlacklistConfig) -> Self {
         let mut rust = RustCompilationBlacklist::new();
 
-        trace!(
-            "blacklist(rust)> load from config: files: {}, crates: {}, build_script: {:?}",
-            cfg.rust.files.len(),
-            cfg.rust.crates.len(),
-            cfg.rust.build_script,
-        );
+        if let Some(cfg) =  &cfg.rust {
+            trace!(
+                "blacklist(rust)> load from config: files: {}, crates: {}, build_script: {:?}",
+                cfg.files.len(),
+                cfg.crates.len(),
+                cfg.build_script,
+            );
 
-        cfg.rust.files.iter().for_each(|file| {
-            rust.enlist_file(file);
-        });
+            cfg.files.iter().for_each(|file| {
+                rust.enlist_file(file);
+            });
 
-        cfg.rust.crates.iter().for_each(|crate_name| {
-            rust.enlist_crate(crate_name);
-        });
+            cfg.crates.iter().for_each(|crate_name| {
+                rust.enlist_crate(crate_name);
+            });
 
-        if cfg.rust.build_script {
-            rust.enlist_build_script();
+            if cfg.build_script {
+                rust.enlist_build_script();
+            }
         }
 
         Self {
