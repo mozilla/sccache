@@ -84,6 +84,8 @@ pub struct ParsedArguments {
     pub depfile: Option<PathBuf>,
     /// Output files, keyed by a simple name, like "obj".
     pub outputs: HashMap<&'static str, PathBuf>,
+    /// Commandline arguments for dependency generation.
+    pub dependency_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor (not including common_args).
     pub preprocessor_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor or the compiler.

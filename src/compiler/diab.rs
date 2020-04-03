@@ -79,9 +79,11 @@ ArgData! { pub
     DoCompilation,
     Output(PathBuf),
     PassThrough(OsString),
-    PreprocessorArgumentFlag,
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
+    DepArgumentFlag,
+    DepArgument(OsString),
+    DepArgumentPath(PathBuf),
     TooHardFlag,
     TooHard(OsString),
 }
@@ -103,22 +105,22 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-V", TooHardFlag),
     flag!("-VV", TooHardFlag),
     take_arg!("-W", OsString, Separated, PassThrough),
-    flag!("-Xmake-dependency", PreprocessorArgumentFlag),
+    flag!("-Xmake-dependency", DepArgumentFlag),
     flag!(
         "-Xmake-dependency-canonicalize-path-off",
-        PreprocessorArgumentFlag
+        DepArgumentFlag
     ),
     take_arg!(
         "-Xmake-dependency-savefile",
         PathBuf,
         Concatenated('='),
-        PreprocessorArgumentPath
+        DepArgumentPath
     ),
     take_arg!(
         "-Xmake-dependency-target",
         OsString,
         Concatenated('='),
-        PreprocessorArgument
+        DepArgument
     ),
     flag!("-c", DoCompilation),
     take_arg!(
@@ -156,6 +158,7 @@ where
     let mut multiple_input = false;
     let mut output_arg = None;
     let mut preprocessor_args = vec![];
+    let mut dependency_args = vec![];
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -187,13 +190,17 @@ where
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
+
+            Some(DepArgument(_))
+            | Some(DepArgumentFlag)
+            | Some(DepArgumentPath(_)) => {}
+
             Some(DoCompilation) => {
                 compilation = true;
                 compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgumentPath(_))
             | Some(PassThrough(_)) => {}
             None => match arg {
@@ -209,8 +216,10 @@ where
         }
         let args = match arg.get_data() {
             Some(PassThrough(_)) => &mut common_args,
-            Some(PreprocessorArgumentFlag)
-            | Some(PreprocessorArgument(_))
+            Some(DepArgument(_))
+            | Some(DepArgumentFlag)
+            | Some(DepArgumentPath(_)) => &mut dependency_args,
+            Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
             Some(DoCompilation) | Some(Output(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
@@ -261,6 +270,7 @@ where
         compilation_flag,
         depfile: None,
         outputs,
+        dependency_args,
         preprocessor_args,
         common_args,
         extra_hash_files: vec![],
@@ -285,6 +295,7 @@ where
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
+        .args(&parsed_args.dependency_args)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
@@ -294,7 +305,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    run_input_output(cmd, None)
+    Box::new(run_input_output(cmd, None))
 }
 
 pub fn generate_compile_commands(
@@ -532,7 +543,7 @@ mod test {
             input,
             language,
             outputs,
-            preprocessor_args,
+            dependency_args,
             msvc_show_includes,
             common_args,
             ..
@@ -551,7 +562,7 @@ mod test {
                 "-Xmake-dependency-savefile=bar",
                 "-Xmake-dependency-target=foo"
             ],
-            preprocessor_args
+            dependency_args
         );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -665,6 +676,7 @@ mod test {
             compilation_flag: "-c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
+            dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
             extra_hash_files: vec![],
