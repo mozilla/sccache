@@ -110,6 +110,7 @@ ArgData! { pub
     // it's not treated as a path by the compiler - it's just written wholesale
     // (including any funny make syntax) into the dep file.
     DepTarget(OsString),
+    DepArgumentPath(PathBuf),
     Language(OsString),
     SplitDwarf,
     ProfileGenerate,
@@ -140,11 +141,11 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-L", OsString, Separated, PassThrough),
     flag!("-M", TooHardFlag),
     flag!("-MD", NeedDepTarget),
-    take_arg!("-MF", PathBuf, Separated, PreprocessorArgumentPath),
+    take_arg!("-MF", PathBuf, Separated, DepArgumentPath),
     flag!("-MM", TooHardFlag),
     flag!("-MMD", NeedDepTarget),
     flag!("-MP", NeedDepTarget),
-    take_arg!("-MQ", OsString, Separated, PreprocessorArgument),
+    take_arg!("-MQ", OsString, Separated, DepTarget),
     take_arg!("-MT", OsString, Separated, DepTarget),
     flag!("-P", TooHardFlag),
     take_arg!("-U", OsString, CanBeSeparated, PassThrough),
@@ -214,8 +215,10 @@ where
     let mut output_arg = None;
     let mut input_arg = None;
     let mut dep_target = None;
+    let mut dep_flag = OsString::from("-MT");
     let mut common_args = vec![];
     let mut preprocessor_args = vec![];
+    let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
     let mut compilation = false;
     let mut multiple_input = false;
@@ -280,8 +283,12 @@ where
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => need_explicit_dep_target = true,
-            Some(DepTarget(s)) => dep_target = Some(s.clone()),
-            Some(ExtraHashFile(_))
+            Some(DepTarget(s)) => {
+                dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
+                dep_target = Some(s.clone());
+            }
+            Some(DepArgumentPath(_))
+            | Some(ExtraHashFile(_))
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
@@ -325,8 +332,9 @@ where
             }
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_))
-            | Some(NeedDepTarget) => &mut preprocessor_args,
+            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(DepArgumentPath(_))
+            | Some(NeedDepTarget) => &mut dependency_args,
             Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
             | Some(DepTarget(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
@@ -381,9 +389,10 @@ where
             }
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_))
-            | Some(DepTarget(_))
-            | Some(NeedDepTarget) => &mut preprocessor_args,
+            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(DepTarget(_))
+            | Some(DepArgumentPath(_))
+            | Some(NeedDepTarget) => &mut dependency_args,
         };
 
         // Normalize attributes such as "-I foo", "-D FOO=bar", as
@@ -435,8 +444,8 @@ where
         profile_generate = true;
     }
     if need_explicit_dep_target {
-        preprocessor_args.push("-MT".into());
-        preprocessor_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
+        dependency_args.push(dep_flag);
+        dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
     }
     outputs.insert("obj", output);
 
@@ -446,6 +455,7 @@ where
         compilation_flag,
         depfile: None,
         outputs,
+        dependency_args,
         preprocessor_args,
         common_args,
         extra_hash_files,
@@ -499,6 +509,7 @@ where
     }
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
+        .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
@@ -507,7 +518,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    run_input_output(cmd, None)
+    Box::new(run_input_output(cmd, None))
 }
 
 pub fn generate_compile_commands(
@@ -974,11 +985,12 @@ mod test {
 
     #[test]
     fn test_parse_arguments_preprocessor_args() {
-        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc"];
+        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc", "-nostdinc"];
         let ParsedArguments {
             input,
             language,
             outputs,
+            dependency_args,
             preprocessor_args,
             msvc_show_includes,
             common_args,
@@ -992,7 +1004,8 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(ovec!["-MF", "file", "-MQ", "abc"], preprocessor_args);
+        assert_eq!(ovec!["-MF", "file"], dependency_args);
+        assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1005,7 +1018,7 @@ mod test {
             input,
             language,
             outputs,
-            preprocessor_args,
+            dependency_args,
             msvc_show_includes,
             common_args,
             ..
@@ -1018,7 +1031,7 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         //TODO: fix assert_map_contains to assert no extra keys!
         assert_eq!(1, outputs.len());
-        assert_eq!(ovec!["-MF", "file"], preprocessor_args);
+        assert_eq!(ovec!["-MF", "file"], dependency_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1032,6 +1045,7 @@ mod test {
             input,
             language,
             outputs,
+            dependency_args,
             preprocessor_args,
             msvc_show_includes,
             common_args,
@@ -1047,8 +1061,41 @@ mod test {
         assert_eq!(1, outputs.len());
         assert_eq!(
             ovec!["-MF", "file", "-MD", "-MT", "depfile"],
-            preprocessor_args
+            dependency_args
         );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fabc"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_mq_dep_target_needed() {
+        let args = stringvec![
+            "-c", "foo.c", "-MQ", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"
+        ];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            dependency_args,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, outputs.len());
+        assert_eq!(
+            ovec!["-MF", "file", "-MD", "-MQ", "depfile"],
+            dependency_args
+        );
+        assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1088,7 +1135,7 @@ mod test {
             input,
             language,
             outputs,
-            preprocessor_args,
+            dependency_args,
             msvc_show_includes,
             common_args,
             ..
@@ -1103,7 +1150,7 @@ mod test {
         assert_eq!(1, outputs.len());
         assert_eq!(
             ovec!["-MF", "file", "-MD", "-MT", "foo.o"],
-            preprocessor_args
+            dependency_args
         );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -1215,6 +1262,7 @@ mod test {
             compilation_flag: "-c".into(),
             depfile: None,
             outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
+            dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
             extra_hash_files: vec![],

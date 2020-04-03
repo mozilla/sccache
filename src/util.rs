@@ -180,7 +180,7 @@ where
 ///
 /// If the command returns a non-successful exit status, an error of `ErrorKind::ProcessError`
 /// will be returned containing the process output.
-pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> SFuture<process::Output>
+pub fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> impl Future<Item = process::Output, Error = Error>
 where
     C: RunCommand,
 {
@@ -195,7 +195,7 @@ where
         .stderr(Stdio::piped())
         .spawn();
 
-    Box::new(child.and_then(|child| {
+    child.and_then(|child| {
         wait_with_input_output(child, input).and_then(|output| {
             if output.status.success() {
                 f_ok(output)
@@ -203,7 +203,7 @@ where
                 f_err(ErrorKind::ProcessError(output))
             }
         })
-    }))
+    })
 }
 
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
