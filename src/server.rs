@@ -596,9 +596,11 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 }
 
 
-type CompilerMap<C> =
-    HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
+/// maps a compiler proxy path to a compiler proxy and it's last modification time
+type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>;
 
+/// maps a compiler path to a compiler cache entry
+type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
 
 /// entry of the compiler cache
 struct CompilerCacheEntry<C : CommandCreatorSync> {
@@ -639,13 +641,7 @@ struct SccacheService<C: CommandCreatorSync> {
     /// (usually file or current working directory)
     /// the associated `FileTime` is the modification time of
     /// the compiler proxy, in order to track updates of the proxy itself
-    compiler_proxies: Rc<
-        RefCell<
-            HashMap<
-                PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)
-            >
-        >
-    >,
+    compiler_proxies: Rc<RefCell<CompilerProxyMap<C>>>,
 
     /// Thread pool to execute work in
     pool: CpuPool,
