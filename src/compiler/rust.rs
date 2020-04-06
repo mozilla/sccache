@@ -764,7 +764,7 @@ impl RustCompilationBlacklist {
         } = compile_info.clone();
 
         if self.disallowed_crates.contains(&crate_name) {
-            return BlacklistCheckResult::Blacklisted(format!("crate name is enlisted: {}", crate_name))
+            return BlacklistCheckResult::Blacklisted(format!("crate: {}", crate_name))
         }
 
         let cargo_toml = cwd.join("Cargo.toml");
@@ -812,8 +812,8 @@ impl RustCompilationBlacklist {
                         |input_path| {
                             if let Ok(dep_crate_names) = rlib_dep_reader
                                 .discover_rlib_deps(&env_vars, &input_path) {
-                                if dep_crate_names.iter().any(|crate_name0| {
-                                    self.disallowed_crate_dependencies.contains(crate_name0)
+                                if dep_crate_names.iter().any(|dep_crate_name| {
+                                    self.disallowed_crate_dependencies.contains(dep_crate_name)
                                 }) {
                                     return true
                                 }
@@ -821,7 +821,7 @@ impl RustCompilationBlacklist {
                             false
                         })
                     {
-                        return BlacklistCheckResult::Blacklisted(format!("Dependency: {}", crate_name))
+                        return BlacklistCheckResult::Blacklisted(format!("Dependency({})", crate_name))
                     }
                 }
             }
