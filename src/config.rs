@@ -430,6 +430,7 @@ impl std::string::ToString for CrateName {
 #[serde(deny_unknown_fields)]
 pub struct RustBlacklistConfig {
     pub crates : Vec<CrateName>,
+    pub crate_dependencies : Vec<CrateName>,
     pub files : Vec<PathBuf>,
     pub build_script: bool,
     // TODO regular expressions for crates+files
@@ -438,8 +439,9 @@ pub struct RustBlacklistConfig {
 impl Default for RustBlacklistConfig {
     fn default() -> Self {
         Self {
-            crates : vec![],
-            files : vec![],
+            crates : Vec::default(),
+            crate_dependencies: Vec::default(),
+            files : Vec::default(),
             build_script : false,
         }
     }
@@ -448,7 +450,7 @@ impl Default for RustBlacklistConfig {
 impl RustBlacklistConfig {
     /// Load the blacklist configuration from environment variables.
     pub fn from_env() -> Self {
-        let (mut files, mut crates) = env::var("SCCACHE_BLACKLIST_RUST")
+        let (mut files, mut crates, mut crate_dependencies) = env::var("SCCACHE_BLACKLIST_RUST")
             .map(|s|{
                 Self::parse_tagged_mixed(s.as_str(), "SCCACHE_BLACKLIST_RUST").unwrap_or_default()
             }).unwrap_or_default();
@@ -457,6 +459,13 @@ impl RustBlacklistConfig {
             val.split(',').filter_map(|item| { CrateName::from_str(item).ok() } )
             .for_each(|crate_name| {
                 crates.push(crate_name);
+            });
+        }
+
+        if let Ok(val) = env::var("SCCACHE_BLACKLIST_RUST_CRATE_DEPENDENCIES") {
+            val.split(',').filter_map(|item| { CrateName::from_str(item).ok() } )
+            .for_each(|crate_name| {
+                crate_dependencies.push(crate_name);
             });
         }
 
@@ -478,14 +487,16 @@ impl RustBlacklistConfig {
 
         Self {
             crates,
+            crate_dependencies,
             files,
             build_script,
         }
     }
 
-    fn parse_tagged_mixed<'a>(s :&'a str, env_var_name: &str) -> Result<(Vec<PathBuf>,Vec<CrateName>)> {
+    fn parse_tagged_mixed<'a>(s :&'a str, env_var_name: &str) -> Result<(Vec<PathBuf>,Vec<CrateName>,Vec<CrateName>)> {
         let mut files = Vec::<PathBuf>::with_capacity(10);
         let mut crates = Vec::<CrateName>::with_capacity(10);
+        let mut crate_dependencies = Vec::<CrateName>::with_capacity(10);
         s.split(',').try_for_each::<_,Result<_>>(|item| {
             let kv : Vec<&str> = item.split(':').collect();
             if kv.len() != 2 {
@@ -501,15 +512,20 @@ impl RustBlacklistConfig {
                     let crate_name = CrateName::from_str(kv[1]).map_err(|_e| "Failed to convert string to crate name".to_string())?;
                     crates.push(crate_name);
                 },
+                "dep"|"dependency" => {
+                    let crate_name = CrateName::from_str(kv[1]).map_err(|_e| "Failed to convert string to crate name".to_string())?;
+                    crate_dependencies.push(crate_name);
+                },
                 prefix => { return Err(format!("Failed to parse env var {} with list item prefix {}", env_var_name, prefix).into()) }
             }
             Ok(())
         })?;
-        Ok((files,crates))
+        Ok((files,crates, crate_dependencies))
     }
 
     pub fn merge(&mut self, mut other : Self) {
         self.crates.append(&mut other.crates);
+        self.crate_dependencies.append(&mut other.crate_dependencies);
         self.files.append(&mut other.files);
         self.build_script = other.build_script || self.build_script;
     }
@@ -1057,6 +1073,7 @@ fn test_gcs_credentials_url() {
 fn test_rust_blacklist_cfg() {
     env::set_var("SCCACHE_BLACKLIST_RUST", "crate:syn,crate:env_logger,file:fx.rs");
     env::set_var("SCCACHE_BLACKLIST_RUST_CRATES", "zzz");
+    env::set_var("SCCACHE_BLACKLIST_RUST_CRATE_DEPENDENCIES", "f12");
     env::set_var("SCCACHE_BLACKLIST_RUST_FILES", "pewpew.rs");
     env::set_var("SCCACHE_BLACKLIST_RUST_BUILD_SCRIPT", "1");
 
@@ -1065,6 +1082,7 @@ fn test_rust_blacklist_cfg() {
     let RustBlacklistConfig {
         ref files,
         ref crates,
+        ref crate_dependencies,
         build_script,
         ..
     } = env_cfg.blacklist.rust;
@@ -1078,6 +1096,5 @@ fn test_rust_blacklist_cfg() {
     assert!(crates.contains(&CrateName::from_str("zzz").unwrap()));
     assert!(crates.contains(&CrateName::from_str("env_logger").unwrap()));
 
-
-
+    assert!(crate_dependencies.contains(&CrateName::from_str("f12").unwrap()));
 }

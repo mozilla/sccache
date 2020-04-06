@@ -722,9 +722,11 @@ pub struct RustCompilationBlacklist {
     cargo_build_script_tracking_enabled: bool,
     // map Cargo.toml to optional build command script path and Cargo.toml modification time
     cargo_build_script_cache: Arc<spin::RwLock<HashMap<PathBuf,(Option<PathBuf>,SystemTime)>>>,
-    // list of disallowed paths from env/cfg
+    // set of disallowed paths
     disallowed_crates: HashSet<String>,
-    // list of disallowed paths from env/cfg
+    // set of disallowed dependencies
+    disallowed_crate_dependencies: HashSet<String>,
+    // set of disallowed paths
     disallowed_files: HashSet<PathBuf>,
     // // list of disallowed paths based on a regex match on the file relative to the CWD
     // disallowed_crates_regex: Vec<Regex>,
@@ -756,9 +758,9 @@ impl RustCompilationBlacklist {
             crate_types: _,
             dep_info: _,
             cwd,
-            env_vars: _,
+            env_vars,
             #[cfg(feature = "dist-client")]
-            rlib_dep_reader: _,
+            rlib_dep_reader,
         } = compile_info.clone();
 
         if self.disallowed_crates.contains(&crate_name) {
@@ -791,7 +793,43 @@ impl RustCompilationBlacklist {
             }
         }).next() {
             BlacklistCheckResult::Blacklisted(rule.to_owned())
-        } else {
+        } else  {
+            #[cfg(feature = "dist-client")]
+            {
+                if let Some(rlib_dep_reader) = rlib_dep_reader.clone() {
+                    if inputs.iter()
+                        .filter_map(|input_path| {
+                            pkg::simplify_path(input_path).ok()
+                        })
+                        .filter(|input_path| {
+                            if let Some(ext) = input_path.extension() {
+                                ext == RLIB_EXTENSION || ext == RMETA_EXTENSION
+                            } else {
+                                false
+                            }
+                        })
+                        .any(
+                        |input_path| {
+                            if let Ok(dep_crate_names) = rlib_dep_reader
+                                .discover_rlib_deps(&env_vars, &input_path) {
+                                if dep_crate_names.iter().any(|crate_name0| {
+                                    self.disallowed_crate_dependencies.contains(crate_name0)
+                                }) {
+                                    return true
+                                }
+                            }
+                            false
+                        })
+                    {
+                        return BlacklistCheckResult::Blacklisted(format!("Dependency: {}", crate_name))
+                    }
+                }
+            }
+            #[cfg(not(feature = "dist-client"))]
+            {
+                // avoid warnings
+                let _ = env_vars;
+            }
             BlacklistCheckResult::Passed
         }
     }
@@ -867,6 +905,12 @@ impl RustCompilationBlacklist {
     /// Adds a crate to the blacklist.
     pub fn enlist_crate<C>(&mut self, crate_name : &C) where C: ToString {
         self.disallowed_crates.insert(crate_name.to_string());
+    }
+
+
+    /// Adds a crate to the blacklist.
+    pub fn enlist_crate_dependency<C>(&mut self, crate_name : &C) where C: ToString {
+        self.disallowed_crate_dependencies.insert(crate_name.to_string());
     }
 
     /// Clone as a box.

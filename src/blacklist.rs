@@ -34,6 +34,10 @@ impl Blacklist {
                 rust.enlist_crate(crate_name);
             });
 
+            cfg.crate_dependencies.iter().for_each(|crate_name| {
+                rust.enlist_crate_dependency(crate_name);
+            });
+
             if cfg.build_script {
                 rust.enlist_build_script();
             }
