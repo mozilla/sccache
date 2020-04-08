@@ -32,7 +32,6 @@ use futures_cpupool::CpuPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
-use spin;
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 #[cfg(feature = "dist-client")]
@@ -721,7 +720,7 @@ impl RustupProxy
 pub struct RustCompilationBlacklist {
     cargo_build_script_tracking_enabled: bool,
     // map Cargo.toml to optional build command script path and Cargo.toml modification time
-    cargo_build_script_cache: Arc<spin::RwLock<HashMap<PathBuf,(Option<PathBuf>,SystemTime)>>>,
+    cargo_build_script_cache: Arc<std::sync::RwLock<HashMap<PathBuf,(Option<PathBuf>,SystemTime)>>>,
     // set of disallowed paths
     disallowed_crates: HashSet<String>,
     // set of disallowed dependencies
@@ -773,7 +772,7 @@ impl RustCompilationBlacklist {
             if self.disallowed_files.contains(input) {
                 Some("Disallowed files")
             } else if self.cargo_build_script_tracking_enabled {
-                let cargo_build_script_cache = self.cargo_build_script_cache.as_ref().read();
+                let cargo_build_script_cache = self.cargo_build_script_cache.as_ref().read().unwrap();
 
                 cargo_build_script_cache
                     .get(cargo_toml.as_path())
@@ -794,6 +793,8 @@ impl RustCompilationBlacklist {
         }).next() {
             BlacklistCheckResult::Blacklisted(rule.to_owned())
         } else  {
+            // only for the dist-client deps are available
+            // TODO consider defering deps resolution to ealier
             #[cfg(feature = "dist-client")]
             {
                 if let Some(rlib_dep_reader) = rlib_dep_reader.clone() {
@@ -859,7 +860,7 @@ impl RustCompilationBlacklist {
                     .map_err(|e| format!("Failed to obtain mtime of {}: {}", cargo_toml.display(), e))?;
 
                 // extract the build= which is added to a blacklists
-                let mut cargo_build_script_cache = self.cargo_build_script_cache.as_ref().write();
+                let mut cargo_build_script_cache = self.cargo_build_script_cache.as_ref().write().unwrap();
 
                 // obtain a buildscript - cached or freshly obtained
                 let cargo_build_script_path : Option<PathBuf> =
@@ -925,7 +926,7 @@ impl RustCompilationBlacklist {
 
     pub fn new() -> Self {
         Self {
-            cargo_build_script_cache : Arc::new(spin::RwLock::new(HashMap::with_capacity(3))),
+            cargo_build_script_cache : Arc::new(std::sync::RwLock::new(HashMap::with_capacity(3))),
             .. Default::default()
         }
     }
