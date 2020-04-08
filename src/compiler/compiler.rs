@@ -90,6 +90,7 @@ pub enum CompilerKind {
 impl CompilerKind {
     pub fn lang_kind(&self) -> String {
         match self {
+            CompilerKind::C(CCompilerKind::NVCC) => "CUDA",
             CompilerKind::C(_) => "C/C++",
             CompilerKind::Rust => "Rust",
         }
