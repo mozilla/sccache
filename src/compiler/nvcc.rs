@@ -125,11 +125,13 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--include-path", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--linker-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
 
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -140,6 +142,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
     take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
@@ -219,6 +222,25 @@ mod test {
         assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_values() {
+        let a = parses!("-c", "foo.cpp", "-fabc",
+                        "-I", "include-file", "-o", "foo.o",
+                        "--include-path", "include-file",
+                        "-isystem=/system/include/file");
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(Language::Cxx, a.language);
+        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        //TODO: fix assert_map_contains to assert no extra keys!
+        assert_eq!(1, a.outputs.len());
+        assert_eq!(
+            ovec!["-Iinclude-file", "--include-path", "include-file", "-isystem", "/system/include/file"],
+            a.preprocessor_args
+        );
+        assert!(a.dependency_args.is_empty());
+        assert_eq!(ovec!["-fabc"], a.common_args);
     }
 
     #[test]
