@@ -86,6 +86,7 @@ impl CCompilerImpl for NVCC {
         cmd.arg("-x").arg(language)
            .arg(&parsed_args.input)
            .arg("-E")
+           .arg("-Xcompiler=-P")
            .env_clear()
            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
            .current_dir(cwd);
