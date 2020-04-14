@@ -61,20 +61,6 @@ impl CCompilerImpl for NVCC {
     where
         T: CommandCreatorSync,
     {
-        trace!("preprocess");
-        let mut cmd = creator.clone().new_command_sync(executable);
-
-        //NVCC only supports `-E` when it comes after preprocessor
-        //and common flags
-        cmd.args(&parsed_args.preprocessor_args);
-        cmd.args(&parsed_args.common_args);
-
-        //We need to add "-rdc=true" if we are compiling with `-dc`
-        //So that the preprocessor has the correct implicit defines
-        if parsed_args.compilation_flag == "-dc" {
-            cmd.arg("-rdc=true");
-        }
-
         let language = match parsed_args.language {
             Language::C => "c",
             Language::Cxx => "c++",
@@ -83,9 +69,53 @@ impl CCompilerImpl for NVCC {
             Language::Cuda => "cu",
         };
 
-        cmd.arg("-x").arg(language)
-           .arg(&parsed_args.input)
-           .arg("-E")
+        let initialize_cmd_and_args = || {
+            let mut command = creator.clone().new_command_sync(executable);
+            command.args(&parsed_args.preprocessor_args);
+            command.args(&parsed_args.common_args);
+            //We need to add "-rdc=true" if we are compiling with `-dc`
+            //So that the preprocessor has the correct implicit defines
+            if parsed_args.compilation_flag == "-dc" {
+                command.arg("-rdc=true");
+            }
+            command.arg("-x").arg(language)
+                   .arg(&parsed_args.input);
+
+            return command;
+        };
+
+        let dep_before_preprocessor = || {
+            //NVCC doesn't support generating both the dependency information
+            //and the preprocessor output at the same time. So if we have
+            //need for both we need separate compiler invocations
+            let mut dep_cmd = initialize_cmd_and_args();
+            let mut transformed_deps = vec![];
+            for item in parsed_args.dependency_args.iter() {
+                if item == "-MD" {
+                    transformed_deps.push(OsString::from("-M"));
+                } else if item == "-MMD" {
+                    transformed_deps.push(OsString::from("-MM"));
+                } else {
+                    transformed_deps.push(item.clone());
+                }
+            }
+            dep_cmd.args(&transformed_deps)
+                   .env_clear()
+                   .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+                   .current_dir(cwd);
+
+            if log_enabled!(Trace) {
+                trace!("dep-gen command: {:?}", dep_cmd);
+            }
+            return dep_cmd;
+        };
+
+        trace!("preprocess");
+        let mut cmd = initialize_cmd_and_args();
+
+        //NVCC only supports `-E` when it comes after preprocessor
+        //and common flags.
+        cmd.arg("-E")
            .arg("-Xcompiler=-P")
            .env_clear()
            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
@@ -93,7 +123,16 @@ impl CCompilerImpl for NVCC {
         if log_enabled!(Trace) {
             trace!("preprocess: {:?}", cmd);
         }
-        run_input_output(cmd, None)
+
+        //Need to chain the dependency generation and the preprocessor
+        //to emulate a `proper` front end
+        if parsed_args.dependency_args.len() > 0 {
+            let first = run_input_output(dep_before_preprocessor(), None);
+            let second = run_input_output(cmd, None);
+            return Box::new( first.join(second).map(|(f, s)| s));
+        } else {
+            return Box::new(run_input_output(cmd, None))
+        }
     }
 
     fn generate_compile_commands(
@@ -105,6 +144,9 @@ impl CCompilerImpl for NVCC {
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+
+        //todo: refactor show_includes into dependency_args
+
         gcc::generate_compile_commands(
             path_transformer,
             executable,
@@ -257,7 +299,7 @@ mod test {
         assert_eq!(1, a.outputs.len());
         assert_eq!(
             ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
-            a.preprocessor_args
+            a.dependency_args
         );
         assert_eq!(ovec!["-fabc"], a.common_args);
     }
