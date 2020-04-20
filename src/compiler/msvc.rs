@@ -258,6 +258,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("U", OsString, Concatenated, PreprocessorArgument),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_flag!("ZI", DebugInfo),
     msvc_flag!("Zi", DebugInfo),
     msvc_flag!("c", DoCompilation),
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
@@ -406,13 +407,13 @@ pub fn parse_arguments(
             outputs.insert("obj", o);
         }
     }
-    // -Fd is not taken into account unless -Zi is given
+    // -Fd is not taken into account unless -Zi or -ZI are given
     // Clang is currently unable to generate PDB files
     if debug_info && !is_clang {
         match pdb {
             Some(p) => outputs.insert("pdb", p),
             None => {
-                // -Zi without -Fd defaults to vcxxx.pdb (where xxx depends on the
+                // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
                 // working directory. We can't cache such a pdb.
                 cannot_cache!("shared pdb");
@@ -888,6 +889,14 @@ mod test {
         assert_eq!(
             CompilerArguments::CannotCache("shared pdb", None),
             parse_arguments(ovec!["-c", "foo.c", "-Zi", "-Fofoo.obj"])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_missing_edit_and_continue_pdb() {
+        assert_eq!(
+            CompilerArguments::CannotCache("shared pdb", None),
+            parse_arguments(ovec!["-c", "foo.c", "-ZI", "-Fofoo.obj"])
         );
     }
 
