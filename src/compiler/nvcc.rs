@@ -145,8 +145,6 @@ impl CCompilerImpl for NVCC {
         rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
 
-        //todo: refactor show_includes into dependency_args
-
         gcc::generate_compile_commands(
             path_transformer,
             executable,
@@ -160,17 +158,20 @@ impl CCompilerImpl for NVCC {
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
-    // take_arg!("--compiler-bindir", PathBuf, Separated, ExtraHashFile),
-    // take_arg!("-ccbin", PathBuf, Separated, ExtraHashFile),
+    //todo: refactor show_includes into dependency_args
 
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--expt-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--expt-relaxed-constexpr", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--include-path", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--linker-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--no-host-device-initializer-list", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -184,13 +185,16 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
+    take_arg!("-expt-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-expt-relaxed-constexpr", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-nohdinitlist", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("-ptx", DoCompilation),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
-
 ]);
 
 #[cfg(test)]
@@ -348,4 +352,24 @@ mod test {
         );
     }
 
+    #[test]
+    fn test_parse_dlink_is_not_compilation() {
+        assert_eq!(
+            CompilerArguments::NotCompilation,
+            parse_arguments_(stringvec!["-forward-unknown-to-host-compiler", "--generate-code=arch=compute_50,code=[compute_50,sm_50,sm_52]",
+                                        "-dlink", "main.cu.o", "-o", "device_link.o"])
+        );
+    }
+    #[test]
+    fn test_parse_cant_cache_flags() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-E", None),
+            parse_arguments_(stringvec!["-x","cu", "-c", "foo.c", "-o", "foo.o", "-E"])
+        );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-M", None),
+            parse_arguments_(stringvec!["-x","cu", "-c", "foo.c", "-o", "foo.o", "-M"])
+        );
+    }
 }
