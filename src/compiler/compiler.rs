@@ -901,7 +901,9 @@ where
         None => return f_err("could not determine compiler kind"),
         Some(f) => f,
     };
-    let rustc_vv = if filename.to_string_lossy().to_lowercase() == "rustc" {
+    let filename = filename.to_string_lossy().to_lowercase();
+
+    let rustc_vv = if filename == "rustc" || filename == "clippy-driver" {
         // Sanity check that it's really rustc.
         let executable = executable.to_path_buf();
         let mut child = creator.clone().new_command_sync(executable);
