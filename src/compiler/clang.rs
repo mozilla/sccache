@@ -149,8 +149,6 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -164,8 +162,6 @@ mod test {
         assert_eq!(Some("foo.cxx"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
         assert_eq!(ovec!["-arch", "xyz", "-fabc"], a.common_args);
     }
