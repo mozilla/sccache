@@ -229,8 +229,6 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -241,8 +239,6 @@ mod test {
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -253,8 +249,6 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -266,8 +260,6 @@ mod test {
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-dc"), a.compilation_flag.to_str());
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -281,8 +273,6 @@ mod test {
         assert_eq!(Some("foo.cpp"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert_eq!(
             ovec!["-Iinclude-file", "--include-path", "include-file", "-isystem", "/system/include/file"],
             a.preprocessor_args
@@ -299,8 +289,6 @@ mod test {
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-c"), a.compilation_flag.to_str());
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert_eq!(
             ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
             a.dependency_args
@@ -315,8 +303,6 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(
             ovec!["--generate-code", "arch=compute_61,code=sm_61"],
@@ -337,8 +323,6 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, a.outputs.len());
         assert_eq!(
             ovec!["-Xcompiler", "-fPIC,-fno-common", "-Xcompiler", "-fvisibility=hidden",
                   "-Xcompiler", "-Wall,-Wno-unknown-pragmas,-Wno-unused-local-typedefs"],

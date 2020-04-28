@@ -72,7 +72,7 @@ macro_rules! assert_map_contains {
             nelems += 1;
             match $map.get(&$key) {
                 Some(&ref v) =>
-                    assert!($val == *v, format!("{} key `{:?}` doesn't match expected! (expected `{:?}` != actual `{:?}`)", stringify!($map), $key, $val, v)),
+                    assert_eq!($val, *v, "{} key `{:?}` doesn't match expected! (expected `{:?}` != actual `{:?}`)", stringify!($map), $key, $val, v),
                 None => panic!("{} missing key `{:?}`", stringify!($map), $key),
             }
          )*

@@ -714,8 +714,6 @@ mod test {
         assert_eq!(Language::C, language);
         assert_eq!(Some("-c"), compilation_flag.to_str());
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
