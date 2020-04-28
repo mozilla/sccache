@@ -741,8 +741,6 @@ mod test {
         assert_eq!(Language::C, language);
         assert_eq!(Some("/c"), compilation_flag.to_str());
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -766,8 +764,6 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -791,8 +787,6 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -816,8 +810,6 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-foo", "-bar"]);
         assert!(!msvc_show_includes);
@@ -841,8 +833,6 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert_eq!(preprocessor_args, ovec!["-FIfile"]);
         assert!(common_args.is_empty());
         assert!(msvc_show_includes);
@@ -870,8 +860,6 @@ mod test {
             ("obj", PathBuf::from("foo.obj")),
             ("pdb", PathBuf::from("foo.pdb"))
         );
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(2, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-Zi", "-Fdfoo.pdb"]);
         assert!(!msvc_show_includes);
