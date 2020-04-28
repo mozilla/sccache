@@ -64,16 +64,19 @@ macro_rules! assert_neq {
     }};
 }
 
-/// Assert that `map` contains all of the (`key`, `val`) pairs specified.
+/// Assert that `map` contains all of the (`key`, `val`) pairs specified and only those keys.
 macro_rules! assert_map_contains {
     ( $map:expr , $( ($key:expr, $val:expr) ),* ) => {
+        let mut nelems = 0;
         $(
+            nelems += 1;
             match $map.get(&$key) {
                 Some(&ref v) =>
                     assert!($val == *v, format!("{} key `{:?}` doesn't match expected! (expected `{:?}` != actual `{:?}`)", stringify!($map), $key, $val, v)),
                 None => panic!("{} missing key `{:?}`", stringify!($map), $key),
             }
          )*
+        assert_eq!(nelems, $map.len(), "{} contains {} elements, expected {}", stringify!($map), $map.len(), nelems);
     }
 }
 
@@ -230,6 +233,15 @@ fn test_map_contains_ok() {
     m.insert("a", 1);
     m.insert("b", 2);
     assert_map_contains!(m, ("a", 1), ("b", 2));
+}
+
+#[test]
+#[should_panic]
+fn test_map_contains_extra_key() {
+    let mut m = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    assert_map_contains!(m, ("a", 1));
 }
 
 #[test]
