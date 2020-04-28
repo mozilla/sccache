@@ -52,7 +52,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
-use tokio::runtime::current_thread::Runtime;
+use tokio_compat::runtime::current_thread::Runtime;
 use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -517,7 +517,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections in separate tasks.
         let server = listener.incoming().for_each(move |socket| {
             trace!("incoming connection");
-            tokio::runtime::current_thread::TaskExecutor::current()
+            tokio_compat::runtime::current_thread::TaskExecutor::current()
                 .spawn_local(Box::new(service.clone().bind(socket).map_err(|err| {
                     error!("{}", err);
                 })))
@@ -1221,7 +1221,7 @@ where
             send.join(cache_write).then(|_| Ok(()))
         });
 
-        tokio::runtime::current_thread::TaskExecutor::current()
+        tokio_compat::runtime::current_thread::TaskExecutor::current()
             .spawn_local(Box::new(task))
             .unwrap();
     }

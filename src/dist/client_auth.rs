@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::Duration;
-use tokio::runtime::current_thread::Runtime;
+use tokio_compat::runtime::current_thread::Runtime;
 use url::Url;
 use uuid::Uuid;
 
