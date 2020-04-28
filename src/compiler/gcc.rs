@@ -1065,8 +1065,6 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
-        //TODO: fix assert_map_contains to assert no extra keys!
-        assert_eq!(1, outputs.len());
         assert_eq!(
             ovec!["-MF", "file", "-MD", "-MQ", "depfile"],
             dependency_args
