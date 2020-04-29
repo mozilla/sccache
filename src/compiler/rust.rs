@@ -1131,7 +1131,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 cannot_cache!(concat!("missing ", stringify!($x)));
             };
         };
-    };
+    }
     // We don't actually save the input value, but there needs to be one.
     req!(input);
     drop(input);
