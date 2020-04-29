@@ -296,10 +296,6 @@ fn test_server_port_in_use() {
         .unwrap();
     assert!(!output.status.success());
     let s = String::from_utf8_lossy(&output.stderr);
-    // Windows times out when the port is already in use.
-    #[cfg(target_os = "windows")]
-    const MSG: &str = "Timed out waiting for server startup";
-    #[cfg(not(target_os = "windows"))]
     const MSG: &str = "Server startup failed:";
     assert!(
         s.contains(MSG),
