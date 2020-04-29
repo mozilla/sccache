@@ -20,6 +20,7 @@ use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
 use futures::sync::oneshot::{self, Sender};
+use futures_03::compat::*;
 use futures_cpupool::CpuPool;
 use std::fs::File;
 use std::io::{Cursor, Write};
@@ -92,7 +93,7 @@ where
         let port = srv.port();
         let creator = srv.command_creator().clone();
         tx.send((port, creator)).unwrap();
-        srv.run(shutdown_rx).unwrap();
+        srv.run(shutdown_rx.compat()).unwrap();
     });
     let (port, creator) = rx.recv().unwrap();
     (port, shutdown_tx, creator, handle)
