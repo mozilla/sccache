@@ -67,6 +67,7 @@ pub type Result<T> = anyhow::Result<T>;
 
 pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error>>;
 pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
+pub type SFutureStd<T> = Box<dyn std::future::Future<Output = Result<T>>>;
 
 pub trait FutureContext<T> {
     fn fcontext<C>(self, context: C) -> SFuture<T>
@@ -105,7 +106,7 @@ macro_rules! ftry {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
+            Err(e) => return Box::new(futures::future::err(e.into())) as SFuture<_>,
         }
     };
 }
@@ -115,7 +116,7 @@ macro_rules! ftry_send {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e)) as SFutureSend<_>,
+            Err(e) => return Box::new(futures::future::err(e)) as SFutureSend<_>,
         }
     };
 }
