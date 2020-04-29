@@ -45,6 +45,8 @@ use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use tokio_timer::Timeout;
 
+use coz_temporary as coz;
+
 use crate::errors::*;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
@@ -1215,7 +1217,11 @@ where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, cwd, env, &pool, dist_archive, blacklist)
+    coz::begin!("detect_compiler");
+    Box::new(detect_compiler(creator, executable, cwd, env, &pool, dist_archive, blacklist).then(|r| {
+        coz::end!("detect_compiler");
+        r
+    }))
 }
 
 #[cfg(test)]

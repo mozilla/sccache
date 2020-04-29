@@ -56,6 +56,8 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 
+use coz_temporary as coz;
+
 use crate::errors::*;
 
 #[cfg(feature = "dist-client")]
@@ -745,6 +747,8 @@ pub struct CargoTomlEssenceExtract {
 
 impl RustCompilationBlacklist {
     fn is_listed(&self, compile_info : &RustCompilation) -> BlacklistCheckResult {
+        coz::scope!("is_listed");
+        coz::progress!();
         let RustCompilation {
             executable: _,
             host: _,
@@ -762,6 +766,7 @@ impl RustCompilationBlacklist {
             rlib_dep_reader,
         } = compile_info.clone();
 
+        coz::progress!();
         if self.disallowed_crates.contains(&crate_name) {
             return BlacklistCheckResult::Blacklisted(format!("crate: {}", crate_name))
         }
@@ -773,7 +778,8 @@ impl RustCompilationBlacklist {
                 Some("Disallowed files")
             } else if self.cargo_build_script_tracking_enabled {
                 let cargo_build_script_cache = self.cargo_build_script_cache.as_ref().read().unwrap();
-
+                coz::progress!();
+                coz::scope!("is_listed::build_script");
                 cargo_build_script_cache
                     .get(cargo_toml.as_path())
                     .map(|x| {
@@ -797,6 +803,7 @@ impl RustCompilationBlacklist {
             // TODO consider defering deps resolution to ealier
             #[cfg(feature = "dist-client")]
             {
+                coz::progress!();
                 if let Some(rlib_dep_reader) = rlib_dep_reader.clone() {
                     if inputs.iter()
                         .filter_map(|input_path| {
@@ -831,6 +838,7 @@ impl RustCompilationBlacklist {
                 // avoid warnings
                 let _ = env_vars;
             }
+            coz::progress!();
             BlacklistCheckResult::Passed
         }
     }
