@@ -34,7 +34,6 @@ fn test_rust_cargo_cmd(cmd: &str) {
         CargoBuild::new()
             .bin("sccache")
             .current_release()
-            .current_target()
             .run()
             .unwrap()
             .command()

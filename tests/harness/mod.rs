@@ -124,7 +124,6 @@ pub fn sccache_command() -> Command {
         CargoBuild::new()
             .bin("sccache")
             .current_release()
-            .current_target()
             .run()
             .unwrap()
             .command(),
@@ -148,7 +147,6 @@ pub fn sccache_command() -> Command {
             .arg("--features")
             .arg(features)
             .current_release()
-            .current_target()
             .run()
             .unwrap()
             .command(),
@@ -164,7 +162,6 @@ pub fn sccache_dist_path() -> PathBuf {
         .arg("--features")
         .arg("dist-client dist-server")
         .current_release()
-        .current_target()
         .run()
         .unwrap()
         .path()

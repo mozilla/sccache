@@ -71,7 +71,6 @@ fn sccache_command() -> Command {
         .arg("--features")
         .arg("dist-client dist-server")
         .current_release()
-        .current_target()
         .run()
         .unwrap()
         .command()
