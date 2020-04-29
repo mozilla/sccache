@@ -1918,19 +1918,22 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.9.1"
+version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0c747d743d48233f9bc3ed3fb00cb84c1d98d8c7f54ed2d4cca9adf461a7ef3"
+checksum = "3eeb1fe3fc011cde97315f370bc88e4db3c23b08709a04915921e02b1d363b20"
 dependencies = [
- "bytes 0.4.12",
+ "bytes 0.5.4",
  "combine",
- "futures 0.1.29",
+ "dtoa",
+ "futures-executor",
+ "futures-util",
+ "itoa",
+ "percent-encoding 2.1.0",
+ "pin-project-lite",
  "sha1",
- "tokio-codec",
- "tokio-executor",
- "tokio-io",
- "tokio-tcp",
- "url 1.7.2",
+ "tokio 0.2.19",
+ "tokio-util",
+ "url 2.1.1",
 ]
 
 [[package]]
@@ -2627,8 +2630,12 @@ dependencies = [
  "bytes 0.5.4",
  "fnv",
  "futures-core",
+ "iovec",
  "lazy_static",
+ "libc",
+ "memchr 2.3.3",
  "mio",
+ "mio-uds",
  "num_cpus",
  "pin-project-lite",
  "slab",
@@ -2891,6 +2898,20 @@ dependencies = [
  "tokio-codec",
  "tokio-io",
  "tokio-reactor",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "571da51182ec208780505a32528fc5512a8fe1443ab960b3f2f3ef093cd16930"
+dependencies = [
+ "bytes 0.5.4",
+ "futures-core",
+ "futures-sink",
+ "log 0.4.8",
+ "pin-project-lite",
+ "tokio 0.2.19",
 ]
 
 [[package]]
