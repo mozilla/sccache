@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use tokio_timer::Timeout;
 
-use coz_temporary as coz;
+use coz;
 
 use crate::errors::*;
 
@@ -151,6 +151,28 @@ where
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
 
+#[macro_export]
+macro_rules! coz_future {
+    ($tagz:expr, $fut:expr) => {
+        {
+            let x = {
+                $fut
+            };
+            Box::new(
+                ::futures::future::ok(())
+                    .and_then(move |_| {
+                        coz::begin!($tagz);
+                        x
+                    }).then(move |r| {
+                        coz::end!($tagz);
+                        r
+                    })
+            )
+        }
+    };
+}
+
+
 /// An interface to a compiler for hash key generation, the result of
 /// argument parsing.
 pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
@@ -206,7 +228,9 @@ where
             &pool,
             rewrite_includes_only,
         );
-        Box::new(result.then(move |res| -> SFuture<_> {
+
+        coz_future!("get_cached_or_compile",
+            result.then(move |res| -> SFuture<_> {
             debug!(
                 "[{}]: generate_hash_key took {}",
                 out_pretty,
@@ -225,6 +249,7 @@ where
                 }) => (key, compilation, weak_toolchain_key, status),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
+            coz::progress!();
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
             let cache_status = match cache_control {
@@ -240,6 +265,7 @@ where
 
             // Check the result of the cache lookup.
             Box::new(cache_status.then(move |result| {
+                coz::progress!();
                 let duration = start.elapsed();
                 let outputs = compilation
                     .outputs()
@@ -330,31 +356,34 @@ where
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = 
+                let compile =
+                coz_future!(
+                    "get cached or compile",
+                    match miss_type {
+                        MissType::Blacklisted =>
+                            Box::new(local_compile(
+                                creator,
+                                compilation,
+                                out_pretty.clone(),
+                            ).map(|(_cacheable,dist_type, process_output)|
+                                (Cacheable::No, dist_type, process_output)
+                            )),
 
-                match miss_type {
-                    MissType::Blacklisted =>
-                        Box::new(local_compile(
-                            creator,
-                            compilation,
-                            out_pretty.clone(),
-                        ).map(|(_cacheable,dist_type, process_output)| 
-                            (Cacheable::No, dist_type, process_output)
-                        )),
+                        _ =>
+                            dist_or_local_compile(
+                                dist_client,
+                                creator,
+                                cwd,
+                                compilation,
+                                weak_toolchain_key,
+                                out_pretty.clone(),
+                            ) as Box<dyn futures::Future<Error = Error, Item = (Cacheable, DistType, std::process::Output)>>,
+                    }
+                );
 
-                    _ => 
-                        dist_or_local_compile(
-                            dist_client,
-                            creator,
-                            cwd,
-                            compilation,
-                            weak_toolchain_key,
-                            out_pretty.clone(),
-                        ) as Box<dyn futures::Future<Error = Error, Item = (Cacheable, DistType, std::process::Output)>>,
-                };
-
-                Box::new(
+                coz_future!("compile and cache",
                     compile.and_then(move |(cacheable, dist_type, compiler_result)| {
+                        coz::progress!();
                         let duration = start.elapsed();
                         if !compiler_result.status.success() {
                             debug!(
@@ -390,6 +419,7 @@ where
                         Box::new(
                             write
                                 .and_then(move |mut entry| {
+                                    coz::progress!();
                                     if !compiler_result.stdout.is_empty() {
                                         let mut stdout = &compiler_result.stdout[..];
                                         entry.put_object("stdout", &mut stdout, None)?;
@@ -427,7 +457,7 @@ where
                                 })
                                 .chain_err(move || format!("failed to store `{}` to cache", o)),
                         )
-                    }),
+                    })
                 )
             }))
         }))
@@ -721,7 +751,7 @@ impl OutputsRewriter for NoopOutputsRewriter {
 
 
 /// Determines the status of the HashResult
-/// 
+///
 /// Utilizied to act upon blacklisting i.e.
 /// or other late conditions that are imposed
 /// when compiling.
@@ -764,7 +794,7 @@ pub struct HashResult {
 }
 
 /// Possible results of parsing compiler arguments.
-/// 
+///
 /// Blacklisting happens at a later point of time,
 /// since the inputs at this point are not parsed
 /// yet and execution can not be asynchronous at

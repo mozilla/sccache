@@ -31,7 +31,7 @@ byteorder = "1.0"
 bytes = "0.4"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
-coz-temporary = "0.1.3"
+coz = { version = "0.1.3", package = "coz-temporary" }
 counted-array = "0.1"
 directories = "1"
 env_logger = "0.5"
@@ -150,7 +150,7 @@ exclude = ["tests/test-crate"]
 
 [profile.release]
 debug = true
-lto = true
+lto = false
 rpath = false
-debug-assertions = false
-codegen-units = 1
+debug-assertions = true
+codegen-units = 5

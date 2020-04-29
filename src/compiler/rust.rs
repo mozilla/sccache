@@ -56,7 +56,7 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 
-use coz_temporary as coz;
+use coz;
 
 use crate::errors::*;
 
@@ -1239,6 +1239,8 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
+    coz::scope!("parse compiler args");
+
     let mut emit: Option<HashSet<String>> = None;
     let mut input = None;
     let mut output_dir = None;
@@ -1458,6 +1460,7 @@ type CargoToml = HashMap<String, toml::Value>;
 
 // extraction helper to obtain the build script from Cargo.toml
 pub(crate) fn extract_build_script(cargo_toml_path: &Path, cwd: &Path) -> Result<Option<PathBuf>> {
+    coz::scope!("extract build script");
     let cargo_toml_content: String = std::fs::read_to_string(cargo_toml_path)
         .map_err(|e| format!("Failed to open {}: {:?}", cargo_toml_path.display(), e))?;
     let mut cargo_toml_content : CargoToml = toml::from_str(cargo_toml_content.as_str())
@@ -1797,6 +1800,7 @@ impl Compilation for RustCompilation {
         path_transformer: &mut dist::PathTransformer,
         _rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+        coz::scope!("compile command");
         let RustCompilation {
             ref executable,
             ref arguments,
@@ -1941,6 +1945,7 @@ impl Compilation for RustCompilation {
         self: Box<Self>,
         path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers> {
+        coz::scope!("into dist packagers");
         let RustCompilation {
             inputs,
             crate_link_paths,
