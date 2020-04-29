@@ -15,8 +15,8 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
-use futures::{future, Future};
-use redis::r#async::Connection;
+use futures_03::prelude::*;
+use redis::aio::Connection;
 use redis::{cmd, Client, InfoDict};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -39,8 +39,8 @@ impl RedisCache {
     }
 
     /// Returns a connection with configured read and write timeouts.
-    fn connect(&self) -> impl Future<Item = Connection, Error = Error> {
-        self.client.get_async_connection().map_err(|e| e.into())
+    async fn connect(self) -> Result<Connection> {
+        Ok(self.client.get_async_connection().await?)
     }
 }
 
@@ -50,15 +50,16 @@ impl Storage for RedisCache {
         let key = key.to_owned();
         let me = self.clone();
         Box::new(
-            me.connect()
-                .and_then(|c| cmd("GET").arg(key).query_async(c).from_err())
-                .and_then(|(_, d): (_, Vec<u8>)| {
-                    if d.is_empty() {
-                        Ok(Cache::Miss)
-                    } else {
-                        CacheRead::from(Cursor::new(d)).map(Cache::Hit)
-                    }
-                }),
+            Box::pin(async move {
+                let mut c = me.connect().await?;
+                let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
+                if d.is_empty() {
+                    Ok(Cache::Miss)
+                } else {
+                    CacheRead::from(Cursor::new(d)).map(Cache::Hit)
+                }
+            })
+            .compat(),
         )
     }
 
@@ -68,12 +69,13 @@ impl Storage for RedisCache {
         let me = self.clone();
         let start = Instant::now();
         Box::new(
-            me.connect()
-                .and_then(move |c| {
-                    future::result(entry.finish())
-                        .and_then(|d| cmd("SET").arg(key).arg(d).query_async(c).from_err())
-                })
-                .map(move |(_, ())| start.elapsed()),
+            Box::pin(async move {
+                let mut c = me.connect().await?;
+                let d = entry.finish()?;
+                cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
+                Ok(start.elapsed())
+            })
+            .compat(),
         )
     }
 
@@ -85,11 +87,14 @@ impl Storage for RedisCache {
     /// Returns the current cache size. This value is aquired via
     /// the Redis INFO command (used_memory).
     fn current_size(&self) -> SFuture<Option<u64>> {
+        let me = self.clone(); // TODO Remove clone
         Box::new(
-            self.connect()
-                .and_then(|c| cmd("INFO").query_async(c).from_err())
-                .map(|(_, v)| v)
-                .map(|i: InfoDict| i.get("used_memory")),
+            Box::pin(async move {
+                let mut c = me.connect().await?;
+                let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
+                Ok(v.get("used_memory"))
+            })
+            .compat(),
         )
     }
 
@@ -97,20 +102,19 @@ impl Storage for RedisCache {
     /// the Redis CONFIG command (maxmemory). If the server has no
     /// configured limit, the result is None.
     fn max_size(&self) -> SFuture<Option<u64>> {
+        let me = self.clone(); // TODO Remove clone
         Box::new(
-            self.connect()
-                .and_then(|c| {
-                    cmd("CONFIG")
-                        .arg("GET")
-                        .arg("maxmemory")
-                        .query_async(c)
-                        .from_err()
-                })
-                .map(|(_, v)| v)
-                .map(|h: HashMap<String, usize>| {
-                    h.get("maxmemory")
-                        .and_then(|&s| if s != 0 { Some(s as u64) } else { None })
-                }),
+            Box::pin(async move {
+                let mut c = me.connect().await?;
+                let h: HashMap<String, usize> = cmd("CONFIG")
+                    .arg("GET")
+                    .arg("maxmemory")
+                    .query_async(&mut c)
+                    .await?;
+                Ok(h.get("maxmemory")
+                    .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
+            })
+            .compat(),
         )
     }
 }

@@ -38,6 +38,7 @@ error-chain = { version = "0.12.1", default-features = false }
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
+futures_03 = { version = "0.3", package = "futures", features = ["compat"] }
 futures-cpupool = "0.1"
 hmac = { version = "0.7", optional = true }
 http = "0.1"
@@ -56,7 +57,7 @@ num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
 rand = "0.5"
-redis = { version = "0.9.0", optional = true }
+redis = { version = "0.15.0", optional = true }
 regex = "1"
 reqwest = { version = "0.9.11", optional = true }
 retry = "0.4.0"
@@ -104,7 +105,7 @@ tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680d
 assert_cmd = "0.9"
 cc = "1.0"
 chrono = "0.4"
-escargot = "0.3"
+escargot = "0.5"
 itertools = "0.7"
 predicates = "0.9.0"
 # Waiting for #15 to make it into a release
