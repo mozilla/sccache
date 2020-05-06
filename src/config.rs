@@ -1085,7 +1085,7 @@ fn test_rust_blacklist_cfg() {
         ref crate_dependencies,
         build_script,
         ..
-    } = env_cfg.blacklist.rust;
+    } = env_cfg.blacklist.rust.unwrap();
 
     assert!(build_script);
 

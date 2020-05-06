@@ -3180,7 +3180,7 @@ c:/foo/bar.rs:
             &creator,
             Ok(MockChild::new(
                 exit_status(0),
-                filenames.iter().join("\n"),
+                filenames.join("\n"),
                 "",
             )),
         );
