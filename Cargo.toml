@@ -31,7 +31,6 @@ byteorder = "1.0"
 bytes = "0.4"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
-coz = { version = "0.1.3", package = "coz-temporary" }
 counted-array = "0.1"
 directories = "1"
 env_logger = "0.5"
@@ -147,11 +146,3 @@ dist-tests = ["dist-client", "dist-server"]
 
 [workspace]
 exclude = ["tests/test-crate"]
-
-
-[profile.release]
-debug = true
-lto = false
-rpath = false
-debug-assertions = true
-codegen-units = 5

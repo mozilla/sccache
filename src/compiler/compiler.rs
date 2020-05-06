@@ -45,8 +45,6 @@ use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use tokio_timer::Timeout;
 
-use coz;
-
 use crate::errors::*;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
@@ -151,28 +149,6 @@ where
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
 
-#[macro_export]
-macro_rules! coz_future {
-    ($tagz:expr, $fut:expr) => {
-        {
-            let x = {
-                $fut
-            };
-            Box::new(
-                ::futures::future::ok(())
-                    .and_then(move |_| {
-                        coz::begin!($tagz);
-                        x
-                    }).then(move |r| {
-                        coz::end!($tagz);
-                        r
-                    })
-            )
-        }
-    };
-}
-
-
 /// An interface to a compiler for hash key generation, the result of
 /// argument parsing.
 pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
@@ -228,9 +204,7 @@ where
             &pool,
             rewrite_includes_only,
         );
-
-        coz_future!("get_cached_or_compile",
-            result.then(move |res| -> SFuture<_> {
+        Box::new(result.then(move |res| -> SFuture<_> {
             debug!(
                 "[{}]: generate_hash_key took {}",
                 out_pretty,
@@ -249,7 +223,6 @@ where
                 }) => (key, compilation, weak_toolchain_key, status),
             };
             trace!("[{}]: Hash key: {}", out_pretty, key);
-            coz::progress!();
             // If `ForceRecache` is enabled, we won't check the cache.
             let start = Instant::now();
             let cache_status = match cache_control {
@@ -265,7 +238,6 @@ where
 
             // Check the result of the cache lookup.
             Box::new(cache_status.then(move |result| {
-                coz::progress!();
                 let duration = start.elapsed();
                 let outputs = compilation
                     .outputs()
@@ -356,34 +328,31 @@ where
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile =
-                coz_future!(
-                    "get cached or compile",
-                    match miss_type {
-                        MissType::Blacklisted =>
-                            Box::new(local_compile(
-                                creator,
-                                compilation,
-                                out_pretty.clone(),
-                            ).map(|(_cacheable,dist_type, process_output)|
-                                (Cacheable::No, dist_type, process_output)
-                            )),
+                let compile = 
 
-                        _ =>
-                            dist_or_local_compile(
-                                dist_client,
-                                creator,
-                                cwd,
-                                compilation,
-                                weak_toolchain_key,
-                                out_pretty.clone(),
-                            ) as Box<dyn futures::Future<Error = Error, Item = (Cacheable, DistType, std::process::Output)>>,
-                    }
-                );
+                match miss_type {
+                    MissType::Blacklisted =>
+                        Box::new(local_compile(
+                            creator,
+                            compilation,
+                            out_pretty.clone(),
+                        ).map(|(_cacheable,dist_type, process_output)| 
+                            (Cacheable::No, dist_type, process_output)
+                        )),
 
-                coz_future!("compile and cache",
+                    _ => 
+                        dist_or_local_compile(
+                            dist_client,
+                            creator,
+                            cwd,
+                            compilation,
+                            weak_toolchain_key,
+                            out_pretty.clone(),
+                        ) as Box<dyn futures::Future<Error = Error, Item = (Cacheable, DistType, std::process::Output)>>,
+                };
+
+                Box::new(
                     compile.and_then(move |(cacheable, dist_type, compiler_result)| {
-                        coz::progress!();
                         let duration = start.elapsed();
                         if !compiler_result.status.success() {
                             debug!(
@@ -419,7 +388,6 @@ where
                         Box::new(
                             write
                                 .and_then(move |mut entry| {
-                                    coz::progress!();
                                     if !compiler_result.stdout.is_empty() {
                                         let mut stdout = &compiler_result.stdout[..];
                                         entry.put_object("stdout", &mut stdout, None)?;
@@ -457,7 +425,7 @@ where
                                 })
                                 .chain_err(move || format!("failed to store `{}` to cache", o)),
                         )
-                    })
+                    }),
                 )
             }))
         }))
@@ -751,7 +719,7 @@ impl OutputsRewriter for NoopOutputsRewriter {
 
 
 /// Determines the status of the HashResult
-///
+/// 
 /// Utilizied to act upon blacklisting i.e.
 /// or other late conditions that are imposed
 /// when compiling.
@@ -794,7 +762,7 @@ pub struct HashResult {
 }
 
 /// Possible results of parsing compiler arguments.
-///
+/// 
 /// Blacklisting happens at a later point of time,
 /// since the inputs at this point are not parsed
 /// yet and execution can not be asynchronous at
@@ -1247,11 +1215,7 @@ where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    coz::begin!("detect_compiler");
-    Box::new(detect_compiler(creator, executable, cwd, env, &pool, dist_archive, blacklist).then(|r| {
-        coz::end!("detect_compiler");
-        r
-    }))
+    detect_compiler(creator, executable, cwd, env, &pool, dist_archive, blacklist)
 }
 
 #[cfg(test)]
@@ -1280,7 +1244,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
         );
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
@@ -1295,7 +1259,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
         );
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
@@ -1324,7 +1288,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
@@ -1360,7 +1324,7 @@ LLVM version: 6.0",
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
         next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(creator, &rustc, f.tempdir.path(),&[], &pool, None, Blacklist::new())
+        let c = detect_compiler(creator, &rustc, f.tempdir.path(),&[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::Rust, c.kind());
@@ -1375,7 +1339,7 @@ LLVM version: 6.0",
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
         );
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
@@ -1391,7 +1355,7 @@ LLVM version: 6.0",
             Ok(MockChild::new(exit_status(0), "something", "")),
         );
         assert!(
-            detect_compiler(creator, "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None, Blacklist::new())
+            detect_compiler(creator, "/foo/bar".as_ref(),f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1404,7 +1368,7 @@ LLVM version: 6.0",
         let pool = CpuPool::new(1);
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         assert!(
-            detect_compiler(creator, "/foo/bar".as_ref(), f.tempdir.path(), &[], &pool, None, Blacklist::new())
+            detect_compiler(creator, "/foo/bar".as_ref(), f.tempdir.path(), &[], &pool, None)
                 .wait()
                 .is_err()
         );
@@ -1417,7 +1381,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // digest of an empty file.
@@ -1435,7 +1399,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // The preprocessor invocation.
@@ -1539,7 +1503,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // The preprocessor invocation.
@@ -1639,7 +1603,7 @@ LLVM version: 6.0",
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // The preprocessor invocation.
@@ -1713,7 +1677,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";
@@ -1826,7 +1790,7 @@ LLVM version: 6.0",
             f.write_all(b"file contents")?;
             Ok(MockChild::new(exit_status(0), "gcc", ""))
         });
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         // We should now have a fake object file.
@@ -1887,7 +1851,7 @@ LLVM version: 6.0",
         let storage: Arc<dyn Storage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None, Blacklist::new())
+        let c = get_compiler_info(creator.clone(), &f.bins[0], f.tempdir.path(), &[], &pool, None)
             .wait()
             .unwrap().0;
         const COMPILER_STDOUT: &[u8] = b"compiler stdout";

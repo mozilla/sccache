@@ -15,6 +15,5 @@
 extern crate sccache;
 
 fn main() {
-    coz::thread_init();
     sccache::main();
 }

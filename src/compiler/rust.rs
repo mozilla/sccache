@@ -56,8 +56,6 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::time;
 
-use coz;
-
 use crate::errors::*;
 
 #[cfg(feature = "dist-client")]
@@ -747,8 +745,6 @@ pub struct CargoTomlEssenceExtract {
 
 impl RustCompilationBlacklist {
     fn is_listed(&self, compile_info : &RustCompilation) -> BlacklistCheckResult {
-        coz::scope!("is_listed");
-        coz::progress!();
         let RustCompilation {
             executable: _,
             host: _,
@@ -766,7 +762,6 @@ impl RustCompilationBlacklist {
             rlib_dep_reader,
         } = compile_info.clone();
 
-        coz::progress!();
         if self.disallowed_crates.contains(&crate_name) {
             return BlacklistCheckResult::Blacklisted(format!("crate: {}", crate_name))
         }
@@ -778,8 +773,7 @@ impl RustCompilationBlacklist {
                 Some("Disallowed files")
             } else if self.cargo_build_script_tracking_enabled {
                 let cargo_build_script_cache = self.cargo_build_script_cache.as_ref().read().unwrap();
-                coz::progress!();
-                coz::scope!("is_listed::build_script");
+
                 cargo_build_script_cache
                     .get(cargo_toml.as_path())
                     .map(|x| {
@@ -803,7 +797,6 @@ impl RustCompilationBlacklist {
             // TODO consider defering deps resolution to ealier
             #[cfg(feature = "dist-client")]
             {
-                coz::progress!();
                 if let Some(rlib_dep_reader) = rlib_dep_reader.clone() {
                     if inputs.iter()
                         .filter_map(|input_path| {
@@ -838,7 +831,6 @@ impl RustCompilationBlacklist {
                 // avoid warnings
                 let _ = env_vars;
             }
-            coz::progress!();
             BlacklistCheckResult::Passed
         }
     }
@@ -1239,8 +1231,6 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
 fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<ParsedArguments> {
     let mut args = vec![];
 
-    coz::scope!("parse compiler args");
-
     let mut emit: Option<HashSet<String>> = None;
     let mut input = None;
     let mut output_dir = None;
@@ -1460,7 +1450,6 @@ type CargoToml = HashMap<String, toml::Value>;
 
 // extraction helper to obtain the build script from Cargo.toml
 pub(crate) fn extract_build_script(cargo_toml_path: &Path, cwd: &Path) -> Result<Option<PathBuf>> {
-    coz::scope!("extract build script");
     let cargo_toml_content: String = std::fs::read_to_string(cargo_toml_path)
         .map_err(|e| format!("Failed to open {}: {:?}", cargo_toml_path.display(), e))?;
     let mut cargo_toml_content : CargoToml = toml::from_str(cargo_toml_content.as_str())
@@ -1800,7 +1789,6 @@ impl Compilation for RustCompilation {
         path_transformer: &mut dist::PathTransformer,
         _rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
-        coz::scope!("compile command");
         let RustCompilation {
             ref executable,
             ref arguments,
@@ -1945,7 +1933,6 @@ impl Compilation for RustCompilation {
         self: Box<Self>,
         path_transformer: dist::PathTransformer,
     ) -> Result<DistPackagers> {
-        coz::scope!("into dist packagers");
         let RustCompilation {
             inputs,
             crate_link_paths,
@@ -3180,7 +3167,7 @@ c:/foo/bar.rs:
             &creator,
             Ok(MockChild::new(
                 exit_status(0),
-                filenames.join("\n"),
+                filenames.iter().join("\n"),
                 "",
             )),
         );
