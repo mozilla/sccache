@@ -328,7 +328,7 @@ where
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
-                let compile = 
+                let compile =
 
                 match miss_type {
                     MissType::Blacklisted =>
@@ -336,11 +336,11 @@ where
                             creator,
                             compilation,
                             out_pretty.clone(),
-                        ).map(|(_cacheable,dist_type, process_output)| 
+                        ).map(|(_cacheable,dist_type, process_output)|
                             (Cacheable::No, dist_type, process_output)
                         )),
 
-                    _ => 
+                    _ =>
                         dist_or_local_compile(
                             dist_client,
                             creator,
@@ -719,7 +719,7 @@ impl OutputsRewriter for NoopOutputsRewriter {
 
 
 /// Determines the status of the HashResult
-/// 
+///
 /// Utilizied to act upon blacklisting i.e.
 /// or other late conditions that are imposed
 /// when compiling.
@@ -762,7 +762,7 @@ pub struct HashResult {
 }
 
 /// Possible results of parsing compiler arguments.
-/// 
+///
 /// Blacklisting happens at a later point of time,
 /// since the inputs at this point are not parsed
 /// yet and execution can not be asynchronous at
