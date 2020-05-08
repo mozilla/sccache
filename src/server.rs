@@ -30,8 +30,8 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::util;
 use filetime::FileTime;
 use futures::sync::mpsc;
-use futures::task::{self, Task};
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures_03::compat::Compat;
 use futures_cpupool::CpuPool;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
 use std::cell::RefCell;
@@ -44,11 +44,13 @@ use std::io::{self, Write};
 use std::mem;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
+use std::task::{Context, Waker};
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
@@ -580,7 +582,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
         runtime
-            .block_on(Timeout::new(wait, Duration::new(30, 0)))
+            .block_on(Timeout::new(Compat::new(wait), Duration::new(30, 0)))
             .map_err(|e| {
                 if e.is_inner() {
                     e.into_inner().unwrap()
@@ -1680,14 +1682,14 @@ struct ActiveInfo {
 
 struct Info {
     active: usize,
-    blocker: Option<Task>,
+    waker: Option<Waker>,
 }
 
 impl WaitUntilZero {
     fn new() -> (WaitUntilZero, ActiveInfo) {
         let info = Rc::new(RefCell::new(Info {
             active: 1,
-            blocker: None,
+            waker: None,
         }));
 
         (WaitUntilZero { info: info.clone() }, ActiveInfo { info })
@@ -1708,24 +1710,23 @@ impl Drop for ActiveInfo {
         let mut info = self.info.borrow_mut();
         info.active -= 1;
         if info.active == 0 {
-            if let Some(task) = info.blocker.take() {
-                task.notify();
+            if let Some(waker) = info.waker.take() {
+                waker.wake();
             }
         }
     }
 }
 
-impl Future for WaitUntilZero {
-    type Item = ();
-    type Error = io::Error;
+impl std::future::Future for WaitUntilZero {
+    type Output = io::Result<()>;
 
-    fn poll(&mut self) -> Poll<(), io::Error> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
         let mut info = self.info.borrow_mut();
         if info.active == 0 {
-            Ok(().into())
+            std::task::Poll::Ready(Ok(()))
         } else {
-            info.blocker = Some(task::current());
-            Ok(Async::NotReady)
+            info.waker = Some(cx.waker().clone());
+            std::task::Poll::Pending
         }
     }
 }
