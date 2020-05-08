@@ -800,7 +800,7 @@ where
                             message,
                             body: true,
                         }))
-                        .chain(body.map(|chunk| Frame::Body { chunk: Some(chunk) }))
+                        .chain(Compat::new(body).map(|chunk| Frame::Body { chunk: Some(chunk) }))
                         .chain(stream::once(Ok(Frame::Body { chunk: None }))),
                     ),
                 };
@@ -1546,15 +1546,12 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> Stream for Body<R> {
-    type Item = R;
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.receiver.poll().unwrap() {
-            Async::Ready(Some(Ok(item))) => Ok(Async::Ready(Some(item))),
-            Async::Ready(Some(Err(err))) => Err(err),
-            Async::Ready(None) => Ok(Async::Ready(None)),
-            Async::NotReady => Ok(Async::NotReady),
+impl<R> futures_03::Stream for Body<R> {
+    type Item = Result<R>;
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.receiver).poll().unwrap() {
+            Async::Ready(item) => std::task::Poll::Ready(item),
+            Async::NotReady => std::task::Poll::Pending,
         }
     }
 }
