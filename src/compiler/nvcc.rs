@@ -162,16 +162,16 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("--expt-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("--expt-relaxed-constexpr", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("--extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
+    flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
+    flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
+    flag!("--extended-lambda", PreprocessorArgumentFlag),
     take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--include-path", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--linker-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--no-host-device-initializer-list", OsString, CanBeSeparated('='), PreprocessorArgument),
+    flag!("--no-host-device-initializer-list", PreprocessorArgumentFlag),
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -185,13 +185,13 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
-    take_arg!("-expt-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-expt-relaxed-constexpr", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-extended-lambda", OsString, CanBeSeparated('='), PreprocessorArgument),
+    flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
+    flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
+    flag!("-extended-lambda", PreprocessorArgumentFlag),
     take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-nohdinitlist", OsString, CanBeSeparated('='), PreprocessorArgument),
+    flag!("-nohdinitlist", PreprocessorArgumentFlag),
     flag!("-ptx", DoCompilation),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
@@ -332,6 +332,27 @@ mod test {
             ovec!["--generate-code", "arch=compute_60,code=[sm_60,sm_61]",
                   "-Xnvlink", "--suppress-stack-size-warning", "-Xcudafe",
                   "--display_error_number"],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_no_capturing_of_xcompiler() {
+        let a = parses!("-x=cu",
+                        "-forward-unknown-to-host-compiler",
+                        "--expt-relaxed-constexpr",
+                        "-Xcompiler", "-pthread",
+                        "-std=c++14",
+                        "-c", "foo.c", "-o", "foo.o");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_eq!(
+            ovec!["--expt-relaxed-constexpr", "-Xcompiler", "-pthread"],
+            a.preprocessor_args
+        );
+        assert_eq!(
+            ovec!["-forward-unknown-to-host-compiler", "-std=c++14"],
             a.common_args
         );
     }
