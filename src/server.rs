@@ -1236,11 +1236,8 @@ pub struct PerLanguageCount {
 impl PerLanguageCount {
     fn increment(&mut self, kind: &CompilerKind) {
         let key = kind.lang_kind();
-        let count = match self.counts.get(&key) {
-            Some(v) => v + 1,
-            None => 1,
-        };
-        self.counts.insert(key, count);
+        let count = self.counts.entry(key).or_insert(0);
+        *count += 1;
     }
 
     pub fn all(&self) -> u64 {
