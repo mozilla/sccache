@@ -468,7 +468,10 @@ pub fn parse_arguments(
                 compilation_flag =
                     OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
-            Some(ShowIncludes) => show_includes = true,
+            Some(ShowIncludes) => {
+                show_includes = true;
+                dependency_args.push(arg.to_os_string());
+            }
             Some(Output(out)) => {
                 output_arg = Some(out.clone());
                 // Can't usefully cache output that goes to nul anyway,
@@ -706,7 +709,7 @@ where
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    if parsed_args.depfile.is_some() || parsed_args.msvc_show_includes {
+    if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
     }
 
@@ -818,6 +821,7 @@ fn generate_compile_commands(
         fo,
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.dependency_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
     let command = CompileCommand {
@@ -1072,6 +1076,7 @@ mod test {
             language,
             outputs,
             preprocessor_args,
+            dependency_args,
             msvc_show_includes,
             common_args,
             ..
@@ -1083,6 +1088,7 @@ mod test {
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         assert_eq!(preprocessor_args, ovec!["-FIfile"]);
+        assert_eq!(dependency_args, ovec!["/showIncludes"]);
         assert!(common_args.is_empty());
         assert!(msvc_show_includes);
     }
