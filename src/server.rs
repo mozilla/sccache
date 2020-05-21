@@ -324,8 +324,8 @@ impl DistClientContainer {
             }};
         }
         // TODO: NLL would avoid this clone
-        match config.scheduler_url.clone() {
-            Some(addr) => {
+        match config.scheduler_url {
+            Some(ref addr) => {
                 let url = addr.to_url();
                 info!("Enabling distributed sccache to {}", url);
                 let auth_token = match &config.auth {
@@ -338,7 +338,6 @@ impl DistClientContainer {
                 let auth_token = try_or_fail_with_message!(auth_token.chain_err(|| {
                     "could not load client auth token, run |sccache --dist-auth|"
                 }));
-                // TODO: NLL would let us move this inside the previous match
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,

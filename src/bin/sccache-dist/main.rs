@@ -812,8 +812,7 @@ impl SchedulerIncoming for Scheduler {
         let mut servers = self.servers.lock().unwrap();
 
         if let btree_map::Entry::Occupied(mut entry) = jobs.entry(job_id) {
-            // TODO: nll should mean not needing to copy this out
-            let job_detail = *entry.get();
+            let job_detail = entry.get();
             if job_detail.server_id != server_id {
                 bail!(
                     "Job id {} is not registed on server {:?}",
