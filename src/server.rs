@@ -323,7 +323,6 @@ impl DistClientContainer {
                 }
             }};
         }
-        // TODO: NLL would avoid this clone
         match config.scheduler_url {
             Some(ref addr) => {
                 let url = addr.to_url();
