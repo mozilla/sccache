@@ -2270,14 +2270,18 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         assert!(line_splits.next().is_none());
 
         let mut libstring_splits = libstring.rsplitn(2, '-');
-        // Rustc prints strict hash value (rather than extra filename as it likely should be)
-        // https://github.com/rust-lang/rust/pull/55555
-        let _svh = libstring_splits
-            .next()
-            .ok_or_else(|| "No hash in lib string from rustc -Z ls")?;
-        let libname = libstring_splits
-            .next()
-            .expect("Zero strings from libstring split");
+        // Most things get printed as ${LIBNAME}-${HASH} but for some things
+        // (native code-only libraries?), ${LIBNAME} is all you get.
+        let libname = {
+            let maybe_hash = libstring_splits
+                .next()
+                .ok_or_else(|| "Nothing in lib string from `rustc -Z ls`")?;
+            if let Some(name) = libstring_splits.next() {
+                name
+            } else {
+                maybe_hash
+            }
+        };
         assert!(libstring_splits.next().is_none());
 
         dep_names.push(libname);
@@ -2850,6 +2854,25 @@ c:/foo/bar.rs:
             pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
             parse_dep_info(&deps, "c:/bar/")
         );
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls() {
+        let output = "=External Dependencies=
+1 lucet_runtime
+2 lucet_runtime_internals-1ff6232b6940e924
+3 lucet_runtime_macros-c18e1952b835769e
+
+
+";
+        let res = parse_rustc_z_ls(&output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], "lucet_runtime");
+        assert_eq!(res[1], "lucet_runtime_internals");
+        assert_eq!(res[2], "lucet_runtime_macros");
     }
 
     fn mock_dep_info(creator: &Arc<Mutex<MockCommandCreator>>, dep_srcs: &[&str]) {
