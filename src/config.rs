@@ -211,7 +211,7 @@ pub enum CacheType {
     S3(S3CacheConfig),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
@@ -400,7 +400,7 @@ impl Default for DistConfig {
 }
 
 // TODO: fields only pub for tests
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
@@ -887,4 +887,93 @@ fn test_gcs_credentials_url() {
         }
         None => unreachable!(),
     };
+}
+
+
+
+#[test]
+fn full_toml_parse() {
+    const CONFIG_STR: &str = r#"
+[dist]
+# where to find the scheduler
+scheduler_url = "http://1.2.3.4:10600"
+# a set of prepackaged toolchains
+toolchains = []
+# the maximum size of the toolchain cache in bytes
+toolchain_cache_size = 5368709120
+cache_dir = "/home/user/.cache/sccache-dist-client"
+
+[dist.auth]
+type = "token"
+token = "secrettoken"
+
+
+#[cache.azure]
+# does not work as it appears
+
+[cache.disk]
+dir = "/tmp/.cache/sccache"
+size = 7516192768 # 7 GiBytes
+
+[cache.gcs]
+# optional url
+url = "..."
+rw_mode = "READ_ONLY"
+# rw_mode = "READ_WRITE"
+cred_path = "/psst/secret/cred"
+bucket = "bucket"
+
+[cache.memcached]
+url = "..."
+
+[cache.redis]
+url = "redis://user:passwd@1.2.3.4:6379/1"
+
+[cache.s3]
+bucket = "name"
+endpoint = "s3-us-east-1.amazonaws.com"
+use_ssl = true
+"#;
+
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(file_config,
+        FileConfig {
+            cache: CacheConfigs {
+                azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
+                disk: Some(DiskCacheConfig {
+                    dir: PathBuf::from("/tmp/.cache/sccache"),
+                    size: 7 * 1024 * 1024 * 1024,
+                }),
+                gcs: Some(GCSCacheConfig {
+                    url: Some("...".to_owned()),
+                    bucket: "bucket".to_owned(),
+                    cred_path: Some(PathBuf::from("/psst/secret/cred")),
+                    rw_mode: GCSCacheRWMode::ReadOnly,
+
+                }),
+                redis: Some(RedisCacheConfig {
+                    url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                }),
+                memcached: Some(MemcachedCacheConfig {
+                    url: "...".to_owned(),
+                }),
+                s3: Some(S3CacheConfig {
+                    bucket: "name".to_owned(),
+                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
+                    use_ssl: true,
+                }),
+            },
+            dist: DistConfig {
+                auth: DistAuth::Token { token: "secrettoken".to_owned() } ,
+                #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+                scheduler_url: Some(parse_http_url("http://1.2.3.4:10600").map(|url| { HTTPUrl::from_url(url)}).expect("Scheduler url must be valid url str")),
+                #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+                scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
+                cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
+                toolchains: vec![],
+                toolchain_cache_size: 5368709120,
+                rewrite_includes_only: false,
+            },
+        }
+    )
 }
