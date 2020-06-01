@@ -1181,10 +1181,10 @@ where
                     error!("[{:?}] fatal error: {}", out_pretty, err);
 
                     let mut error = "sccache: encountered fatal error\n".to_string();
-                    let _ = writeln!(error, "sccache: error : {}", err);
+                    let _ = writeln!(error, "sccache: error: {}", err);
                     for e in err.iter() {
                         error!("[{:?}] \t{}", out_pretty, e);
-                        let _ = writeln!(error, "sccache:  cause: {}", e);
+                        let _ = writeln!(error, "sccache: caused by: {}", e);
                     }
                     stats.cache_errors.increment(&kind);
                     //TODO: figure out a better way to communicate this?

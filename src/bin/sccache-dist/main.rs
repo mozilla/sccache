@@ -101,18 +101,18 @@ fn main() {
             Ok(s) => s,
             Err(e) => {
                 let stderr = &mut std::io::stderr();
-                writeln!(stderr, "error: {}", e).unwrap();
+                writeln!(stderr, "sccache-dist: error: {}", e).unwrap();
 
                 for e in e.iter().skip(1) {
-                    writeln!(stderr, "caused by: {}", e).unwrap();
+                    writeln!(stderr, "sccache-dist: caused by: {}", e).unwrap();
                 }
                 2
             }
         },
         Err(e) => {
-            println!("sccache: {}", e);
+            println!("sccache-dist: {}", e);
             for e in e.iter().skip(1) {
-                println!("caused by: {}", e);
+                println!("sccache-dist: caused by: {}", e);
             }
             get_app().print_help().unwrap();
             println!("");
