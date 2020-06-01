@@ -192,7 +192,6 @@ impl DistClientContainer {
     fn new(config: &Config, pool: &CpuPool) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
-
             scheduler_url: config.dist.scheduler_url.clone(),
             auth: config.dist.auth.clone(),
             cache_dir: config.dist.cache_dir.clone(),
