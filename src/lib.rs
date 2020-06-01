@@ -71,10 +71,10 @@ pub fn main() {
             Ok(s) => s,
             Err(e) => {
                 let stderr = &mut std::io::stderr();
-                writeln!(stderr, "error: {}", e).unwrap();
+                writeln!(stderr, "sccache: error: {}", e).unwrap();
 
                 for e in e.iter().skip(1) {
-                    writeln!(stderr, "caused by: {}", e).unwrap();
+                    writeln!(stderr, "sccache: caused by: {}", e).unwrap();
                 }
                 2
             }
@@ -82,7 +82,7 @@ pub fn main() {
         Err(e) => {
             println!("sccache: {}", e);
             for e in e.iter().skip(1) {
-                println!("caused by: {}", e);
+                println!("sccache: caused by: {}", e);
             }
             cmdline::get_app().print_help().unwrap();
             println!();
