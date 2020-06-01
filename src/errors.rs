@@ -12,20 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// TODO error_chain needs to be upgraded, it uses deprecated APIs.
-#![allow(deprecated)]
-#![allow(renamed_and_removed_lints)]
-
+use futures::future;
+use futures::Future;
 use std::boxed::Box;
 use std::convert;
 use std::error;
 use std::io;
 use std::process;
-
-#[cfg(feature = "jsonwebtoken")]
-use crate::jwt;
-use futures::future;
-use futures::Future;
 
 error_chain! {
     foreign_links {
@@ -33,9 +26,7 @@ error_chain! {
         Io(io::Error);
         Lru(lru_disk_cache::Error);
         Json(serde_json::Error);
-        Jwt(jwt::errors::Error) #[cfg(feature = "jsonwebtoken")];
         Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
-        Base64Decode(base64::DecodeError);
         Bincode(bincode::Error);
         Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
         Redis(redis::RedisError) #[cfg(feature = "redis")];
