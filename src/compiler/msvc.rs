@@ -216,12 +216,15 @@ ArgData! {
     TooHardPath(PathBuf),
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
+    SuppressCompilation,
     DoCompilation,
     ShowIncludes,
     Output(PathBuf),
     DepFile(PathBuf),
     ProgramDatabase(PathBuf),
     DebugInfo,
+    PassThrough, // Miscellaneous flags that don't prevent caching.
+    PassThroughWithSuffix(OsString), // As above, but recognised by prefix.
     XClang(OsString),
 }
 
@@ -241,11 +244,22 @@ macro_rules! msvc_args {
     (@one $prefix:expr, $other:expr) => { $other };
 }
 
+// Reference:
+// https://docs.microsoft.com/en-us/cpp/build/reference/compiler-options-listed-alphabetically?view=vs-2019
 msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
+    msvc_flag!("?", SuppressCompilation),
+    msvc_flag!("C", PassThrough), // Ignored unless a preprocess-only flag is specified.
     msvc_take_arg!("D", OsString, Concatenated, PreprocessorArgument),
+    msvc_flag!("E", SuppressCompilation),
+    msvc_take_arg!("EH", OsString, Concatenated, PassThroughWithSuffix), // /EH[acsr\-]+ - TODO: use a regex?
+    msvc_flag!("EP", SuppressCompilation),
+    msvc_take_arg!("F", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("FA", OsString, Concatenated, TooHard),
+    msvc_flag!("FC", TooHardFlag), // Use absolute paths in error messages.
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
+    msvc_flag!("FS", TooHardFlag),
+    msvc_take_arg!("FU", PathBuf, CanBeSeparated, TooHardPath),
     msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
     msvc_take_arg!("Fe", PathBuf, Concatenated, TooHardPath),
@@ -255,18 +269,164 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
+    msvc_flag!("GA", PassThrough),
+    msvc_flag!("GF", PassThrough),
+    msvc_flag!("GH", PassThrough),
+    msvc_flag!("GL", PassThrough),
+    msvc_flag!("GL-", PassThrough),
+    msvc_flag!("GR", PassThrough),
+    msvc_flag!("GR-", PassThrough),
+    msvc_flag!("GS", PassThrough),
+    msvc_flag!("GS-", PassThrough),
+    msvc_flag!("GT", PassThrough),
+    msvc_flag!("GX", PassThrough),
+    msvc_flag!("GZ", PassThrough),
+    msvc_flag!("Gd", PassThrough),
+    msvc_flag!("Ge", PassThrough),
+    msvc_flag!("Gh", PassThrough),
+    msvc_flag!("Gm", TooHardFlag),
+    msvc_flag!("Gr", PassThrough),
+    msvc_take_arg!("Gs", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("Gv", PassThrough),
+    msvc_flag!("Gw", PassThrough),
+    msvc_flag!("Gw-", PassThrough),
+    msvc_flag!("Gy", PassThrough),
+    msvc_flag!("Gy-", PassThrough),
+    msvc_flag!("Gz", PassThrough),
+    msvc_take_arg!("H", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("HELP", SuppressCompilation),
     msvc_take_arg!("I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    msvc_flag!("J", PassThrough),
+    msvc_flag!("JMC", PassThrough),
+    msvc_flag!("JMC-", PassThrough),
+    msvc_flag!("LD", PassThrough),
+    msvc_flag!("LDd", PassThrough),
+    msvc_flag!("MD", PassThrough),
+    msvc_flag!("MDd", PassThrough),
+    msvc_flag!("MP", TooHardFlag), // Multiple source files.
+    msvc_flag!("MT", PassThrough),
+    msvc_flag!("MTd", PassThrough),
+    msvc_flag!("O1", PassThrough),
+    msvc_flag!("O2", PassThrough),
+    msvc_flag!("Ob0", PassThrough),
+    msvc_flag!("Ob1", PassThrough),
+    msvc_flag!("Ob2", PassThrough),
+    msvc_flag!("Ob3", PassThrough),
+    msvc_flag!("Od", PassThrough),
+    msvc_flag!("Og", PassThrough),
+    msvc_flag!("Oi", PassThrough),
+    msvc_flag!("Oi-", PassThrough),
+    msvc_flag!("Os", PassThrough),
+    msvc_flag!("Ot", PassThrough),
+    msvc_flag!("Ox", PassThrough),
+    msvc_flag!("Oy", PassThrough),
+    msvc_flag!("Oy-", PassThrough),
+    msvc_flag!("P", SuppressCompilation),
+    msvc_flag!("QIfist", PassThrough),
+    msvc_flag!("QIntel-jcc-erratum", PassThrough),
+    msvc_flag!("Qfast_transcendentals", PassThrough),
+    msvc_flag!("Qimprecise_fwaits", PassThrough),
+    msvc_flag!("Qpar", PassThrough),
+    msvc_flag!("Qsafe_fp_loads", PassThrough),
+    msvc_flag!("Qspectre", PassThrough),
+    msvc_flag!("Qspectre-load", PassThrough),
+    msvc_flag!("Qspectre-load-cf", PassThrough),
+    msvc_flag!("Qvec-report:1", PassThrough),
+    msvc_flag!("Qvec-report:2", PassThrough),
+    msvc_take_arg!("RTC", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("TC", PassThrough), // TODO: disable explicit language check, hope for the best for now? Also, handle /Tc & /Tp.
+    msvc_flag!("TP", PassThrough), // As above.
     msvc_take_arg!("U", OsString, Concatenated, PreprocessorArgument),
+    msvc_take_arg!("V", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("W0", PassThrough),
+    msvc_flag!("W1", PassThrough),
+    msvc_flag!("W2", PassThrough),
+    msvc_flag!("W3", PassThrough),
+    msvc_flag!("W4", PassThrough),
+    msvc_flag!("WL", PassThrough),
+    msvc_flag!("WX", PassThrough),
+    msvc_flag!("Wall", PassThrough),
+    msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
-    msvc_flag!("ZI", DebugInfo),
+    msvc_flag!("Yd", PassThrough),
+    msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
+    msvc_flag!("ZI", DebugInfo), // Implies /FC, which puts absolute paths in error messages -> TooHardFlag?
+    msvc_flag!("ZW", PassThrough),
+    msvc_flag!("Za", PassThrough),
+    msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("Ze", PassThrough),
     msvc_flag!("Zi", DebugInfo),
+    msvc_flag!("Zo", PassThrough),
+    msvc_flag!("Zo-", PassThrough),
+    msvc_flag!("Zp1", PassThrough),
+    msvc_flag!("Zp16", PassThrough),
+    msvc_flag!("Zp2", PassThrough),
+    msvc_flag!("Zp4", PassThrough),
+    msvc_flag!("Zp8", PassThrough),
+    msvc_flag!("Zs", SuppressCompilation),
+    msvc_flag!("analyze-", PassThrough),
+    msvc_take_arg!("analyze:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("arch:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("await", PassThrough),
+    msvc_flag!("bigobj", PassThrough),
     msvc_flag!("c", DoCompilation),
+    msvc_take_arg!("cgthreads", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("clr", PassThrough),
+    msvc_take_arg!("clr:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("constexpr:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
+    msvc_take_arg!("diagnostics:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
+    msvc_take_arg!("errorReport:", OsString, Concatenated, PassThroughWithSuffix), // Deprecated.
+    msvc_take_arg!("execution-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("experimental:module", TooHardFlag),
+    msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
+    msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("favor:", OsString, Separated, PassThroughWithSuffix),
+    msvc_take_arg!("fp:", OsString, Separated, PassThroughWithSuffix),
     msvc_flag!("fsyntax-only", TooHardFlag),
+    msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("homeparams", PassThrough),
+    msvc_flag!("hotpatch", PassThrough),
+    msvc_flag!("kernel", PassThrough),
+    msvc_flag!("kernel-", PassThrough),
+    msvc_flag!("nologo", PassThrough),
     msvc_take_arg!("o", PathBuf, Separated, Output), // Deprecated but valid
+    msvc_flag!("openmp", PassThrough),
+    msvc_flag!("openmp:experimental", PassThrough),
+    msvc_flag!("permissive-", PassThrough),
+    msvc_flag!("sdl", PassThrough),
+    msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
+    msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("u", PassThrough),
+    msvc_flag!("utf-8", PassThrough),
+    msvc_flag!("validate-charset", PassThrough),
+    msvc_flag!("validate-charset-", PassThrough),
+    msvc_flag!("vd0", PassThrough),
+    msvc_flag!("vd1", PassThrough),
+    msvc_flag!("vd2", PassThrough),
+    msvc_flag!("vmb", PassThrough),
+    msvc_flag!("vmg", PassThrough),
+    msvc_flag!("vmm", PassThrough),
+    msvc_flag!("vms", PassThrough),
+    msvc_flag!("vmv", PassThrough),
+    msvc_flag!("volatile:iso", PassThrough),
+    msvc_flag!("volatile:ms", PassThrough),
+    msvc_flag!("w", PassThrough),
+    msvc_take_arg!("w1", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("w2", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("w3", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("w4", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("wd", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("we", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("wo", OsString, Concatenated, PassThroughWithSuffix),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
+
+// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /ZH, /Zm
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -290,6 +450,7 @@ pub fn parse_arguments(
     for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
+            Some(PassThrough) | Some(PassThroughWithSuffix(_)) => {}
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
@@ -310,6 +471,9 @@ pub fn parse_arguments(
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_)) | Some(PreprocessorArgumentPath(_)) => {}
+            Some(SuppressCompilation) => {
+                return CompilerArguments::NotCompilation;
+            }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => {
                 match arg {

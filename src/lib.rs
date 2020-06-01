@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #![deny(rust_2018_idioms)]
-#![recursion_limit = "128"]
+#![recursion_limit = "256"]
 
 #[macro_use]
 extern crate clap;
