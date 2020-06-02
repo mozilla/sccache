@@ -385,7 +385,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("favor:", OsString, Separated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Separated, PassThroughWithSuffix),
-    msvc_flag!("fsyntax-only", TooHardFlag),
+    msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
