@@ -224,7 +224,8 @@ ArgData! {
     ProgramDatabase(PathBuf),
     DebugInfo,
     PassThrough, // Miscellaneous flags that don't prevent caching.
-    PassThroughWithSuffix(OsString), // As above, but recognised by prefix.
+    PassThroughWithPath(PathBuf), // As above, recognised by prefix.
+    PassThroughWithSuffix(OsString), // As above, recognised by prefix.
     XClang(OsString),
 }
 
@@ -264,7 +265,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
     msvc_take_arg!("Fe", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
-    msvc_take_arg!("Fm", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
     msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
@@ -450,7 +451,7 @@ pub fn parse_arguments(
     for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(PassThrough) | Some(PassThroughWithSuffix(_)) => {}
+            Some(PassThrough) | Some(PassThroughWithPath(_)) |  Some(PassThroughWithSuffix(_)) => {}
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
