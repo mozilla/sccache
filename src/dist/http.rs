@@ -42,7 +42,7 @@ mod common {
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
             let bytes =
-                bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
+                bincode::serialize(bincode).context("Failed to serialize body to bincode")?;
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
@@ -57,7 +57,7 @@ mod common {
     impl ReqwestRequestBuilderExt for reqwest::r#async::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
             let bytes =
-                bincode::serialize(bincode).chain_err(|| "Failed to serialize body to bincode")?;
+                bincode::serialize(bincode).context("Failed to serialize body to bincode")?;
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
@@ -77,15 +77,14 @@ mod common {
         let status = res.status();
         let mut body = vec![];
         res.copy_to(&mut body)
-            .chain_err(|| "error reading response body")?;
+            .context("error reading response body")?;
         if !status.is_success() {
-            Err(format!(
+            Err(anyhow!(
                 "Error {} (Headers={:?}): {}",
                 status.as_u16(),
                 res.headers(),
                 String::from_utf8_lossy(&body)
-            )
-            .into())
+            ))
         } else {
             bincode::deserialize(&body).map_err(Into::into)
         }
@@ -112,9 +111,9 @@ mod common {
                             String::from_utf8_lossy(&body)
                         );
                         if status.is_client_error() {
-                            return f_err(ErrorKind::HttpClientError(errmsg));
+                            return f_err(HttpClientError(errmsg));
                         } else {
-                            return f_err(errmsg);
+                            return f_err(anyhow!(errmsg));
                         }
                     }
                     match bincode::deserialize(&body) {
@@ -307,39 +306,39 @@ mod server {
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
-            .chain_err(|| "failed to generate rsa privkey")?;
+            .context("failed to generate rsa privkey")?;
         let privkey_pem = rsa_key
             .private_key_to_pem()
-            .chain_err(|| "failed to create pem from rsa privkey")?;
+            .context("failed to create pem from rsa privkey")?;
         let privkey: openssl::pkey::PKey<openssl::pkey::Private> =
             openssl::pkey::PKey::from_rsa(rsa_key)
-                .chain_err(|| "failed to create openssl pkey from rsa privkey")?;
+                .context("failed to create openssl pkey from rsa privkey")?;
         let mut builder =
-            openssl::x509::X509::builder().chain_err(|| "failed to create x509 builder")?;
+            openssl::x509::X509::builder().context("failed to create x509 builder")?;
 
         // Populate the certificate with the necessary parts, mostly from mkcert in openssl
         builder
             .set_version(2)
-            .chain_err(|| "failed to set x509 version")?;
+            .context("failed to set x509 version")?;
         let serial_number = openssl::bn::BigNum::from_u32(0)
             .and_then(|bn| bn.to_asn1_integer())
-            .chain_err(|| "failed to create openssl asn1 0")?;
+            .context("failed to create openssl asn1 0")?;
         builder
             .set_serial_number(serial_number.as_ref())
-            .chain_err(|| "failed to set x509 serial number")?;
+            .context("failed to set x509 serial number")?;
         let not_before = openssl::asn1::Asn1Time::days_from_now(0)
-            .chain_err(|| "failed to create openssl not before asn1")?;
+            .context("failed to create openssl not before asn1")?;
         builder
             .set_not_before(not_before.as_ref())
-            .chain_err(|| "failed to set not before on x509")?;
+            .context("failed to set not before on x509")?;
         let not_after = openssl::asn1::Asn1Time::days_from_now(365)
-            .chain_err(|| "failed to create openssl not after asn1")?;
+            .context("failed to create openssl not after asn1")?;
         builder
             .set_not_after(not_after.as_ref())
-            .chain_err(|| "failed to set not after on x509")?;
+            .context("failed to set not after on x509")?;
         builder
             .set_pubkey(privkey.as_ref())
-            .chain_err(|| "failed to set pubkey for x509")?;
+            .context("failed to set pubkey for x509")?;
 
         let mut name = openssl::x509::X509Name::builder()?;
         name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME, &addr.to_string())?;
@@ -347,40 +346,38 @@ mod server {
 
         builder
             .set_subject_name(&name)
-            .chain_err(|| "failed to set subject name")?;
+            .context("failed to set subject name")?;
         builder
             .set_issuer_name(&name)
-            .chain_err(|| "failed to set issuer name")?;
+            .context("failed to set issuer name")?;
 
         // Add the SubjectAlternativeName
         let extension = openssl::x509::extension::SubjectAlternativeName::new()
             .ip(&addr.ip().to_string())
             .build(&builder.x509v3_context(None, None))
-            .chain_err(|| "failed to build SAN extension for x509")?;
+            .context("failed to build SAN extension for x509")?;
         builder
             .append_extension(extension)
-            .chain_err(|| "failed to append SAN extension for x509")?;
+            .context("failed to append SAN extension for x509")?;
 
         // Add ExtendedKeyUsage
         let ext_key_usage = openssl::x509::extension::ExtendedKeyUsage::new()
             .server_auth()
             .build()
-            .chain_err(|| "failed to build EKU extension for x509")?;
+            .context("failed to build EKU extension for x509")?;
         builder
             .append_extension(ext_key_usage)
-            .chain_err(|| "failes to append EKU extension for x509")?;
+            .context("failes to append EKU extension for x509")?;
 
         // Finish the certificate
         builder
             .sign(&privkey, openssl::hash::MessageDigest::sha1())
-            .chain_err(|| "failed to sign x509 with sha1")?;
+            .context("failed to sign x509 with sha1")?;
         let cert: openssl::x509::X509 = builder.build();
-        let cert_pem = cert
-            .to_pem()
-            .chain_err(|| "failed to create pem from x509")?;
+        let cert_pem = cert.to_pem().context("failed to create pem from x509")?;
         let cert_digest = cert
             .digest(openssl::hash::MessageDigest::sha256())
-            .chain_err(|| "failed to create digest of x509 certificate")?
+            .context("failed to create digest of x509 certificate")?
             .as_ref()
             .to_owned();
 
@@ -489,6 +486,7 @@ mod server {
                 cause,
             }
         }
+
         fn into_data(self) -> String {
             serde_json::to_string(&self).expect("infallible serialization for ErrJson failed")
         }
@@ -499,6 +497,7 @@ mod server {
                 Ok(r) => r,
                 Err(err) => {
                     // TODO: would ideally just use error_chain
+                    #[allow(unused_imports)]
                     use std::error::Error;
                     let mut err_msg = err.to_string();
                     let mut maybe_cause = err.source();
@@ -509,7 +508,8 @@ mod server {
                     }
 
                     warn!("Res {} error: {}", $reqid, err_msg);
-                    let json = ErrJson::from_err(&err);
+                    let err: Box<dyn std::error::Error + 'static> = err.into();
+                    let json = ErrJson::from_err(&*err);
                     return rouille::Response::json(&json).with_status_code($code);
                 }
             }
@@ -557,7 +557,7 @@ mod server {
     where
         T: serde::Serialize,
     {
-        let data = bincode::serialize(content).chain_err(|| "Failed to serialize response body");
+        let data = bincode::serialize(content).context("Failed to serialize response body");
         let data = try_or_500_log!("bincode body serialization", data);
 
         rouille::Response {
@@ -585,13 +585,13 @@ mod server {
         ($request:ident, $job_authorizer:expr, $job_id:expr) => {{
             let verify_result = match bearer_http_auth($request) {
                 Some(token) => $job_authorizer.verify_token($job_id, token),
-                None => Err("no Authorization header".to_owned()),
+                None => Err(anyhow!("no Authorization header")),
             };
             match verify_result {
                 Ok(()) => (),
                 Err(err) => {
-                    let err = Error::from(err);
-                    let json = ErrJson::from_err(&err);
+                    let err: Box<dyn std::error::Error> = err.into();
+                    let json = ErrJson::from_err(&*err);
                     return make_401_with_body("invalid_jwt", ClientVisibleMsg(json.into_data()));
                 }
             }
@@ -607,22 +607,22 @@ mod server {
         }
     }
     impl dist::JobAuthorizer for JWTJobAuthorizer {
-        fn generate_token(&self, job_id: JobId) -> StdResult<String, String> {
+        fn generate_token(&self, job_id: JobId) -> Result<String> {
             let claims = JobJwt { job_id };
             jwt::encode(&JWT_HEADER, &claims, &self.server_key)
-                .map_err(|e| format!("Failed to create JWT for job: {}", e))
+                .map_err(|e| anyhow!("Failed to create JWT for job: {}", e))
         }
-        fn verify_token(&self, job_id: JobId, token: &str) -> StdResult<(), String> {
+        fn verify_token(&self, job_id: JobId, token: &str) -> Result<()> {
             let valid_claims = JobJwt { job_id };
             jwt::decode(&token, &self.server_key, &JWT_VALIDATION)
-                .map_err(|e| format!("JWT decode failed: {}", e))
+                .map_err(|e| anyhow!("JWT decode failed: {}", e))
                 .and_then(|res| {
                     fn identical_t<T>(_: &T, _: &T) {}
                     identical_t(&res.claims, &valid_claims);
                     if res.claims == valid_claims {
                         Ok(())
                     } else {
-                        Err("mismatched claims".to_owned())
+                        Err(anyhow!("mismatched claims"))
                     }
                 })
         }
@@ -739,7 +739,7 @@ mod server {
                 // Add all the certificates we know about
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
-                        .chain_err(|| "failed to interpret pem as certificate")?,
+                        .context("failed to interpret pem as certificate")?,
                 );
                 for (_, cert_pem) in certs.values() {
                     client_builder = client_builder.add_root_certificate(
@@ -749,7 +749,7 @@ mod server {
                 // Finish the clients
                 let new_client = client_builder
                     .build()
-                    .chain_err(|| "failed to create a HTTP client")?;
+                    .context("failed to create a HTTP client")?;
                 // Use the updated certificates
                 *client = new_client;
                 certs.insert(server_id, (cert_digest, cert_pem));
@@ -789,7 +789,7 @@ mod server {
                     (GET) (/api/v1/scheduler/server_certificate/{server_id: ServerId}) => {
                         let certs = server_certificates.lock().unwrap();
                         let (cert_digest, cert_pem) = try_or_500_log!(req_id, certs.get(&server_id)
-                            .ok_or_else(|| Error::from("server cert not available")));
+                            .context("server cert not available"));
                         let res = ServerCertificateHttpResponse {
                             cert_digest: cert_digest.clone(),
                             cert_pem: cert_pem.clone(),
@@ -836,7 +836,8 @@ mod server {
                 ))();
                 trace!("Res {}: {:?}", req_id, response);
                 response
-            }).map_err(|e| Error::with_boxed_chain(e, ErrorKind::Msg("Failed to start http server for sccache scheduler".to_owned())))?;
+            }).map_err(|e| anyhow!(format!("Failed to start http server for sccache scheduler: {}", e)))?;
+
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
@@ -862,7 +863,7 @@ mod server {
             let url = urls::server_assign_job(server_id, job_id);
             let req = self.client.lock().unwrap().post(url);
             bincode_req(req.bearer_auth(auth).bincode(&tc)?)
-                .chain_err(|| "POST to scheduler assign_job failed")
+                .context("POST to scheduler assign_job failed")
         }
     }
 
@@ -890,10 +891,10 @@ mod server {
         ) -> Result<Self> {
             let (cert_digest, cert_pem, privkey_pem) =
                 create_https_cert_and_privkey(public_addr)
-                    .chain_err(|| "failed to create HTTPS certificate for server")?;
+                    .context("failed to create HTTPS certificate for server")?;
             let mut jwt_key = vec![0; JWT_KEY_LENGTH];
-            let mut rng = rand::OsRng::new()
-                .chain_err(|| "Failed to initialise a random number generator")?;
+            let mut rng =
+                rand::OsRng::new().context("Failed to initialise a random number generator")?;
             rng.fill_bytes(&mut jwt_key);
             let server_nonce = ServerNonce::from_rng(&mut rng);
 
@@ -991,11 +992,11 @@ mod server {
 
                         let mut body = request.data().expect("body was already read in run_job");
                         let bincode_length = try_or_500_log!(req_id, body.read_u32::<BigEndian>()
-                            .chain_err(|| "failed to read run job input length")) as u64;
+                            .context("failed to read run job input length")) as u64;
 
                         let mut bincode_reader = body.take(bincode_length);
                         let runjob = try_or_500_log!(req_id, bincode::deserialize_from(&mut bincode_reader)
-                            .chain_err(|| "failed to deserialize run job request"));
+                            .context("failed to deserialize run job request"));
                         trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
                         let RunJobHttpRequest { command, outputs } = runjob;
                         let body = bincode_reader.into_inner();
@@ -1012,7 +1013,8 @@ mod server {
                 ))();
                 trace!("Res {}: {:?}", req_id, response);
                 response
-            }, cert_pem, privkey_pem).map_err(|e| Error::with_boxed_chain(e, ErrorKind::Msg("Failed to start http server for sccache server".to_owned())))?;
+            }, cert_pem, privkey_pem).map_err(|e| anyhow!(format!("Failed to start http server for sccache server: {}", e)))?;
+
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
             // error handling to be done.
@@ -1042,7 +1044,7 @@ mod server {
                     .bearer_auth(self.scheduler_auth.clone())
                     .bincode(&state)?,
             )
-            .chain_err(|| "POST to scheduler job_state failed")
+            .context("POST to scheduler job_state failed")
         }
     }
 }
@@ -1107,15 +1109,15 @@ mod client {
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 .build()
-                .chain_err(|| "failed to create a HTTP client")?;
+                .context("failed to create a HTTP client")?;
             let client_async = reqwest::r#async::ClientBuilder::new()
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 .build()
-                .chain_err(|| "failed to create an async HTTP client")?;
+                .context("failed to create an async HTTP client")?;
             let client_toolchains =
                 cache::ClientToolchains::new(cache_dir, cache_size, toolchain_configs)
-                    .chain_err(|| "failed to initialise client toolchains")?;
+                    .context("failed to initialise client toolchains")?;
             Ok(Self {
                 auth_token,
                 scheduler_url,
@@ -1140,11 +1142,11 @@ mod client {
             // Add all the certificates we know about
             client_builder = client_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)
-                    .chain_err(|| "failed to interpret pem as certificate")?,
+                    .context("failed to interpret pem as certificate")?,
             );
             client_async_builder = client_async_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)
-                    .chain_err(|| "failed to interpret pem as certificate")?,
+                    .context("failed to interpret pem as certificate")?,
             );
             for cert_pem in certs.values() {
                 client_builder = client_builder.add_root_certificate(
@@ -1159,11 +1161,11 @@ mod client {
             let new_client = client_builder
                 .timeout(timeout)
                 .build()
-                .chain_err(|| "failed to create a HTTP client")?;
+                .context("failed to create a HTTP client")?;
             let new_client_async = client_async_builder
                 .timeout(timeout)
                 .build()
-                .chain_err(|| "failed to create an async HTTP client")?;
+                .context("failed to create an async HTTP client")?;
             // Use the updated certificates
             *client = new_client;
             *client_async = new_client_async;
@@ -1204,9 +1206,7 @@ mod client {
                     let req = client_async.lock().unwrap().get(url);
                     Box::new(
                         bincode_req_fut(req)
-                            .map_err(|e| {
-                                e.chain_err(|| "GET to scheduler server_certificate failed")
-                            })
+                            .map_err(|e| e.context("GET to scheduler server_certificate failed"))
                             .and_then(move |res: ServerCertificateHttpResponse| {
                                 ftry!(Self::update_certs(
                                     &mut client.lock().unwrap(),
@@ -1243,7 +1243,7 @@ mod client {
                         bincode_req(req)
                     }))
                 }
-                Ok(None) => f_err("couldn't find toolchain locally"),
+                Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => f_err(e),
             }
         }
@@ -1259,7 +1259,7 @@ mod client {
 
             Box::new(self.pool.spawn_fn(move || {
                 let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
-                    .chain_err(|| "failed to serialize run job request")?;
+                    .context("failed to serialize run job request")?;
                 let bincode_length = bincode.len();
 
                 let mut body = vec![];
@@ -1272,18 +1272,14 @@ mod client {
                     let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
                     path_transformer = inputs_packager
                         .write_inputs(&mut compressor)
-                        .chain_err(|| "Could not write inputs for compilation")?;
-                    compressor
-                        .flush()
-                        .chain_err(|| "failed to flush compressor")?;
+                        .context("Could not write inputs for compilation")?;
+                    compressor.flush().context("failed to flush compressor")?;
                     trace!(
                         "Compressed inputs from {} -> {}",
                         compressor.total_in(),
                         compressor.total_out()
                     );
-                    compressor
-                        .finish()
-                        .chain_err(|| "failed to finish compressor")?;
+                    compressor.finish().context("failed to finish compressor")?;
                 }
 
                 req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);

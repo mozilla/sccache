@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use anyhow::{anyhow, bail, Context, Error, Result};
 use flate2::read::GzDecoder;
 use libmount::Overlay;
 use lru_disk_cache::Error as LruError;
@@ -29,8 +30,6 @@ use std::sync::Mutex;
 use std::time::Instant;
 use version_compare::Version;
 
-use crate::errors::*;
-
 trait CommandExt {
     fn check_stdout_trim(&mut self) -> Result<String>;
     fn check_piped(&mut self, pipe: &mut dyn FnMut(&mut ChildStdin) -> Result<()>) -> Result<()>;
@@ -39,10 +38,10 @@ trait CommandExt {
 
 impl CommandExt for Command {
     fn check_stdout_trim(&mut self) -> Result<String> {
-        let output = self.output().chain_err(|| "Failed to start command")?;
+        let output = self.output().context("Failed to start command")?;
         check_output(&output)?;
-        let stdout = String::from_utf8(output.stdout)
-            .chain_err(|| "Output from listing containers not UTF8")?;
+        let stdout =
+            String::from_utf8(output.stdout).context("Output from listing containers not UTF8")?;
         Ok(stdout.trim().to_owned())
     }
     // Should really take a FnOnce/FnBox
@@ -50,19 +49,19 @@ impl CommandExt for Command {
         let mut process = self
             .stdin(Stdio::piped())
             .spawn()
-            .chain_err(|| "Failed to start command")?;
+            .context("Failed to start command")?;
         let mut stdin = process
             .stdin
             .take()
             .expect("Requested piped stdin but not present");
-        pipe(&mut stdin).chain_err(|| "Failed to pipe input to process")?;
+        pipe(&mut stdin).context("Failed to pipe input to process")?;
         let output = process
             .wait_with_output()
-            .chain_err(|| "Failed to wait for process to return")?;
+            .context("Failed to wait for process to return")?;
         check_output(&output)
     }
     fn check_run(&mut self) -> Result<()> {
-        let output = self.output().chain_err(|| "Failed to start command")?;
+        let output = self.output().context("Failed to start command")?;
         check_output(&output)
     }
 }
@@ -119,7 +118,7 @@ impl OverlayBuilder {
         let out = Command::new(&bubblewrap)
             .arg("--version")
             .check_stdout_trim()
-            .chain_err(|| "Failed to execute bwrap for version check")?;
+            .context("Failed to execute bwrap for version check")?;
         if let Some(s) = out.split_whitespace().nth(1) {
             match (Version::from("0.3.0"), Version::from(s)) {
                 (Some(min), Some(seen)) => {
@@ -151,17 +150,17 @@ impl OverlayBuilder {
             toolchain_dir_map: Mutex::new(HashMap::new()),
         };
         ret.cleanup()?;
-        fs::create_dir(&ret.dir).chain_err(|| "Failed to create base directory for builder")?;
+        fs::create_dir(&ret.dir).context("Failed to create base directory for builder")?;
         fs::create_dir(ret.dir.join("builds"))
-            .chain_err(|| "Failed to create builder builds directory")?;
+            .context("Failed to create builder builds directory")?;
         fs::create_dir(ret.dir.join("toolchains"))
-            .chain_err(|| "Failed to create builder toolchains directory")?;
+            .context("Failed to create builder toolchains directory")?;
         Ok(ret)
     }
 
     fn cleanup(&self) -> Result<()> {
         if self.dir.exists() {
-            fs::remove_dir_all(&self.dir).chain_err(|| "Failed to clean up builder directory")?
+            fs::remove_dir_all(&self.dir).context("Failed to clean up builder directory")?
         }
         Ok(())
     }
@@ -197,9 +196,7 @@ impl OverlayBuilder {
                         bail!("expected toolchain {}, but not available", tc.archive_id)
                     }
                     Err(e) => {
-                        return Err(
-                            Error::from(e).chain_err(|| "failed to get toolchain from cache")
-                        )
+                        return Err(Error::from(e).context("failed to get toolchain from cache"))
                     }
                 };
 
@@ -208,10 +205,10 @@ impl OverlayBuilder {
                     .or_else(|e| {
                         warn!("Failed to unpack toolchain: {:?}", e);
                         fs::remove_dir_all(&toolchain_dir)
-                            .chain_err(|| "Failed to remove unpacked toolchain")?;
+                            .context("Failed to remove unpacked toolchain")?;
                         tccache
                             .remove(tc)
-                            .chain_err(|| "Failed to remove corrupt toolchain")?;
+                            .context("Failed to remove corrupt toolchain")?;
                         Err(Error::from(e))
                     })?;
 
@@ -235,7 +232,7 @@ impl OverlayBuilder {
                         warn!("Removing old un-compressed toolchain: {:?}", tc);
                         assert!(toolchain_dir_map.remove(tc).is_some());
                         fs::remove_dir_all(&self.dir.join("toolchains").join(&tc.archive_id))
-                            .chain_err(|| "Failed to remove old toolchain directory")?;
+                            .context("Failed to remove old toolchain directory")?;
                     }
                 }
                 entry
@@ -274,7 +271,7 @@ impl OverlayBuilder {
                     // Now mounted filesystems will be automatically unmounted when this thread dies
                     // (and tmpfs filesystems will be completely destroyed)
                     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
-                        .chain_err(|| "Failed to enter a new Linux namespace")?;
+                        .context("Failed to enter a new Linux namespace")?;
                     // Make sure that all future mount changes are private to this namespace
                     // TODO: shouldn't need to add these annotations
                     let source: Option<&str> = None;
@@ -288,35 +285,33 @@ impl OverlayBuilder {
                         nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_PRIVATE,
                         data,
                     )
-                    .chain_err(|| "Failed to turn / into a slave")?;
+                    .context("Failed to turn / into a slave")?;
 
                     let work_dir = overlay.build_dir.join("work");
                     let upper_dir = overlay.build_dir.join("upper");
                     let target_dir = overlay.build_dir.join("target");
-                    fs::create_dir(&work_dir)
-                        .chain_err(|| "Failed to create overlay work directory")?;
+                    fs::create_dir(&work_dir).context("Failed to create overlay work directory")?;
                     fs::create_dir(&upper_dir)
-                        .chain_err(|| "Failed to create overlay upper directory")?;
+                        .context("Failed to create overlay upper directory")?;
                     fs::create_dir(&target_dir)
-                        .chain_err(|| "Failed to create overlay target directory")?;
+                        .context("Failed to create overlay target directory")?;
 
                     let () = Overlay::writable(
                         iter::once(overlay.toolchain_dir.as_path()),
                         upper_dir,
                         work_dir,
                         &target_dir,
-                        // This error is unfortunately not Send
+                        // This error is unfortunately not Send+Sync
                     )
                     .mount()
-                    .map_err(|e| Error::from(e.to_string()))
-                    .chain_err(|| "Failed to mount overlay FS")?;
+                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
 
                     trace!("copying in inputs");
                     // Note that we don't unpack directly into the upperdir since there overlayfs has some
                     // special marker files that we don't want to create by accident (or malicious intent)
                     tar::Archive::new(inputs_rdr)
                         .unpack(&target_dir)
-                        .chain_err(|| "Failed to unpack inputs to overlay")?;
+                        .context("Failed to unpack inputs to overlay")?;
 
                     let CompileCommand {
                         executable,
@@ -328,7 +323,7 @@ impl OverlayBuilder {
 
                     trace!("creating output directories");
                     fs::create_dir_all(join_suffix(&target_dir, cwd))
-                        .chain_err(|| "Failed to create cwd")?;
+                        .context("Failed to create cwd")?;
                     for path in output_paths.iter() {
                         // If it doesn't have a parent, nothing needs creating
                         let output_parent = if let Some(p) = Path::new(path).parent() {
@@ -337,7 +332,7 @@ impl OverlayBuilder {
                             continue;
                         };
                         fs::create_dir_all(join_suffix(&target_dir, cwd.join(output_parent)))
-                            .chain_err(|| "Failed to create an output directory")?;
+                            .context("Failed to create an output directory")?;
                     }
 
                     trace!("performing compile");
@@ -385,7 +380,7 @@ impl OverlayBuilder {
                     cmd.args(arguments);
                     let compile_output = cmd
                         .output()
-                        .chain_err(|| "Failed to retrieve output from compile")?;
+                        .context("Failed to retrieve output from compile")?;
                     trace!("compile_output: {:?}", compile_output);
 
                     let mut outputs = vec![];
@@ -395,7 +390,7 @@ impl OverlayBuilder {
                         match fs::File::open(abspath) {
                             Ok(file) => {
                                 let output = OutputData::try_from_reader(file)
-                                    .chain_err(|| "Failed to read output file")?;
+                                    .context("Failed to read output file")?;
                                 outputs.push((path, output))
                             }
                             Err(e) => {
@@ -403,14 +398,14 @@ impl OverlayBuilder {
                                     debug!("Missing output path {:?}", path)
                                 } else {
                                     return Err(
-                                        Error::from(e).chain_err(|| "Failed to open output file")
+                                        Error::from(e).context("Failed to open output file")
                                     );
                                 }
                             }
                         }
                     }
                     let compile_output = ProcessOutput::try_from(compile_output)
-                        .chain_err(|| "Failed to convert compilation exit status")?;
+                        .context("Failed to convert compilation exit status")?;
                     Ok(BuildResult {
                         output: compile_output,
                         outputs,
@@ -419,7 +414,7 @@ impl OverlayBuilder {
                     // Bizarrely there's no way to actually get any information from a thread::Result::Err
                 })
                 .join()
-                .unwrap_or_else(|_e| Err(Error::from("Build thread exited unsuccessfully")))
+                .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
         })
     }
 
@@ -443,7 +438,6 @@ impl OverlayBuilder {
 }
 
 impl BuilderIncoming for OverlayBuilder {
-    type Error = Error;
     fn run_build(
         &self,
         tc: Toolchain,
@@ -455,13 +449,13 @@ impl BuilderIncoming for OverlayBuilder {
         debug!("Preparing overlay");
         let overlay = self
             .prepare_overlay_dirs(&tc, tccache)
-            .chain_err(|| "failed to prepare overlay dirs")?;
+            .context("failed to prepare overlay dirs")?;
         debug!("Performing build in {:?}", overlay);
         let res = Self::perform_build(&self.bubblewrap, command, inputs_rdr, outputs, &overlay);
         debug!("Finishing with overlay");
         self.finish_overlay(&tc, overlay);
         debug!("Returning result");
-        res.chain_err(|| "Compilation execution failed")
+        res.context("Compilation execution failed")
     }
 }
 
@@ -476,7 +470,7 @@ fn docker_diff(cid: &str) -> Result<String> {
     Command::new("docker")
         .args(&["diff", cid])
         .check_stdout_trim()
-        .chain_err(|| "Failed to Docker diff container")
+        .context("Failed to Docker diff container")
 }
 
 // Force remove the container
@@ -484,7 +478,7 @@ fn docker_rm(cid: &str) -> Result<()> {
     Command::new("docker")
         .args(&["rm", "-f", &cid])
         .check_run()
-        .chain_err(|| "Failed to force delete container")
+        .context("Failed to force delete container")
 }
 
 pub struct DockerBuilder {
@@ -515,17 +509,17 @@ impl DockerBuilder {
         let containers = Command::new("docker")
             .args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
             .check_stdout_trim()
-            .chain_err(|| "Unable to list all Docker containers")?;
+            .context("Unable to list all Docker containers")?;
         if containers != "" {
             let mut containers_to_rm = vec![];
             for line in containers.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
                 let container_id = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed container listing - no container ID"))?;
+                    .context("Malformed container listing - no container ID")?;
                 let image_name = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed container listing - no image name"))?;
+                    .context("Malformed container listing - no image name")?;
                 if iter.next() != None {
                     bail!("Malformed container listing - third field on row")
                 }
@@ -538,24 +532,24 @@ impl DockerBuilder {
                     .args(&["rm", "-f"])
                     .args(containers_to_rm)
                     .check_run()
-                    .chain_err(|| "Failed to start command to remove old containers")?;
+                    .context("Failed to start command to remove old containers")?;
             }
         }
 
         let images = Command::new("docker")
             .args(&["images", "--format", "{{.ID}} {{.Repository}}"])
             .check_stdout_trim()
-            .chain_err(|| "Failed to list all docker images")?;
+            .context("Failed to list all docker images")?;
         if images != "" {
             let mut images_to_rm = vec![];
             for line in images.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
                 let image_id = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed image listing - no image ID"))?;
+                    .context("Malformed image listing - no image ID")?;
                 let image_name = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed image listing - no image name"))?;
+                    .context("Malformed image listing - no image name")?;
                 if iter.next() != None {
                     bail!("Malformed image listing - third field on row")
                 }
@@ -568,7 +562,7 @@ impl DockerBuilder {
                     .args(&["rmi"])
                     .args(images_to_rm)
                     .check_run()
-                    .chain_err(|| "Failed to remove image")?
+                    .context("Failed to remove image")?
             }
         }
 
@@ -611,7 +605,7 @@ impl DockerBuilder {
         Command::new("docker")
             .args(&["exec", &cid, "/busybox", "kill", "-9", "-1"])
             .check_run()
-            .chain_err(|| "Failed to run kill on all processes in container")?;
+            .context("Failed to run kill on all processes in container")?;
 
         let diff = docker_diff(&cid)?;
         if diff != "" {
@@ -620,10 +614,10 @@ impl DockerBuilder {
                 let mut iter = line.splitn(2, ' ');
                 let changetype = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed container diff - no change type"))?;
+                    .context("Malformed container diff - no change type")?;
                 let changepath = iter
                     .next()
-                    .ok_or_else(|| Error::from("Malformed container diff - no change path"))?;
+                    .context("Malformed container diff - no change path")?;
                 if iter.next() != None {
                     bail!("Malformed container diff - third field on row")
                 }
@@ -704,7 +698,7 @@ impl DockerBuilder {
         let cid = Command::new("docker")
             .args(&["create", BASE_DOCKER_IMAGE, "/busybox", "true"])
             .check_stdout_trim()
-            .chain_err(|| "Failed to create docker container")?;
+            .context("Failed to create docker container")?;
 
         let mut tccache = tccache.lock().unwrap();
         let mut toolchain_rdr = match tccache.get(tc) {
@@ -714,8 +708,7 @@ impl DockerBuilder {
                 tc.archive_id
             ),
             Err(e) => {
-                return Err(Error::from(e)
-                    .chain_err(|| format!("Failed to use toolchain {}", tc.archive_id)))
+                return Err(e).with_context(|| format!("Failed to use toolchain {}", tc.archive_id))
             }
         };
 
@@ -726,19 +719,19 @@ impl DockerBuilder {
                 io::copy(&mut toolchain_rdr, stdin)?;
                 Ok(())
             })
-            .chain_err(|| "Failed to copy toolchain tar into container")?;
+            .context("Failed to copy toolchain tar into container")?;
         drop(toolchain_rdr);
 
         let imagename = format!("sccache-builder-{}", &tc.archive_id);
         Command::new("docker")
             .args(&["commit", &cid, &imagename])
             .check_run()
-            .chain_err(|| "Failed to commit container after build")?;
+            .context("Failed to commit container after build")?;
 
         Command::new("docker")
             .args(&["rm", "-f", &cid])
             .check_run()
-            .chain_err(|| "Failed to remove temporary build container")?;
+            .context("Failed to remove temporary build container")?;
 
         Ok(imagename)
     }
@@ -755,7 +748,7 @@ impl DockerBuilder {
                 DOCKER_SHELL_INIT,
             ])
             .check_stdout_trim()
-            .chain_err(|| "Failed to run container")
+            .context("Failed to run container")
     }
 
     fn perform_build(
@@ -778,7 +771,7 @@ impl DockerBuilder {
                 io::copy(&mut inputs_rdr, stdin)?;
                 Ok(())
             })
-            .chain_err(|| "Failed to copy inputs tar into container")?;
+            .context("Failed to copy inputs tar into container")?;
         drop(inputs_rdr);
 
         let CompileCommand {
@@ -803,7 +796,7 @@ impl DockerBuilder {
             cmd.arg(cwd.join(output_parent));
         }
         cmd.check_run()
-            .chain_err(|| "Failed to create directories required for compile in container")?;
+            .context("Failed to create directories required for compile in container")?;
 
         trace!("performing compile");
         // TODO: likely shouldn't perform the compile as root in the container
@@ -825,9 +818,7 @@ impl DockerBuilder {
         cmd.arg(cwd);
         cmd.arg(executable);
         cmd.args(arguments);
-        let compile_output = cmd
-            .output()
-            .chain_err(|| "Failed to start executing compile")?;
+        let compile_output = cmd.output().context("Failed to start executing compile")?;
         trace!("compile_output: {:?}", compile_output);
 
         let mut outputs = vec![];
@@ -839,7 +830,7 @@ impl DockerBuilder {
                 .args(&["exec", cid, "/busybox", "cat"])
                 .arg(abspath)
                 .output()
-                .chain_err(|| "Failed to start command to retrieve output file")?;
+                .context("Failed to start command to retrieve output file")?;
             if output.status.success() {
                 let output = OutputData::try_from_reader(&*output.stdout)
                     .expect("Failed to read compress output stdout");
@@ -850,7 +841,7 @@ impl DockerBuilder {
         }
 
         let compile_output = ProcessOutput::try_from(compile_output)
-            .chain_err(|| "Failed to convert compilation exit status")?;
+            .context("Failed to convert compilation exit status")?;
         Ok(BuildResult {
             output: compile_output,
             outputs,
@@ -859,7 +850,6 @@ impl DockerBuilder {
 }
 
 impl BuilderIncoming for DockerBuilder {
-    type Error = Error;
     // From Server
     fn run_build(
         &self,
@@ -872,10 +862,10 @@ impl BuilderIncoming for DockerBuilder {
         debug!("Finding container");
         let cid = self
             .get_container(&tc, tccache)
-            .chain_err(|| "Failed to get a container for build")?;
+            .context("Failed to get a container for build")?;
         debug!("Performing build with container {}", cid);
         let res = Self::perform_build(command, inputs_rdr, outputs, &cid)
-            .chain_err(|| "Failed to perform build")?;
+            .context("Failed to perform build")?;
         debug!("Finishing with container {}", cid);
         self.finish_container(&tc, cid);
         debug!("Returning result");

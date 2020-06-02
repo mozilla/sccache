@@ -50,7 +50,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
-use std::task::{Context, Waker};
+use std::task::Context as TaskContext;
+use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
@@ -259,7 +260,7 @@ impl DistClientContainer {
         let res = match state {
             DistClientState::Some(_, dc) => Ok(Some(dc.clone())),
             DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => Ok(None),
-            DistClientState::FailWithMessage(_, msg) => Err(Error::from(msg.clone())),
+            DistClientState::FailWithMessage(_, msg) => Err(anyhow!(msg.clone())),
         };
         if res.is_err() {
             let config = match mem::replace(state, DistClientState::Disabled) {
@@ -295,8 +296,8 @@ impl DistClientContainer {
                 match $v {
                     Ok(v) => v,
                     Err(e) => {
-                        use error_chain::ChainedError;
-                        error!("{}", e.display_chain());
+                        // `{:?}` prints the full cause chain and backtrace.
+                        error!("{:?}", e);
                         return DistClientState::RetryCreateAt(
                             Box::new(config),
                             Instant::now() + DIST_CLIENT_RECREATE_TIMEOUT,
@@ -311,8 +312,8 @@ impl DistClientContainer {
                 match $v {
                     Ok(v) => v,
                     Err(e) => {
-                        use error_chain::ChainedError;
-                        let errmsg = e.display_chain();
+                        // `{:?}` prints the full cause chain and backtrace.
+                        let errmsg = format!("{:?}", e);
                         error!("{}", errmsg);
                         return DistClientState::FailWithMessage(
                             Box::new(config),
@@ -333,9 +334,8 @@ impl DistClientContainer {
                         Self::get_cached_config_auth_token(auth_url)
                     }
                 };
-                let auth_token = try_or_fail_with_message!(auth_token.chain_err(|| {
-                    "could not load client auth token, run |sccache --dist-auth|"
-                }));
+                let auth_token = try_or_fail_with_message!(auth_token
+                    .context("could not load client auth token, run |sccache --dist-auth|"));
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,
@@ -345,9 +345,8 @@ impl DistClientContainer {
                     auth_token,
                     config.rewrite_includes_only,
                 );
-                let dist_client = try_or_retry_later!(
-                    dist_client.chain_err(|| "failure during dist client creation")
-                );
+                let dist_client =
+                    try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
                 match dist_client.do_get_status().wait() {
                     Ok(res) => {
@@ -377,12 +376,7 @@ impl DistClientContainer {
         let cached_config = config::CachedConfig::reload()?;
         cached_config
             .with(|c| c.dist.auth_tokens.get(auth_url).map(String::to_owned))
-            .ok_or_else(|| {
-                Error::from(format!(
-                    "token for url {} not present in cached config",
-                    auth_url
-                ))
-            })
+            .with_context(|| format!("token for url {} not present in cached config", auth_url))
     }
 }
 
@@ -1173,38 +1167,45 @@ where
                     res.stdout = stdout;
                     res.stderr = stderr;
                 }
-                Err(Error(ErrorKind::ProcessError(output), _)) => {
-                    debug!("Compilation failed: {:?}", output);
-                    stats.compile_fails += 1;
-                    match output.status.code() {
-                        Some(code) => res.retcode = Some(code),
-                        None => res.signal = Some(get_signal(output.status)),
-                    };
-                    res.stdout = output.stdout;
-                    res.stderr = output.stderr;
-                }
-                Err(Error(ErrorKind::HttpClientError(msg), _)) => {
-                    me.dist_client.reset_state();
-                    let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
-                    error!("{}", errmsg);
-                    res.retcode = Some(1);
-                    res.stderr = errmsg.as_bytes().to_vec();
-                }
                 Err(err) => {
-                    use std::fmt::Write;
+                    match err.downcast::<ProcessError>() {
+                        Ok(ProcessError(output)) => {
+                            debug!("Compilation failed: {:?}", output);
+                            stats.compile_fails += 1;
+                            match output.status.code() {
+                                Some(code) => res.retcode = Some(code),
+                                None => res.signal = Some(get_signal(output.status)),
+                            };
+                            res.stdout = output.stdout;
+                            res.stderr = output.stderr;
+                        }
+                        Err(err) => match err.downcast::<HttpClientError>() {
+                            Ok(HttpClientError(msg)) => {
+                                me.dist_client.reset_state();
+                                let errmsg =
+                                    format!("[{:?}] http error status: {}", out_pretty, msg);
+                                error!("{}", errmsg);
+                                res.retcode = Some(1);
+                                res.stderr = errmsg.as_bytes().to_vec();
+                            }
+                            Err(err) => {
+                                use std::fmt::Write;
 
-                    error!("[{:?}] fatal error: {}", out_pretty, err);
+                                error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                    let mut error = "sccache: encountered fatal error\n".to_string();
-                    let _ = writeln!(error, "sccache: error: {}", err);
-                    for e in err.iter() {
-                        error!("[{:?}] \t{}", out_pretty, e);
-                        let _ = writeln!(error, "sccache: caused by: {}", e);
+                                let mut error = "sccache: encountered fatal error\n".to_string();
+                                let _ = writeln!(error, "sccache: error: {}", err);
+                                for e in err.chain() {
+                                    error!("[{:?}] \t{}", out_pretty, e);
+                                    let _ = writeln!(error, "sccache: caused by: {}", e);
+                                }
+                                stats.cache_errors.increment(&kind);
+                                //TODO: figure out a better way to communicate this?
+                                res.retcode = Some(-2);
+                                res.stderr = error.into_bytes();
+                            }
+                        },
                     }
-                    stats.cache_errors.increment(&kind);
-                    //TODO: figure out a better way to communicate this?
-                    res.retcode = Some(-2);
-                    res.stderr = error.into_bytes();
                 }
             };
             let send = tx.send(Ok(Response::CompileFinished(res)));
@@ -1559,7 +1560,7 @@ impl<R> futures_03::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        _cx: &mut TaskContext<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match Pin::new(&mut self.receiver).poll().unwrap() {
             Async::Ready(item) => std::task::Poll::Ready(item),
@@ -1729,7 +1730,7 @@ impl Drop for ActiveInfo {
 impl std::future::Future for WaitUntilZero {
     type Output = io::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> std::task::Poll<Self::Output> {
         let mut info = self.info.borrow_mut();
         if info.active == 0 {
             std::task::Poll::Ready(Ok(()))

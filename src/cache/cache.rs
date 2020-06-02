@@ -101,7 +101,7 @@ impl CacheRead {
         R: ReadSeek + 'static,
     {
         let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
-            .chain_err(|| "Failed to parse cache entry")?;
+            .context("Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
 
@@ -114,7 +114,7 @@ impl CacheRead {
         let mut file = self
             .zip
             .by_name(name)
-            .chain_err(|| "Failed to read object from cache entry")?;
+            .context("Failed to read object from cache entry")?;
         io::copy(&mut file, to)?;
         Ok(file.unix_mode())
     }
@@ -185,7 +185,7 @@ impl CacheWrite {
                 let mode = get_file_mode(&f)?;
                 entry
                     .put_object(&key, &mut f, mode)
-                    .chain_err(|| format!("failed to put object `{:?}` in cache entry", path))?;
+                    .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
             }
             Ok(entry)
         }))
@@ -205,7 +205,7 @@ impl CacheWrite {
         };
         self.zip
             .start_file(name, opts)
-            .chain_err(|| "Failed to start cache entry object")?;
+            .context("Failed to start cache entry object")?;
         io::copy(from, &mut self.zip)?;
         Ok(())
     }
@@ -229,9 +229,7 @@ impl CacheWrite {
     /// Finish writing data to the cache entry writer, and return the data.
     pub fn finish(self) -> Result<Vec<u8>> {
         let CacheWrite { mut zip } = self;
-        let cur = zip
-            .finish()
-            .chain_err(|| "Failed to finish cache entry zip")?;
+        let cur = zip.finish().context("Failed to finish cache entry zip")?;
         Ok(cur.into_inner())
     }
 }

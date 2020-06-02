@@ -268,7 +268,7 @@ impl RunCommand for AsyncCommand {
         Box::new(self.jobserver.acquire().and_then(move |token| {
             let child = inner
                 .spawn_async()
-                .chain_err(|| format!("failed to spawn {:?}", inner))?;
+                .with_context(|| format!("failed to spawn {:?}", inner))?;
             Ok(Child {
                 inner: child,
                 token,
@@ -650,7 +650,7 @@ mod test {
     fn test_mock_spawn_error() {
         let client = Client::new_num(1);
         let mut creator = MockCommandCreator::new(&client);
-        creator.next_command_spawns(Err("error".into()));
+        creator.next_command_spawns(Err(anyhow!("error")));
         let e = spawn_command(&mut creator, "foo").err().unwrap();
         assert_eq!("error", e.to_string());
     }

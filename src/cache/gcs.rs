@@ -84,12 +84,12 @@ impl Bucket {
             }
             client
                 .execute(request)
-                .chain_err(move || format!("failed GET: {}", url))
+                .fwith_context(move || format!("failed GET: {}", url))
                 .and_then(|res| {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                        Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(|body| {
@@ -97,7 +97,7 @@ impl Bucket {
                         body.extend_from_slice(&chunk);
                         Ok::<_, reqwest::Error>(body)
                     })
-                    .chain_err(|| "failed to read HTTP body")
+                    .fcontext("failed to read HTTP body")
                 })
         }))
     }
@@ -141,7 +141,7 @@ impl Bucket {
                         Ok(())
                     } else {
                         trace!("PUT failed with HTTP status: {}", res.status());
-                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                        Err(BadHttpStatusError(res.status()).into())
                     }
                 }
                 Err(e) => {
@@ -299,13 +299,13 @@ fn sign_rsa(
     alg: &'static dyn signature::RsaEncoding,
 ) -> Result<String> {
     let key_pair = signature::RsaKeyPair::from_pkcs8(untrusted::Input::from(key))
-        .chain_err(|| "failed to deserialize rsa key")?;
+        .context("failed to deserialize rsa key")?;
 
     let mut signature = vec![0; key_pair.public_modulus_len()];
     let rng = ring::rand::SystemRandom::new();
     key_pair
         .sign(alg, &rng, signing_input.as_bytes(), &mut signature)
-        .chain_err(|| "failed to sign JWT claim")?;
+        .context("failed to sign JWT claim")?;
 
     Ok(base64::encode_config(&signature, base64::URL_SAFE_NO_PAD))
 }
@@ -388,7 +388,7 @@ impl GCSCredentialProvider {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                        Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
@@ -397,7 +397,7 @@ impl GCSCredentialProvider {
                         body.extend_from_slice(&chunk);
                         Ok::<_, reqwest::Error>(body)
                     })
-                    .chain_err(|| "failed to read HTTP body")
+                    .fcontext("failed to read HTTP body")
                 })
                 .and_then(move |body| {
                     // Convert body to string and parse the token out of the response
@@ -422,7 +422,7 @@ impl GCSCredentialProvider {
                     if res.status().is_success() {
                         Ok(res.into_body())
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                        Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
@@ -430,7 +430,7 @@ impl GCSCredentialProvider {
                         body.extend_from_slice(&chunk);
                         Ok::<_, reqwest::Error>(body)
                     })
-                    .chain_err(|| "failed to read HTTP body")
+                    .fcontext("failed to read HTTP body")
                 })
                 .and_then(move |body| {
                     let body_str = String::from_utf8(body)?;
@@ -468,7 +468,7 @@ impl GCSCredentialProvider {
                 .clone()
                 .then(|result| match result {
                     Ok(e) => Ok((*e).clone()),
-                    Err(e) => Err(e.to_string().into()),
+                    Err(e) => Err(anyhow!(e.to_string())),
                 }),
         )
     }
@@ -530,7 +530,7 @@ impl Storage for GCSCache {
         let bucket = self.bucket.clone();
         let response = bucket
             .put(&key, data, &self.credential_provider)
-            .chain_err(|| "failed to put cache entry in GCS");
+            .fcontext("failed to put cache entry in GCS");
 
         Box::new(response.map(move |_| start.elapsed()))
     }

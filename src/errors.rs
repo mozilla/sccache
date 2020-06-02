@@ -12,83 +12,91 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub use anyhow::{anyhow, bail, Context, Error};
 use futures::future;
 use futures::Future;
 use std::boxed::Box;
-use std::convert;
-use std::error;
-use std::io;
+use std::fmt::Display;
 use std::process;
 
-error_chain! {
-    foreign_links {
-        Hyper(hyper::Error) #[cfg(feature = "hyper")];
-        Io(io::Error);
-        Lru(lru_disk_cache::Error);
-        Json(serde_json::Error);
-        Openssl(openssl::error::ErrorStack) #[cfg(feature = "openssl")];
-        Bincode(bincode::Error);
-        Memcached(memcached::proto::Error) #[cfg(feature = "memcached")];
-        Redis(redis::RedisError) #[cfg(feature = "redis")];
-        Reqwest(reqwest::Error) #[cfg(feature = "reqwest")];
-        StrFromUtf8(::std::string::FromUtf8Error) #[cfg(feature = "gcs")];
-        TempfilePersist(tempfile::PersistError);
-        WalkDir(walkdir::Error);
-        Timer(tokio_timer::Error);
-    }
+// We use `anyhow` for error handling.
+// - Use `context()`/`with_context()` to annotate errors.
+// - Use `anyhow!` with a string to create a new `anyhow::Error`.
+// - The error types below (`BadHttpStatusError`, etc.) are internal ones that
+//   need to be checked at points other than the outermost error-checking
+//   layer.
+// - There are some combinators below for working with futures.
 
-    errors {
-        #[cfg(feature = "hyper")]
-        BadHTTPStatus(status: hyper::StatusCode) {
-            description("failed to get a successful HTTP status")
-            display("didn't get a successful HTTP status, got `{}`", status)
-        }
-        HttpClientError(msg: String) {
-            display("didn't get a successful HTTP status, got `{}`", msg)
-        }
-        ProcessError(output: process::Output) {
-            display("{}", String::from_utf8_lossy(&output.stderr))
-        }
-        Which(err: which::Error) {
-            display("{}", err)
-        }
+#[cfg(feature = "hyper")]
+#[derive(Debug)]
+pub struct BadHttpStatusError(pub hyper::StatusCode);
+
+#[derive(Debug)]
+pub struct HttpClientError(pub String);
+
+#[derive(Debug)]
+pub struct ProcessError(pub process::Output);
+
+#[cfg(feature = "hyper")]
+impl std::error::Error for BadHttpStatusError {}
+
+impl std::error::Error for HttpClientError {}
+
+impl std::error::Error for ProcessError {}
+
+#[cfg(feature = "hyper")]
+impl std::fmt::Display for BadHttpStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "didn't get a successful HTTP status, got `{}`", self.0)
     }
 }
 
-impl From<which::Error> for Error {
-    fn from(err: which::Error) -> Self {
-        Error::from(ErrorKind::Which(err))
+impl std::fmt::Display for HttpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "didn't get a successful HTTP status, got `{}`", self.0)
     }
 }
 
-#[cfg(feature = "gcs")]
-impl From<chrono::ParseError> for Error {
-    fn from(err: chrono::ParseError) -> Self {
-        Error::from(err.to_string())
+impl std::fmt::Display for ProcessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.0.stderr))
     }
 }
+
+pub type Result<T> = anyhow::Result<T>;
 
 pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error>>;
 pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
 
-pub trait FutureChainErr<T> {
-    fn chain_err<F, E>(self, callback: F) -> SFuture<T>
+pub trait FutureContext<T> {
+    fn fcontext<C>(self, context: C) -> SFuture<T>
     where
-        F: FnOnce() -> E + 'static,
-        E: Into<ErrorKind>;
+        C: Display + Send + Sync + 'static;
+
+    fn fwith_context<C, CB>(self, callback: CB) -> SFuture<T>
+    where
+        CB: FnOnce() -> C + 'static,
+        C: Display + Send + Sync + 'static;
 }
 
-impl<F> FutureChainErr<F::Item> for F
+impl<F> FutureContext<F::Item> for F
 where
     F: Future + 'static,
-    F::Error: error::Error + Send + 'static,
+    F::Error: Into<Error> + Send + Sync,
 {
-    fn chain_err<C, E>(self, callback: C) -> SFuture<F::Item>
+    fn fcontext<C>(self, context: C) -> SFuture<F::Item>
     where
-        C: FnOnce() -> E + 'static,
-        E: Into<ErrorKind>,
+        C: Display + Send + Sync + 'static,
     {
-        Box::new(self.then(|r| r.chain_err(callback)))
+        Box::new(self.then(|r| r.map_err(F::Error::into).context(context)))
+    }
+
+    fn fwith_context<C, CB>(self, callback: CB) -> SFuture<F::Item>
+    where
+        CB: FnOnce() -> C + 'static,
+        C: Display + Send + Sync + 'static,
+    {
+        Box::new(self.then(|r| r.map_err(F::Error::into).context(callback())))
     }
 }
 
@@ -107,16 +115,9 @@ macro_rules! ftry_send {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFutureSend<_>,
+            Err(e) => return Box::new($crate::futures::future::err(e)) as SFutureSend<_>,
         }
     };
-}
-
-pub fn f_res<T, E: convert::Into<Error>>(t: ::std::result::Result<T, E>) -> SFuture<T>
-where
-    T: 'static,
-{
-    Box::new(future::result(t.map_err(Into::into)))
 }
 
 pub fn f_ok<T>(t: T) -> SFuture<T>

@@ -1,12 +1,11 @@
 use crate::jwt;
+use anyhow::{bail, Context, Result};
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::RequestExt;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-use crate::errors::*;
 
 // https://auth0.com/docs/jwks
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,18 +30,18 @@ impl Jwk {
 
         // JWK is big-endian, openssl bignum from_slice is big-endian
         let n = base64::decode_config(&self.n, base64::URL_SAFE)
-            .chain_err(|| "Failed to base64 decode n")?;
+            .context("Failed to base64 decode n")?;
         let e = base64::decode_config(&self.e, base64::URL_SAFE)
-            .chain_err(|| "Failed to base64 decode e")?;
+            .context("Failed to base64 decode e")?;
         let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .chain_err(|| "Failed to create openssl bignum from n")?;
+            .context("Failed to create openssl bignum from n")?;
         let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .chain_err(|| "Failed to create openssl bignum from e")?;
+            .context("Failed to create openssl bignum from e")?;
         let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .chain_err(|| "Failed to create pubkey from n and e")?;
+            .context("Failed to create pubkey from n and e")?;
         let der: Vec<u8> = pubkey
             .public_key_to_der_pkcs1()
-            .chain_err(|| "Failed to convert public key to der pkcs1")?;
+            .context("Failed to convert public key to der pkcs1")?;
         Ok(der)
     }
 }
@@ -122,8 +121,8 @@ impl MozillaCheck {
             sub: String,
         }
         // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
-        let unsafe_token = jwt::dangerous_unsafe_decode::<MozillaToken>(token)
-            .chain_err(|| "Unable to decode jwt")?;
+        let unsafe_token =
+            jwt::dangerous_unsafe_decode::<MozillaToken>(token).context("Unable to decode jwt")?;
         let user = unsafe_token.claims.sub;
         trace!("Validating token for user {} with mozilla", user);
         if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
@@ -151,10 +150,10 @@ impl MozillaCheck {
             .get(url.clone())
             .set_header(header)
             .send()
-            .chain_err(|| "Failed to make request to mozilla userinfo")?;
+            .context("Failed to make request to mozilla userinfo")?;
         let res_text = res
             .text()
-            .chain_err(|| "Failed to interpret response from mozilla userinfo as string")?;
+            .context("Failed to interpret response from mozilla userinfo as string")?;
         if !res.status().is_success() {
             bail!(
                 "JWT forwarded to {} returned {}: {}",
@@ -166,7 +165,7 @@ impl MozillaCheck {
 
         // The API didn't return a HTTP error code, let's check the response
         let () = check_mozilla_profile(&user, &self.required_groups, &res_text)
-            .chain_err(|| format!("Validation of the user profile failed for {}", user))?;
+            .with_context(|| format!("Validation of the user profile failed for {}", user))?;
 
         // Validation success, cache the token
         debug!("Validation for user {} succeeded, caching", user);
@@ -183,7 +182,7 @@ fn check_mozilla_profile(user: &str, required_groups: &[String], profile: &str) 
         groups: Vec<String>,
     }
     let profile: UserInfo = serde_json::from_str(profile)
-        .chain_err(|| format!("Could not parse profile: {}", profile))?;
+        .with_context(|| format!("Could not parse profile: {}", profile))?;
     if user != profile.sub {
         bail!(
             "User {} retrieved in profile is different to desired user {}",
@@ -294,7 +293,7 @@ impl ProxyTokenCheck {
             .get(&self.url)
             .set_header(header)
             .send()
-            .chain_err(|| "Failed to make request to proxying url")?;
+            .context("Failed to make request to proxying url")?;
         if !res.status().is_success() {
             bail!("Token forwarded to {} returned {}", self.url, res.status());
         }
@@ -331,17 +330,17 @@ impl ClientAuthCheck for ValidJWTCheck {
 
 impl ValidJWTCheck {
     pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let mut res = reqwest::get(jwks_url).chain_err(|| "Failed to make request to JWKs url")?;
+        let mut res = reqwest::get(jwks_url).context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }
-        let jwks: Jwks = res.json().chain_err(|| "Failed to parse JWKs json")?;
+        let jwks: Jwks = res.json().context("Failed to parse JWKs json")?;
         let kid_to_pkcs1 = jwks
             .keys
             .into_iter()
             .map(|k| k.to_der_pkcs1().map(|pkcs1| (k.kid, pkcs1)))
             .collect::<Result<_>>()
-            .chain_err(|| "Failed to convert JWKs into pkcs1")?;
+            .context("Failed to convert JWKs into pkcs1")?;
         Ok(Self {
             audience,
             issuer,
@@ -350,14 +349,14 @@ impl ValidJWTCheck {
     }
 
     fn check_jwt_validity(&self, token: &str) -> Result<()> {
-        let header = jwt::decode_header(token).chain_err(|| "Could not decode jwt header")?;
+        let header = jwt::decode_header(token).context("Could not decode jwt header")?;
         trace!("Validating JWT in scheduler");
         // Prepare validation
-        let kid = header.kid.chain_err(|| "No kid found")?;
+        let kid = header.kid.context("No kid found")?;
         let pkcs1 = self
             .kid_to_pkcs1
             .get(&kid)
-            .chain_err(|| "kid not found in jwks")?;
+            .context("kid not found in jwks")?;
         let mut validation = jwt::Validation::new(header.alg);
         validation.set_audience(&self.audience);
         validation.iss = Some(self.issuer.clone());
@@ -365,7 +364,7 @@ impl ValidJWTCheck {
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
         let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
-            .chain_err(|| "Unable to validate and decode jwt")?;
+            .context("Unable to validate and decode jwt")?;
         Ok(())
     }
 }

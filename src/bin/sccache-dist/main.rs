@@ -3,8 +3,6 @@ extern crate base64;
 extern crate clap;
 extern crate crossbeam_utils;
 extern crate env_logger;
-#[macro_use]
-extern crate error_chain;
 extern crate flate2;
 extern crate hyperx;
 extern crate jsonwebtoken as jwt;
@@ -24,6 +22,7 @@ extern crate syslog;
 extern crate tar;
 extern crate void;
 
+use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::RngCore;
 use sccache::config::{
@@ -39,37 +38,13 @@ use sccache::dist::{
 use sccache::util::daemonize;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
-use std::io::{self, Write};
+use std::io;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use syslog::Facility;
-
-use crate::errors::*;
-
-mod errors {
-    #![allow(renamed_and_removed_lints)]
-    use std::boxed::Box;
-    use std::io;
-
-    use crate::jwt;
-
-    error_chain! {
-        foreign_links {
-            Base64(base64::DecodeError);
-            Io(io::Error);
-            Jwt(jwt::errors::Error);
-            Lru(lru_disk_cache::Error);
-            Openssl(openssl::error::ErrorStack);
-        }
-
-        links {
-            Sccache(sccache::errors::Error, sccache::errors::ErrorKind);
-        }
-    }
-}
 
 mod build;
 mod token_check;
@@ -100,18 +75,17 @@ fn main() {
         Ok(cmd) => match run(cmd) {
             Ok(s) => s,
             Err(e) => {
-                let stderr = &mut std::io::stderr();
-                writeln!(stderr, "sccache-dist: error: {}", e).unwrap();
+                eprintln!("sccache-dist: error: {}", e);
 
-                for e in e.iter().skip(1) {
-                    writeln!(stderr, "sccache-dist: caused by: {}", e).unwrap();
+                for e in e.chain().skip(1) {
+                    eprintln!("sccache-dist: caused by: {}", e);
                 }
                 2
             }
         },
         Err(e) => {
             println!("sccache-dist: {}", e);
-            for e in e.iter().skip(1) {
+            for e in e.chain().skip(1) {
                 println!("sccache-dist: caused by: {}", e);
             }
             get_app().print_help().unwrap();
@@ -309,8 +283,8 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng = rand::OsRng::new()
-                .chain_err(|| "Failed to initialise a random number generator")?;
+            let mut rng =
+                rand::OsRng::new().context("Failed to initialise a random number generator")?;
             rng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
@@ -323,7 +297,7 @@ fn run(command: Command) -> Result<i32> {
             let header = jwt::Header::new(jwt::Algorithm::HS256);
             let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)?;
             let token = create_jwt_server_token(server_id, &header, &secret_key)
-                .chain_err(|| "Failed to create server token")?;
+                .context("Failed to create server token")?;
             println!("{}", token);
             Ok(0)
         }
@@ -350,7 +324,7 @@ fn run(command: Command) -> Result<i32> {
                         issuer.to_owned(),
                         &jwks_url,
                     )
-                    .chain_err(|| "Failed to create a checker for valid JWTs")?,
+                    .context("Failed to create a checker for valid JWTs")?,
                 ),
                 scheduler_config::ClientAuth::Mozilla { required_groups } => {
                     Box::new(token_check::MozillaCheck::new(required_groups))
@@ -371,7 +345,7 @@ fn run(command: Command) -> Result<i32> {
                 }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
                     let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)
-                        .chain_err(|| "Secret key base64 invalid")?;
+                        .context("Secret key base64 invalid")?;
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
                     }
@@ -409,16 +383,16 @@ fn run(command: Command) -> Result<i32> {
             scheduler_auth,
             toolchain_cache_size,
         }) => {
-            let builder: Box<dyn dist::BuilderIncoming<Error = Error>> = match builder {
-                server_config::BuilderType::Docker => Box::new(
-                    build::DockerBuilder::new().chain_err(|| "Docker builder failed to start")?,
-                ),
+            let builder: Box<dyn dist::BuilderIncoming> = match builder {
+                server_config::BuilderType::Docker => {
+                    Box::new(build::DockerBuilder::new().context("Docker builder failed to start")?)
+                }
                 server_config::BuilderType::Overlay {
                     bwrap_path,
                     build_dir,
                 } => Box::new(
                     build::OverlayBuilder::new(bwrap_path, build_dir)
-                        .chain_err(|| "Overlay builder failed to start")?,
+                        .context("Overlay builder failed to start")?,
                 ),
             };
 
@@ -434,7 +408,7 @@ fn run(command: Command) -> Result<i32> {
                 server_config::SchedulerAuth::JwtToken { token } => {
                     let token_server_id: ServerId =
                         dangerous_unsafe_extract_jwt_server_token(&token)
-                            .chain_err(|| "Could not decode scheduler auth jwt")?;
+                            .context("Could not decode scheduler auth jwt")?;
                     if token_server_id != server_id {
                         bail!(
                             "JWT server id ({:?}) did not match configured server id ({:?})",
@@ -447,14 +421,14 @@ fn run(command: Command) -> Result<i32> {
             };
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
-                .chain_err(|| "Failed to create sccache server instance")?;
+                .context("Failed to create sccache server instance")?;
             let http_server = dist::http::Server::new(
                 public_addr,
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,
             )
-            .chain_err(|| "Failed to create sccache HTTP server instance")?;
+            .context("Failed to create sccache HTTP server instance")?;
             void::unreachable(http_server.start()?)
         }
     }
@@ -554,7 +528,6 @@ impl Scheduler {
 }
 
 impl SchedulerIncoming for Scheduler {
-    type Error = Error;
     fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
@@ -632,7 +605,7 @@ impl SchedulerIncoming for Scheduler {
                         .job_authorizer
                         .generate_token(job_id)
                         .map_err(Error::from)
-                        .chain_err(|| "Could not create an auth token for this job")?;
+                        .context("Could not create an auth token for this job")?;
                     Some((job_id, server_id, auth))
                 } else {
                     None
@@ -654,7 +627,7 @@ impl SchedulerIncoming for Scheduler {
             need_toolchain,
         } = requester
             .do_assign_job(server_id, job_id, tc, auth.clone())
-            .chain_err(|| {
+            .with_context(|| {
                 // LOCKS
                 let mut servers = self.servers.lock().unwrap();
                 if let Some(entry) = servers.get_mut(&server_id) {
@@ -870,19 +843,19 @@ impl SchedulerIncoming for Scheduler {
 }
 
 pub struct Server {
-    builder: Box<dyn BuilderIncoming<Error = Error>>,
+    builder: Box<dyn BuilderIncoming>,
     cache: Mutex<TcCache>,
     job_toolchains: Mutex<HashMap<JobId, Toolchain>>,
 }
 
 impl Server {
     pub fn new(
-        builder: Box<dyn BuilderIncoming<Error = Error>>,
+        builder: Box<dyn BuilderIncoming>,
         cache_dir: &Path,
         toolchain_cache_size: u64,
     ) -> Result<Server> {
         let cache = TcCache::new(&cache_dir.join("tc"), toolchain_cache_size)
-            .chain_err(|| "Failed to create toolchain cache")?;
+            .context("Failed to create toolchain cache")?;
         Ok(Server {
             builder,
             cache: Mutex::new(cache),
@@ -892,7 +865,6 @@ impl Server {
 }
 
 impl ServerIncoming for Server {
-    type Error = Error;
     fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = !self.cache.lock().unwrap().contains_toolchain(&tc);
         assert!(self
@@ -920,7 +892,7 @@ impl ServerIncoming for Server {
     ) -> Result<SubmitToolchainResult> {
         requester
             .do_update_job_state(job_id, JobState::Ready)
-            .chain_err(|| "Updating job state failed")?;
+            .context("Updating job state failed")?;
         // TODO: need to lock the toolchain until the container has started
         // TODO: can start prepping container
         let tc = match self.job_toolchains.lock().unwrap().get(&job_id).cloned() {
@@ -949,7 +921,7 @@ impl ServerIncoming for Server {
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
-            .chain_err(|| "Updating job state failed")?;
+            .context("Updating job state failed")?;
         let tc = self.job_toolchains.lock().unwrap().remove(&job_id);
         let res = match tc {
             None => Ok(RunJobResult::JobNotFound),
@@ -958,7 +930,7 @@ impl ServerIncoming for Server {
                     .builder
                     .run_build(tc, command, outputs, inputs_rdr, &self.cache)
                 {
-                    Err(e) => Err(e.chain_err(|| "run build failed")),
+                    Err(e) => Err(e.context("run build failed")),
                     Ok(res) => Ok(RunJobResult::Complete(JobComplete {
                         output: res.output,
                         outputs: res.outputs,
@@ -968,7 +940,7 @@ impl ServerIncoming for Server {
         };
         requester
             .do_update_job_state(job_id, JobState::Complete)
-            .chain_err(|| "Updating job state failed")?;
+            .context("Updating job state failed")?;
         return res;
     }
 }

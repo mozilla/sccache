@@ -119,7 +119,7 @@ where
             file.write_all(b"/* empty */\n")?;
             Ok((tempdir, input))
         })
-        .chain_err(|| "failed to write temporary file")
+        .fcontext("failed to write temporary file")
     });
     let output = write2.and_then(move |(tempdir, input)| {
         let mut cmd = creator.new_command_sync(&exe);
@@ -157,9 +157,8 @@ where
             stdout: stdout_bytes,
             ..
         } = output;
-        let stdout = from_local_codepage(&stdout_bytes).chain_err(|| {
-            "Failed to convert compiler stdout while detecting showIncludes prefix"
-        })?;
+        let stdout = from_local_codepage(&stdout_bytes)
+            .context("Failed to convert compiler stdout while detecting showIncludes prefix")?;
         for line in stdout.lines() {
             if !line.ends_with("test.h") {
                 continue;
@@ -692,10 +691,10 @@ where
             let mut f = BufWriter::new(f);
 
             encode_path(&mut f, &objfile)
-                .chain_err(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
+                .with_context(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
             write!(f, ": ")?;
             encode_path(&mut f, &parsed_args.input)
-                .chain_err(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
+                .with_context(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
             write!(f, " ")?;
             let process::Output {
                 status,
@@ -703,7 +702,7 @@ where
                 stderr: stderr_bytes,
             } = output;
             let stderr = from_local_codepage(&stderr_bytes)
-                .chain_err(|| "Failed to convert preprocessor stderr")?;
+                .context("Failed to convert preprocessor stderr")?;
             let mut deps = HashSet::new();
             let mut stderr_bytes = vec![];
             for line in stderr.lines() {
@@ -724,7 +723,7 @@ where
             // Write extra rules for each dependency to handle
             // removed files.
             encode_path(&mut f, &parsed_args.input)
-                .chain_err(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
+                .with_context(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
             writeln!(f, ":")?;
             let mut sorted = deps.into_iter().collect::<Vec<_>>();
             sorted.sort();
@@ -757,7 +756,7 @@ fn generate_compile_commands(
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
-        None => return Err("Missing object file output".into()),
+        None => bail!("Missing object file output"),
     };
 
     // See if this compilation will produce a PDB.

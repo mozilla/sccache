@@ -20,8 +20,6 @@ extern crate clap;
 #[macro_use]
 extern crate counted_array;
 #[macro_use]
-extern crate error_chain;
-#[macro_use]
 extern crate futures;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
@@ -62,7 +60,6 @@ mod simples3;
 pub mod util;
 
 use std::env;
-use std::io::Write;
 
 pub fn main() {
     init_logging();
@@ -70,18 +67,16 @@ pub fn main() {
         Ok(cmd) => match commands::run_command(cmd) {
             Ok(s) => s,
             Err(e) => {
-                let stderr = &mut std::io::stderr();
-                writeln!(stderr, "sccache: error: {}", e).unwrap();
-
-                for e in e.iter().skip(1) {
-                    writeln!(stderr, "sccache: caused by: {}", e).unwrap();
+                eprintln!("sccache: error: {}", e);
+                for e in e.chain().skip(1) {
+                    eprintln!("sccache: caused by: {}", e);
                 }
                 2
             }
         },
         Err(e) => {
             println!("sccache: {}", e);
-            for e in e.iter().skip(1) {
+            for e in e.chain().skip(1) {
                 println!("sccache: caused by: {}", e);
             }
             cmdline::get_app().print_help().unwrap();

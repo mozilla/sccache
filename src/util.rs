@@ -71,7 +71,7 @@ impl Digest {
     pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
             let reader = File::open(&path)
-                .chain_err(|| format!("Failed to open file for hashing: {:?}", path))?;
+                .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
             Digest::reader_sync(reader)
         }))
     }
@@ -148,19 +148,19 @@ where
     let stdin = input.and_then(|i| {
         child
             .take_stdin()
-            .map(|stdin| write_all(stdin, i).chain_err(|| "failed to write stdin"))
+            .map(|stdin| write_all(stdin, i).fcontext("failed to write stdin"))
     });
     let stdout = child
         .take_stdout()
-        .map(|io| read_to_end(io, Vec::new()).chain_err(|| "failed to read stdout"));
+        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stdout"));
     let stderr = child
         .take_stderr()
-        .map(|io| read_to_end(io, Vec::new()).chain_err(|| "failed to read stderr"));
+        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stderr"));
 
     // Finish writing stdin before waiting, because waiting drops stdin.
     let status = Future::and_then(stdin, |io| {
         drop(io);
-        child.wait().chain_err(|| "failed to wait for child")
+        child.wait().fcontext("failed to wait for child")
     });
 
     Box::new(status.join3(stdout, stderr).map(|(status, out, err)| {
@@ -176,7 +176,7 @@ where
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
 ///
-/// If the command returns a non-successful exit status, an error of `ErrorKind::ProcessError`
+/// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
 pub fn run_input_output<C>(
     mut command: C,
@@ -201,7 +201,7 @@ where
             if output.status.success() {
                 f_ok(output)
             } else {
-                f_err(ErrorKind::ProcessError(output))
+                f_err(ProcessError(output))
             }
         })
     })
@@ -450,9 +450,7 @@ pub fn daemonize() -> Result<()> {
     match env::var("SCCACHE_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
         _ => {
-            Daemonize::new()
-                .start()
-                .chain_err(|| "failed to daemonize")?;
+            Daemonize::new().start().context("failed to daemonize")?;
         }
     }
 

@@ -73,8 +73,8 @@ impl Client {
         helper.request_token();
         tx.unbounded_send(mytx).unwrap();
         Box::new(
-            myrx.chain_err(|| "jobserver helper panicked")
-                .and_then(|t| t.chain_err(|| "failed to acquire jobserver token"))
+            myrx.fcontext("jobserver helper panicked")
+                .and_then(|t| t.context("failed to acquire jobserver token"))
                 .map(|t| Acquired { _token: Some(t) }),
         )
     }

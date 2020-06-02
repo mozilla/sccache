@@ -311,21 +311,21 @@ where
                         warn!("Could not remove files after preprocessing failed!\n");
                     }
 
-                    match err {
-                        Error(ErrorKind::ProcessError(output), _) => {
+                    match err.downcast::<ProcessError>() {
+                        Ok(ProcessError(output)) => {
                             debug!(
                                 "[{}]: preprocessor returned error status {:?}",
                                 out_pretty,
                                 output.status.code()
                             );
-                            // Drop the stdout since it's the preprocessor output, just hand back stderr and
-                            // the exit status.
-                            bail!(ErrorKind::ProcessError(process::Output {
+                            // Drop the stdout since it's the preprocessor output,
+                            // just hand back stderr and the exit status.
+                            bail!(ProcessError(process::Output {
                                 stdout: vec!(),
                                 ..output
                             }))
                         }
-                        e => Err(e),
+                        Err(err) => Err(err),
                     }
                 })
                 .and_then(move |preprocessor_result| {
@@ -463,9 +463,9 @@ impl pkg::InputsPackager for CInputsPackager {
 
         {
             let input_path = pkg::simplify_path(&input_path)?;
-            let dist_input_path = path_transformer
-                .as_dist(&input_path)
-                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+            let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
+                format!("unable to transform input path {}", input_path.display())
+            })?;
 
             let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
             file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
@@ -487,9 +487,9 @@ impl pkg::InputsPackager for CInputsPackager {
                 )
             }
 
-            let dist_input_path = path_transformer
-                .as_dist(&input_path)
-                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+            let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
+                format!("unable to transform input path {}", input_path.display())
+            })?;
 
             let mut file = io::BufReader::new(fs::File::open(&input_path)?);
             let mut output = vec![];
