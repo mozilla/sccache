@@ -88,11 +88,13 @@ Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 RUSTC_WRAPPER=/path/to/sccache cargo build
 ```
 
-sccache supports gcc, clang, MSVC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
+sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
+
+If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
 sccache works using a client-server model, where the server runs locally on the same machine as the client. The client-server model allows the server to be more efficient by keeping some state in memory. The sccache command will spawn a server process if one is not already running, or you can run `sccache --start-server` to start the background server process without performing any compilation.
 
-You can run `sccache --stop-server` to terminate the server. By default it will terminate after 10 minutes of inactivity.
+You can run `sccache --stop-server` to terminate the server. It will also terminate after (by default) 10 minutes of inactivity.
 
 Running `sccache --show-stats` will print a summary of cache statistics.
 
@@ -103,9 +105,7 @@ Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](d
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.41.1**.
-
-We recommend you install Rust via [Rustup](https://rustup.rs/). The generated binaries can be built so that they are very [portable](#building-portable-binaries). By default `sccache` supports a local disk cache. To build `sccache` with support for `S3` and/or `Redis` cache backends, add `--features=all` or select a specific feature by passing `s3`, `gcs`, and/or `redis`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details.
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.41.1**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -113,8 +113,10 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--features=all|redis|s3|gcs|...]
+cargo build --release [--features=all|s3|redis|gcs|memcached|azure]
 ```
+
+By default, `sccache` supports a local disk cache and S3. Use the `--features` flag to build `sccache` with support for other storage options. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
 ### Building portable binaries
 
@@ -147,7 +149,7 @@ Build with `cargo` and use `otool -L` to check that the resulting binary does no
 
 #### Windows
 
-On Windows it is fairly straight forward to just ship the required `libcrypto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+On Windows it is fairly straightforward to just ship the required `libcrypto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
 It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
 
@@ -176,7 +178,9 @@ Storage Options
 ---------------
 
 ### Local
-sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS. To limit the cache size set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`. The default value is 10 Gigabytes.
+sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
+
+The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
 
 ### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
@@ -203,7 +207,7 @@ To use Azure Blob Storage, you'll need your Azure connection string and an _exis
 environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
 the container for you - you'll need to do that yourself.
 
-**Important:** The environment variables are only taken into account when the server starts, so only on the first run.
+**Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
 
 ---
 
