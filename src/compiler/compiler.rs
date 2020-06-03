@@ -251,10 +251,8 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        let mut stdout = Vec::new();
-                        let mut stderr = Vec::new();
-                        drop(entry.get_object("stdout", &mut stdout));
-                        drop(entry.get_object("stderr", &mut stderr));
+                        let stdout = entry.get_stdout();
+                        let stderr = entry.get_stderr();
                         let write = pool.spawn_fn(move || {
                             for (key, path) in &outputs {
                                 let dir = match path.parent() {

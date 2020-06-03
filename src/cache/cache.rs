@@ -90,6 +90,22 @@ impl CacheRead {
         io::copy(&mut file, to)?;
         Ok(file.unix_mode())
     }
+
+    /// Get the stdout from this cache entry, if it exists.
+    pub fn get_stdout(&mut self) -> Vec<u8> {
+        self.get_bytes("stdout")
+    }
+
+    /// Get the stderr from this cache entry, if it exists.
+    pub fn get_stderr(&mut self) -> Vec<u8> {
+        self.get_bytes("stderr")
+    }
+
+    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        drop(self.get_object(name, &mut bytes));
+        bytes
+    }
 }
 
 /// Data to be stored in the compiler cache.
