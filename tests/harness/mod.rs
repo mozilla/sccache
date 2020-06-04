@@ -14,7 +14,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use assert_cmd::prelude::*;
-use escargot::CargoBuild;
 #[cfg(feature = "dist-server")]
 use nix::{
     sys::{
@@ -110,65 +109,17 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
-// Alter an sccache command to override any environment variables that could adversely
-// affect test execution
-fn blankslate_sccache(mut cmd: Command) -> Command {
+// Override any environment variables that could adversely affect test execution.
+pub fn sccache_command() -> Command {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("sccache"));
     cmd.env("SCCACHE_CONF", "nonexistent_conf_path")
         .env("SCCACHE_CACHED_CONF", "nonexistent_cached_conf_path");
     cmd
 }
 
-#[cfg(not(feature = "dist-client"))]
-pub fn sccache_command() -> Command {
-    blankslate_sccache(
-        CargoBuild::new()
-            .bin("sccache")
-            .current_release()
-            .current_target()
-            .run()
-            .unwrap()
-            .command(),
-    )
-}
-
-#[cfg(feature = "dist-client")]
-pub fn sccache_command() -> Command {
-    // dist-server isn't available on all platforms, so only pass it here if we
-    // compiled with it.
-    let features = if cfg!(feature = "dist-server") {
-        "dist-client dist-server"
-    } else {
-        "dist-client"
-    };
-    blankslate_sccache(
-        CargoBuild::new()
-            .bin("sccache")
-            // This should just inherit from the feature list we're compiling with to avoid recompilation
-            // https://github.com/assert-rs/assert_cmd/issues/44#issuecomment-418485128
-            .arg("--features")
-            .arg(features)
-            .current_release()
-            .current_target()
-            .run()
-            .unwrap()
-            .command(),
-    )
-}
-
 #[cfg(feature = "dist-server")]
 pub fn sccache_dist_path() -> PathBuf {
-    CargoBuild::new()
-        .bin("sccache-dist")
-        // This should just inherit from the feature list we're compiling with to avoid recompilation
-        // https://github.com/assert-rs/assert_cmd/issues/44#issuecomment-418485128
-        .arg("--features")
-        .arg("dist-client dist-server")
-        .current_release()
-        .current_target()
-        .run()
-        .unwrap()
-        .path()
-        .to_owned()
+    assert_cmd::cargo::cargo_bin("sccache-dist")
 }
 
 pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
