@@ -22,7 +22,6 @@ fn test_rust_cargo() {
 fn test_rust_cargo_cmd(cmd: &str) {
     use assert_cmd::prelude::*;
     use chrono::Local;
-    use escargot::CargoBuild;
     use predicates::prelude::*;
     use std::env;
     use std::fs;
@@ -31,13 +30,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use std::process::{Command, Stdio};
 
     fn sccache_command() -> Command {
-        CargoBuild::new()
-            .bin("sccache")
-            .current_release()
-            .current_target()
-            .run()
-            .unwrap()
-            .command()
+        Command::new(assert_cmd::cargo::cargo_bin("sccache"))
     }
 
     fn stop() {
@@ -67,8 +60,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     );
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
-    #[allow(deprecated)]
-    let sccache = assert_cmd::cargo::main_binary_path().unwrap();
+    let sccache = assert_cmd::cargo::cargo_bin("sccache");
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.

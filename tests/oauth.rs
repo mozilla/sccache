@@ -1,7 +1,6 @@
 #![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
 
-use escargot::CargoBuild;
 use selenium_rs::webdriver::{Browser, Selector, WebDriver};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -64,17 +63,7 @@ fn config_with_dist_auth(
 }
 
 fn sccache_command() -> Command {
-    CargoBuild::new()
-        .bin("sccache")
-        // This should just inherit from the feature list we're compiling with to avoid recompilation
-        // https://github.com/assert-rs/assert_cmd/issues/44#issuecomment-418485128
-        .arg("--features")
-        .arg("dist-client dist-server")
-        .current_release()
-        .current_target()
-        .run()
-        .unwrap()
-        .command()
+    Command::new(assert_cmd::cargo::cargo_bin("sccache"))
 }
 
 fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f: F) -> Option<T> {
