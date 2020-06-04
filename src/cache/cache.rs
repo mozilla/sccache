@@ -26,15 +26,32 @@ use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 use futures_cpupool::CpuPool;
 use std::fmt;
+use std::fs;
 #[cfg(feature = "gcs")]
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::errors::*;
+
+#[cfg(unix)]
+fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+    let p = Permissions::from_mode(mode);
+    fs::set_permissions(path, p)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
 
 /// Result of a cache lookup.
 pub enum Cache {
@@ -105,6 +122,30 @@ impl CacheRead {
         let mut bytes = Vec::new();
         drop(self.get_object(name, &mut bytes));
         bytes
+    }
+
+    pub fn extract_objects<T>(mut self, objects: T, pool: &CpuPool) -> SFuture<()>
+    where
+        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+    {
+        Box::new(pool.spawn_fn(move || {
+            for (key, path) in objects {
+                let dir = match path.parent() {
+                    Some(d) => d,
+                    None => bail!("Output file without a parent directory!"),
+                };
+                // Write the cache entry to a tempfile and then atomically
+                // move it to its final location so that other rustc invocations
+                // happening in parallel don't see a partially-written file.
+                let mut tmp = NamedTempFile::new_in(dir)?;
+                let mode = self.get_object(&key, &mut tmp)?;
+                tmp.persist(&path)?;
+                if let Some(mode) = mode {
+                    set_file_mode(&path, mode)?;
+                }
+            }
+            Ok(())
+        }))
     }
 }
 

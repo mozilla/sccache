@@ -33,7 +33,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
-#[cfg(any(feature = "dist-client", unix))]
+#[cfg(feature = "dist-client")]
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -42,7 +42,7 @@ use std::process::{self, Stdio};
 use std::str;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 use tokio_timer::Timeout;
 
 use crate::errors::*;
@@ -253,24 +253,7 @@ where
                         );
                         let stdout = entry.get_stdout();
                         let stderr = entry.get_stderr();
-                        let write = pool.spawn_fn(move || {
-                            for (key, path) in &outputs {
-                                let dir = match path.parent() {
-                                    Some(d) => d,
-                                    None => bail!("Output file without a parent directory!"),
-                                };
-                                // Write the cache entry to a tempfile and then atomically
-                                // move it to its final location so that other rustc invocations
-                                // happening in parallel don't see a partially-written file.
-                                let mut tmp = NamedTempFile::new_in(dir)?;
-                                let mode = entry.get_object(&key, &mut tmp)?;
-                                tmp.persist(path)?;
-                                if let Some(mode) = mode {
-                                    set_file_mode(&path, mode)?;
-                                }
-                            }
-                            Ok(())
-                        });
+                        let write = entry.extract_objects(outputs, &pool);
                         let output = process::Output {
                             status: exit_status(0),
                             stdout,
@@ -816,20 +799,6 @@ fn get_file_mode(file: &File) -> Result<Option<u32>> {
 #[cfg(windows)]
 fn get_file_mode(_file: &File) -> Result<Option<u32>> {
     Ok(None)
-}
-
-#[cfg(unix)]
-fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
-    use std::fs::Permissions;
-    use std::os::unix::fs::PermissionsExt;
-    let p = Permissions::from_mode(mode);
-    fs::set_permissions(path, p)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
-    Ok(())
 }
 
 /// Can this result be stored in cache?
