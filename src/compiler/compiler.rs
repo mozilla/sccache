@@ -36,7 +36,7 @@ use std::fmt;
 #[cfg(any(feature = "dist-client", unix))]
 use std::fs;
 use std::fs::File;
-use std::io::{prelude::*, Cursor};
+use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
@@ -364,14 +364,8 @@ where
                         Box::new(
                             write
                                 .and_then(move |mut entry| {
-                                    if !compiler_result.stdout.is_empty() {
-                                        let mut cursor = Cursor::new(&compiler_result.stdout);
-                                        entry.put_object("stdout", &mut cursor, None)?;
-                                    }
-                                    if !compiler_result.stderr.is_empty() {
-                                        let mut cursor = Cursor::new(&compiler_result.stderr);
-                                        entry.put_object("stderr", &mut cursor, None)?;
-                                    }
+                                    entry.put_stdout(&compiler_result.stdout)?;
+                                    entry.put_stderr(&compiler_result.stderr)?;
 
                                     // Try to finish storing the newly-written cache
                                     // entry. We'll get the result back elsewhere.

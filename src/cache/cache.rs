@@ -28,7 +28,7 @@ use futures_cpupool::CpuPool;
 use std::fmt;
 #[cfg(feature = "gcs")]
 use std::fs::File;
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Cursor, Read, Seek, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use zip::write::FileOptions;
@@ -137,6 +137,22 @@ impl CacheWrite {
             .start_file(name, opts)
             .chain_err(|| "Failed to start cache entry object")?;
         io::copy(from, &mut self.zip)?;
+        Ok(())
+    }
+
+    pub fn put_stdout(&mut self, bytes: &[u8]) -> Result<()> {
+        self.put_bytes("stdout", bytes)
+    }
+
+    pub fn put_stderr(&mut self, bytes: &[u8]) -> Result<()> {
+        self.put_bytes("stderr", bytes)
+    }
+
+    fn put_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+        if !bytes.is_empty() {
+            let mut cursor = Cursor::new(bytes);
+            return self.put_object(name, &mut cursor, None);
+        }
         Ok(())
     }
 
