@@ -331,17 +331,7 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        let write = pool.spawn_fn(move || -> Result<_> {
-                            let mut entry = CacheWrite::new();
-                            for (key, path) in &outputs {
-                                let mut f = File::open(&path)?;
-                                let mode = get_file_mode(&f)?;
-                                entry.put_object(key, &mut f, mode).chain_err(|| {
-                                    format!("failed to put object `{:?}` in zip", path)
-                                })?;
-                            }
-                            Ok(entry)
-                        });
+                        let write = CacheWrite::from_objects(outputs, &pool);
                         let write = write.chain_err(|| "failed to zip up compiler outputs");
                         let o = out_pretty.clone();
                         Box::new(
@@ -788,17 +778,6 @@ impl PartialEq<CompileResult> for CompileResult {
             _ => false,
         }
     }
-}
-
-#[cfg(unix)]
-fn get_file_mode(file: &File) -> Result<Option<u32>> {
-    use std::os::unix::fs::MetadataExt;
-    Ok(Some(file.metadata()?.mode()))
-}
-
-#[cfg(windows)]
-fn get_file_mode(_file: &File) -> Result<Option<u32>> {
-    Ok(None)
 }
 
 /// Can this result be stored in cache?

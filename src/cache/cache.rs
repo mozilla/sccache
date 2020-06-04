@@ -40,6 +40,17 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use crate::errors::*;
 
 #[cfg(unix)]
+fn get_file_mode(file: &fs::File) -> Result<Option<u32>> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(Some(file.metadata()?.mode()))
+}
+
+#[cfg(windows)]
+fn get_file_mode(_file: &fs::File) -> Result<Option<u32>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
@@ -160,6 +171,24 @@ impl CacheWrite {
         CacheWrite {
             zip: ZipWriter::new(io::Cursor::new(vec![])),
         }
+    }
+
+    /// Create a new cache entry populated with the contents of `objects`.
+    pub fn from_objects<T>(objects: T, pool: &CpuPool) -> SFuture<CacheWrite>
+    where
+        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+    {
+        Box::new(pool.spawn_fn(move || -> Result<_> {
+            let mut entry = CacheWrite::new();
+            for (key, path) in objects {
+                let mut f = fs::File::open(&path)?;
+                let mode = get_file_mode(&f)?;
+                entry
+                    .put_object(&key, &mut f, mode)
+                    .chain_err(|| format!("failed to put object `{:?}` in cache entry", path))?;
+            }
+            Ok(entry)
+        }))
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
