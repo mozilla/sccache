@@ -22,7 +22,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
@@ -52,13 +51,12 @@ impl Digest {
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
-    pub fn reader_sync<R: Read>(reader: R) -> Result<String> {
+    pub fn reader_sync<R: Read>(mut reader: R) -> Result<String> {
         let mut m = Digest::new();
-        let mut reader = BufReader::new(reader);
+        // A buffer of 128KB should give us the best performance.
+        // See https://eklitzke.org/efficient-file-copying-on-linux.
+        let mut buffer = [0; 128 * 1024];
         loop {
-            // A buffer of 128KB should give us the best performance.
-            // See https://eklitzke.org/efficient-file-copying-on-linux.
-            let mut buffer = [0; 128 * 1024];
             let count = reader.read(&mut buffer[..])?;
             if count == 0 {
                 break;
