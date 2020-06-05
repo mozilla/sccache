@@ -576,7 +576,10 @@ pub fn get_token_oauth2_code_grant_pkce(
     );
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
-    println!("sccache: Please visit http://localhost:{} in your browser", port);
+    println!(
+        "sccache: Please visit http://localhost:{} in your browser",
+        port
+    );
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (code_tx, code_rx) = mpsc::sync_channel(1);
     let state = code_grant_pkce::State {
@@ -614,7 +617,10 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
-    println!("sccache: Please visit http://localhost:{} in your browser", port);
+    println!(
+        "sccache: Please visit http://localhost:{} in your browser",
+        port
+    );
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (token_tx, token_rx) = mpsc::sync_channel(1);
     let state = implicit::State {
