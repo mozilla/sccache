@@ -36,6 +36,7 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zstd;
 
 use crate::errors::*;
 
@@ -111,12 +112,16 @@ impl CacheRead {
     where
         T: Write,
     {
-        let mut file = self
+        let file = self
             .zip
             .by_name(name)
             .context("Failed to read object from cache entry")?;
-        io::copy(&mut file, to)?;
-        Ok(file.unix_mode())
+        if file.compression() != CompressionMethod::Stored {
+            bail!("Cache entry is not stored as a zstd blob");
+        }
+        let mode = file.unix_mode();
+        zstd::stream::copy_decode(file, to)?;
+        Ok(mode)
     }
 
     /// Get the stdout from this cache entry, if it exists.
@@ -197,7 +202,9 @@ impl CacheWrite {
     where
         T: Read,
     {
-        let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        // We're going to declare the compression method as "stored",
+        // but we're actually going to store zstd-compressed blobs.
+        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
         let opts = if let Some(mode) = mode {
             opts.unix_permissions(mode)
         } else {
@@ -206,7 +213,7 @@ impl CacheWrite {
         self.zip
             .start_file(name, opts)
             .context("Failed to start cache entry object")?;
-        io::copy(from, &mut self.zip)?;
+        zstd::stream::copy_encode(from, &mut self.zip, 3)?;
         Ok(())
     }
 

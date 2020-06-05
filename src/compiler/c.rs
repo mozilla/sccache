@@ -621,7 +621,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION: &[u8] = b"8";
+pub const CACHE_VERSION: &[u8] = b"9";
 
 lazy_static! {
     /// Environment variables that are factored into the cache key.
