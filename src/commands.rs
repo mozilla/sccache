@@ -425,10 +425,10 @@ fn handle_compile_finished(
         trace!("compiler exited with status {}", ret);
         Ok(ret)
     } else if let Some(signal) = response.signal {
-        println!("Compiler killed by signal {}", signal);
+        println!("sccache: Compiler killed by signal {}", signal);
         Ok(-2)
     } else {
-        println!("Missing compiler exit status!");
+        println!("sccache: Missing compiler exit status!");
         Ok(-3)
     }
 }
@@ -466,7 +466,7 @@ where
                 Ok(_) => bail!("unexpected response from server"),
                 Err(Error(ErrorKind::Io(ref e), _)) if e.kind() == io::ErrorKind::UnexpectedEof => {
                     eprintln!(
-                        "warning: sccache server looks like it shut down \
+                        "sccache: warning: The server looks like it shut down \
                          unexpectedly, compiling locally instead"
                     );
                 }
@@ -499,7 +499,7 @@ where
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
-            println!("Compile terminated by signal {}", sig);
+            println!("sccache: Compile terminated by signal {}", sig);
         }
         // Arbitrary.
         2
@@ -560,12 +560,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::StartServer => {
             trace!("Command::StartServer");
-            println!("Starting sccache server...");
+            println!("sccache: Starting the server...");
             let startup = run_server_process().chain_err(|| "failed to start server process")?;
             match startup {
                 ServerStartup::Ok { port } => {
                     if port != DEFAULT_PORT {
-                        println!("Listening on port {}", port);
+                        println!("sccache: Listening on port {}", port);
                     }
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
