@@ -112,12 +112,11 @@ pub struct RustHasher {
 }
 
 /// a lookup proxy for determining the actual compiler used per file or directory
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct RustupProxy {
     proxy_executable: PathBuf,
     filetime: FileTime,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
@@ -495,8 +494,6 @@ where
     }
 }
 
-
-
 impl<T> CompilerProxy<T> for RustupProxy
 where
     T: CommandCreatorSync,
@@ -505,42 +502,52 @@ where
         &self,
         mut creator: T,
         cwd: PathBuf,
-        env: &[(OsString,OsString)],
+        env: &[(OsString, OsString)],
     ) -> SFuture<(PathBuf, FileTime)> {
-
         let proxy_executable = self.proxy_executable.clone();
 
         let mut child = creator.new_command_sync(&proxy_executable);
-        child.current_dir(&cwd)
+        child
+            .current_dir(&cwd)
             .env_clear()
             .envs(ref_env(&env))
             .args(&["which", "rustc"]);
 
-        let lookup =
-            run_input_output(child, None)
-                .map_err(|e| { format!("Failed to execute rustup which rustc: {}", e).into() })
-                .and_then(move |output| {
-                    String::from_utf8(output.stdout.clone())
-                        .map_err(|e| { format!("Failed to parse output of rustup which rustc: {}", e).into() })
-                        .and_then(|stdout| {
-                            let proxied_compiler = PathBuf::from(stdout.trim());
-                            trace!("proxy: rustup which rustc produced: {:?}", &proxied_compiler);
-                            let res = fs::metadata(proxied_compiler.as_path())
-                            .map_err(|e| { format!("Failed to obtain metadata of the resolved, true rustc: {}", e).into() })
+        let lookup = run_input_output(child, None)
+            .map_err(|e| format!("Failed to execute rustup which rustc: {}", e).into())
+            .and_then(move |output| {
+                String::from_utf8(output.stdout.clone())
+                    .map_err(|e| {
+                        format!("Failed to parse output of rustup which rustc: {}", e).into()
+                    })
+                    .and_then(|stdout| {
+                        let proxied_compiler = PathBuf::from(stdout.trim());
+                        trace!(
+                            "proxy: rustup which rustc produced: {:?}",
+                            &proxied_compiler
+                        );
+                        let res = fs::metadata(proxied_compiler.as_path())
+                            .map_err(|e| {
+                                format!(
+                                    "Failed to obtain metadata of the resolved, true rustc: {}",
+                                    e
+                                )
+                                .into()
+                            })
                             .and_then(|attr| {
                                 if attr.is_file() {
                                     Ok(FileTime::from_last_modification_time(&attr))
                                 } else {
-                                    Err("proxy: rustup resolved compiler is not of type file".into())
+                                    Err("proxy: rustup resolved compiler is not of type file"
+                                        .into())
                                 }
                             })
-                            .map(|filetime| {(proxied_compiler, filetime)});
-                            res
-                        })
-                });
+                            .map(|filetime| (proxied_compiler, filetime));
+                        res
+                    })
+            });
 
         Box::new(lookup)
-
     }
 
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>> {
@@ -548,14 +555,13 @@ where
     }
 }
 
-impl RustupProxy
-{
-    pub fn new<P>(proxy_executable : P) -> Result<Self>
+impl RustupProxy {
+    pub fn new<P>(proxy_executable: P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
         let filetime = fs::metadata(proxy_executable.as_ref())
-            .map(|attr| { FileTime::from_last_modification_time(&attr) })?;
+            .map(|attr| FileTime::from_last_modification_time(&attr))?;
         let proxy_executable = proxy_executable.as_ref().to_owned();
         Ok(Self {
             proxy_executable,
@@ -564,15 +570,14 @@ impl RustupProxy
     }
 
     pub fn find_proxy_executable<T>(
-        compiler_executable : &Path,
-        proxy_name : &str,
+        compiler_executable: &Path,
+        proxy_name: &str,
         mut creator: T,
-        env: &[(OsString,OsString)],
+        env: &[(OsString, OsString)],
     ) -> SFuture<Result<Option<Self>>>
     where
         T: CommandCreatorSync,
     {
-
         let compiler_executable1 = compiler_executable.to_owned();
         let compiler_executable2 = compiler_executable.to_owned();
         let proxy_name1 = proxy_name.to_owned();
@@ -584,7 +589,7 @@ impl RustupProxy
         enum ProxyPath {
             Candidate(PathBuf),
             ToBeDiscovered,
-            None
+            None,
         }
 
         // verification if rustc is a proxy or not
@@ -666,39 +671,37 @@ impl RustupProxy
                 f_ok(state)
             });
 
-
-        let f = find_candidate
-            .and_then(move |state| {
-                match state {
-                    Err(e) => f_ok(Err(e)),
-                    Ok(ProxyPath::ToBeDiscovered) => f_ok(Err("Failed to discover a rustup executable, but rustc behaves like a proxy".into())),
-                    Ok(ProxyPath::None) => f_ok(Ok(None)),
-                    Ok(ProxyPath::Candidate(proxy_executable)) => {
-                        // verify the candidate is a rustup
-                        let mut child = creator.new_command_sync(proxy_executable.to_owned());
-                        child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
-                        let rustup_candidate_check =
-                        run_input_output(child, None)
-                            .map(move |output| {
-                                String::from_utf8(output.stdout.clone())
-                                .map_err(|_e| { "Response of `rustup --version` is not valid UTF-8".into() })
-                                .and_then(|stdout| {
-                                        if stdout.trim().starts_with("rustup ") {
-                                            trace!("PROXY rustup --version produced: {}", &stdout);
-                                            Self::new(&proxy_executable).map(|proxy| Some(proxy))
-                                        } else {
-                                            Err("Unexpected output or `rustup --version`".into())
-                                        }
-                                })
-                        });
-                        Box::new(rustup_candidate_check)
-                    }
+        let f = find_candidate.and_then(move |state| {
+            match state {
+                Err(e) => f_ok(Err(e)),
+                Ok(ProxyPath::ToBeDiscovered) => f_ok(Err(
+                    "Failed to discover a rustup executable, but rustc behaves like a proxy".into(),
+                )),
+                Ok(ProxyPath::None) => f_ok(Ok(None)),
+                Ok(ProxyPath::Candidate(proxy_executable)) => {
+                    // verify the candidate is a rustup
+                    let mut child = creator.new_command_sync(proxy_executable.to_owned());
+                    child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
+                    let rustup_candidate_check = run_input_output(child, None).map(move |output| {
+                        String::from_utf8(output.stdout.clone())
+                            .map_err(|_e| {
+                                "Response of `rustup --version` is not valid UTF-8".into()
+                            })
+                            .and_then(|stdout| {
+                                if stdout.trim().starts_with("rustup ") {
+                                    trace!("PROXY rustup --version produced: {}", &stdout);
+                                    Self::new(&proxy_executable).map(|proxy| Some(proxy))
+                                } else {
+                                    Err("Unexpected output or `rustup --version`".into())
+                                }
+                            })
+                    });
+                    Box::new(rustup_candidate_check)
                 }
-
-            });
+            }
+        });
 
         Box::new(f)
-
     }
 }
 

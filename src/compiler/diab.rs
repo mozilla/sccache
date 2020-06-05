@@ -191,13 +191,12 @@ where
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
 
-            Some(DepArgument(_))
-            | Some(DepArgumentFlag)
-            | Some(DepArgumentPath(_)) => {}
+            Some(DepArgument(_)) | Some(DepArgumentFlag) | Some(DepArgumentPath(_)) => {}
 
             Some(DoCompilation) => {
                 compilation = true;
-                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+                compilation_flag =
+                    OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(PreprocessorArgument(_))
@@ -216,11 +215,12 @@ where
         }
         let args = match arg.get_data() {
             Some(PassThrough(_)) => &mut common_args,
-            Some(DepArgument(_))
-            | Some(DepArgumentFlag)
-            | Some(DepArgumentPath(_)) => &mut dependency_args,
-            Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(DepArgument(_)) | Some(DepArgumentFlag) | Some(DepArgumentPath(_)) => {
+                &mut dependency_args
+            }
+            Some(PreprocessorArgument(_)) | Some(PreprocessorArgumentPath(_)) => {
+                &mut preprocessor_args
+            }
             Some(DoCompilation) | Some(Output(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
             None => match arg {

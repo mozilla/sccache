@@ -428,7 +428,7 @@ mod server {
         }
     }
     impl std::error::Error for RouilleBincodeError {
-        fn source(&self) -> Option<&(dyn std::error::Error +'static)>{
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
             match *self {
                 RouilleBincodeError::ParseError(ref e) => Some(e),
                 _ => None,
@@ -440,7 +440,9 @@ mod server {
             &self,
             fmt: &mut std::fmt::Formatter<'_>,
         ) -> std::result::Result<(), std::fmt::Error> {
-            write!(fmt, "{}",
+            write!(
+                fmt,
+                "{}",
                 match *self {
                     RouilleBincodeError::BodyAlreadyExtracted => {
                         "the body of the request was already extracted"
@@ -480,7 +482,7 @@ mod server {
     }
 
     impl ErrJson {
-        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson{
+        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson {
             let cause = err.source().map(ErrJson::from_err).map(Box::new);
             ErrJson {
                 description: err.to_string(),

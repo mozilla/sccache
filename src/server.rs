@@ -594,23 +594,27 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     }
 }
 
-
-type CompilerMap<C> =
-    HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
-
+type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
 
 /// entry of the compiler cache
-struct CompilerCacheEntry<C : CommandCreatorSync> {
+struct CompilerCacheEntry<C: CommandCreatorSync> {
     /// compiler argument trait obj
-    pub compiler : Box<dyn Compiler<C>>,
+    pub compiler: Box<dyn Compiler<C>>,
     /// modification time of the compilers executable file
-    pub mtime : FileTime,
+    pub mtime: FileTime,
     /// distributed compilation extra info
-    pub dist_info : Option<(PathBuf, FileTime)>,
+    pub dist_info: Option<(PathBuf, FileTime)>,
 }
 
-impl<C> CompilerCacheEntry<C> where C: CommandCreatorSync {
-    fn new(compiler : Box<dyn Compiler<C>>, mtime : FileTime, dist_info : Option<(PathBuf, FileTime)>) -> Self {
+impl<C> CompilerCacheEntry<C>
+where
+    C: CommandCreatorSync,
+{
+    fn new(
+        compiler: Box<dyn Compiler<C>>,
+        mtime: FileTime,
+        dist_info: Option<(PathBuf, FileTime)>,
+    ) -> Self {
         Self {
             compiler,
             mtime,
@@ -638,13 +642,7 @@ struct SccacheService<C: CommandCreatorSync> {
     /// (usually file or current working directory)
     /// the associated `FileTime` is the modification time of
     /// the compiler proxy, in order to track updates of the proxy itself
-    compiler_proxies: Rc<
-        RefCell<
-            HashMap<
-                PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)
-            >
-        >
-    >,
+    compiler_proxies: Rc<RefCell<HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>>>,
 
     /// Thread pool to execute work in
     pool: CpuPool,
@@ -853,8 +851,6 @@ where
         )
     }
 
-
-
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
     fn compiler_info(
@@ -872,7 +868,10 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
-        let env = env.into_iter().cloned().collect::<Vec<(OsString,OsString)>>();
+        let env = env
+            .into_iter()
+            .cloned()
+            .collect::<Vec<(OsString, OsString)>>();
 
         let resolve_w_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
@@ -883,68 +882,68 @@ where
                     cwd.clone(),
                     env.as_slice(),
                 );
-                Box::new(fut.then(|res : Result<_>| { Ok(res.ok()) }))
+                Box::new(fut.then(|res: Result<_>| Ok(res.ok())))
             } else {
                 f_ok(None)
             }
         };
 
         // use the supplied compiler path as fallback, lookup its modification time too
-        let w_fallback = resolve_w_proxy
-            .then(move |res: Result<Option<(PathBuf, FileTime)>>| {
-                let opt = match res {
-                    Ok(Some(x)) => Some(x), // TODO resolve the path right away
-                    _ => {
-                        // fallback to using the path directly
-                        metadata(&path2)
+        let w_fallback = resolve_w_proxy.then(move |res: Result<Option<(PathBuf, FileTime)>>| {
+            let opt = match res {
+                Ok(Some(x)) => Some(x), // TODO resolve the path right away
+                _ => {
+                    // fallback to using the path directly
+                    metadata(&path2)
                         .map(|attr| FileTime::from_last_modification_time(&attr))
                         .ok()
-                        .map(move |filetime| {
-                            (path2.clone(),filetime)
-                        })
-                    }
-                };
-                f_ok(opt)
-            });
+                        .map(move |filetime| (path2.clone(), filetime))
+                }
+            };
+            f_ok(opt)
+        });
 
-        let lookup_compiler =
-            w_fallback.and_then(move |opt : Option<(PathBuf, FileTime)>| {
-                let (resolved_compiler_path, mtime)
-                    = opt.expect("Must contain sane data, otherwise mtime is not avail");
+        let lookup_compiler = w_fallback.and_then(move |opt: Option<(PathBuf, FileTime)>| {
+            let (resolved_compiler_path, mtime) =
+                opt.expect("Must contain sane data, otherwise mtime is not avail");
 
-
-                let dist_info = match me1.dist_client.get_client() {
-                    Ok(Some(ref client)) => {
-                        if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
-                            match metadata(&archive)
-                                .map(|attr| FileTime::from_last_modification_time(&attr))
-                            {
-                                Ok(mtime) => Some((archive, mtime)),
-                                _ => None,
-                            }
-                        } else {
-                            None
+            let dist_info = match me1.dist_client.get_client() {
+                Ok(Some(ref client)) => {
+                    if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
+                        match metadata(&archive)
+                            .map(|attr| FileTime::from_last_modification_time(&attr))
+                        {
+                            Ok(mtime) => Some((archive, mtime)),
+                            _ => None,
                         }
+                    } else {
+                        None
                     }
-                    _ => None,
-                };
+                }
+                _ => None,
+            };
 
-                let opt = match me1.compilers.borrow().get(&resolved_compiler_path) {
-                    // It's a hit only if the mtime and dist archive data matches.
-                    Some(&Some(ref entry)) => {
-                        if entry.mtime == mtime && entry.dist_info == dist_info {
-                            Some(entry.compiler.clone())
-                        } else {
-                            None
-                        }
+            let opt = match me1.compilers.borrow().get(&resolved_compiler_path) {
+                // It's a hit only if the mtime and dist archive data matches.
+                Some(&Some(ref entry)) => {
+                    if entry.mtime == mtime && entry.dist_info == dist_info {
+                        Some(entry.compiler.clone())
+                    } else {
+                        None
                     }
-                    _ => None,
-                };
-                f_ok((resolved_compiler_path, mtime, opt, dist_info))
-            });
+                }
+                _ => None,
+            };
+            f_ok((resolved_compiler_path, mtime, opt, dist_info))
+        });
 
-        let obtain =
-            lookup_compiler.and_then(move |(resolved_compiler_path, mtime, opt, dist_info) : (PathBuf, FileTime, Option<Box<dyn Compiler<C>>>, Option<(PathBuf,FileTime)> )| {
+        let obtain = lookup_compiler.and_then(
+            move |(resolved_compiler_path, mtime, opt, dist_info): (
+                PathBuf,
+                FileTime,
+                Option<Box<dyn Compiler<C>>>,
+                Option<(PathBuf, FileTime)>,
+            )| {
                 match opt {
                     Some(info) => {
                         trace!("compiler_info cache hit");
@@ -967,43 +966,59 @@ where
                             dist_info.clone().map(|(p, _)| p),
                         );
 
-                        Box::new(
-                        x.then(move |info: Result<(Box<dyn Compiler<C>>,Option<Box<dyn CompilerProxy<C>>>)>| {
-                            match info {
-                                Ok((ref c, ref proxy)) => {
-                                    // register the proxy for this compiler, so it will be used directly from now on
-                                    // and the true/resolved compiler will create table hits in the hash map
-                                    // based on the resolved path
-                                    if let Some(proxy) = proxy {
-                                        trace!("Inserting new path proxy {:?} @ {:?} -> {:?}", &path, &cwd, resolved_compiler_path);
-                                        let proxy : Box<dyn CompilerProxy<C>> =  proxy.box_clone();
-                                        me.compiler_proxies.borrow_mut().insert(path, (proxy, mtime.clone()));
-                                    }
-                                    // TODO add some safety checks in case a proxy exists, that the initial `path` is not
-                                    // TODO the same as the resolved compiler binary
+                        Box::new(x.then(
+                            move |info: Result<(
+                                Box<dyn Compiler<C>>,
+                                Option<Box<dyn CompilerProxy<C>>>,
+                            )>| {
+                                match info {
+                                    Ok((ref c, ref proxy)) => {
+                                        // register the proxy for this compiler, so it will be used directly from now on
+                                        // and the true/resolved compiler will create table hits in the hash map
+                                        // based on the resolved path
+                                        if let Some(proxy) = proxy {
+                                            trace!(
+                                                "Inserting new path proxy {:?} @ {:?} -> {:?}",
+                                                &path,
+                                                &cwd,
+                                                resolved_compiler_path
+                                            );
+                                            let proxy: Box<dyn CompilerProxy<C>> =
+                                                proxy.box_clone();
+                                            me.compiler_proxies
+                                                .borrow_mut()
+                                                .insert(path, (proxy, mtime.clone()));
+                                        }
+                                        // TODO add some safety checks in case a proxy exists, that the initial `path` is not
+                                        // TODO the same as the resolved compiler binary
 
-                                    // cache
-                                    let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
-                                    trace!("Inserting POSSIBLY PROXIED cache map info for {:?}", &resolved_compiler_path);
-                                    me.compilers.borrow_mut().insert(resolved_compiler_path, Some(map_info));
-                                },
-                                Err(_) => {
-                                    trace!("Inserting PLAIN cache map info for {:?}", &path);
-                                    me.compilers.borrow_mut().insert(path, None);
+                                        // cache
+                                        let map_info =
+                                            CompilerCacheEntry::new(c.clone(), mtime, dist_info);
+                                        trace!(
+                                            "Inserting POSSIBLY PROXIED cache map info for {:?}",
+                                            &resolved_compiler_path
+                                        );
+                                        me.compilers
+                                            .borrow_mut()
+                                            .insert(resolved_compiler_path, Some(map_info));
+                                    }
+                                    Err(_) => {
+                                        trace!("Inserting PLAIN cache map info for {:?}", &path);
+                                        me.compilers.borrow_mut().insert(path, None);
+                                    }
                                 }
-                            }
-                            // drop the proxy information, response is compiler only
-                            let r : Result<Box<dyn Compiler<C>>> = info.map(|info| info.0);
-                            f_ok(r)
-                        }))
+                                // drop the proxy information, response is compiler only
+                                let r: Result<Box<dyn Compiler<C>>> = info.map(|info| info.0);
+                                f_ok(r)
+                            },
+                        ))
                     }
                 }
-
-            });
-
+            },
+        );
 
         return Box::new(obtain);
-
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.
@@ -1542,7 +1557,10 @@ impl<R> Body<R> {
 
 impl<R> futures_03::Stream for Body<R> {
     type Item = Result<R>;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         match Pin::new(&mut self.receiver).poll().unwrap() {
             Async::Ready(item) => std::task::Poll::Ready(item),
             Async::NotReady => std::task::Poll::Pending,

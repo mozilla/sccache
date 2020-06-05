@@ -264,7 +264,8 @@ where
             Some(SplitDwarf) => split_dwarf = true,
             Some(DoCompilation) => {
                 compilation = true;
-                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+                compilation_flag =
+                    OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
             Some(ProfileGenerate) => profile_generate = true,
             Some(TestCoverage) => outputs_gcno = true,
@@ -333,8 +334,7 @@ where
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
-            Some(DepArgumentPath(_))
-            | Some(NeedDepTarget) => &mut dependency_args,
+            Some(DepArgumentPath(_)) | Some(NeedDepTarget) => &mut dependency_args,
             Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
             | Some(DepTarget(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
@@ -390,9 +390,9 @@ where
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
-            Some(DepTarget(_))
-            | Some(DepArgumentPath(_))
-            | Some(NeedDepTarget) => &mut dependency_args,
+            Some(DepTarget(_)) | Some(DepArgumentPath(_)) | Some(NeedDepTarget) => {
+                &mut dependency_args
+            }
         };
 
         // Normalize attributes such as "-I foo", "-D FOO=bar", as
@@ -967,7 +967,18 @@ mod test {
 
     #[test]
     fn test_parse_arguments_preprocessor_args() {
-        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MQ", "abc", "-nostdinc"];
+        let args = stringvec![
+            "-c",
+            "foo.c",
+            "-fabc",
+            "-MF",
+            "file",
+            "-o",
+            "foo.o",
+            "-MQ",
+            "abc",
+            "-nostdinc"
+        ];
         let ParsedArguments {
             input,
             language,
@@ -1120,10 +1131,7 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
-        assert_eq!(
-            ovec!["-MF", "file", "-MD", "-MT", "foo.o"],
-            dependency_args
-        );
+        assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], dependency_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
