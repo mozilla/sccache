@@ -451,13 +451,14 @@ pub fn parse_arguments(
     for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(PassThrough) | Some(PassThroughWithPath(_)) |  Some(PassThroughWithSuffix(_)) => {}
+            Some(PassThrough) | Some(PassThroughWithPath(_)) | Some(PassThroughWithSuffix(_)) => {}
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(DoCompilation) => {
                 compilation = true;
-                compilation_flag = OsString::from(arg.flag_str().expect("Compilation flag expected"));
+                compilation_flag =
+                    OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
             Some(ShowIncludes) => show_includes = true,
             Some(Output(out)) => {
@@ -539,9 +540,9 @@ pub fn parse_arguments(
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
-            Some(DepArgumentPath(_))
-            | Some(DepTarget(_))
-            | Some(NeedDepTarget) => &mut dependency_args,
+            Some(DepArgumentPath(_)) | Some(DepTarget(_)) | Some(NeedDepTarget) => {
+                &mut dependency_args
+            }
         };
         // Normalize attributes such as "-I foo", "-D FOO=bar", as
         // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
@@ -776,9 +777,11 @@ fn generate_compile_commands(
     let mut fo = OsString::from("-Fo");
     fo.push(&out_file);
 
-    let mut arguments: Vec<OsString> = vec![ parsed_args.compilation_flag.clone(),
-                                             parsed_args.input.clone().into(),
-                                             fo];
+    let mut arguments: Vec<OsString> = vec![
+        parsed_args.compilation_flag.clone(),
+        parsed_args.input.clone().into(),
+        fo,
+    ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 

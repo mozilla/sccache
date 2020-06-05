@@ -78,8 +78,7 @@ impl CCompilerImpl for NVCC {
             if parsed_args.compilation_flag == "-dc" {
                 command.arg("-rdc=true");
             }
-            command.arg("-x").arg(language)
-                   .arg(&parsed_args.input);
+            command.arg("-x").arg(language).arg(&parsed_args.input);
 
             return command;
         };
@@ -99,10 +98,11 @@ impl CCompilerImpl for NVCC {
                     transformed_deps.push(item.clone());
                 }
             }
-            dep_cmd.args(&transformed_deps)
-                   .env_clear()
-                   .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-                   .current_dir(cwd);
+            dep_cmd
+                .args(&transformed_deps)
+                .env_clear()
+                .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+                .current_dir(cwd);
 
             if log_enabled!(Trace) {
                 trace!("dep-gen command: {:?}", dep_cmd);
@@ -116,10 +116,10 @@ impl CCompilerImpl for NVCC {
         //NVCC only supports `-E` when it comes after preprocessor
         //and common flags.
         cmd.arg("-E")
-           .arg("-Xcompiler=-P")
-           .env_clear()
-           .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-           .current_dir(cwd);
+            .arg("-Xcompiler=-P")
+            .env_clear()
+            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+            .current_dir(cwd);
         if log_enabled!(Trace) {
             trace!("preprocess: {:?}", cmd);
         }
@@ -129,9 +129,9 @@ impl CCompilerImpl for NVCC {
         if parsed_args.dependency_args.len() > 0 {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
-            return Box::new( first.join(second).map(|(f, s)| s));
+            return Box::new(first.join(second).map(|(f, s)| s));
         } else {
-            return Box::new(run_input_output(cmd, None))
+            return Box::new(run_input_output(cmd, None));
         }
     }
 
@@ -144,7 +144,6 @@ impl CCompilerImpl for NVCC {
         env_vars: &[(OsString, OsString)],
         rewrite_includes_only: bool,
     ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
-
         gcc::generate_compile_commands(
             path_transformer,
             executable,
@@ -245,7 +244,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_simple_c_as_cu() {
-        let a = parses!("-x","cu", "-c", "foo.c", "-o", "foo.o");
+        let a = parses!("-x", "cu", "-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
@@ -255,7 +254,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_dc_compile_flag() {
-        let a = parses!("-x","cu", "-dc", "foo.c", "-o", "foo.o");
+        let a = parses!("-x", "cu", "-dc", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-dc"), a.compilation_flag.to_str());
@@ -266,15 +265,29 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let a = parses!("-c", "foo.cpp", "-fabc",
-                        "-I", "include-file", "-o", "foo.o",
-                        "--include-path", "include-file",
-                        "-isystem=/system/include/file");
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-fabc",
+            "-I",
+            "include-file",
+            "-o",
+            "foo.o",
+            "--include-path",
+            "include-file",
+            "-isystem=/system/include/file"
+        );
         assert_eq!(Some("foo.cpp"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         assert_eq!(
-            ovec!["-Iinclude-file", "--include-path", "include-file", "-isystem", "/system/include/file"],
+            ovec![
+                "-Iinclude-file",
+                "--include-path",
+                "include-file",
+                "-isystem",
+                "/system/include/file"
+            ],
             a.preprocessor_args
         );
         assert!(a.dependency_args.is_empty());
@@ -283,8 +296,10 @@ mod test {
 
     #[test]
     fn test_parse_md_mt_flags_cu() {
-        let a = parses!("-x", "cu", "-c", "foo.c", "-fabc",
-                           "-MD", "-MT", "foo.o", "-MF", "foo.o.d", "-o", "foo.o");
+        let a = parses!(
+            "-x", "cu", "-c", "foo.c", "-fabc", "-MD", "-MT", "foo.o", "-MF", "foo.o.d", "-o",
+            "foo.o"
+        );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-c"), a.compilation_flag.to_str());
@@ -298,8 +313,15 @@ mod test {
 
     #[test]
     fn test_parse_generate_code_flags() {
-        let a = parses!("-x","cu", "--generate-code=arch=compute_61,code=sm_61",
-                        "-c", "foo.c", "-o", "foo.o");
+        let a = parses!(
+            "-x",
+            "cu",
+            "--generate-code=arch=compute_61,code=sm_61",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
+        );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
@@ -312,38 +334,62 @@ mod test {
 
     #[test]
     fn test_parse_pass_to_host_flags() {
-        let a = parses!("-x=cu",
-                        "--generate-code=arch=compute_60,code=[sm_60,sm_61]",
-                        "-Xnvlink=--suppress-stack-size-warning",
-                        "-Xcompiler", "-fPIC,-fno-common",
-                        "-Xcompiler=-fvisibility=hidden",
-                        "-Xcompiler=-Wall,-Wno-unknown-pragmas,-Wno-unused-local-typedefs",
-                        "-Xcudafe", "--display_error_number",
-                        "-c", "foo.c", "-o", "foo.o");
+        let a = parses!(
+            "-x=cu",
+            "--generate-code=arch=compute_60,code=[sm_60,sm_61]",
+            "-Xnvlink=--suppress-stack-size-warning",
+            "-Xcompiler",
+            "-fPIC,-fno-common",
+            "-Xcompiler=-fvisibility=hidden",
+            "-Xcompiler=-Wall,-Wno-unknown-pragmas,-Wno-unused-local-typedefs",
+            "-Xcudafe",
+            "--display_error_number",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
+        );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         assert_eq!(
-            ovec!["-Xcompiler", "-fPIC,-fno-common", "-Xcompiler", "-fvisibility=hidden",
-                  "-Xcompiler", "-Wall,-Wno-unknown-pragmas,-Wno-unused-local-typedefs"],
+            ovec![
+                "-Xcompiler",
+                "-fPIC,-fno-common",
+                "-Xcompiler",
+                "-fvisibility=hidden",
+                "-Xcompiler",
+                "-Wall,-Wno-unknown-pragmas,-Wno-unused-local-typedefs"
+            ],
             a.preprocessor_args
         );
         assert_eq!(
-            ovec!["--generate-code", "arch=compute_60,code=[sm_60,sm_61]",
-                  "-Xnvlink", "--suppress-stack-size-warning", "-Xcudafe",
-                  "--display_error_number"],
+            ovec![
+                "--generate-code",
+                "arch=compute_60,code=[sm_60,sm_61]",
+                "-Xnvlink",
+                "--suppress-stack-size-warning",
+                "-Xcudafe",
+                "--display_error_number"
+            ],
             a.common_args
         );
     }
 
     #[test]
     fn test_parse_no_capturing_of_xcompiler() {
-        let a = parses!("-x=cu",
-                        "-forward-unknown-to-host-compiler",
-                        "--expt-relaxed-constexpr",
-                        "-Xcompiler", "-pthread",
-                        "-std=c++14",
-                        "-c", "foo.c", "-o", "foo.o");
+        let a = parses!(
+            "-x=cu",
+            "-forward-unknown-to-host-compiler",
+            "--expt-relaxed-constexpr",
+            "-Xcompiler",
+            "-pthread",
+            "-std=c++14",
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o"
+        );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
@@ -361,20 +407,26 @@ mod test {
     fn test_parse_dlink_is_not_compilation() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(stringvec!["-forward-unknown-to-host-compiler", "--generate-code=arch=compute_50,code=[compute_50,sm_50,sm_52]",
-                                        "-dlink", "main.cu.o", "-o", "device_link.o"])
+            parse_arguments_(stringvec![
+                "-forward-unknown-to-host-compiler",
+                "--generate-code=arch=compute_50,code=[compute_50,sm_50,sm_52]",
+                "-dlink",
+                "main.cu.o",
+                "-o",
+                "device_link.o"
+            ])
         );
     }
     #[test]
     fn test_parse_cant_cache_flags() {
         assert_eq!(
             CompilerArguments::CannotCache("-E", None),
-            parse_arguments_(stringvec!["-x","cu", "-c", "foo.c", "-o", "foo.o", "-E"])
+            parse_arguments_(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
         );
 
         assert_eq!(
             CompilerArguments::CannotCache("-M", None),
-            parse_arguments_(stringvec!["-x","cu", "-c", "foo.c", "-o", "foo.o", "-M"])
+            parse_arguments_(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
         );
     }
 }

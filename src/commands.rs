@@ -150,8 +150,8 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use std::time::Duration;
-    use tokio_reactor::Handle;
     use tokio_named_pipes::NamedPipe;
+    use tokio_reactor::Handle;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
     use winapi::um::handleapi::CloseHandle;
@@ -166,7 +166,11 @@ fn run_server_process() -> Result<ServerStartup> {
     let mut runtime = Runtime::new()?;
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
     let server = runtime.block_on(future::lazy(|| {
-        NamedPipe::new(&pipe_name, #[allow(deprecated)] &Handle::current())
+        NamedPipe::new(
+            &pipe_name,
+            #[allow(deprecated)]
+            &Handle::current(),
+        )
     }))?;
 
     // Connect a client to our server, and we'll wait below if it's still in
@@ -663,7 +667,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
-            let compiler = compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
+            let compiler =
+                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
             let packager = compiler.map(|c| c.0.get_toolchain_packager());
             let res = packager.and_then(|p| p.write_pkg(out_file));
             runtime.block_on(res)?
