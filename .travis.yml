@@ -5,6 +5,8 @@ matrix:
     # OS compat
     - os: linux
     - os: osx
+    - os: osx
+      rust: 1.43.1
 
     # rustc version compat
     - rust: 1.41.1 # oldest supported version, keep in sync with README.md
