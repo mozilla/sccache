@@ -51,7 +51,7 @@ fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> imp
         Box::new(serve(req).or_else(move |e| {
             let body = e.display_chain().to_string();
             eprintln!(
-                "Error during a request to {} on the client auth web server\n{}",
+                "sccache: Error during a request to {} on the client auth web server\n{}",
                 uri, body
             );
             let len = body.len();
@@ -308,7 +308,7 @@ mod code_grant_pkce {
                 MIN_TOKEN_VALIDITY_WARNING
             );
             eprintln!(
-                "Token retrieved expires in under {}",
+                "sccache: Token retrieved expires in under {}",
                 MIN_TOKEN_VALIDITY_WARNING
             );
         }
@@ -444,7 +444,7 @@ mod implicit {
                         MIN_TOKEN_VALIDITY_WARNING
                     );
                     eprintln!(
-                        "Token retrieved expires in under {}",
+                        "sccache: Token retrieved expires in under {}",
                         MIN_TOKEN_VALIDITY_WARNING
                     );
                 }
@@ -576,7 +576,7 @@ pub fn get_token_oauth2_code_grant_pkce(
     );
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
-    println!("Please visit http://localhost:{} in your browser", port);
+    println!("sccache: Please visit http://localhost:{} in your browser", port);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (code_tx, code_rx) = mpsc::sync_channel(1);
     let state = code_grant_pkce::State {
@@ -614,7 +614,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);
-    println!("Please visit http://localhost:{} in your browser", port);
+    println!("sccache: Please visit http://localhost:{} in your browser", port);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (token_tx, token_rx) = mpsc::sync_channel(1);
     let state = implicit::State {
