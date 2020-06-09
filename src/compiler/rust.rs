@@ -15,7 +15,8 @@
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, HashResult,
+    CompilerKind, CompilerProxy, HashResult, LightCompilerHasher, LightHashResult,
+    MaybeLightHashResult,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -31,6 +32,7 @@ use futures_03::executor::ThreadPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
+use regex::Regex;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
@@ -143,6 +145,8 @@ pub struct ParsedArguments {
     color_mode: ColorMode,
     /// Whether `--json` was passed to this invocation.
     has_json: bool,
+    /// The file to be compiled.
+    input: OsString,
 }
 
 /// A struct on which to hang a `Compilation` impl.
@@ -471,7 +475,7 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
-    ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
+    ) -> CompilerArguments<Box<dyn LightCompilerHasher<T> + 'static>> {
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
@@ -1132,9 +1136,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
             };
         };
     };
-    // We don't actually save the input value, but there needs to be one.
     req!(input);
-    drop(input);
     req!(output_dir);
     req!(emit);
     req!(crate_name);
@@ -1208,7 +1210,35 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
         emit,
         color_mode,
         has_json,
+        input,
     })
+}
+
+impl<T> LightCompilerHasher<T> for RustHasher
+where
+    T: CommandCreatorSync,
+{
+    fn maybe_light_hash_result(
+        self: Box<Self>,
+        _force_local_regex: &Option<Regex>,
+        _cwd: &PathBuf,
+        _env_vars: &Vec<(OsString, OsString)>,
+    ) -> MaybeLightHashResult<T> {
+        // We never force local compilation for Rust.
+        MaybeLightHashResult::FullCompilerHasher(self)
+    }
+
+    fn color_mode(&self) -> ColorMode {
+        self.parsed_args.color_mode
+    }
+
+    fn output_pretty(&self) -> Cow<'_, str> {
+        Cow::Borrowed(&self.parsed_args.crate_name)
+    }
+
+    fn box_clone(&self) -> Box<dyn LightCompilerHasher<T>> {
+        Box::new((*self).clone())
+    }
 }
 
 impl<T> CompilerHasher<T> for RustHasher
@@ -1463,42 +1493,32 @@ where
                             .chain(abs_staticlibs)
                             .collect();
 
-                        HashResult {
-                            key: m.finish(),
-                            compilation: Box::new(RustCompilation {
-                                executable,
-                                host,
-                                sysroot,
-                                arguments,
-                                inputs,
-                                outputs,
-                                crate_link_paths,
-                                crate_name,
-                                crate_types,
-                                dep_info,
-                                cwd,
-                                env_vars,
-                                #[cfg(feature = "dist-client")]
-                                rlib_dep_reader,
-                            }),
-                            weak_toolchain_key,
-                        }
+                        HashResult::Full(
+                            m.finish(),
+                            LightHashResult {
+                                compilation: Box::new(RustCompilation {
+                                    executable,
+                                    host,
+                                    sysroot,
+                                    arguments,
+                                    inputs,
+                                    outputs,
+                                    crate_link_paths,
+                                    crate_name,
+                                    crate_types,
+                                    dep_info,
+                                    cwd,
+                                    env_vars,
+                                    #[cfg(feature = "dist-client")]
+                                    rlib_dep_reader,
+                                }),
+                                weak_toolchain_key,
+                            },
+                        )
                     }),
                 )
             },
         ))
-    }
-
-    fn color_mode(&self) -> ColorMode {
-        self.parsed_args.color_mode
-    }
-
-    fn output_pretty(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.parsed_args.crate_name)
-    }
-
-    fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
-        Box::new((*self).clone())
     }
 }
 
@@ -2298,6 +2318,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use itertools::Itertools;
+    use std::convert::From;
     use std::ffi::OsStr;
     use std::fs::File;
     use std::io::Write;
@@ -2955,6 +2976,7 @@ c:/foo/bar.rs:
                 emit,
                 color_mode: ColorMode::Auto,
                 has_json: false,
+                input: From::from(&"foo/foo.rs"),
             },
         });
         let creator = new_creator();
@@ -2977,6 +2999,10 @@ c:/foo/bar.rs:
             )
             .wait()
             .unwrap();
+        let (key, compilation) = match res {
+            HashResult::Full(key, LightHashResult { compilation, .. }) => (key, compilation),
+            _ => panic!("Did not expect light HashResult"),
+        };
         let m = Digest::new();
         let empty_digest = m.finish();
 
@@ -3004,9 +3030,8 @@ c:/foo/bar.rs:
         OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
         f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
-        assert_eq!(res.key, digest);
-        let mut out = res
-            .compilation
+        assert_eq!(key, digest);
+        let mut out = compilation
             .outputs()
             .map(|(k, _)| k.to_owned())
             .collect::<Vec<_>>();
@@ -3053,7 +3078,7 @@ c:/foo/bar.rs:
         let pool = ThreadPool::sized(1);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
-        hasher
+        match hasher
             .generate_hash_key(
                 &creator,
                 f.tempdir.path().to_owned(),
@@ -3064,7 +3089,10 @@ c:/foo/bar.rs:
             )
             .wait()
             .unwrap()
-            .key
+        {
+            HashResult::Full(key, _) => key,
+            _ => panic!("Did not expect light HashResult"),
+        }
     }
 
     fn nothing(_path: &Path) -> Result<()> {

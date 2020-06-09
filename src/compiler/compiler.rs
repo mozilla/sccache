@@ -29,6 +29,7 @@ use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
 use futures_03::executor::ThreadPool;
+use regex::Regex;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -120,7 +121,7 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
-    ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
+    ) -> CompilerArguments<Box<dyn LightCompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<dyn Compiler<T>>;
 }
 
@@ -128,6 +129,11 @@ impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
     fn clone(&self) -> Box<dyn Compiler<T>> {
         self.box_clone()
     }
+}
+
+pub enum MaybeLightHashResult<T> {
+    LightHashResult(LightHashResult),
+    FullCompilerHasher(Box<dyn CompilerHasher<T>>),
 }
 
 pub trait CompilerProxy<T>: Send + 'static
@@ -150,25 +156,13 @@ where
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
 }
 
-/// An interface to a compiler for hash key generation, the result of
-/// argument parsing.
-pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
+/// An interface to a compiler which, depending on the parsed arguments, may
+/// immediately produce an interface for local compilation or a full
+/// CompilerHasher.
+pub trait LightCompilerHasher<T>: fmt::Debug + Send + 'static
 where
     T: CommandCreatorSync,
 {
-    /// Given information about a compiler command, generate a hash key
-    /// that can be used for cache lookups, as well as any additional
-    /// information that can be reused for compilation if necessary.
-    fn generate_hash_key(
-        self: Box<Self>,
-        creator: &T,
-        cwd: PathBuf,
-        env_vars: Vec<(OsString, OsString)>,
-        may_dist: bool,
-        pool: &ThreadPool,
-        rewrite_includes_only: bool,
-    ) -> SFuture<HashResult>;
-
     /// Return the state of any `--color` option passed to the compiler.
     fn color_mode(&self) -> ColorMode;
 
@@ -183,6 +177,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
+        force_local_regex: &Option<Regex>,
         cache_control: CacheControl,
         pool: ThreadPool,
     ) -> SFuture<(CompileResult, process::Output)> {
@@ -197,40 +192,50 @@ where
             Ok(Some(ref client)) => client.rewrite_includes_only(),
             _ => false,
         };
-        let result = self.generate_hash_key(
-            &creator,
-            cwd.clone(),
-            env_vars,
-            may_dist,
-            &pool,
-            rewrite_includes_only,
-        );
+        let result = match self.maybe_light_hash_result(force_local_regex, &cwd, &env_vars) {
+            MaybeLightHashResult::LightHashResult(lhr) => f_ok(HashResult::Light(lhr)),
+            MaybeLightHashResult::FullCompilerHasher(hasher) => hasher.generate_hash_key(
+                &creator,
+                cwd.clone(),
+                env_vars,
+                may_dist,
+                &pool,
+                rewrite_includes_only,
+            ),
+        };
         Box::new(result.then(move |res| -> SFuture<_> {
             debug!(
                 "[{}]: generate_hash_key took {}",
                 out_pretty,
                 fmt_duration_as_secs(&start.elapsed())
             );
-            let (key, compilation, weak_toolchain_key) = match res {
+            let hash_result = match res {
                 Err(e) => {
                     return match e.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => f_ok((CompileResult::Error, output)),
                         Err(e) => f_err(e),
                     };
                 }
-                Ok(HashResult {
-                    key,
-                    compilation,
-                    weak_toolchain_key,
-                }) => (key, compilation, weak_toolchain_key),
+                Ok(hash_result) => {
+                    match &hash_result {
+                        HashResult::Full(ref key, _) => {
+                            trace!("[{}]: Hash key: {}", out_pretty, key)
+                        }
+                        _ => trace!("[{}]: Skipping cache", out_pretty),
+                    }
+                    hash_result
+                }
             };
-            trace!("[{}]: Hash key: {}", out_pretty, key);
-            // If `ForceRecache` is enabled, we won't check the cache.
+
+            // If `ForceRecache` is enabled, or we're forcing local compilation, we won't check the cache.
             let start = Instant::now();
             let cache_status = if cache_control == CacheControl::ForceRecache {
                 f_ok(Cache::Recache)
             } else {
-                storage.get(&key)
+                match &hash_result {
+                    HashResult::Full(ref key, _) => storage.get(&key),
+                    _ => f_ok(Cache::ForceLocal),
+                }
             };
 
             // Set a maximum time limit for the cache to respond before we forge
@@ -241,7 +246,8 @@ where
             // Check the result of the cache lookup.
             Box::new(cache_status.then(move |result| {
                 let duration = start.elapsed();
-                let outputs = compilation
+                let outputs = hash_result
+                    .compilation()
                     .outputs()
                     .map(|(key, path)| (key.to_string(), cwd.join(path)))
                     .collect::<HashMap<_, _>>();
@@ -280,6 +286,14 @@ where
                         );
                         MissType::ForcedRecache
                     }
+                    Ok(Cache::ForceLocal) => {
+                        debug!(
+                            "[{}]: Cache skip in {}",
+                            out_pretty,
+                            fmt_duration_as_secs(&duration)
+                        );
+                        MissType::ForceLocal
+                    }
                     Err(err) => {
                         if err.is_elapsed() {
                             debug!(
@@ -303,6 +317,21 @@ where
 
                 // Cache miss, so compile it.
                 let start = Instant::now();
+                // Deconstruct the hash_result to take ownership of the
+                // components; we don't need a key for a forced local (light) compilation.
+                let (key, compilation, weak_toolchain_key) = match hash_result {
+                    HashResult::Light(LightHashResult {
+                        compilation,
+                        weak_toolchain_key,
+                    }) => (None, compilation, weak_toolchain_key),
+                    HashResult::Full(
+                        key,
+                        LightHashResult {
+                            compilation,
+                            weak_toolchain_key,
+                        },
+                    ) => (Some(key), compilation, weak_toolchain_key),
+                };
                 let compile = dist_or_local_compile(
                     dist_client,
                     creator,
@@ -328,6 +357,10 @@ where
                             debug!("[{}]: Compiled but not cacheable", out_pretty);
                             return f_ok((CompileResult::NotCacheable, compiler_result));
                         }
+                        if miss_type == MissType::ForceLocal {
+                            debug!("[{}]: Compiled but caching skipped", out_pretty);
+                            return f_ok((CompileResult::ForceLocal(duration), compiler_result));
+                        }
                         debug!(
                             "[{}]: Compiled in {}, storing in cache",
                             out_pretty,
@@ -344,22 +377,23 @@ where
 
                                     // Try to finish storing the newly-written cache
                                     // entry. We'll get the result back elsewhere.
-                                    let future = storage.put(&key, entry).then(move |res| {
-                                        match res {
-                                            Ok(_) => debug!(
-                                                "[{}]: Stored in cache successfully!",
-                                                out_pretty
-                                            ),
-                                            Err(ref e) => debug!(
-                                                "[{}]: Cache write error: {:?}",
-                                                out_pretty, e
-                                            ),
-                                        }
-                                        res.map(|duration| CacheWriteInfo {
-                                            object_file_pretty: out_pretty,
-                                            duration,
-                                        })
-                                    });
+                                    let future =
+                                        storage.put(&key.unwrap(), entry).then(move |res| {
+                                            match res {
+                                                Ok(_) => debug!(
+                                                    "[{}]: Stored in cache successfully!",
+                                                    out_pretty
+                                                ),
+                                                Err(ref e) => debug!(
+                                                    "[{}]: Cache write error: {:?}",
+                                                    out_pretty, e
+                                                ),
+                                            }
+                                            res.map(|duration| CacheWriteInfo {
+                                                object_file_pretty: out_pretty,
+                                                duration,
+                                            })
+                                        });
                                     let future = Box::new(future);
                                     Ok((
                                         CompileResult::CacheMiss(
@@ -376,13 +410,50 @@ where
         }))
     }
 
+    /// Return a LightHashResult if we're going to immediately perform a local
+    /// compilation, otherwise produce a full CompilerHasher.
+    fn maybe_light_hash_result(
+        self: Box<Self>,
+        force_local_regex: &Option<Regex>,
+        cwd: &PathBuf,
+        env_vars: &Vec<(OsString, OsString)>,
+    ) -> MaybeLightHashResult<T>;
+
     /// A descriptive string about the file that we're going to be producing.
     ///
     /// This is primarily intended for debug logging and such, not for actual
     /// artifact generation.
     fn output_pretty(&self) -> Cow<'_, str>;
 
-    fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
+    fn box_clone(&self) -> Box<dyn LightCompilerHasher<T>>;
+}
+
+impl<T: CommandCreatorSync> Clone for Box<dyn LightCompilerHasher<T>> {
+    fn clone(&self) -> Box<dyn LightCompilerHasher<T>> {
+        self.box_clone()
+    }
+}
+
+/// An interface to a compiler for hash key generation, the result of
+/// argument parsing.
+pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
+where
+    T: CommandCreatorSync,
+{
+    /// Given information about a compiler command, generate a hash key
+    /// that can be used for cache lookups, as well as any additional
+    /// information that can be reused for compilation if necessary.
+    fn generate_hash_key(
+        self: Box<Self>,
+        creator: &T,
+        cwd: PathBuf,
+        env_vars: Vec<(OsString, OsString)>,
+        // true iff it may be possible to distribute the compilation,
+        // irrespective of the value of force_local.
+        may_dist: bool,
+        pool: &ThreadPool,
+        rewrite_includes_only: bool,
+    ) -> SFuture<HashResult>;
 }
 
 #[cfg(not(feature = "dist-client"))]
@@ -592,12 +663,6 @@ where
     )
 }
 
-impl<T: CommandCreatorSync> Clone for Box<dyn CompilerHasher<T>> {
-    fn clone(&self) -> Box<dyn CompilerHasher<T>> {
-        self.box_clone()
-    }
-}
-
 /// An interface to a compiler for actually invoking compilation.
 pub trait Compilation {
     /// Given information about a compiler command, generate a command that can
@@ -647,14 +712,29 @@ impl OutputsRewriter for NoopOutputsRewriter {
     }
 }
 
-/// Result of generating a hash from a compiler command.
-pub struct HashResult {
-    /// The hash key of the inputs.
-    pub key: String,
+/// Compiler interface that doesn't contain a hash key, for when one isn't necessary.
+pub struct LightHashResult {
     /// An object to use for the actual compilation, if necessary.
     pub compilation: Box<dyn Compilation + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
+}
+
+/// Result of generating a hash from a compiler command.
+pub enum HashResult {
+    /// Used for forced-local compilation, where a key isn't necessary.
+    Light(LightHashResult),
+    /// As above, but with an additional String key.
+    Full(String, LightHashResult),
+}
+
+impl HashResult {
+    fn compilation(&self) -> &Box<dyn Compilation + 'static> {
+        match self {
+            HashResult::Light(ref lhr) => &lhr.compilation,
+            HashResult::Full(_, ref lhr) => &lhr.compilation,
+        }
+    }
 }
 
 /// Possible results of parsing compiler arguments.
@@ -704,6 +784,8 @@ pub enum MissType {
     Normal,
     /// Cache lookup was overridden, recompilation was forced.
     ForcedRecache,
+    /// Cache lookup was skipped, recompilation was forced.
+    ForceLocal,
     /// Cache took too long to respond.
     TimedOut,
     /// Error reading from cache
@@ -729,6 +811,8 @@ pub enum CompileResult {
     CacheMiss(MissType, DistType, Duration, SFuture<CacheWriteInfo>),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
+    /// We didn't try to cache because the caching was requested to be skipped.
+    ForceLocal(Duration),
     /// Not in cache, but compilation failed.
     CompileFailed,
 }
@@ -757,6 +841,7 @@ impl fmt::Debug for CompileResult {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
             CompileResult::NotCacheable => write!(f, "CompileResult::NotCacheable"),
+            CompileResult::ForceLocal(ref d) => write!(f, "CompileResult::ForceLocal({:?})", d),
             CompileResult::CompileFailed => write!(f, "CompileResult::CompileFailed"),
         }
     }
@@ -773,6 +858,7 @@ impl PartialEq<CompileResult> for CompileResult {
                 &CompileResult::CacheMiss(ref n, ref dt2, _, _),
             ) => m == n && dt == dt2,
             (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
+            (&CompileResult::ForceLocal(_), &CompileResult::ForceLocal(_)) => true,
             (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
             _ => false,
         }
@@ -1339,6 +1425,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
@@ -1348,6 +1435,7 @@ LLVM version: 6.0",
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool.clone(),
                 )
@@ -1385,6 +1473,7 @@ LLVM version: 6.0",
                     arguments,
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool,
                 )
@@ -1446,6 +1535,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
@@ -1455,6 +1545,7 @@ LLVM version: 6.0",
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool.clone(),
                 )
@@ -1492,6 +1583,7 @@ LLVM version: 6.0",
                     arguments,
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool,
                 )
@@ -1558,6 +1650,7 @@ LLVM version: 6.0",
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         // The cache will return an error.
         storage.next_get(f_err(anyhow!("Some Error")));
         let (cached, res) = runtime
@@ -1569,6 +1662,7 @@ LLVM version: 6.0",
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool,
                 )
@@ -1645,6 +1739,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let hasher2 = hasher.clone();
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
@@ -1654,6 +1749,7 @@ LLVM version: 6.0",
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool.clone(),
                 )
@@ -1684,6 +1780,7 @@ LLVM version: 6.0",
                 arguments,
                 cwd.to_path_buf(),
                 vec![],
+                &force_local_regex,
                 CacheControl::ForceRecache,
                 pool,
             )
@@ -1753,6 +1850,7 @@ LLVM version: 6.0",
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
@@ -1762,6 +1860,7 @@ LLVM version: 6.0",
                     arguments,
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::Default,
                     pool,
                 )
@@ -1834,6 +1933,7 @@ LLVM version: 6.0",
             CompilerArguments::Ok(h) => h,
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
+        let force_local_regex = Some(Regex::new("bar\\.c").unwrap());
         // All these dist clients will fail, but should still result in successful compiles
         for dist_client in dist_clients {
             if obj.is_file() {
@@ -1848,6 +1948,7 @@ LLVM version: 6.0",
                     arguments.clone(),
                     cwd.to_path_buf(),
                     vec![],
+                    &force_local_regex,
                     CacheControl::ForceRecache,
                     pool.clone(),
                 )

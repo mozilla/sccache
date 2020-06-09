@@ -14,7 +14,7 @@
 
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult,
+    CompilerKind, HashResult, LightCompilerHasher, LightHashResult, MaybeLightHashResult,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -25,6 +25,7 @@ use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
 use futures::Future;
 use futures_03::executor::ThreadPool;
+use regex::Regex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -229,7 +230,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-    ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
+    ) -> CompilerArguments<Box<dyn LightCompilerHasher<T> + 'static>> {
         match self.compiler.parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(CCompilerHasher {
                 parsed_args: args,
@@ -245,6 +246,75 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
 
     fn box_clone(&self) -> Box<dyn Compiler<T>> {
+        Box::new((*self).clone())
+    }
+}
+
+fn format_weak_toolchain_key(executable: &PathBuf, executable_digest: &String) -> String {
+    // A compiler binary may be a symlink to another and so has the same digest, but that means
+    // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
+    // executable path to try and prevent this
+    format!("{}-{}", executable.to_string_lossy(), executable_digest)
+}
+
+impl<T, I> LightCompilerHasher<T> for CCompilerHasher<I>
+where
+    T: CommandCreatorSync,
+    I: CCompilerImpl,
+{
+    fn maybe_light_hash_result(
+        self: Box<Self>,
+        force_local_regex: &Option<Regex>,
+        cwd: &PathBuf,
+        env_vars: &Vec<(OsString, OsString)>,
+    ) -> MaybeLightHashResult<T> {
+        if self
+            .parsed_args
+            .input
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| {
+                force_local_regex
+                    .as_ref()
+                    .map(|re| re.is_match(&name))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        {
+            let me = *self;
+            let CCompilerHasher {
+                parsed_args,
+                executable,
+                executable_digest,
+                compiler,
+            } = me;
+            let weak_toolchain_key = format_weak_toolchain_key(&executable, &executable_digest);
+            MaybeLightHashResult::LightHashResult(LightHashResult {
+                compilation: Box::new(CCompilation {
+                    parsed_args,
+                    #[cfg(feature = "dist-client")]
+                    preprocessed_input: Vec::new(),
+                    executable,
+                    compiler,
+                    cwd: cwd.clone(),
+                    env_vars: env_vars.clone(),
+                }),
+                weak_toolchain_key,
+            })
+        } else {
+            MaybeLightHashResult::FullCompilerHasher(self)
+        }
+    }
+
+    fn color_mode(&self) -> ColorMode {
+        self.parsed_args.color_mode
+    }
+
+    fn output_pretty(&self) -> Cow<'_, str> {
+        self.parsed_args.output_pretty()
+    }
+
+    fn box_clone(&self) -> Box<dyn LightCompilerHasher<T>> {
         Box::new((*self).clone())
     }
 }
@@ -270,7 +340,8 @@ where
             executable_digest,
             compiler,
         } = me;
-        let result = compiler.preprocess(
+        let weak_toolchain_key = format_weak_toolchain_key(&executable, &executable_digest);
+        let result = Box::new(compiler.preprocess(
             creator,
             &executable,
             &parsed_args,
@@ -278,14 +349,14 @@ where
             &env_vars,
             may_dist,
             rewrite_includes_only,
-        );
+        ));
         let out_pretty = parsed_args.output_pretty().into_owned();
         let result = result.map_err(move |e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });
         let out_pretty = parsed_args.output_pretty().into_owned();
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone());
+        let extra_hashes = Box::new(hash_all(&parsed_args.extra_hash_files, &pool.clone()));
         let outputs = parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
 
@@ -336,49 +407,32 @@ where
                     );
 
                     Box::new(extra_hashes.and_then(move |extra_hashes| {
-                        let key = {
-                            hash_key(
-                                &executable_digest,
-                                parsed_args.language,
-                                &parsed_args.common_args,
-                                &extra_hashes,
-                                &env_vars,
-                                &preprocessor_result.stdout,
-                            )
-                        };
-                        // A compiler binary may be a symlink to another and so has the same digest, but that means
-                        // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
-                        // executable path to try and prevent this
-                        let weak_toolchain_key =
-                            format!("{}-{}", executable.to_string_lossy(), executable_digest);
-                        Ok(HashResult {
+                        let key = hash_key(
+                            &executable_digest,
+                            parsed_args.language,
+                            &parsed_args.common_args,
+                            &extra_hashes,
+                            &env_vars,
+                            &preprocessor_result.stdout,
+                        );
+                        Ok(HashResult::Full(
                             key,
-                            compilation: Box::new(CCompilation {
-                                parsed_args,
-                                #[cfg(feature = "dist-client")]
-                                preprocessed_input: preprocessor_result.stdout,
-                                executable,
-                                compiler,
-                                cwd,
-                                env_vars,
-                            }),
-                            weak_toolchain_key,
-                        })
+                            LightHashResult {
+                                compilation: Box::new(CCompilation {
+                                    parsed_args,
+                                    #[cfg(feature = "dist-client")]
+                                    preprocessed_input: preprocessor_result.stdout,
+                                    executable,
+                                    compiler,
+                                    cwd,
+                                    env_vars,
+                                }),
+                                weak_toolchain_key,
+                            },
+                        ))
                     }))
                 }),
         )
-    }
-
-    fn color_mode(&self) -> ColorMode {
-        self.parsed_args.color_mode
-    }
-
-    fn output_pretty(&self) -> Cow<'_, str> {
-        self.parsed_args.output_pretty()
-    }
-
-    fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
-        Box::new((*self).clone())
     }
 }
 

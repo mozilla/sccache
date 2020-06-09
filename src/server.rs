@@ -17,8 +17,8 @@
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
-    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, DistType, MissType,
+    get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerKind,
+    CompilerProxy, DistType, LightCompilerHasher, MissType,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -35,6 +35,7 @@ use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, S
 use futures_03::compat::Compat;
 use futures_03::executor::ThreadPool;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
+use regex::Regex;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -73,6 +74,9 @@ const DEFAULT_IDLE_TIMEOUT: u64 = 600;
 /// of seconds from now (or later)
 #[cfg(feature = "dist-client")]
 const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// not_cached reason
+const REQUESTED_BY_USER: &'static str = "Requested by user";
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -658,6 +662,11 @@ struct SccacheService<C: CommandCreatorSync> {
 
     /// Information tracking how many services (connected clients) are active.
     info: ActiveInfo,
+
+    /// If the file basename to be compiled matches this regex, always skip
+    /// caching and distribution for this compilation and unconditionally
+    /// compile locally.
+    force_local_regex: Option<Regex>,
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
@@ -744,6 +753,15 @@ where
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
+        let force_local_regex = env::var("SCCACHE_FORCE_LOCAL_REGEX")
+            .ok()
+            .as_ref()
+            .and_then(|s| {
+                Regex::new(s)
+                    .map_err(|err| warn!("Could not parse SCCACHE_FORCE_LOCAL_REGEX: {}", err))
+                    .ok()
+            });
+
         SccacheService {
             stats: Rc::new(RefCell::new(ServerStats::default())),
             dist_client: Rc::new(dist_client),
@@ -754,6 +772,7 @@ where
             creator: C::new(client),
             tx,
             info,
+            force_local_regex,
         }
     }
 
@@ -1037,6 +1056,7 @@ where
             }
             Ok(c) => {
                 debug!("check_compiler: Supported compiler");
+                // Check whether we should skip this compilation.
                 // Now check that we can handle this compiler with
                 // the provided commandline.
                 match c.parse_arguments(&cmd, &cwd) {
@@ -1078,7 +1098,7 @@ where
     fn start_compile_task(
         &self,
         compiler: Box<dyn Compiler<C>>,
-        hasher: Box<dyn CompilerHasher<C>>,
+        hasher: Box<dyn LightCompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1101,6 +1121,7 @@ where
             arguments,
             cwd,
             env_vars,
+            &self.force_local_regex,
             cache_control,
             self.pool.clone(),
         );
@@ -1121,6 +1142,14 @@ where
                             stats.cache_hits.increment(&kind);
                             stats.cache_read_hit_duration += duration;
                         }
+                        CompileResult::ForceLocal(_duration) => {
+                            // Currently not doing anything with the duration.
+                            stats.forced_local += 1;
+                            *stats
+                                .not_cached
+                                .entry(REQUESTED_BY_USER.to_string())
+                                .or_insert(0) += 1;
+                        }
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
                             match dist_type {
                                 DistType::NoDist => {}
@@ -1136,6 +1165,13 @@ where
                                 MissType::Normal => {}
                                 MissType::ForcedRecache => {
                                     stats.forced_recaches += 1;
+                                }
+                                MissType::ForceLocal => {
+                                    stats.forced_local += 1;
+                                    *stats
+                                        .not_cached
+                                        .entry(REQUESTED_BY_USER.to_string())
+                                        .or_insert(0) += 1;
                                 }
                                 MissType::TimedOut => {
                                     stats.cache_timeouts += 1;
@@ -1294,6 +1330,9 @@ pub struct ServerStats {
     pub cache_read_errors: u64,
     /// The count of compilations which were successful but couldn't be cached.
     pub non_cacheable_compilations: u64,
+    /// The count of caches/distributions that were skipped because it was requested by the user
+    /// via SCCACHE_FORCE_LOCAL_REGEX.
+    pub forced_local: u64,
     /// The count of compilations which forcibly ignored the cache.
     pub forced_recaches: u64,
     /// The count of errors writing to cache.
@@ -1350,6 +1389,7 @@ impl Default for ServerStats {
             cache_timeouts: u64::default(),
             cache_read_errors: u64::default(),
             non_cacheable_compilations: u64::default(),
+            forced_local: u64::default(),
             forced_recaches: u64::default(),
             cache_write_errors: u64::default(),
             cache_writes: u64::default(),
@@ -1420,6 +1460,7 @@ impl ServerStats {
             self.non_cacheable_compilations,
             "Non-cacheable compilations"
         );
+        set_stat!(stats_vec, self.forced_local, "Forced local compilations");
         set_stat!(
             stats_vec,
             self.requests_not_cacheable,

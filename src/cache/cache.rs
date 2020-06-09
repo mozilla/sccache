@@ -74,6 +74,8 @@ pub enum Cache {
     Miss,
     /// Cache entry should be ignored, force compilation.
     Recache,
+    /// Skip caching/distribution entirely.
+    ForceLocal,
 }
 
 impl fmt::Debug for Cache {
@@ -82,6 +84,7 @@ impl fmt::Debug for Cache {
             Cache::Hit(_) => write!(f, "Cache::Hit(...)"),
             Cache::Miss => write!(f, "Cache::Miss"),
             Cache::Recache => write!(f, "Cache::Recache"),
+            Cache::ForceLocal => write!(f, "Cache::ForceLocal"),
         }
     }
 }
