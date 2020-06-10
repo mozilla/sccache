@@ -32,12 +32,9 @@ checksum = "85bb70cc08ec97ca5450e6eba421deeea5f172c0fc61f78b5357b2a8e8be195f"
 
 [[package]]
 name = "ar"
-version = "0.6.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "579681b3fecd1e9d6b5ce6969e05f9feb913f296eddaf595be1166a5ca597bc4"
-dependencies = [
- "byteorder",
-]
+checksum = "450575f58f7bee32816abbff470cbc47797397c2a81e0eaced4b98436daf52e1"
 
 [[package]]
 name = "arc-swap"

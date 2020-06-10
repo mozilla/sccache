@@ -23,7 +23,7 @@ required-features = ["dist-server"]
 
 [dependencies]
 anyhow = "1.0"
-ar = { version = "0.6", optional = true }
+ar = { version = "0.8", optional = true }
 atty = "0.2.6"
 base64 = "0.11.0"
 bincode = "1"
