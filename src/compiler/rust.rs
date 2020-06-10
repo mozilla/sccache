@@ -1873,12 +1873,11 @@ impl pkg::InputsPackager for RustInputsPackager {
                     if entry.header().identifier() != b"rust.metadata.bin" {
                         continue;
                     }
-                    let mut metadata = vec![];
-                    io::copy(&mut entry, &mut metadata)?;
                     let mut metadata_ar = vec![];
                     {
                         let mut ar_builder = ar::Builder::new(&mut metadata_ar);
-                        ar_builder.append(entry.header(), metadata.as_slice())?
+                        let header = entry.header().clone();
+                        ar_builder.append(&header, &mut entry)?
                     }
                     file_header.set_size(metadata_ar.len() as u64);
                     file_header.set_cksum();
