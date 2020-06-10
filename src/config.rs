@@ -121,8 +121,7 @@ fn parse_http_url(url: &str) -> Result<reqwest::Url> {
         reqwest::Url::parse(&format!("http://{}", sa))
     } else {
         reqwest::Url::parse(url)
-    }
-    .map_err(|e| format!("{}", e))?;
+    }?;
     if url.scheme() != "http" && url.scheme() != "https" {
         bail!("url not http or https")
     }
@@ -431,10 +430,10 @@ pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T
 
     let res = if path.extension().map_or(false, |e| e == "json") {
         serde_json::from_str(&string)
-            .chain_err(|| format!("Failed to load json config file from {}", path.display()))?
+            .with_context(|| format!("Failed to load json config file from {}", path.display()))?
     } else {
         toml::from_str(&string)
-            .chain_err(|| format!("Failed to load toml config file from {}", path.display()))?
+            .with_context(|| format!("Failed to load toml config file from {}", path.display()))?
     };
 
     Ok(Some(res))
@@ -556,7 +555,7 @@ impl Config {
                 dirs.config_dir().join("config")
             });
         let file_conf = try_read_config_file(&file_conf_path)
-            .chain_err(|| "Failed to load config file")?
+            .context("Failed to load config file")?
             .unwrap_or_default();
 
         Ok(Config::from_env_and_file_configs(env_conf, file_conf))
@@ -602,8 +601,7 @@ impl CachedConfig {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
 
         if cached_file_config.is_none() {
-            let cfg =
-                Self::load_file_config().chain_err(|| "Unable to initialise cached config")?;
+            let cfg = Self::load_file_config().context("Unable to initialise cached config")?;
             *cached_file_config = Some(cfg)
         }
         Ok(CachedConfig(()))
@@ -650,9 +648,9 @@ impl CachedConfig {
                 .expect("Cached conf file has no parent directory");
             if !file_conf_dir.is_dir() {
                 fs::create_dir_all(file_conf_dir)
-                    .chain_err(|| "Failed to create dir to hold cached config")?
+                    .context("Failed to create dir to hold cached config")?
             }
-            Self::save_file_config(&Default::default()).chain_err(|| {
+            Self::save_file_config(&Default::default()).with_context(|| {
                 format!(
                     "Unable to create cached config file at {}",
                     file_conf_path.display()
@@ -660,13 +658,12 @@ impl CachedConfig {
             })?
         }
         try_read_config_file(&file_conf_path)
-            .chain_err(|| "Failed to load cached config file")?
-            .ok_or_else(|| format!("Failed to load from {}", file_conf_path.display()).into())
+            .context("Failed to load cached config file")?
+            .with_context(|| format!("Failed to load from {}", file_conf_path.display()))
     }
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
-        let mut file =
-            File::create(file_conf_path).chain_err(|| "Could not open config for writing")?;
+        let mut file = File::create(file_conf_path).context("Could not open config for writing")?;
         file.write_all(&toml::to_vec(c).unwrap())
             .map_err(Into::into)
     }
@@ -723,7 +720,7 @@ pub mod scheduler {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).chain_err(|| "Failed to load scheduler config file")
+        super::try_read_config_file(&conf_path).context("Failed to load scheduler config file")
     }
 }
 
@@ -778,7 +775,7 @@ pub mod server {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).chain_err(|| "Failed to load server config file")
+        super::try_read_config_file(&conf_path).context("Failed to load server config file")
     }
 }
 

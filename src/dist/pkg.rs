@@ -91,8 +91,9 @@ mod toolchain_imp {
                 if self.file_set.contains_key(&tar_path) {
                     continue;
                 }
-                let ldd_libraries = find_ldd_libraries(&obj_path)
-                    .chain_err(|| format!("Failed to analyse {} with ldd", obj_path.display()))?;
+                let ldd_libraries = find_ldd_libraries(&obj_path).with_context(|| {
+                    format!("Failed to analyse {} with ldd", obj_path.display())
+                })?;
                 remaining.extend(ldd_libraries);
                 self.file_set.insert(tar_path, obj_path);
             }
@@ -236,7 +237,7 @@ mod toolchain_imp {
             )
         }
 
-        let stdout = str::from_utf8(&stdout).map_err(|_| "ldd output not utf8")?;
+        let stdout = str::from_utf8(&stdout).context("ldd output not utf8")?;
         Ok(parse_ldd_output(stdout))
     }
 
@@ -421,7 +422,7 @@ pub fn simplify_path(path: &Path) -> Result<PathBuf> {
             Component::ParentDir => {
                 // If the path is doing funny symlink traversals, just give up
                 let is_symlink = fs::symlink_metadata(&final_path)
-                    .chain_err(|| "Missing directory while simplifying path")?
+                    .context("Missing directory while simplifying path")?
                     .file_type()
                     .is_symlink();
                 if is_symlink {

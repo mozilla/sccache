@@ -101,9 +101,9 @@ impl ProvideAwsCredentials for EnvironmentProvider {
 }
 
 fn credentials_from_environment() -> Result<AwsCredentials> {
-    let env_key = var("AWS_ACCESS_KEY_ID").chain_err(|| "No AWS_ACCESS_KEY_ID in environment")?;
+    let env_key = var("AWS_ACCESS_KEY_ID").context("No AWS_ACCESS_KEY_ID in environment")?;
     let env_secret =
-        var("AWS_SECRET_ACCESS_KEY").chain_err(|| "No AWS_SECRET_ACCESS_KEY in environment")?;
+        var("AWS_SECRET_ACCESS_KEY").context("No AWS_SECRET_ACCESS_KEY in environment")?;
 
     if env_key.is_empty() || env_secret.is_empty() {
         bail!(
@@ -147,7 +147,7 @@ impl ProfileProvider {
         // %USERPROFILE%\.aws\credentials  (Windows)
         let profile_location = UserDirs::new()
             .map(|d| d.home_dir().join(".aws").join("credentials"))
-            .ok_or("Couldn't get user directories")?;
+            .context("Couldn't get user directories")?;
 
         Ok(ProfileProvider {
             credentials: None,
@@ -200,17 +200,14 @@ impl ProfileProvider {
 impl ProvideAwsCredentials for ProfileProvider {
     fn credentials(&self) -> SFuture<AwsCredentials> {
         let result = parse_credentials_file(self.file_path());
-        let result = result.and_then(|mut profiles| {
-            profiles
-                .remove(self.profile())
-                .ok_or_else(|| "profile not found".into())
-        });
+        let result = result
+            .and_then(|mut profiles| profiles.remove(self.profile()).context("profile not found"));
         Box::new(future::result(result))
     }
 }
 
 fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredentials>> {
-    let metadata = fs::metadata(file_path).chain_err(|| "couldn't stat credentials file")?;
+    let metadata = fs::metadata(file_path).context("couldn't stat credentials file")?;
     if !metadata.is_file() {
         bail!("Couldn't open file.");
     }
@@ -310,9 +307,9 @@ impl IamProvider {
         Box::new(
             response
                 .then(|res| {
-                    let bytes = res.chain_err(|| "couldn't connect to metadata service")?;
+                    let bytes = res.context("couldn't connect to metadata service")?;
                     String::from_utf8(bytes)
-                        .chain_err(|| "Didn't get a parsable response body from metadata service")
+                        .context("Didn't get a parsable response body from metadata service")
                 })
                 .map(move |body| {
                     let mut address = address.to_string();
@@ -331,7 +328,7 @@ impl ProvideAwsCredentials for IamProvider {
         };
         let url = url.and_then(|url| {
             url.parse::<hyper::Uri>()
-                .chain_err(|| format!("failed to parse `{}` as url", url))
+                .with_context(|| format!("failed to parse `{}` as url", url))
         });
 
         let client = self.client.clone();
@@ -341,9 +338,7 @@ impl ProvideAwsCredentials for IamProvider {
                 .set_header(Connection::close())
                 .body("".into())
                 .unwrap();
-            client
-                .request(req)
-                .chain_err(|| "failed to send http request")
+            client.request(req).fcontext("failed to send http request")
         });
         let body = response.and_then(|response| {
             response
@@ -352,13 +347,11 @@ impl ProvideAwsCredentials for IamProvider {
                     body.extend_from_slice(&chunk);
                     Ok::<_, hyper::Error>(body)
                 })
-                .chain_err(|| "failed to read http body")
+                .fcontext("failed to read http body")
         });
         let body = body
-            .map_err(|e| format!("Failed to get IAM credentials: {}", e).into())
-            .and_then(|body| {
-                String::from_utf8(body).chain_err(|| "failed to read iam role response")
-            });
+            .map_err(|e| anyhow!("Failed to get IAM credentials: {}", e))
+            .and_then(|body| String::from_utf8(body).context("failed to read iam role response"));
 
         let creds = body.and_then(|body| {
             let json_object: Value;
@@ -405,7 +398,7 @@ impl ProvideAwsCredentials for IamProvider {
 
             let expiration_time = expiration
                 .parse()
-                .chain_err(|| "failed to parse expiration time")?;
+                .context("failed to parse expiration time")?;
 
             let token_from_response;
             match json_object.get("Token") {
@@ -471,7 +464,7 @@ impl<P: ProvideAwsCredentials> ProvideAwsCredentials for AutoRefreshingProvider<
         }
         Box::new(future.clone().then(|result| match result {
             Ok(e) => Ok((*e).clone()),
-            Err(e) => Err(e.to_string().into()),
+            Err(e) => Err(anyhow!(e.to_string())),
         }))
     }
 }
@@ -510,8 +503,9 @@ impl ProvideAwsCredentials for ChainProvider {
                     })
                 })
                 .map_err(|_| {
+                    anyhow!(
                     "Couldn't find AWS credentials in environment, credentials file, or IAM role."
-                        .into()
+                )
                 }),
         )
     }

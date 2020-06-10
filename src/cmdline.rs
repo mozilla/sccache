@@ -96,7 +96,7 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
 pub fn parse() -> Result<Command> {
     trace!("parse");
     let cwd =
-        env::current_dir().chain_err(|| "sccache: Couldn't determine current working directory")?;
+        env::current_dir().context("sccache: Couldn't determine current working directory")?;
     // The internal start server command is passed in the environment.
     let internal_start_server = match env::var("SCCACHE_START_SERVER") {
         Ok(val) => val == "1",

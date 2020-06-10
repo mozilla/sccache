@@ -1,4 +1,3 @@
-use error_chain::ChainedError;
 use futures::future;
 use futures::prelude::*;
 use futures::sync::oneshot;
@@ -49,7 +48,8 @@ fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> imp
     move |req: Request<Body>| {
         let uri = req.uri().to_owned();
         Box::new(serve(req).or_else(move |e| {
-            let body = e.display_chain().to_string();
+            // `{:?}` prints the full cause chain and backtrace.
+            let body = format!("{:?}", e);
             eprintln!(
                 "sccache: Error during a request to {} on the client auth web server\n{}",
                 uri, body
@@ -71,7 +71,7 @@ fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
     let url = Url::parse("http://unused_base")
         .expect("Failed to parse fake url prefix")
         .join(url)
-        .chain_err(|| "Failed to parse url while extracting query params")?;
+        .context("Failed to parse url while extracting query params")?;
     Ok(url
         .query_pairs()
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -87,7 +87,7 @@ fn html_response(body: &'static str) -> Response<Body> {
 }
 
 fn json_response<T: Serialize>(data: &T) -> Result<Response<Body>> {
-    let body = serde_json::to_vec(data).chain_err(|| "Failed to serialize to JSON")?;
+    let body = serde_json::to_vec(data).context("Failed to serialize to JSON")?;
     let len = body.len();
     Ok(Response::builder()
         .set_header(ContentType::json())
@@ -188,7 +188,7 @@ mod code_grant_pkce {
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
         let mut rng =
-            rand::OsRng::new().chain_err(|| "Failed to initialise a random number generator")?;
+            rand::OsRng::new().context("Failed to initialise a random number generator")?;
         rng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
         let mut hasher = Sha256::new();
@@ -216,10 +216,10 @@ mod code_grant_pkce {
     fn handle_code_response(params: HashMap<String, String>) -> Result<(String, String)> {
         let code = params
             .get(CODE_RESULT_PARAM)
-            .ok_or("No code found in response")?;
+            .context("No code found in response")?;
         let state = params
             .get(STATE_RESULT_PARAM)
-            .ok_or("No state found in response")?;
+            .context("No state found in response")?;
         Ok((code.to_owned(), state.to_owned()))
     }
 
@@ -253,9 +253,9 @@ mod code_grant_pkce {
             (&Method::GET, "/redirect") => {
                 let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
                 let (code, auth_state) = ftry_send!(handle_code_response(query_pairs)
-                    .chain_err(|| "Failed to handle response from redirect"));
+                    .context("Failed to handle response from redirect"));
                 if auth_state != state.auth_state_value {
-                    return ftry_send!(Err("Mismatched auth states after redirect"));
+                    return ftry_send!(Err(anyhow!("Mismatched auth states after redirect")));
                 }
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.code_tx.send(code).unwrap();
@@ -300,7 +300,7 @@ mod code_grant_pkce {
 
         let (token, expires_at) = handle_token_response(
             res.json()
-                .chain_err(|| "Failed to parse token response as JSON")?,
+                .context("Failed to parse token response as JSON")?,
         )?;
         if expires_at - Instant::now() < MIN_TOKEN_VALIDITY {
             warn!(
@@ -367,10 +367,10 @@ mod implicit {
     fn handle_response(params: HashMap<String, String>) -> Result<(String, Instant, String)> {
         let token = params
             .get(TOKEN_RESULT_PARAM)
-            .ok_or("No token found in response")?;
+            .context("No token found in response")?;
         let bearer = params
             .get(TOKEN_TYPE_RESULT_PARAM)
-            .ok_or("No token type found in response")?;
+            .context("No token type found in response")?;
         if bearer.to_lowercase() != TOKEN_TYPE_RESULT_PARAM_VALUE {
             bail!(
                 "Token type in response is not {}",
@@ -379,17 +379,17 @@ mod implicit {
         }
         let expires_in = params
             .get(EXPIRES_IN_RESULT_PARAM)
-            .ok_or("No expiry found in response")?;
+            .context("No expiry found in response")?;
         // Calculate ASAP the actual time at which the token will expire
         let expires_at = Instant::now()
             + Duration::from_secs(
                 expires_in
                     .parse()
-                    .map_err(|_| "Failed to parse expiry as integer")?,
+                    .map_err(|_| anyhow!("Failed to parse expiry as integer"))?,
             );
         let state = params
             .get(STATE_RESULT_PARAM)
-            .ok_or("No state found in response")?;
+            .context("No state found in response")?;
         Ok((token.to_owned(), expires_at, state.to_owned()))
     }
 
@@ -432,11 +432,11 @@ mod implicit {
             (&Method::GET, "/redirect") => html_response(SAVE_AUTH_AFTER_REDIRECT),
             (&Method::POST, "/save_auth") => {
                 let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
-                let (token, expires_at, auth_state) =
-                    ftry_send!(handle_response(query_pairs)
-                        .chain_err(|| "Failed to save auth after redirect"));
+                let (token, expires_at, auth_state) = ftry_send!(
+                    handle_response(query_pairs).context("Failed to save auth after redirect")
+                );
                 if auth_state != state.auth_state_value {
-                    return ftry_send!(Err("Mismatched auth states after redirect"));
+                    return ftry_send!(Err(anyhow!("Mismatched auth states after redirect")));
                 }
                 if expires_at - Instant::now() < MIN_TOKEN_VALIDITY {
                     warn!(
@@ -530,8 +530,8 @@ where
             // Doesn't seem to be open
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
             Err(e) => {
-                return Err(Error::from(e)
-                    .chain_err(|| format!("Failed to check {} is available for binding", addr)))
+                return Err(e)
+                    .with_context(|| format!("Failed to check {} is available for binding", addr))
             }
         }
 
@@ -547,9 +547,7 @@ where
             {
                 continue
             }
-            Err(e) => {
-                return Err(Error::from(e).chain_err(|| format!("Failed to bind to {}", addr)))
-            }
+            Err(e) => return Err(e).with_context(|| format!("Failed to bind to {}", addr)),
         }
     }
     bail!("Could not bind to any valid port: ({:?})", VALID_PORTS)
@@ -604,7 +602,7 @@ pub fn get_token_oauth2_code_grant_pkce(
         .try_recv()
         .expect("Hyper shutdown but code not available - internal error");
     code_grant_pkce::code_to_token(token_url, client_id, &verifier, &code, &redirect_uri)
-        .chain_err(|| "Failed to convert oauth2 code into a token")
+        .context("Failed to convert oauth2 code into a token")
 }
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant

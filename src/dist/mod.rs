@@ -643,19 +643,18 @@ pub trait ServerOutgoing {
 // Trait to handle the creation and verification of job authorization tokens
 #[cfg(feature = "dist-server")]
 pub trait JobAuthorizer: Send {
-    fn generate_token(&self, job_id: JobId) -> ExtResult<String, String>;
-    fn verify_token(&self, job_id: JobId, token: &str) -> ExtResult<(), String>;
+    fn generate_token(&self, job_id: JobId) -> Result<String>;
+    fn verify_token(&self, job_id: JobId, token: &str) -> Result<()>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait SchedulerIncoming: Send + Sync {
-    type Error: ::std::error::Error;
     // From Client
     fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
-    ) -> ExtResult<AllocJobResult, Self::Error>;
+    ) -> ExtResult<AllocJobResult, Error>;
     // From Server
     fn handle_heartbeat_server(
         &self,
@@ -663,34 +662,29 @@ pub trait SchedulerIncoming: Send + Sync {
         server_nonce: ServerNonce,
         num_cpus: usize,
         job_authorizer: Box<dyn JobAuthorizer>,
-    ) -> ExtResult<HeartbeatServerResult, Self::Error>;
+    ) -> ExtResult<HeartbeatServerResult, Error>;
     // From Server
     fn handle_update_job_state(
         &self,
         job_id: JobId,
         server_id: ServerId,
         job_state: JobState,
-    ) -> ExtResult<UpdateJobStateResult, Self::Error>;
+    ) -> ExtResult<UpdateJobStateResult, Error>;
     // From anyone
-    fn handle_status(&self) -> ExtResult<SchedulerStatusResult, Self::Error>;
+    fn handle_status(&self) -> ExtResult<SchedulerStatusResult, Error>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait ServerIncoming: Send + Sync {
-    type Error: ::std::error::Error;
     // From Scheduler
-    fn handle_assign_job(
-        &self,
-        job_id: JobId,
-        tc: Toolchain,
-    ) -> ExtResult<AssignJobResult, Self::Error>;
+    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Error>;
     // From Client
     fn handle_submit_toolchain(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
         tc_rdr: ToolchainReader<'_>,
-    ) -> ExtResult<SubmitToolchainResult, Self::Error>;
+    ) -> ExtResult<SubmitToolchainResult, Error>;
     // From Client
     fn handle_run_job(
         &self,
@@ -699,12 +693,11 @@ pub trait ServerIncoming: Send + Sync {
         command: CompileCommand,
         outputs: Vec<String>,
         inputs_rdr: InputsReader<'_>,
-    ) -> ExtResult<RunJobResult, Self::Error>;
+    ) -> ExtResult<RunJobResult, Error>;
 }
 
 #[cfg(feature = "dist-server")]
 pub trait BuilderIncoming: Send + Sync {
-    type Error: ::std::error::Error;
     // From Server
     fn run_build(
         &self,
@@ -713,7 +706,7 @@ pub trait BuilderIncoming: Send + Sync {
         outputs: Vec<String>,
         inputs_rdr: InputsReader<'_>,
         cache: &Mutex<TcCache>,
-    ) -> ExtResult<BuildResult, Self::Error>;
+    ) -> ExtResult<BuildResult, Error>;
 }
 
 /////////

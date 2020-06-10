@@ -78,7 +78,7 @@ impl Storage for AzureBlobCache {
         let response = self
             .container
             .put(key, data, &self.credentials)
-            .chain_err(|| "Failed to put cache entry in Azure");
+            .fcontext("Failed to put cache entry in Azure");
 
         Box::new(response.map(move |_| start.elapsed()))
     }

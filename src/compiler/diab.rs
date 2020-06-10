@@ -319,7 +319,7 @@ pub fn generate_compile_commands(
 
     let out_file = match parsed_args.outputs.get("obj") {
         Some(obj) => obj,
-        None => return Err("Missing object file output".into()),
+        None => return Err(anyhow!("Missing object file output")),
     };
 
     let mut arguments: Vec<OsString> = vec![

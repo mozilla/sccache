@@ -283,9 +283,9 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
 /// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
 pub fn request_zero_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
-    let response = conn.request(Request::ZeroStats).chain_err(|| {
-        "failed to send zero statistics command to server or failed to receive respone"
-    })?;
+    let response = conn
+        .request(Request::ZeroStats)
+        .context("failed to send zero statistics command to server or failed to receive respone")?;
     if let Response::Stats(stats) = response {
         Ok(*stats)
     } else {
@@ -298,7 +298,7 @@ pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
     let response = conn
         .request(Request::GetStats)
-        .chain_err(|| "Failed to send data to or receive data from server")?;
+        .context("Failed to send data to or receive data from server")?;
     if let Response::Stats(stats) = response {
         Ok(*stats)
     } else {
@@ -311,7 +311,7 @@ pub fn request_dist_status(mut conn: ServerConnection) -> Result<DistInfo> {
     debug!("request_dist_status");
     let response = conn
         .request(Request::DistStatus)
-        .chain_err(|| "Failed to send data to or receive data from server")?;
+        .context("Failed to send data to or receive data from server")?;
     if let Response::DistStatus(info) = response {
         Ok(info)
     } else {
@@ -325,7 +325,7 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
     //TODO: better error mapping
     let response = conn
         .request(Request::Shutdown)
-        .chain_err(|| "Failed to send data to or receive data from server")?;
+        .context("Failed to send data to or receive data from server")?;
     if let Response::ShuttingDown(stats) = response {
         Ok(*stats)
     } else {
@@ -356,7 +356,7 @@ where
     //TODO: better error mapping?
     let response = conn
         .request(req)
-        .chain_err(|| "Failed to send data to or receive data from server")?;
+        .context("Failed to send data to or receive data from server")?;
     if let Response::Compile(response) = response {
         Ok(response)
     } else {
@@ -468,17 +468,19 @@ where
                     return handle_compile_finished(result, stdout, stderr)
                 }
                 Ok(_) => bail!("unexpected response from server"),
-                Err(Error(ErrorKind::Io(ref e), _)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                    eprintln!(
-                        "sccache: warning: The server looks like it shut down \
-                         unexpectedly, compiling locally instead"
-                    );
-                }
                 Err(e) => {
-                    return Err(e).chain_err(|| {
-                        //TODO: something better here?
-                        "error reading compile response from server"
-                    });
+                    match e.downcast_ref::<io::Error>() {
+                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
+                            eprintln!(
+                                "sccache: warning: The server looks like it shut down \
+                                 unexpectedly, compiling locally instead"
+                            );
+                        }
+                        _ => {
+                            //TODO: something better here?
+                            return Err(e).context("error reading compile response from server");
+                        }
+                    }
                 }
             }
         }
@@ -498,7 +500,7 @@ where
     }
     let status = runtime.block_on(
         cmd.spawn()
-            .and_then(|c| c.wait().chain_err(|| "failed to wait for child")),
+            .and_then(|c| c.wait().fcontext("failed to wait for child")),
     )?;
 
     Ok(status.code().unwrap_or_else(|| {
@@ -549,7 +551,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::ShowStats(fmt) => {
             trace!("Command::ShowStats({:?})", fmt);
             let srv = connect_or_start_server(get_port())?;
-            let stats = request_stats(srv).chain_err(|| "failed to get stats from server")?;
+            let stats = request_stats(srv).context("failed to get stats from server")?;
             match fmt {
                 StatsFormat::text => stats.print(),
                 StatsFormat::json => serde_json::to_writer(&mut io::stdout(), &stats)?,
@@ -565,7 +567,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StartServer => {
             trace!("Command::StartServer");
             println!("sccache: Starting the server...");
-            let startup = run_server_process().chain_err(|| "failed to start server process")?;
+            let startup = run_server_process().context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { port } => {
                     if port != DEFAULT_PORT {
@@ -579,15 +581,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StopServer => {
             trace!("Command::StopServer");
             println!("Stopping sccache server...");
-            let server =
-                connect_to_server(get_port()).chain_err(|| "couldn't connect to server")?;
+            let server = connect_to_server(get_port()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
             stats.print();
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             let conn = connect_or_start_server(get_port())?;
-            let stats = request_zero_stats(conn).chain_err(|| "couldn't zero stats on server")?;
+            let stats = request_zero_stats(conn).context("couldn't zero stats on server")?;
             stats.print();
         }
         #[cfg(feature = "dist-client")]
@@ -608,7 +609,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     let cached_config = config::CachedConfig::load()?;
 
                     let parsed_auth_url = Url::parse(auth_url)
-                        .map_err(|_| format!("Failed to parse URL {}", auth_url))?;
+                        .map_err(|_| anyhow!("Failed to parse URL {}", auth_url))?;
                     let token = dist::client_auth::get_token_oauth2_code_grant_pkce(
                         client_id,
                         parsed_auth_url,
@@ -619,7 +620,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                         .with_mut(|c| {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
-                        .chain_err(|| "Unable to save auth token")?;
+                        .context("Unable to save auth token")?;
                     println!("Saved token")
                 }
                 config::DistAuth::Oauth2Implicit {
@@ -629,7 +630,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     let cached_config = config::CachedConfig::load()?;
 
                     let parsed_auth_url = Url::parse(auth_url)
-                        .map_err(|_| format!("Failed to parse URL {}", auth_url))?;
+                        .map_err(|_| anyhow!("Failed to parse URL {}", auth_url))?;
                     let token =
                         dist::client_auth::get_token_oauth2_implicit(client_id, parsed_auth_url)?;
 
@@ -637,7 +638,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                         .with_mut(|c| {
                             c.dist.auth_tokens.insert(auth_url.to_owned(), token);
                         })
-                        .chain_err(|| "Unable to save auth token")?;
+                        .context("Unable to save auth token")?;
                     println!("Saved token")
                 }
             };
@@ -650,7 +651,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             trace!("Command::DistStatus");
             let srv = connect_or_start_server(get_port())?;
             let status =
-                request_dist_status(srv).chain_err(|| "failed to get dist-status from server")?;
+                request_dist_status(srv).context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
         }
         #[cfg(feature = "dist-client")]
@@ -699,7 +700,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 &mut io::stdout(),
                 &mut io::stderr(),
             );
-            return res.chain_err(|| "failed to execute compile");
+            return res.context("failed to execute compile");
         }
     }
 

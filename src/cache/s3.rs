@@ -36,7 +36,7 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     pub fn new(bucket: &str, endpoint: &str, use_ssl: bool) -> Result<S3Cache> {
-        let user_dirs = UserDirs::new().ok_or("Couldn't get user directories")?;
+        let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
         let profile_providers = vec![
@@ -98,13 +98,13 @@ impl Storage for S3Cache {
         let credentials = self
             .provider
             .credentials()
-            .chain_err(|| "failed to get AWS credentials");
+            .fcontext("failed to get AWS credentials");
 
         let bucket = self.bucket.clone();
         let response = credentials.and_then(move |credentials| {
             bucket
                 .put(&key, data, &credentials)
-                .chain_err(|| "failed to put cache entry in s3")
+                .fcontext("failed to put cache entry in s3")
         });
 
         Box::new(response.map(move |_| start.elapsed()))

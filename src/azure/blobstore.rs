@@ -110,7 +110,7 @@ impl BlobContainer {
         Box::new(
             self.client
                 .execute(request)
-                .chain_err(move || format!("failed GET: {}", uri_copy))
+                .fwith_context(move || format!("failed GET: {}", uri_copy))
                 .and_then(|res| {
                     if res.status().is_success() {
                         let content_length = res
@@ -119,7 +119,7 @@ impl BlobContainer {
                             .map(|header::ContentLength(len)| len);
                         Ok((res.into_body(), content_length))
                     } else {
-                        Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                        Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(|(body, content_length)| {
@@ -127,7 +127,7 @@ impl BlobContainer {
                         body.extend_from_slice(&chunk);
                         Ok::<_, reqwest::Error>(body)
                     })
-                    .chain_err(|| "failed to read HTTP body")
+                    .fcontext("failed to read HTTP body")
                     .and_then(move |bytes| {
                         if let Some(len) = content_length {
                             if len != bytes.len() as u64 {
@@ -211,7 +211,7 @@ impl BlobContainer {
                     Ok(())
                 } else {
                     trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(ErrorKind::BadHTTPStatus(res.status()).into())
+                    Err(BadHttpStatusError(res.status()).into())
                 }
             }
             Err(e) => {

@@ -2,8 +2,6 @@
 
 extern crate assert_cmd;
 #[macro_use]
-extern crate error_chain;
-#[macro_use]
 extern crate log;
 extern crate sccache;
 extern crate serde_json;
@@ -161,7 +159,6 @@ fn test_dist_nobuilder() {
 
 struct FailingServer;
 impl ServerIncoming for FailingServer {
-    type Error = Error;
     fn handle_assign_job(&self, _job_id: JobId, _tc: Toolchain) -> Result<AssignJobResult> {
         let need_toolchain = false;
         let state = JobState::Ready;
@@ -188,7 +185,7 @@ impl ServerIncoming for FailingServer {
     ) -> Result<RunJobResult> {
         requester
             .do_update_job_state(job_id, JobState::Started)
-            .chain_err(|| "Updating job state failed")?;
+            .context("Updating job state failed")?;
         bail!("internal build failure")
     }
 }

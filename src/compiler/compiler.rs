@@ -212,10 +212,12 @@ where
                 fmt_duration_as_secs(&start.elapsed())
             );
             let (key, compilation, weak_toolchain_key) = match res {
-                Err(Error(ErrorKind::ProcessError(output), _)) => {
-                    return f_ok((CompileResult::Error, output));
+                Err(e) => {
+                    return match e.downcast::<ProcessError>() {
+                        Ok(ProcessError(output)) => f_ok((CompileResult::Error, output)),
+                        Err(e) => f_err(e),
+                    };
                 }
-                Err(e) => return f_err(e),
                 Ok(HashResult {
                     key,
                     compilation,
@@ -290,7 +292,7 @@ where
                             error!("[{}]: Cache read error: {}", out_pretty, err);
                             if err.is_inner() {
                                 let err = err.into_inner().unwrap();
-                                for e in err.iter().skip(1) {
+                                for e in err.chain().skip(1) {
                                     error!("[{}] \t{}", out_pretty, e);
                                 }
                             }
@@ -332,7 +334,7 @@ where
                             fmt_duration_as_secs(&duration)
                         );
                         let write = CacheWrite::from_objects(outputs, &pool);
-                        let write = write.chain_err(|| "failed to zip up compiler outputs");
+                        let write = write.fcontext("failed to zip up compiler outputs");
                         let o = out_pretty.clone();
                         Box::new(
                             write
@@ -366,7 +368,7 @@ where
                                         compiler_result,
                                     ))
                                 })
-                                .chain_err(move || format!("failed to store `{}` to cache", o)),
+                                .fwith_context(move || format!("failed to store `{}` to cache", o)),
                         )
                     }),
                 )
@@ -398,7 +400,7 @@ where
     let mut path_transformer = dist::PathTransformer::default();
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, true)
-        .chain_err(|| "Failed to generate compile commands");
+        .context("Failed to generate compile commands");
     let (compile_cmd, _dist_compile_cmd, cacheable) = match compile_commands {
         Ok(cmds) => cmds,
         Err(e) => return f_err(e),
@@ -434,7 +436,7 @@ where
     let mut path_transformer = dist::PathTransformer::default();
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
-        .chain_err(|| "Failed to generate compile commands");
+        .context("Failed to generate compile commands");
     let (compile_cmd, dist_compile_cmd, cacheable) = match compile_commands {
         Ok(cmds) => cmds,
         Err(e) => return f_err(e),
@@ -463,13 +465,13 @@ where
     let local_executable = compile_cmd.executable.clone();
     let local_executable2 = local_executable.clone();
     // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
-    Box::new(future::result(dist_compile_cmd.ok_or_else(|| "Could not create distributed compile command".into()))
+    Box::new(future::result(dist_compile_cmd.context("Could not create distributed compile command"))
         .and_then(move |dist_compile_cmd| {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
                 .map(|(_key, path)| path_transformer.as_dist_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
-                .ok_or_else(|| Error::from("Failed to adapt an output path for distributed compile"))?;
+                .context("Failed to adapt an output path for distributed compile")?;
             compilation.into_dist_packagers(path_transformer)
                 .map(|packagers| (dist_compile_cmd, packagers, dist_output_paths))
         })
@@ -503,12 +505,12 @@ where
                                             bail!("Toolchain for job {} could not be cached by server", job_alloc.job_id),
                                     }
                                 })
-                                .chain_err(|| "Could not submit toolchain"))
+                                .fcontext("Could not submit toolchain"))
                         },
                         dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
                             f_ok(job_alloc),
                         dist::AllocJobResult::Fail { msg } =>
-                            f_err(Error::from("Failed to allocate job").chain_err(|| msg)),
+                            f_err(anyhow!("Failed to allocate job").context(msg)),
                     };
                     alloc
                         .and_then(move |job_alloc| {
@@ -517,7 +519,7 @@ where
                             debug!("[{}]: Running job", compile_out_pretty3);
                             dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
                                 .map(move |res| ((job_id, server_id), res))
-                                .chain_err(move || format!("could not run distributed compilation job on {:?}", server_id))
+                                .fwith_context(move || format!("could not run distributed compilation job on {:?}", server_id))
                         })
                 })
                 .and_then(move |((job_id, server_id), (jres, path_transformer))| {
@@ -550,15 +552,15 @@ where
                     for (path, output_data) in jc.outputs {
                         let len = output_data.lens().actual;
                         let local_path = try_or_cleanup!(path_transformer.to_local(&path)
-                            .chain_err(|| format!("unable to transform output path {}", path)));
+                            .with_context(|| format!("unable to transform output path {}", path)));
                         output_paths.push(local_path);
                         // Do this first so cleanup works correctly
                         let local_path = output_paths.last().expect("nothing in vec after push");
 
                         let mut file = try_or_cleanup!(File::create(&local_path)
-                            .chain_err(|| format!("Failed to create output file {}", local_path.display())));
+                            .with_context(|| format!("Failed to create output file {}", local_path.display())));
                         let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
-                            .chain_err(|| format!("Failed to write output to {}", local_path.display())));
+                            .with_context(|| format!("Failed to write output to {}", local_path.display())));
 
                         assert!(count == len);
                     }
@@ -567,26 +569,23 @@ where
                         None => vec![],
                     };
                     try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths, &extra_inputs)
-                        .chain_err(|| "failed to rewrite outputs from compile"));
+                        .with_context(|| "failed to rewrite outputs from compile"));
                     Ok((DistType::Ok(server_id), jc.output.into()))
                 })
         })
         .or_else(move |e| {
-            let mut errmsg = e.to_string();
-            for cause in e.iter() {
-                errmsg.push_str(": ");
-                errmsg.push_str(&cause.to_string());
-            }
-            match e {
-                Error(ErrorKind::HttpClientError(_), _) => f_err(e),
-                Error(ErrorKind::Lru(lru_disk_cache::Error::FileTooLarge), _) => f_err(format!(
+            if let Some(HttpClientError(_)) = e.downcast_ref::<HttpClientError>() {
+                f_err(e)
+            } else if let Some(lru_disk_cache::Error::FileTooLarge) = e.downcast_ref::<lru_disk_cache::Error>() {
+                f_err(anyhow!(
                     "Could not cache dist toolchain for {:?} locally.
                      Increase `toolchain_cache_size` or decrease the toolchain archive size.",
-                    local_executable2)),
-                _ => {
-                    warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
-                    Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
-                }
+                    local_executable2))
+            } else {
+                // `{:#}` prints the error and the causes in a single line.
+                let errmsg = format!("{:#}", e);
+                warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
+                Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
             }
         })
         .map(move |(dt, o)| (cacheable, dt, o))
@@ -818,7 +817,7 @@ pub fn write_temp_file(
         file.write_all(&contents)?;
         Ok((dir, src))
     })
-    .chain_err(|| "failed to write temporary file")
+    .fcontext("failed to write temporary file")
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
@@ -837,7 +836,7 @@ where
 
     // First, see if this looks like rustc.
     let filename = match executable.file_stem() {
-        None => return f_err("could not determine compiler kind"),
+        None => return f_err(anyhow!("could not determine compiler kind")),
         Some(f) => f,
     };
     let filename = filename.to_string_lossy().to_lowercase();
@@ -854,7 +853,7 @@ where
                     return Some(Ok(stdout));
                 }
             }
-            Some(Err(ErrorKind::ProcessError(output)))
+            Some(Err(ProcessError(output)))
         }))
     } else {
         f_ok(None)
@@ -993,7 +992,7 @@ diab
             .and_then(|child| {
                 child
                     .wait_with_output()
-                    .chain_err(|| "failed to read child output")
+                    .fcontext("failed to read child output")
             })
             .map(|e| {
                 drop(tempdir);
@@ -1004,7 +1003,7 @@ diab
     Box::new(output.and_then(move |output| -> SFuture<_> {
         let stdout = match str::from_utf8(&output.stdout) {
             Ok(s) => s,
-            Err(_) => return f_err("Failed to parse output"),
+            Err(_) => return f_err(anyhow!("Failed to parse output")),
         };
         for line in stdout.lines() {
             //TODO: do something smarter here.
@@ -1069,7 +1068,7 @@ diab
         debug!("compiler status: {}", output.status);
         debug!("compiler stderr:\n{}", stderr);
 
-        f_err(stderr.into_owned())
+        f_err(anyhow!(stderr.into_owned()))
     }))
 }
 
@@ -1560,7 +1559,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
-        storage.next_get(f_err("Some Error"));
+        storage.next_get(f_err(anyhow!("Some Error")));
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
@@ -1920,7 +1919,7 @@ mod test_dist {
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
-            f_err("put toolchain failure")
+            f_err(anyhow!("put toolchain failure"))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -1946,7 +1945,7 @@ mod test_dist {
     impl dist::Client for ErrorAllocJobClient {
         fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
             assert_eq!(self.tc, tc);
-            f_err("alloc job failure")
+            f_err(anyhow!("alloc job failure"))
         }
         fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             unreachable!()
@@ -2017,7 +2016,7 @@ mod test_dist {
         ) -> SFuture<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            f_err("submit toolchain failure")
+            f_err(anyhow!("submit toolchain failure"))
         }
         fn do_run_job(
             &self,
@@ -2093,7 +2092,7 @@ mod test_dist {
         ) -> SFuture<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
-            f_err("run job failure")
+            f_err(anyhow!("run job failure"))
         }
         fn put_toolchain(
             &self,

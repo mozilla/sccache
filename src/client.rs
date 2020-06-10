@@ -52,7 +52,7 @@ impl ServerConnection {
         let mut bytes = [0; 4];
         self.reader
             .read_exact(&mut bytes)
-            .chain_err(|| "Failed to read response header")?;
+            .context("Failed to read response header")?;
         let len = BigEndian::read_u32(&bytes);
         trace!("Should read {} more bytes", len);
         let mut data = vec![0; len as usize];

@@ -214,7 +214,7 @@ where
     let temp_dir = ftry!(tempfile::Builder::new()
         .prefix("sccache")
         .tempdir()
-        .chain_err(|| "Failed to create temp dir"));
+        .context("Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
@@ -234,7 +234,7 @@ where
         let name2 = crate_name.clone();
         let parsed = pool.spawn_fn(move || {
             parse_dep_file(&dep_file, &cwd)
-                .chain_err(|| format!("Failed to parse dep info for {}", name2))
+                .with_context(|| format!("Failed to parse dep info for {}", name2))
         });
         Box::new(parsed.map(move |files| {
             trace!(
@@ -336,7 +336,7 @@ where
     }
     let outputs = run_input_output(cmd, None);
     Box::new(outputs.and_then(move |output| -> Result<_> {
-        let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing rustc output")?;
+        let outstr = String::from_utf8(output.stdout).context("Error parsing rustc output")?;
         if log_enabled!(Trace) {
             trace!("get_compiler_outputs: {:?}", outstr);
         }
@@ -363,7 +363,7 @@ impl Rust {
             .lines()
             .find(|l| l.starts_with("host: "))
             .map(|l| &l[6..])
-            .ok_or_else(|| Error::from("rustc verbose version didn't have a line for `host:`")))
+            .context("rustc verbose version didn't have a line for `host:`"))
         .to_string();
 
         // it's fine to use the `executable` directly no matter if proxied or not
@@ -376,11 +376,11 @@ impl Rust {
         let output = run_input_output(cmd, None);
         let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
             //debug!("output.and_then: {}", output);
-            let outstr = String::from_utf8(output.stdout).chain_err(|| "Error parsing sysroot")?;
+            let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
             let sysroot = PathBuf::from(outstr.trim_end());
             let libs_path = sysroot.join(LIBS_DIR);
             let mut libs = fs::read_dir(&libs_path)
-                .chain_err(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?
+                .with_context(|| format!("Failed to list rustc sysroot: `{:?}`", libs_path))?
                 .filter_map(|e| {
                     e.ok().and_then(|e| {
                         e.file_type().ok().and_then(|t| {
@@ -514,12 +514,10 @@ where
             .args(&["which", "rustc"]);
 
         let lookup = run_input_output(child, None)
-            .map_err(|e| format!("Failed to execute rustup which rustc: {}", e).into())
+            .map_err(|e| anyhow!("Failed to execute rustup which rustc: {}", e))
             .and_then(move |output| {
                 String::from_utf8(output.stdout.clone())
-                    .map_err(|e| {
-                        format!("Failed to parse output of rustup which rustc: {}", e).into()
-                    })
+                    .map_err(|e| anyhow!("Failed to parse output of rustup which rustc: {}", e))
                     .and_then(|stdout| {
                         let proxied_compiler = PathBuf::from(stdout.trim());
                         trace!(
@@ -528,18 +526,18 @@ where
                         );
                         let res = fs::metadata(proxied_compiler.as_path())
                             .map_err(|e| {
-                                format!(
+                                anyhow!(
                                     "Failed to obtain metadata of the resolved, true rustc: {}",
                                     e
                                 )
-                                .into()
                             })
                             .and_then(|attr| {
                                 if attr.is_file() {
                                     Ok(FileTime::from_last_modification_time(&attr))
                                 } else {
-                                    Err("proxy: rustup resolved compiler is not of type file"
-                                        .into())
+                                    Err(anyhow!(
+                                        "proxy: rustup resolved compiler is not of type file"
+                                    ))
                                 }
                             })
                             .map(|filetime| (proxied_compiler, filetime));
@@ -674,9 +672,9 @@ impl RustupProxy {
         let f = find_candidate.and_then(move |state| {
             match state {
                 Err(e) => f_ok(Err(e)),
-                Ok(ProxyPath::ToBeDiscovered) => f_ok(Err(
-                    "Failed to discover a rustup executable, but rustc behaves like a proxy".into(),
-                )),
+                Ok(ProxyPath::ToBeDiscovered) => f_ok(Err(anyhow!(
+                    "Failed to discover a rustup executable, but rustc behaves like a proxy"
+                ))),
                 Ok(ProxyPath::None) => f_ok(Ok(None)),
                 Ok(ProxyPath::Candidate(proxy_executable)) => {
                     // verify the candidate is a rustup
@@ -685,14 +683,14 @@ impl RustupProxy {
                     let rustup_candidate_check = run_input_output(child, None).map(move |output| {
                         String::from_utf8(output.stdout.clone())
                             .map_err(|_e| {
-                                "Response of `rustup --version` is not valid UTF-8".into()
+                                anyhow!("Response of `rustup --version` is not valid UTF-8")
                             })
                             .and_then(|stdout| {
                                 if stdout.trim().starts_with("rustup ") {
                                     trace!("PROXY rustup --version produced: {}", &stdout);
                                     Self::new(&proxy_executable).map(|proxy| Some(proxy))
                                 } else {
-                                    Err("Unexpected output or `rustup --version`".into())
+                                    Err(anyhow!("Unexpected output or `rustup --version`"))
                                 }
                             })
                     });
@@ -1751,16 +1749,16 @@ impl pkg::InputsPackager for RustInputsPackager {
                         dep_crate_names.extend(
                             rlib_dep_reader
                                 .discover_rlib_deps(&env_vars, &input_path)
-                                .chain_err(|| {
+                                .with_context(|| {
                                     format!("Failed to read deps of {}", input_path.display())
                                 })?,
                         )
                     }
                 }
             }
-            let dist_input_path = path_transformer
-                .as_dist(&input_path)
-                .chain_err(|| format!("unable to transform input path {}", input_path.display()))?;
+            let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
+                format!("unable to transform input path {}", input_path.display())
+            })?;
             tar_inputs.push((input_path, dist_input_path))
         }
 
@@ -1778,19 +1776,13 @@ impl pkg::InputsPackager for RustInputsPackager {
             let crate_link_path = pkg::simplify_path(&crate_link_path)?;
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
-                Err(ref e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    return Err(Error::from(e)
-                        .chain_err(|| "Failed to read dir entries in crate link path"))
-                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).context("Failed to read dir entries in crate link path"),
             };
             for entry in dir_entries {
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(e) => {
-                        return Err(Error::from(e)
-                            .chain_err(|| "Error during iteration over crate link path"))
-                    }
+                    Err(e) => return Err(e).context("Error during iteration over crate link path"),
                 };
                 let path = entry.path();
 
@@ -1841,7 +1833,7 @@ impl pkg::InputsPackager for RustInputsPackager {
                 // This is a lib that may be of interest during compilation
                 let dist_path = path_transformer
                     .as_dist(&path)
-                    .chain_err(|| format!("unable to transform lib path {}", path.display()))?;
+                    .with_context(|| format!("unable to transform lib path {}", path.display()))?;
                 tar_crate_libs.push((path, dist_path))
             }
         }
@@ -1965,14 +1957,14 @@ impl OutputsRewriter for RustOutputsRewriter {
                 if dep_info == *dep_info_local_path {
                     info!("Replacing using the transformer {:?}", path_transformer);
                     // Found the dep info file, read it in
-                    let f =
-                        fs::File::open(&dep_info).chain_err(|| "Failed to open dep info file")?;
+                    let f = fs::File::open(&dep_info)
+                        .with_context(|| "Failed to open dep info file")?;
                     let mut deps = String::new();
                     { f }.read_to_string(&mut deps)?;
                     // Replace all the output paths, at the beginning of lines
                     for (local_path, dist_path) in get_path_mappings(path_transformer) {
                         let re_str = format!("(?m)^{}", regex::escape(&dist_path));
-                        let local_path_str = local_path.to_str().chain_err(|| {
+                        let local_path_str = local_path.to_str().with_context(|| {
                             format!(
                                 "could not convert {} to string for RE replacement",
                                 local_path.display()
@@ -1989,8 +1981,8 @@ impl OutputsRewriter for RustOutputsRewriter {
                         deps = deps.replace(": ", &format!(":{} ", extra_input_str));
                     }
                     // Write the depinfo file
-                    let f = fs::File::create(&dep_info)
-                        .chain_err(|| "Failed to recreate dep info file")?;
+                    let f =
+                        fs::File::create(&dep_info).context("Failed to recreate dep info file")?;
                     { f }.write_all(deps.as_bytes())?;
                     return Ok(());
                 }
@@ -2103,7 +2095,7 @@ impl RlibDepReader {
         let temp_dir = tempfile::Builder::new()
             .prefix("sccache-rlibreader")
             .tempdir()
-            .chain_err(|| "Could not create temporary directory for rlib output")?;
+            .context("Could not create temporary directory for rlib output")?;
         let temp_rlib = temp_dir.path().join("x.rlib");
 
         let mut cmd = process::Command::new(&executable);
@@ -2167,7 +2159,7 @@ impl RlibDepReader {
     ) -> Result<Vec<String>> {
         let rlib_mtime = fs::metadata(&rlib)
             .and_then(|m| m.modified())
-            .chain_err(|| "Unable to get rlib modified time")?;
+            .context("Unable to get rlib modified time")?;
 
         {
             let mut cache = self.cache.lock().unwrap();
@@ -2203,7 +2195,7 @@ impl RlibDepReader {
             )
         }
 
-        let stdout = String::from_utf8(stdout).chain_err(|| "Error parsing rustc -Z ls output")?;
+        let stdout = String::from_utf8(stdout).context("Error parsing rustc -Z ls output")?;
         let deps: Vec<_> = parse_rustc_z_ls(&stdout)
             .map(|deps| deps.into_iter().map(|dep| dep.to_owned()).collect())?;
 
@@ -2260,10 +2252,10 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
             .next()
             .expect("Zero strings from line split")
             .parse()
-            .chain_err(|| "Could not parse number from rustc -Z ls")?;
+            .context("Could not parse number from rustc -Z ls")?;
         let libstring = line_splits
             .next()
-            .ok_or_else(|| "No lib string on line from rustc -Z ls")?;
+            .context("No lib string on line from rustc -Z ls")?;
         if num != dep_names.len() + 1 {
             bail!(
                 "Unexpected numbering of {} in rustc -Z ls output",
@@ -2278,7 +2270,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
         let libname = {
             let maybe_hash = libstring_splits
                 .next()
-                .ok_or_else(|| "Nothing in lib string from `rustc -Z ls`")?;
+                .context("Nothing in lib string from `rustc -Z ls`")?;
             if let Some(name) = libstring_splits.next() {
                 name
             } else {
