@@ -28,6 +28,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+use anyhow::Context as _;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
@@ -50,8 +51,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(feature = "dist-client")]
 use std::sync::Mutex;
-use std::task::Context as TaskContext;
-use std::task::Waker;
+use std::task::{Context, Waker};
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
@@ -1560,7 +1560,7 @@ impl<R> futures_03::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
-        _cx: &mut TaskContext<'_>,
+        _cx: &mut Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match Pin::new(&mut self.receiver).poll().unwrap() {
             Async::Ready(item) => std::task::Poll::Ready(item),
@@ -1730,7 +1730,7 @@ impl Drop for ActiveInfo {
 impl std::future::Future for WaitUntilZero {
     type Output = io::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
         let mut info = self.info.borrow_mut();
         if info.active == 0 {
             std::task::Poll::Ready(Ok(()))
