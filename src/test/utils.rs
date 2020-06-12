@@ -20,6 +20,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use futures_03::executor::ThreadPool;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -259,4 +260,17 @@ fn test_map_contains_wrong_value() {
     m.insert("a", 1);
     m.insert("b", 3);
     assert_map_contains!(m, ("a", 1), ("b", 2));
+}
+
+pub trait ThreadPoolExt {
+    fn sized(size: usize) -> Self;
+}
+
+impl ThreadPoolExt for ThreadPool {
+    fn sized(size: usize) -> Self {
+        ThreadPool::builder()
+            .pool_size(size)
+            .create()
+            .expect("Failed to start thread pool")
+    }
 }

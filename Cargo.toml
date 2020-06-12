@@ -37,8 +37,7 @@ env_logger = "0.5"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
-futures_03 = { package = "futures", version = "0.3", features = ["compat"] }
-futures-cpupool = "0.1"
+futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
 hmac = { version = "0.7", optional = true }
 http = "0.1"
 hyper = { version = "0.12", optional = true }

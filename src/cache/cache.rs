@@ -24,7 +24,8 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
-use futures_cpupool::CpuPool;
+use crate::util::SpawnExt;
+use futures_03::executor::ThreadPool;
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -140,7 +141,7 @@ impl CacheRead {
         bytes
     }
 
-    pub fn extract_objects<T>(mut self, objects: T, pool: &CpuPool) -> SFuture<()>
+    pub fn extract_objects<T>(mut self, objects: T, pool: &ThreadPool) -> SFuture<()>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
@@ -179,7 +180,7 @@ impl CacheWrite {
     }
 
     /// Create a new cache entry populated with the contents of `objects`.
-    pub fn from_objects<T>(objects: T, pool: &CpuPool) -> SFuture<CacheWrite>
+    pub fn from_objects<T>(objects: T, pool: &ThreadPool) -> SFuture<CacheWrite>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
@@ -276,7 +277,7 @@ pub trait Storage {
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &CpuPool) -> Arc<dyn Storage> {
+pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

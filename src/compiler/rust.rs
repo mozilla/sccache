@@ -24,10 +24,10 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
-use crate::util::{ref_env, HashToDigest, OsStrExt};
+use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -204,7 +204,7 @@ fn get_source_files<T>(
     arguments: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    pool: &CpuPool,
+    pool: &ThreadPool,
 ) -> SFuture<Vec<PathBuf>>
 where
     T: CommandCreatorSync,
@@ -353,7 +353,7 @@ impl Rust {
         env_vars: &[(OsString, OsString)],
         rustc_verbose_version: &str,
         dist_archive: Option<PathBuf>,
-        pool: CpuPool,
+        pool: ThreadPool,
     ) -> SFuture<Rust>
     where
         T: CommandCreatorSync,
@@ -1221,7 +1221,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         _may_dist: bool,
-        pool: &CpuPool,
+        pool: &ThreadPool,
         _rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
         let me = *self;
@@ -2960,7 +2960,7 @@ c:/foo/bar.rs:
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
-        let pool = CpuPool::new(1);
+        let pool = ThreadPool::sized(1);
         let res = hasher
             .generate_hash_key(
                 &creator,
@@ -3050,7 +3050,7 @@ c:/foo/bar.rs:
         });
 
         let creator = new_creator();
-        let pool = CpuPool::new(1);
+        let pool = ThreadPool::sized(1);
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher

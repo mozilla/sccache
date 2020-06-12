@@ -33,7 +33,7 @@ use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures_03::compat::Compat;
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -141,7 +141,7 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: CpuPool,
+    pool: ThreadPool,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
@@ -166,7 +166,7 @@ enum DistClientState {
 #[cfg(not(feature = "dist-client"))]
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
-    fn new(config: &Config, _: &CpuPool) -> Self {
+    fn new(config: &Config, _: &ThreadPool) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
@@ -190,7 +190,7 @@ impl DistClientContainer {
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
-    fn new(config: &Config, pool: &CpuPool) -> Self {
+    fn new(config: &Config, pool: &ThreadPool) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -388,7 +388,9 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
     let runtime = Runtime::new()?;
-    let pool = CpuPool::new(std::cmp::max(20, 2 * num_cpus::get()));
+    let pool = ThreadPool::builder()
+        .pool_size(std::cmp::max(20, 2 * num_cpus::get()))
+        .create()?;
     let dist_client = DistClientContainer::new(config, &pool);
     let storage = storage_from_config(config, &pool);
     let res = SccacheServer::<ProcessCommandCreator>::new(
@@ -429,7 +431,7 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
-        pool: CpuPool,
+        pool: ThreadPool,
         runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
@@ -468,7 +470,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns a reference to a thread pool to run work on
     #[allow(dead_code)]
-    pub fn pool(&self) -> &CpuPool {
+    pub fn pool(&self) -> &ThreadPool {
         &self.service.pool
     }
 
@@ -639,7 +641,7 @@ struct SccacheService<C: CommandCreatorSync> {
     compiler_proxies: Rc<RefCell<HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>>>,
 
     /// Thread pool to execute work in
-    pool: CpuPool,
+    pool: ThreadPool,
 
     /// An object for creating commands.
     ///
@@ -738,7 +740,7 @@ where
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
         client: &Client,
-        pool: CpuPool,
+        pool: ThreadPool,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {

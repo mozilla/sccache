@@ -15,7 +15,8 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
-use futures_cpupool::CpuPool;
+use crate::util::SpawnExt;
+use futures_03::executor::ThreadPool;
 use memcached::client::Client;
 use memcached::proto::NoReplyOperation;
 use memcached::proto::Operation;
@@ -31,11 +32,11 @@ thread_local! {
 #[derive(Clone)]
 pub struct MemcachedCache {
     url: String,
-    pool: CpuPool,
+    pool: ThreadPool,
 }
 
 impl MemcachedCache {
-    pub fn new(url: &str, pool: &CpuPool) -> Result<MemcachedCache> {
+    pub fn new(url: &str, pool: &ThreadPool) -> Result<MemcachedCache> {
         Ok(MemcachedCache {
             url: url.to_owned(),
             pool: pool.clone(),

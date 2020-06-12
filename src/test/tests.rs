@@ -20,7 +20,7 @@ use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
 use futures::sync::oneshot::{self, Sender};
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -75,7 +75,7 @@ where
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let pool = CpuPool::new(1);
+        let pool = ThreadPool::sized(1);
         let dist_client = DistClientContainer::new_disabled();
         let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
 

@@ -657,14 +657,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;
-            use futures_cpupool::CpuPool;
+            use futures_03::executor::ThreadPool;
 
             trace!("Command::PackageToolchain({})", executable.display());
             let mut runtime = Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();
-            let pool = CpuPool::new(1);
+            let pool = ThreadPool::builder().pool_size(1).create()?;
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
