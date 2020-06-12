@@ -16,7 +16,9 @@ use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
+use futures_03::future::TryFutureExt;
+use futures_03::task;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -28,6 +30,20 @@ use std::time;
 use std::time::Duration;
 
 use crate::errors::*;
+
+pub trait SpawnExt: task::SpawnExt {
+    fn spawn_fn<F, T>(&self, f: F) -> SFuture<T>
+    where
+        F: FnOnce() -> Result<T> + std::marker::Send + 'static,
+        T: std::marker::Send + 'static,
+    {
+        self.spawn_with_handle(async move { f() })
+            .map(|f| Box::new(f.compat()) as _)
+            .unwrap_or_else(|e| f_err(e))
+    }
+}
+
+impl<S: task::SpawnExt + ?Sized> SpawnExt for S {}
 
 #[derive(Clone)]
 pub struct Digest {
@@ -43,7 +59,7 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn file<T>(path: T, pool: &CpuPool) -> SFuture<String>
+    pub fn file<T>(path: T, pool: &ThreadPool) -> SFuture<String>
     where
         T: AsRef<Path>,
     {
@@ -68,7 +84,7 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn reader(path: PathBuf, pool: &CpuPool) -> SFuture<String> {
+    pub fn reader(path: PathBuf, pool: &ThreadPool) -> SFuture<String> {
         Box::new(pool.spawn_fn(move || -> Result<_> {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
@@ -109,7 +125,7 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
-pub fn hash_all(files: &[PathBuf], pool: &CpuPool) -> SFuture<Vec<String>> {
+pub fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> SFuture<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
     let pool = pool.clone();

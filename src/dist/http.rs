@@ -1058,11 +1058,12 @@ mod client {
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
+    use crate::util::SpawnExt;
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
     use futures::Future;
-    use futures_cpupool::CpuPool;
+    use futures_03::executor::ThreadPool;
     use std::collections::HashMap;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1088,14 +1089,14 @@ mod client {
         // and only support owned bytes, which means the whole toolchain would end up in memory
         client: Arc<Mutex<reqwest::Client>>,
         client_async: Arc<Mutex<reqwest::r#async::Client>>,
-        pool: CpuPool,
+        pool: ThreadPool,
         tc_cache: Arc<cache::ClientToolchains>,
         rewrite_includes_only: bool,
     }
 
     impl Client {
         pub fn new(
-            pool: &CpuPool,
+            pool: &ThreadPool,
             scheduler_url: reqwest::Url,
             cache_dir: &Path,
             cache_size: u64,

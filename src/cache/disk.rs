@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures_cpupool::CpuPool;
+use crate::util::SpawnExt;
+use futures_03::executor::ThreadPool;
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::LruDiskCache;
 use std::ffi::OsStr;
@@ -29,12 +30,12 @@ pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
     lru: Arc<Mutex<LruDiskCache>>,
     /// Thread pool to execute disk I/O
-    pool: CpuPool,
+    pool: ThreadPool,
 }
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &CpuPool) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &ThreadPool) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
             lru: Arc::new(Mutex::new(

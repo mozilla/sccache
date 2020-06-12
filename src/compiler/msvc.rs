@@ -19,9 +19,9 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::run_input_output;
+use crate::util::{run_input_output, SpawnExt};
 use futures::future::Future;
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
@@ -102,7 +102,7 @@ pub fn detect_showincludes_prefix<T>(
     exe: &OsStr,
     is_clang: bool,
     env: Vec<(OsString, OsString)>,
-    pool: &CpuPool,
+    pool: &ThreadPool,
 ) -> SFuture<String>
 where
     T: CommandCreatorSync,
@@ -830,7 +830,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use futures::Future;
-    use futures_cpupool::CpuPool;
+    use futures_03::executor::ThreadPool;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)
@@ -840,7 +840,7 @@ mod test {
     fn test_detect_showincludes_prefix() {
         drop(env_logger::try_init());
         let creator = new_creator();
-        let pool = CpuPool::new(1);
+        let pool = ThreadPool::sized(1);
         let f = TestFixture::new();
         let srcfile = f.touch("test.h").unwrap();
         let mut s = srcfile.to_str().unwrap();

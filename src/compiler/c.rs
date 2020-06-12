@@ -24,7 +24,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
 use futures::Future;
-use futures_cpupool::CpuPool;
+use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -203,7 +203,7 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub fn new(compiler: I, executable: PathBuf, pool: &CpuPool) -> SFuture<CCompiler<I>> {
+    pub fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> SFuture<CCompiler<I>> {
         Box::new(
             Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
                 executable,
@@ -260,7 +260,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &CpuPool,
+        pool: &ThreadPool,
         rewrite_includes_only: bool,
     ) -> SFuture<HashResult> {
         let me = *self;

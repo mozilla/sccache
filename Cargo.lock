@@ -796,6 +796,7 @@ dependencies = [
  "futures-core",
  "futures-task",
  "futures-util",
+ "num_cpus",
 ]
 
 [[package]]
@@ -2212,7 +2213,6 @@ dependencies = [
  "flate2",
  "futures 0.1.29",
  "futures 0.3.5",
- "futures-cpupool",
  "hmac",
  "http",
  "hyper",
