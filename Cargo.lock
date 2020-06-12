@@ -2316,8 +2316,9 @@ dependencies = [
 
 [[package]]
 name = "selenium-rs"
-version = "0.1.1"
-source = "git+https://github.com/saresend/selenium-rs.git?rev=0314a2420da78cce7454a980d862995750771722#0314a2420da78cce7454a980d862995750771722"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01173ad274e14fafa534a5e660d950ca1939ccebd3955df987b7df7e4e301108"
 dependencies = [
  "reqwest",
  "serde",
