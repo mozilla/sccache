@@ -958,6 +958,49 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_dependency_file() {
+        let args = ovec![
+            "-Fohost_dictionary.obj",
+            "-c",
+            "-Xclang",
+            "-MP",
+            "-Xclang",
+            "-dependency-file",
+            "-Xclang",
+            ".deps/host_dictionary.obj.pp",
+            "-Xclang",
+            "-MT",
+            "-Xclang",
+            "host_dictionary.obj",
+            "dictionary.c"
+        ];
+        let ParsedArguments {
+            dependency_args,
+            preprocessor_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(
+            dependency_args,
+            ovec!(
+                "-Xclang",
+                "-MP",
+                "-Xclang",
+                "-dependency-file",
+                "-Xclang",
+                ".deps/host_dictionary.obj.pp",
+                "-Xclang",
+                "-MT",
+                "-Xclang",
+                "host_dictionary.obj"
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_extra() {
         let args = ovec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"];
         let ParsedArguments {

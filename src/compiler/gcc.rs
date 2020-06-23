@@ -157,7 +157,6 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-aux-info", OsString, Separated, PassThrough),
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
-    take_arg!("-dependency-file", PathBuf, Separated, PreprocessorArgumentPath),
     take_arg!("-fdiagnostics-color", OsString, Concatenated('='), DiagnosticsColor),
     flag!("-fno-diagnostics-color", NoDiagnosticsColorFlag),
     flag!("-fno-working-directory", PreprocessorArgumentFlag),
