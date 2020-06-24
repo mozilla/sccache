@@ -496,7 +496,11 @@ pub fn parse_arguments(
                     arg.normalize(NormalizedDisposition::Concatenated)
                         .iter_os_strings(),
                 ),
-            Some(ProgramDatabase(_)) | Some(DebugInfo) => common_args.extend(
+            Some(ProgramDatabase(_))
+            | Some(DebugInfo)
+            | Some(PassThrough)
+            | Some(PassThroughWithPath(_))
+            | Some(PassThroughWithSuffix(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Concatenated)
                     .iter_os_strings(),
             ),
@@ -1083,6 +1087,37 @@ mod test {
         assert_eq!(
             CompilerArguments::NotCompilation,
             parse_arguments(ovec!["-Fofoo", "foo.c"])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_passthrough() {
+        let args = ovec![
+            "-Oy",
+            "-Gw",
+            "-EHa",
+            "-Fmdictionary-map",
+            "-c",
+            "-Fohost_dictionary.obj",
+            "dictionary.c"
+        ];
+        let ParsedArguments {
+            input,
+            common_args,
+            dependency_args,
+            preprocessor_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("dictionary.c"), input.to_str());
+        assert!(preprocessor_args.is_empty());
+        assert!(dependency_args.is_empty());
+        assert!(!common_args.is_empty());
+        assert_eq!(
+            common_args,
+            ovec!("-Oy", "-Gw", "-EHa", "-Fmdictionary-map")
         );
     }
 
