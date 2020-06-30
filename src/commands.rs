@@ -271,8 +271,20 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
         {
             // If the connection was refused we probably need to start
             // the server.
-            //TODO: check startup value!
-            let _startup = run_server_process()?;
+            match run_server_process()? {
+                ServerStartup::Ok { port: actualport } => {
+                    if port != actualport {
+                        // bail as the next connect_with_retry will fail
+                        bail!(
+                            "sccache: Listening on port {} instead of {}",
+                            actualport,
+                            port
+                        );
+                    }
+                }
+                ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
+                ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
+            }
             let server = connect_with_retry(port)?;
             Ok(server)
         }
