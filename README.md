@@ -100,6 +100,13 @@ Running `sccache --show-stats` will print a summary of cache statistics.
 
 Some notes about using `sccache` with [Jenkins](https://jenkins.io) are [here](docs/Jenkins.md).
 
+To use sccache with cmake, provide the following command line arguments to cmake 3.4 or newer:
+
+```
+-DCMAKE_C_COMPILER_LAUNCHER=sccache
+-DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+```
+
 ---
 
 Build Requirements
