@@ -13,7 +13,7 @@ linked-hash-map = "0.2"
 log = "0.4"
 # This is currently vendored to allow publishing on crates.io.
 #lru-cache = { git = "https://github.com/luser/lru-cache", branch = "non-mut-get" }
-walkdir = "1"
+walkdir = "2.3.1"
 
 [dev-dependencies]
 tempfile = "3"
