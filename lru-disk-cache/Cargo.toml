@@ -8,7 +8,7 @@ repository = "https://github.com/mozilla/sccache/"
 edition = "2018"
 
 [dependencies]
-filetime = "0.1"
+filetime = "0.2"
 linked-hash-map = "0.2"
 log = "0.4"
 # This is currently vendored to allow publishing on crates.io.

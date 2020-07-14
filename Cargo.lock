@@ -654,17 +654,6 @@ checksum = "e88a8acf291dafb59c2d96e8f59828f3838bb1a70398823ade51a84de6a6deed"
 
 [[package]]
 name = "filetime"
-version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714653f3e34871534de23771ac7b26e999651a0a228f47beb324dfdf1dd4b10f"
-dependencies = [
- "cfg-if",
- "libc",
- "redox_syscall",
-]
-
-[[package]]
-name = "filetime"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "affc17579b132fc2461adf7c575cc6e8b134ebca52c51f5411388965227dc695"
@@ -1208,7 +1197,7 @@ dependencies = [
 name = "lru-disk-cache"
 version = "0.4.0"
 dependencies = [
- "filetime 0.1.15",
+ "filetime",
  "linked-hash-map",
  "log 0.4.8",
  "tempfile",
@@ -2110,7 +2099,7 @@ checksum = "0845b9c39ba772da769fe2aaa4d81bfd10695a7ea051d0510702260ff4159841"
 dependencies = [
  "base64 0.9.3",
  "chrono",
- "filetime 0.2.10",
+ "filetime",
  "multipart",
  "num_cpus",
  "rand 0.4.6",
@@ -2199,7 +2188,7 @@ dependencies = [
  "daemonize",
  "directories",
  "env_logger",
- "filetime 0.2.10",
+ "filetime",
  "flate2",
  "futures 0.1.29",
  "futures 0.3.5",
@@ -2560,7 +2549,7 @@ version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c058ad0bd6ccb84faa24cc44d4fc99bee8a5d7ba9ff33aa4d993122d1aeeac2"
 dependencies = [
- "filetime 0.2.10",
+ "filetime",
  "libc",
  "redox_syscall",
  "xattr",
