@@ -9,7 +9,7 @@ edition = "2018"
 
 [dependencies]
 filetime = "0.2"
-linked-hash-map = "0.2"
+linked-hash-map = "0.5"
 log = "0.4"
 # This is currently vendored to allow publishing on crates.io.
 #lru-cache = { git = "https://github.com/luser/lru-cache", branch = "non-mut-get" }
