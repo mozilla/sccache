@@ -16,7 +16,6 @@ use std::hash::BuildHasher;
 use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use crate::lru_cache::{LruCache, Meter};
 use filetime::{set_file_times, FileTime};
@@ -107,11 +106,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub trait ReadSeek: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> ReadSeek for T {}
-
-fn filetime_now() -> FileTime {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    FileTime::from_seconds_since_1970(d.as_secs(), d.subsec_nanos())
-}
 
 enum AddFile<'a> {
     AbsPath(PathBuf),
@@ -293,7 +287,7 @@ impl LruDiskCache {
             .get(rel_path)
             .ok_or(Error::FileNotInCache)
             .and_then(|_| {
-                let t = filetime_now();
+                let t = FileTime::now();
                 set_file_times(&path, t, t)?;
                 File::open(path).map_err(Into::into)
             })
@@ -351,10 +345,7 @@ mod tests {
     fn set_mtime_back<T: AsRef<Path>>(path: T, seconds: usize) {
         let m = fs::metadata(path.as_ref()).unwrap();
         let t = FileTime::from_last_modification_time(&m);
-        let t = FileTime::from_seconds_since_1970(
-            t.seconds_relative_to_1970() - seconds as u64,
-            t.nanoseconds(),
-        );
+        let t = FileTime::from_unix_time(t.unix_seconds() - seconds as i64, t.nanoseconds());
         set_file_times(path, t, t).unwrap();
     }
 
