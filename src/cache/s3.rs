@@ -31,11 +31,13 @@ pub struct S3Cache {
     bucket: Rc<Bucket>,
     /// Credentials provider.
     provider: AutoRefreshingProvider<ChainProvider>,
+    /// Prefix to be used for bucket keys.
+    key_prefix: String,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str, use_ssl: bool) -> Result<S3Cache> {
+    pub fn new(bucket: &str, endpoint: &str, use_ssl: bool, key_prefix: &str) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -50,17 +52,17 @@ impl S3Cache {
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
         let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
-        Ok(S3Cache { bucket, provider })
+        Ok(S3Cache { bucket, provider, key_prefix: key_prefix.to_owned() })
     }
-}
 
-fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+    fn normalize_key(&self, key: &str) -> String {
+        format!("{}{}/{}/{}/{}", &self.key_prefix, &key[0..1], &key[1..2], &key[2..3], &key)
+    }
 }
 
 impl Storage for S3Cache {
     fn get(&self, key: &str) -> SFuture<Cache> {
-        let key = normalize_key(key);
+        let key = self.normalize_key(key);
 
         let result_cb = |result| match result {
             Ok(data) => {
@@ -89,7 +91,7 @@ impl Storage for S3Cache {
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
-        let key = normalize_key(&key);
+        let key = self.normalize_key(&key);
         let start = Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,
