@@ -52,11 +52,22 @@ impl S3Cache {
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
         let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
-        Ok(S3Cache { bucket, provider, key_prefix: key_prefix.to_owned() })
+        Ok(S3Cache {
+            bucket,
+            provider,
+            key_prefix: key_prefix.to_owned(),
+        })
     }
 
     fn normalize_key(&self, key: &str) -> String {
-        format!("{}{}/{}/{}/{}", &self.key_prefix, &key[0..1], &key[1..2], &key[2..3], &key)
+        format!(
+            "{}{}/{}/{}/{}",
+            &self.key_prefix,
+            &key[0..1],
+            &key[1..2],
+            &key[2..3],
+            &key
+        )
     }
 }
 
