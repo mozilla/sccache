@@ -199,6 +199,7 @@ pub struct S3CacheConfig {
     pub bucket: String,
     pub endpoint: String,
     pub use_ssl: bool,
+    pub key_prefix: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -455,14 +456,23 @@ fn config_from_env() -> EnvConfig {
                 _ => format!("{}.s3.amazonaws.com", bucket),
             },
         };
-        let use_ssl = match env::var("SCCACHE_S3_USE_SSL") {
-            Ok(ref value) if value != "off" => true,
-            _ => false,
-        };
+        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
+            .ok()
+            .filter(|value| value != "off")
+            .is_some();
+        let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches("/"))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned() + "/")
+            .unwrap_or_default();
+
         S3CacheConfig {
             bucket,
             endpoint,
             use_ssl,
+            key_prefix,
         }
     });
 
