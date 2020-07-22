@@ -223,7 +223,7 @@ the container for you - you'll need to do that yourself.
 Debugging
 ---------
 
-You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the `RUST_LOG` environment variable, the format of which is described in more detail in the [env_logger](https://docs.rs/env_logger/0.5.3/env_logger/#enabling-logging) documentation.
+You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`RUST_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) e.g. `RUST_LOG=debug`.
 
 Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `RUST_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
 
@@ -235,3 +235,13 @@ Interaction with GNU `make` jobserver
 sccache provides support for a [GNU make jobserver](https://www.gnu.org/software/make/manual/html_node/Job-Slots.html). When the server is started from a process that provides a jobserver, sccache will use that jobserver and provide it to any processes it spawns. (If you are running sccache from a GNU make recipe, you will need to prefix the command with `+` to get this behavior.) If the sccache server is started without a jobserver present it will create its own with the number of slots equal to the number of available CPU cores.
 
 This is most useful when using sccache for Rust compilation, as rustc supports using a jobserver for parallel codegen, so this ensures that rustc will not overwhelm the system with codegen tasks. Cargo implements its own jobserver ([see the information on `NUM_JOBS` in the cargo documentation](https://doc.rust-lang.org/stable/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)) for rustc to use, so using sccache for Rust compilation in cargo via `RUSTC_WRAPPER` should do the right thing automatically.
+
+---
+
+Known Caveats
+-------------
+
+* `proc-macro` crates like `serde_derive` cannot be cached.
+* `bin` crates cannot be cached.
+* Incrementally compiled crates cannot be cached. First party crates are compiled incrementally when building in debug mode. You may find that release builds are faster than debug builds because of this.
+* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in $HOME) in order to benefit each other.
