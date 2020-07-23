@@ -355,6 +355,7 @@ where
     }
 
     let xclang_it = ExpandIncludeFile::new(cwd, &xclangs);
+    let mut follows_plugin_arg = false;
     for arg in ArgsIter::new(xclang_it, (&ARGS[..], &clang::ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         let args = match arg.get_data() {
@@ -371,6 +372,7 @@ where
                 .flag_str()
                 .unwrap_or("Can't handle complex arguments through clang",)),
             None => match arg {
+                Argument::Raw(_) if follows_plugin_arg => &mut common_args,
                 Argument::Raw(_) => cannot_cache!("Can't handle Raw arguments with -Xclang"),
                 Argument::UnknownFlag(_) => {
                     cannot_cache!("Can't handle UnknownFlag arguments with -Xclang")
@@ -392,6 +394,10 @@ where
             Some(DepTarget(_)) | Some(DepArgumentPath(_)) | Some(NeedDepTarget) => {
                 &mut dependency_args
             }
+        };
+        follows_plugin_arg = match arg.flag_str() {
+            Some(s) => s == "-plugin-arg",
+            _ => false,
         };
 
         // Normalize attributes such as "-I foo", "-D FOO=bar", as

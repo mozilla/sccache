@@ -113,8 +113,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
-    take_arg!("-plugin-arg-blink-gc-plugin", OsString, Separated, PassThrough),
-    take_arg!("-plugin-arg-find-bad-constructs", OsString, Separated, PassThrough),
+    take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
 ]);
