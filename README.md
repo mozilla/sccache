@@ -223,9 +223,13 @@ the container for you - you'll need to do that yourself.
 Debugging
 ---------
 
-You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`RUST_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) e.g. `RUST_LOG=debug`.
+You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`RUST_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example
+
+    RUST_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
 
 Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `RUST_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
+
+    SCCACHE_ERROR_LOG=/tmp/sccache_log.txt RUST_LOG=debug sccache
 
 ---
 
@@ -241,7 +245,13 @@ This is most useful when using sccache for Rust compilation, as rustc supports u
 Known Caveats
 -------------
 
-* `proc-macro` crates like `serde_derive` cannot be cached.
-* `bin` crates cannot be cached.
-* Incrementally compiled crates cannot be cached. First party crates are compiled incrementally when building in debug mode. You may find that release builds are faster than debug builds because of this.
-* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in $HOME) in order to benefit each other.
+### General
+
+* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in $HOME) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
+
+### Rust
+
+* Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
+* Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
+
+[More details on Rust caveats](/docs/Rust.md)
