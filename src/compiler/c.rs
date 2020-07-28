@@ -160,6 +160,8 @@ pub enum CCompilerKind {
     MSVC,
     /// NVIDIA cuda compiler
     NVCC,
+    /// Tasking VX
+    TaskingVX,
 }
 
 /// An interface to a specific C compiler.
