@@ -27,7 +27,6 @@ Table of Contents (ToC)
   * [Azure](#azure)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
-* [Known Caveats](#known-caveats)
 
 ---
 
