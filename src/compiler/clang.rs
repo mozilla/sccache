@@ -113,6 +113,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
 ]);
@@ -274,6 +275,68 @@ mod test {
                 "-instcombine-lower-dbg-declare=0",
                 "-Xclang",
                 "-debug-info-kind=constructor"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_xclang_plugin_arg_blink_gc_plugin() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-add-plugin",
+            "-Xclang",
+            "blink-gc-plugin",
+            "-Xclang",
+            "-plugin-arg-blink-gc-plugin",
+            "-Xclang",
+            "no-members-in-stack-allocated"
+        );
+        assert_eq!(
+            ovec![
+                "-Xclang",
+                "-add-plugin",
+                "-Xclang",
+                "blink-gc-plugin",
+                "-Xclang",
+                "-plugin-arg-blink-gc-plugin",
+                "-Xclang",
+                "no-members-in-stack-allocated"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_xclang_plugin_arg_find_bad_constructs() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-add-plugin",
+            "-Xclang",
+            "find-bad-constructs",
+            "-Xclang",
+            "-plugin-arg-find-bad-constructs",
+            "-Xclang",
+            "check-ipc"
+        );
+        assert_eq!(
+            ovec![
+                "-Xclang",
+                "-add-plugin",
+                "-Xclang",
+                "find-bad-constructs",
+                "-Xclang",
+                "-plugin-arg-find-bad-constructs",
+                "-Xclang",
+                "check-ipc"
             ],
             a.common_args
         );
