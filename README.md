@@ -223,13 +223,13 @@ the container for you - you'll need to do that yourself.
 Debugging
 ---------
 
-You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`RUST_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example
+You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example
 
-    RUST_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
+    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
 
-Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `RUST_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
+Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
 
-    SCCACHE_ERROR_LOG=/tmp/sccache_log.txt RUST_LOG=debug sccache
+    SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=debug sccache
 
 ---
 

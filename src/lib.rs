@@ -61,6 +61,8 @@ pub mod util;
 
 use std::env;
 
+const LOGGING_ENV: &str = "SCCACHE_LOG";
+
 pub fn main() {
     init_logging();
     std::process::exit(match cmdline::parse() {
@@ -87,8 +89,8 @@ pub fn main() {
 }
 
 fn init_logging() {
-    if env::var("RUST_LOG").is_ok() {
-        match env_logger::try_init() {
+    if env::var(LOGGING_ENV).is_ok() {
+        match env_logger::Builder::from_env(LOGGING_ENV).try_init() {
             Ok(_) => (),
             Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
         }
