@@ -28,20 +28,25 @@ use std::process;
 
 use crate::errors::*;
 
-/// A unit struct on which to implement `CCompilerImpl`.
+/// A struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct GCC;
+pub struct GCC {
+    pub gplusplus: bool,
+}
 
 impl CCompilerImpl for GCC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::GCC
+    }
+    fn plusplus(&self) -> bool {
+        self.gplusplus
     }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, &ARGS[..])
+        parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus)
     }
 
     fn preprocess<T>(
@@ -207,6 +212,7 @@ pub fn parse_arguments<S>(
     arguments: &[OsString],
     cwd: &Path,
     arg_info: S,
+    plusplus: bool,
 ) -> CompilerArguments<ParsedArguments>
 where
     S: SearchableArgInfo<ArgData>,
@@ -426,9 +432,16 @@ where
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
-    if language == None {
-        language = Language::from_file_name(Path::new(&input));
-    }
+    let language = match language {
+        None => {
+            let mut lang = Language::from_file_name(Path::new(&input));
+            if let (Some(Language::C), true) = (lang, plusplus) {
+                lang = Some(Language::Cxx);
+            }
+            lang
+        }
+        l => l,
+    };
     let language = match language {
         Some(l) => l,
         None => cannot_cache!("unknown source language"),
@@ -714,9 +727,12 @@ mod test {
     use crate::test::utils::*;
     use futures::Future;
 
-    fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
+    fn parse_arguments_(
+        arguments: Vec<String>,
+        plusplus: bool,
+    ) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&args, ".".as_ref(), &ARGS[..])
+        parse_arguments(&args, ".".as_ref(), &ARGS[..], plusplus)
     }
 
     #[test]
@@ -731,7 +747,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -755,7 +771,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -770,7 +786,7 @@ mod test {
     #[test]
     fn test_parse_arguments_default_outputdir() {
         let args = stringvec!["-c", "/tmp/foo.c"];
-        let ParsedArguments { outputs, .. } = match parse_arguments_(args) {
+        let ParsedArguments { outputs, .. } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -788,7 +804,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -827,7 +843,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -851,7 +867,7 @@ mod test {
             common_args,
             profile_generate,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -880,7 +896,7 @@ mod test {
             common_args,
             profile_generate,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -909,7 +925,7 @@ mod test {
             common_args,
             profile_generate,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -933,7 +949,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -958,7 +974,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -993,7 +1009,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1018,7 +1034,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1044,7 +1060,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1074,7 +1090,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1094,7 +1110,7 @@ mod test {
     fn test_parse_arguments_diagnostics_color() {
         fn get_color_mode(color_flag: &str) -> ColorMode {
             let args = stringvec!["-c", "foo.c", color_flag];
-            match parse_arguments_(args) {
+            match parse_arguments_(args, false) {
                 CompilerArguments::Ok(args) => args.color_mode,
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
@@ -1110,7 +1126,7 @@ mod test {
     #[test]
     fn color_mode_preprocess() {
         let args = stringvec!["-c", "foo.c", "-fdiagnostics-color"];
-        let args = match parse_arguments_(args) {
+        let args = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1129,7 +1145,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(args) {
+        } = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1143,14 +1159,17 @@ mod test {
 
     #[test]
     fn test_parse_arguments_empty_args() {
-        assert_eq!(CompilerArguments::NotCompilation, parse_arguments_(vec!()));
+        assert_eq!(
+            CompilerArguments::NotCompilation,
+            parse_arguments_(vec!(), false)
+        );
     }
 
     #[test]
     fn test_parse_arguments_not_compile() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(stringvec!["-o", "foo"])
+            parse_arguments_(stringvec!["-o", "foo"], false)
         );
     }
 
@@ -1158,7 +1177,7 @@ mod test {
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(
             CompilerArguments::CannotCache("multiple input files", None),
-            parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"])
+            parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"], false)
         );
     }
 
@@ -1166,7 +1185,10 @@ mod test {
     fn test_parse_arguments_link() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(stringvec!["-shared", "foo.o", "-o", "foo.so", "bar.o"])
+            parse_arguments_(
+                stringvec!["-shared", "foo.o", "-o", "foo.so", "bar.o"],
+                false
+            )
         );
     }
 
@@ -1174,17 +1196,17 @@ mod test {
     fn test_parse_arguments_pgo() {
         assert_eq!(
             CompilerArguments::CannotCache("-fprofile-use", None),
-            parse_arguments_(stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"])
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-fprofile-use", "-o", "foo.o"],
+                false
+            )
         );
         assert_eq!(
             CompilerArguments::CannotCache("-fprofile-use", None),
-            parse_arguments_(stringvec![
-                "-c",
-                "foo.c",
-                "-fprofile-use=file",
-                "-o",
-                "foo.o"
-            ])
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-fprofile-use=file", "-o", "foo.o"],
+                false
+            )
         );
     }
 
@@ -1192,11 +1214,11 @@ mod test {
     fn test_parse_arguments_response_file() {
         assert_eq!(
             CompilerArguments::CannotCache("@", None),
-            parse_arguments_(stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"])
+            parse_arguments_(stringvec!["-c", "foo.c", "@foo", "-o", "foo.o"], false)
         );
         assert_eq!(
             CompilerArguments::CannotCache("@", None),
-            parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"])
+            parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"], false)
         );
     }
 
@@ -1223,7 +1245,7 @@ mod test {
             msvc_show_includes,
             common_args,
             ..
-        } = match parse_arguments_(vec![arg]) {
+        } = match parse_arguments_(vec![arg], false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -1275,5 +1297,30 @@ mod test {
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_parse_arguments_plusplus() {
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args, true) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 }

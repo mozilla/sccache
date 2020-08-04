@@ -970,8 +970,12 @@ nvcc
 msvc-clang
 #elif defined(_MSC_VER)
 msvc
+#elif defined(__clang__) && defined(__cplusplus)
+clang++
 #elif defined(__clang__)
 clang
+#elif defined(__GNUC__) && defined(__cplusplus)
+g++
 #elif defined(__GNUC__)
 gcc
 #elif defined(__DCC__)
@@ -1008,11 +1012,17 @@ diab
         for line in stdout.lines() {
             //TODO: do something smarter here.
             match line {
-                "clang" => {
-                    debug!("Found clang");
+                "clang" | "clang++" => {
+                    debug!("Found {}", line);
                     return Box::new(
-                        CCompiler::new(Clang, executable, &pool)
-                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                        CCompiler::new(
+                            Clang {
+                                clangplusplus: line == "clang++",
+                            },
+                            executable,
+                            &pool,
+                        )
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
                     );
                 }
                 "diab" => {
@@ -1022,11 +1032,17 @@ diab
                             .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
                     );
                 }
-                "gcc" => {
-                    debug!("Found GCC");
+                "gcc" | "g++" => {
+                    debug!("Found {}", line);
                     return Box::new(
-                        CCompiler::new(GCC, executable, &pool)
-                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                        CCompiler::new(
+                            GCC {
+                                gplusplus: line == "g++",
+                            },
+                            executable,
+                            &pool,
+                        )
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
                     );
                 }
                 "msvc" | "msvc-clang" => {

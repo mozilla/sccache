@@ -30,20 +30,31 @@ use std::process;
 
 use crate::errors::*;
 
-/// A unit struct on which to implement `CCompilerImpl`.
+/// A struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct Clang;
+pub struct Clang {
+    /// true iff this is clang++.
+    pub clangplusplus: bool,
+}
 
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
+    }
+    fn plusplus(&self) -> bool {
+        self.clangplusplus
     }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]))
+        gcc::parse_arguments(
+            arguments,
+            cwd,
+            (&gcc::ARGS[..], &ARGS[..]),
+            self.clangplusplus,
+        )
     }
 
     fn preprocess<T>(
@@ -131,7 +142,10 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        Clang.parse_arguments(&arguments, ".".as_ref())
+        Clang {
+            clangplusplus: false,
+        }
+        .parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {

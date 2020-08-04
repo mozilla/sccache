@@ -38,6 +38,9 @@ impl CCompilerImpl for Diab {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Diab
     }
+    fn plusplus(&self) -> bool {
+        false
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],

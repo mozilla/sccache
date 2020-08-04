@@ -47,6 +47,9 @@ impl CCompilerImpl for MSVC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::MSVC
     }
+    fn plusplus(&self) -> bool {
+        false
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
