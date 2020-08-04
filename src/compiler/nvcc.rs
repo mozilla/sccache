@@ -39,12 +39,15 @@ impl CCompilerImpl for NVCC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::NVCC
     }
+    fn plusplus(&self) -> bool {
+        false
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]))
+        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
     }
 
     fn preprocess<T>(
