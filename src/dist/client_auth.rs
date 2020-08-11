@@ -2,7 +2,7 @@ use futures::future;
 use futures::prelude::*;
 use futures::sync::oneshot;
 use http::StatusCode;
-use hyper::body::Payload;
+use hyper::body::HttpBody;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
@@ -481,20 +481,19 @@ struct ServiceFn<F, R> {
     _req: PhantomData<fn(R)>,
 }
 
-impl<F, ReqBody, Ret, ResBody> Service for ServiceFn<F, ReqBody>
+impl<F, ReqBody, Ret, ResBody> Service<ReqBody> for ServiceFn<F, ReqBody>
 where
     F: Fn(Request<ReqBody>) -> Ret,
-    ReqBody: Payload,
+    ReqBody: HttpBody,
     Ret: IntoFuture<Item = Response<ResBody>>,
     Ret::Error: Into<Box<dyn StdError + Send + Sync>>,
-    ResBody: Payload,
+    ResBody: HttpBody,
 {
-    type ReqBody = ReqBody;
-    type ResBody = ResBody;
+    type Response = ResBody;
     type Error = Ret::Error;
     type Future = Ret::Future;
 
-    fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         (self.f)(req).into_future()
     }
 }

@@ -14,16 +14,22 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::simples3::{
-    AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
+    AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, Ssl,
 };
 use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
+use futures_03::{future::TryFutureExt as _};
+use rusoto_core::Region;
+use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3};
 use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-
+use tokio_02::io::AsyncReadExt as _;
+use hyper_rustls;
+use hyper::Client;
 use crate::errors::*;
+use hyperx::header::CacheDirective;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
@@ -33,10 +39,17 @@ pub struct S3Cache {
     provider: AutoRefreshingProvider<ChainProvider>,
     /// Prefix to be used for bucket keys.
     key_prefix: String,
+    client: S3Client,
+    bucket_name: String,
 }
+
+
+// TODO create a custom credential provider that also reads
+// TODO `AWS_SESSION_TOKEN`, `AWS_ACCESS_KEY_ID` besides the config vars.
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
+    /// TODO: Handle custom region
     pub fn new(bucket: &str, endpoint: &str, use_ssl: bool, key_prefix: &str) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
@@ -51,12 +64,60 @@ impl S3Cache {
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
+        let bucket_name = bucket.to_owned();
         let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
+        let region = Region::default();
+
+        let client: Client<_, hyper::Body> = Client::builder();
+        let client = if use_ssl {
+            S3Client::new_with_client(
+                hyper::client::Client::builder(),
+                hyper_rustls::HttpsConnector::new(),
+                region
+            )
+        } else {
+            S3Client::new(region);
+        };
+        
         Ok(S3Cache {
             bucket,
             provider,
             key_prefix: key_prefix.to_owned(),
+            client,
+            bucket_name,
         })
+    }
+
+    async fn get_object(client: S3Client, request: GetObjectRequest) -> Result<Cache> {
+        let result = client.get_object(request).await;
+        match result {
+            Ok(output) => Self::read_object_output(output).await,
+            Err(rusoto_core::RusotoError::Service(rusoto_s3::GetObjectError::NoSuchKey(_))) => {
+                Ok(Cache::Miss)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn read_object_output(output: GetObjectOutput) -> Result<Cache> {
+        let body = output.body.context("no HTTP body")?;
+        let mut body_reader = body.into_async_read();
+        let mut body = Vec::new();
+        body_reader
+            .read_to_end(&mut body)
+            .await
+            .context("failed to read HTTP body")?;
+        let hit = CacheRead::from(io::Cursor::new(body))?;
+        Ok(Cache::Hit(hit))
+    }
+
+    async fn put_object(client: S3Client, request: PutObjectRequest) -> Result<()> {
+        client
+            .put_object(request)
+            .await
+            .map(|_| ())
+            .context("failed to put cache entry in s3")
+            .into()
     }
 
     fn normalize_key(&self, key: &str) -> String {
@@ -75,30 +136,14 @@ impl Storage for S3Cache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         let key = self.normalize_key(key);
 
-        let result_cb = |result| match result {
-            Ok(data) => {
-                let hit = CacheRead::from(io::Cursor::new(data))?;
-                Ok(Cache::Hit(hit))
-            }
-            Err(e) => {
-                warn!("Got AWS error: {:?}", e);
-                Ok(Cache::Miss)
-            }
+        let client = self.client.clone();
+        let request = GetObjectRequest {
+            bucket: self.bucket_name.clone(),
+            key,
+            ..Default::default()
         };
 
-        let bucket = self.bucket.clone();
-        let response = self
-            .provider
-            .credentials()
-            .then(move |credentials| match credentials {
-                Ok(creds) => bucket.get(&key, Some(&creds)),
-                Err(e) => {
-                    debug!("Could not load AWS creds: {}", e);
-                    bucket.get(&key, None)
-                }
-            })
-            .then(result_cb);
-        Box::new(response)
+        Box::new(Box::pin(Self::get_object(client, request)).compat())
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
@@ -108,19 +153,25 @@ impl Storage for S3Cache {
             Ok(data) => data,
             Err(e) => return f_err(e),
         };
-        let credentials = self
-            .provider
-            .credentials()
-            .fcontext("failed to get AWS credentials");
+        let data_length = data.len();
 
-        let bucket = self.bucket.clone();
-        let response = credentials.and_then(move |credentials| {
-            bucket
-                .put(&key, data, &credentials)
-                .fcontext("failed to put cache entry in s3")
-        });
+        let client = self.client.clone();
+        let request = PutObjectRequest {
+            bucket: self.bucket_name.clone(),
+            body: Some(data.into()),
+            // Two weeks
+            cache_control: Some(CacheDirective::MaxAge(1_296_000).to_string()),
+            content_length: Some(data_length as i64),
+            content_type: Some("application/octet-stream".to_owned()),
+            key,
+            ..Default::default()
+        };
 
-        Box::new(response.map(move |_| start.elapsed()))
+        Box::new(
+            Box::pin(Self::put_object(client, request))
+                .compat()
+                .then(move |_| future::ok(start.elapsed())),
+        )
     }
 
     fn location(&self) -> String {

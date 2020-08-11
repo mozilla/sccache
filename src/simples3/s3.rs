@@ -1,6 +1,10 @@
 // Originally from https://github.com/rust-lang/crates.io/blob/master/src/s3/lib.rs
 //#![deny(warnings)]
 
+//! The whole module is pending removal.
+
+#![allow(dead_code)]
+
 #[allow(unused_imports, deprecated)]
 use std::ascii::AsciiExt;
 use std::fmt;
