@@ -13,62 +13,39 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::simples3::{
-    AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
-};
-use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
 use futures_03::{compat::Compat as _, future::TryFutureExt as _};
-use rusoto_core::Region;
+use hyperx::header::CacheDirective;
+use rusoto_core::{self, Region};
 use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3 as _, S3};
 use std::io;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio_02::io::AsyncReadExt as _;
 
 use crate::errors::*;
-use hyperx::header::CacheDirective;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
-    /// The S3 bucket.
-    bucket: Rc<Bucket>,
-    /// Credentials provider.
-    provider: AutoRefreshingProvider<ChainProvider>,
+    /// The name of the bucket.
+    bucket_name: String,
+    /// The S3 client to be used for the Get and Put requests.
+    client: S3Client,
     /// Prefix to be used for bucket keys.
     key_prefix: String,
-    client: S3Client,
-    bucket_name: String,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     /// TODO: Handle custom region
+    /// TODO: Handle endpoint?
     /// TODO: Handle use_ssl
     pub fn new(bucket: &str, endpoint: &str, use_ssl: bool, key_prefix: &str) -> Result<S3Cache> {
-        let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
-        let home = user_dirs.home_dir();
-
-        let profile_providers = vec![
-            ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
-            //TODO: this is hacky, this is where our mac builders store their
-            // credentials. We should either match what boto does more directly
-            // or make those builders put their credentials in ~/.aws/credentials
-            ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
-        ];
-        let provider =
-            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
-        let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
-        let bucket_name = bucket.to_owned();
-        let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
         let client = S3Client::new(Region::default());
         Ok(S3Cache {
-            bucket,
-            provider,
-            key_prefix: key_prefix.to_owned(),
+            bucket_name: bucket.to_owned(),
             client,
-            bucket_name,
+            key_prefix: key_prefix.to_owned(),
         })
     }
 
@@ -159,7 +136,7 @@ impl Storage for S3Cache {
     }
 
     fn location(&self) -> String {
-        format!("S3, bucket: {}", self.bucket)
+        format!("S3, bucket: {}", self.bucket_name)
     }
 
     fn current_size(&self) -> SFuture<Option<u64>> {
