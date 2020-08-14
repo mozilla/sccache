@@ -22,12 +22,14 @@ use hyper::Client;
 use hyper_rustls;
 use hyperx::header::CacheDirective;
 use rusoto_core::{
+    self,
     credential::{AutoRefreshingProvider, ChainProvider, ProfileProvider},
     Region,
 };
+use std::rc::Rc;
 use rusoto_s3::{Bucket, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3};
 use std::io;
-use std::rc::Rc;
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tokio_02::io::AsyncReadExt as _;
 
@@ -47,37 +49,52 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     /// TODO: Handle custom region
-    pub fn new(bucket: &str, endpoint: &str, use_ssl: bool, key_prefix: &str) -> Result<S3Cache> {
+    pub fn new(bucket: &str, region: Option<&str>, endpoint: Option<&str>, key_prefix: &str) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
-        let profile_providers = vec![
-            ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default"),
-            //TODO: this is hacky, this is where our mac builders store their
-            // credentials. We should either match what boto does more directly
-            // or make those builders put their credentials in ~/.aws/credentials
-            ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
-        ];
+        let profile_provider =
+            ProfileProvider::with_configuration(home.join(".aws").join("credentials"), "default")
+            // //TODO: this is hacky, this is where our mac builders store their
+            // // credentials. We should either match what boto does more directly
+            // // or make those builders put their credentials in ~/.aws/credentials
+            // ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
+        ;
         let provider =
-            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
+            AutoRefreshingProvider::new(ChainProvider::with_profile_provider(profile_provider) )?;
         let bucket_name = bucket.to_owned();
-        let url = "https://s3"; // FIXME
-        let bucket = Rc::new(Bucket::new(url)?);
-        let region = Region::default();
-
-        let client: Client<_, hyper::Body> = Client::builder();
-        let client = if use_ssl {
+        let bucket = Rc::new(Bucket {
+            creation_date: None,
+            name: Some(bucket_name.clone()),
+        });
+        let region = match endpoint {
+            Some(endpoint) => Region::Custom {
+                name: region
+                    .map(ToOwned::to_owned)
+                    .unwrap_or(Region::default().name().to_owned()),
+                endpoint: endpoint.to_owned(),
+            },
+            None => region
+                .map(FromStr::from_str)
+                .unwrap_or_else(|| Ok(Region::default()))?,
+        };
+        
+        let client = if endpoint.filter(|endpoint| endpoint.starts_with("https")).is_some() {
+            let connector = hyper_rustls::HttpsConnector::new();
+            // let client = hyper::client::Client::builder().build(connector);
+            let client = rusoto_core::HttpClient::from_connector(connector);
+            let client = rusoto_core::Client::new_with(provider, client);
             S3Client::new_with_client(
-                hyper::client::Client::builder(),
-                hyper_rustls::HttpsConnector::new(),
+                client,
                 region,
             )
         } else {
-            S3Client::new(region);
+            S3Client::new(region)
         };
 
+        // TODO verify endpoint is used
         Ok(S3Cache {
-            bucket_name: bucket.to_owned(),
+            bucket_name,
             client,
             key_prefix: key_prefix.to_owned(),
         })
@@ -146,10 +163,7 @@ impl Storage for S3Cache {
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let key = self.normalize_key(&key);
         let start = Instant::now();
-        let data = match entry.finish() {
-            Ok(data) => data,
-            Err(e) => return f_err(e),
-        };
+        let data = entry.finish()?;
         let data_length = data.len();
 
         let client = self.client.clone();
@@ -164,13 +178,8 @@ impl Storage for S3Cache {
             ..Default::default()
         };
 
-        Self::put_object(client, request).await
-
-        // Box::new(
-        //     Box::pin(Self::put_object(client, request))
-        //         .compat()
-        //         .then(move |_| future::ok(start.elapsed())),
-        // )
+        Self::put_object(client, request).await?;
+        Ok(start.elapsed())
     }
 
     fn location(&self) -> String {
