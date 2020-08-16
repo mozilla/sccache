@@ -220,6 +220,20 @@ fn run_server_process() -> Result<ServerStartup> {
     };
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
+    let process_flags = match env::var("SCCACHE_NO_DETACHED") {
+        Ok(no_detached) if no_detached == "true" || no_detached == "1" => {
+            if log_enabled!(Trace) {
+                trace!("creating process without DETACHED_PROCESS flag")
+            }
+            CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        }
+        _ => {
+            CREATE_UNICODE_ENVIRONMENT
+                | CREATE_NEW_PROCESS_GROUP
+                | CREATE_NO_WINDOW
+                | DETACHED_PROCESS
+        }
+    };
     if unsafe {
         CreateProcessW(
             exe.as_mut_ptr(),
@@ -227,10 +241,7 @@ fn run_server_process() -> Result<ServerStartup> {
             ptr::null_mut(),
             ptr::null_mut(),
             FALSE,
-            CREATE_UNICODE_ENVIRONMENT
-                | DETACHED_PROCESS
-                | CREATE_NEW_PROCESS_GROUP
-                | CREATE_NO_WINDOW,
+            process_flags,
             envp.as_mut_ptr() as LPVOID,
             ptr::null(),
             &mut si,
