@@ -156,7 +156,7 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 # Run JWK token crypto against openssl ref impl
