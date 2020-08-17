@@ -28,6 +28,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use filetime::FileTime;
 use futures::sync::mpsc;
