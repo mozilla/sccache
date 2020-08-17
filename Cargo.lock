@@ -76,6 +76,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eab1c04a571841102f5345a8fc0f6bb3d31c315dec879b5c6e42e40ce7ffa34e"
 
 [[package]]
+name = "ascii"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf56136a5198c7b01a49e3afcbef6cf84597273d298f54432926024107b0109"
+
+[[package]]
 name = "assert_cmd"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -311,6 +317,12 @@ name = "chunked_transfer"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498d20a7aaf62625b9bf26e637cf7736417cde1d0c99f1d04d1170229a85cf87"
+
+[[package]]
+name = "chunked_transfer"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d29eb15132782371f71da8f947dba48b3717bdb6fa771b9b434d645e40a7193"
 
 [[package]]
 name = "clap"
@@ -2110,7 +2122,7 @@ dependencies = [
  "term",
  "threadpool",
  "time",
- "tiny_http",
+ "tiny_http 0.6.2",
  "url 1.7.2",
 ]
 
@@ -2230,6 +2242,7 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+ "tiny_http 0.7.0",
  "tokio-compat",
  "tokio-io",
  "tokio-named-pipes",
@@ -2659,14 +2672,28 @@ dependencies = [
 [[package]]
 name = "tiny_http"
 version = "0.6.2"
-source = "git+https://github.com/tiny-http/tiny-http.git?rev=619680de#619680dea2c4f1dfb31b552d5e7b472a9f25b8b8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1661fa0a44c95d01604bd05c66732a446c657efb62b5164a7a083a3b552b4951"
 dependencies = [
  "ascii 0.8.7",
  "chrono",
- "chunked_transfer",
+ "chunked_transfer 0.3.1",
  "log 0.4.8",
  "openssl",
  "url 1.7.2",
+]
+
+[[package]]
+name = "tiny_http"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15ce4fc3c4cdea1a4399bb1819a539195fb69db4bbe0bde5b7c7f18fed412e02"
+dependencies = [
+ "ascii 1.0.0",
+ "chrono",
+ "chunked_transfer 1.2.0",
+ "log 0.4.8",
+ "url 2.1.1",
 ]
 
 [[package]]
