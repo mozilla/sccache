@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, Storage};
+use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -104,6 +104,11 @@ pub type DistPackagers = (
     Box<dyn pkg::ToolchainPackager>,
     Box<dyn OutputsRewriter>,
 );
+
+enum CacheLookupResult {
+    Success(CompileResult, process::Output),
+    Miss(MissType),
+}
 
 /// An interface to a compiler for argument parsing.
 pub trait Compiler<T>: Send + 'static
@@ -240,13 +245,14 @@ where
 
             // Check the result of the cache lookup.
             Box::new(cache_status.then(move |result| {
+                let out_pretty2 = out_pretty.clone();
                 let duration = start.elapsed();
                 let outputs = compilation
                     .outputs()
                     .map(|(key, path)| (key.to_string(), cwd.join(path)))
                     .collect::<HashMap<_, _>>();
 
-                let miss_type = match result {
+                let miss_type = Box::new(match result {
                     Ok(Cache::Hit(mut entry)) => {
                         debug!(
                             "[{}]: Cache hit in {}",
@@ -255,14 +261,24 @@ where
                         );
                         let stdout = entry.get_stdout();
                         let stderr = entry.get_stderr();
-                        let write = entry.extract_objects(outputs, &pool);
+                        let write = entry.extract_objects(outputs.clone(), &pool);
                         let output = process::Output {
                             status: exit_status(0),
                             stdout,
                             stderr,
                         };
-                        let result = CompileResult::CacheHit(duration);
-                        return Box::new(write.map(|_| (result, output))) as SFuture<_>;
+                        let hit = CompileResult::CacheHit(duration);
+                        Box::new(write.then(move |result| match result {
+                            Ok(()) => f_ok(CacheLookupResult::Success(hit, output)),
+                            Err(e) => {
+                                if let Some(_) = e.downcast_ref::<DecompressionFailure>() {
+                                    debug!("[{}]: Failed to decompress object", out_pretty);
+                                    f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
+                                } else {
+                                    f_err(e)
+                                }
+                            }
+                        }))
                     }
                     Ok(Cache::Miss) => {
                         debug!(
@@ -270,7 +286,7 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        MissType::Normal
+                        f_ok(CacheLookupResult::Miss(MissType::Normal))
                     }
                     Ok(Cache::Recache) => {
                         debug!(
@@ -278,7 +294,7 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        MissType::ForcedRecache
+                        f_ok(CacheLookupResult::Miss(MissType::ForcedRecache))
                     }
                     Err(err) => {
                         if err.is_elapsed() {
@@ -287,7 +303,7 @@ where
                                 out_pretty,
                                 fmt_duration_as_secs(&duration)
                             );
-                            MissType::TimedOut
+                            f_ok(CacheLookupResult::Miss(MissType::TimedOut))
                         } else {
                             error!("[{}]: Cache read error: {}", out_pretty, err);
                             if err.is_inner() {
@@ -296,82 +312,97 @@ where
                                     error!("[{}] \t{}", out_pretty, e);
                                 }
                             }
-                            MissType::CacheReadError
+                            f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         }
                     }
-                };
+                });
 
-                // Cache miss, so compile it.
-                let start = Instant::now();
-                let compile = dist_or_local_compile(
-                    dist_client,
-                    creator,
-                    cwd,
-                    compilation,
-                    weak_toolchain_key,
-                    out_pretty.clone(),
-                );
-
-                Box::new(
-                    compile.and_then(move |(cacheable, dist_type, compiler_result)| {
-                        let duration = start.elapsed();
-                        if !compiler_result.status.success() {
-                            debug!(
-                                "[{}]: Compiled but failed, not storing in cache",
-                                out_pretty
+                Box::new(miss_type.and_then(move |result| {
+                    match result {
+                        CacheLookupResult::Success(compile_result, output) => {
+                            f_ok((compile_result, output))
+                        }
+                        CacheLookupResult::Miss(miss_type) => {
+                            // Cache miss, so compile it.
+                            let start = Instant::now();
+                            let compile = dist_or_local_compile(
+                                dist_client,
+                                creator,
+                                cwd,
+                                compilation,
+                                weak_toolchain_key,
+                                out_pretty2.clone(),
                             );
-                            return f_ok((CompileResult::CompileFailed, compiler_result))
-                                as SFuture<_>;
-                        }
-                        if cacheable != Cacheable::Yes {
-                            // Not cacheable
-                            debug!("[{}]: Compiled but not cacheable", out_pretty);
-                            return f_ok((CompileResult::NotCacheable, compiler_result));
-                        }
-                        debug!(
-                            "[{}]: Compiled in {}, storing in cache",
-                            out_pretty,
-                            fmt_duration_as_secs(&duration)
-                        );
-                        let write = CacheWrite::from_objects(outputs, &pool);
-                        let write = write.fcontext("failed to zip up compiler outputs");
-                        let o = out_pretty.clone();
-                        Box::new(
-                            write
-                                .and_then(move |mut entry| {
-                                    entry.put_stdout(&compiler_result.stdout)?;
-                                    entry.put_stderr(&compiler_result.stderr)?;
 
-                                    // Try to finish storing the newly-written cache
-                                    // entry. We'll get the result back elsewhere.
-                                    let future = storage.put(&key, entry).then(move |res| {
-                                        match res {
-                                            Ok(_) => debug!(
-                                                "[{}]: Stored in cache successfully!",
-                                                out_pretty
-                                            ),
-                                            Err(ref e) => debug!(
-                                                "[{}]: Cache write error: {:?}",
-                                                out_pretty, e
-                                            ),
-                                        }
-                                        res.map(|duration| CacheWriteInfo {
-                                            object_file_pretty: out_pretty,
-                                            duration,
-                                        })
-                                    });
-                                    let future = Box::new(future);
-                                    Ok((
-                                        CompileResult::CacheMiss(
-                                            miss_type, dist_type, duration, future,
-                                        ),
-                                        compiler_result,
-                                    ))
-                                })
-                                .fwith_context(move || format!("failed to store `{}` to cache", o)),
-                        )
-                    }),
-                )
+                            Box::new(compile.and_then(
+                                move |(cacheable, dist_type, compiler_result)| {
+                                    let duration = start.elapsed();
+                                    if !compiler_result.status.success() {
+                                        debug!(
+                                            "[{}]: Compiled but failed, not storing in cache",
+                                            out_pretty2
+                                        );
+                                        return f_ok((CompileResult::CompileFailed, compiler_result))
+                                            as SFuture<_>;
+                                    }
+                                    if cacheable != Cacheable::Yes {
+                                        // Not cacheable
+                                        debug!("[{}]: Compiled but not cacheable", out_pretty2);
+                                        return f_ok((
+                                            CompileResult::NotCacheable,
+                                            compiler_result,
+                                        ));
+                                    }
+                                    debug!(
+                                        "[{}]: Compiled in {}, storing in cache",
+                                        out_pretty2,
+                                        fmt_duration_as_secs(&duration)
+                                    );
+                                    let write = CacheWrite::from_objects(outputs, &pool);
+                                    let write = write.fcontext("failed to zip up compiler outputs");
+                                    let o = out_pretty2.clone();
+                                    Box::new(
+                                        write
+                                            .and_then(move |mut entry| {
+                                                entry.put_stdout(&compiler_result.stdout)?;
+                                                entry.put_stderr(&compiler_result.stderr)?;
+
+                                                // Try to finish storing the newly-written cache
+                                                // entry. We'll get the result back elsewhere.
+                                                let future =
+                                                    storage.put(&key, entry).then(move |res| {
+                                                        match res {
+                                                            Ok(_) => debug!(
+							    "[{}]: Stored in cache successfully!",
+							    out_pretty2
+							),
+                                                            Err(ref e) => debug!(
+                                                                "[{}]: Cache write error: {:?}",
+                                                                out_pretty2, e
+                                                            ),
+                                                        }
+                                                        res.map(|duration| CacheWriteInfo {
+                                                            object_file_pretty: out_pretty2,
+                                                            duration,
+                                                        })
+                                                    });
+                                                let future = Box::new(future);
+                                                Ok((
+                                                    CompileResult::CacheMiss(
+                                                        miss_type, dist_type, duration, future,
+                                                    ),
+                                                    compiler_result,
+                                                ))
+                                            })
+                                            .fwith_context(move || {
+                                                format!("failed to store `{}` to cache", o)
+                                            }),
+                                    )
+                                },
+                            ))
+                        }
+                    }
+                }))
             }))
         }))
     }

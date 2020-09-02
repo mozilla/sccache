@@ -96,6 +96,18 @@ pub struct CacheRead {
     zip: ZipArchive<Box<dyn ReadSeek>>,
 }
 
+/// Represents a failure to decompress stored object data.
+#[derive(Debug)]
+pub struct DecompressionFailure;
+
+impl std::fmt::Display for DecompressionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to decompress content")
+    }
+}
+
+impl std::error::Error for DecompressionFailure {}
+
 impl CacheRead {
     /// Create a cache entry from `reader`.
     pub fn from<R>(reader: R) -> Result<CacheRead>
@@ -113,15 +125,12 @@ impl CacheRead {
     where
         T: Write,
     {
-        let file = self
-            .zip
-            .by_name(name)
-            .context("Failed to read object from cache entry")?;
+        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
         if file.compression() != CompressionMethod::Stored {
-            bail!("Cache entry is not stored as a zstd blob");
+            bail!(DecompressionFailure);
         }
         let mode = file.unix_mode();
-        zstd::stream::copy_decode(file, to)?;
+        zstd::stream::copy_decode(file, to).or(Err(DecompressionFailure))?;
         Ok(mode)
     }
 
