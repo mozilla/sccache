@@ -79,6 +79,8 @@ const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum ServerStartup {
     /// Server started successfully on `port`.
     Ok { port: u16 },
+    /// Server Addr already in suse
+    AddrInUse,
     /// Timed out waiting for server startup.
     TimedOut,
     /// Server encountered an error.
@@ -412,8 +414,15 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         }
         Err(e) => {
             error!("failed to start server: {}", e);
-            let reason = e.to_string();
-            notify_server_startup(&notify, ServerStartup::Err { reason })?;
+            match e.downcast_ref::<io::Error>() {
+                Some(io_err) if io::ErrorKind::AddrInUse == io_err.kind() => {
+                    notify_server_startup(&notify, ServerStartup::AddrInUse)?;
+                }
+                _ => {
+                    let reason = e.to_string();
+                    notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                }
+            };
             Err(e)
         }
     }
