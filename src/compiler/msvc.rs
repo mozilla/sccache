@@ -1284,4 +1284,24 @@ mod test {
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
     }
+
+    #[test]
+    fn test_parse_fsanitize_blacklist() {
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize-blacklist=list.txt"
+        ];
+        let ParsedArguments {
+            common_args,
+            extra_hash_files,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(ovec!["list.txt"], extra_hash_files);
+    }
 }
