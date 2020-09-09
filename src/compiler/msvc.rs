@@ -228,6 +228,7 @@ ArgData! {
     PassThrough, // Miscellaneous flags that don't prevent caching.
     PassThroughWithPath(PathBuf), // As above, recognised by prefix.
     PassThroughWithSuffix(OsString), // As above, recognised by prefix.
+    ExtraHashFile(PathBuf),
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
 }
@@ -390,6 +391,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("favor:", OsString, Separated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Separated, PassThroughWithSuffix),
+    msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("homeparams", PassThrough),
@@ -478,7 +480,9 @@ pub fn parse_arguments(
             Some(DepFile(p)) => depfile = Some(p.clone()),
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
             Some(DebugInfo) => debug_info = true,
-            Some(PreprocessorArgument(_)) | Some(PreprocessorArgumentPath(_)) => {}
+            Some(PreprocessorArgument(_))
+            | Some(PreprocessorArgumentPath(_))
+            | Some(ExtraHashFile(_)) => {}
             Some(SuppressCompilation) => {
                 return CompilerArguments::NotCompilation;
             }
@@ -512,6 +516,7 @@ pub fn parse_arguments(
                 arg.normalize(NormalizedDisposition::Concatenated)
                     .iter_os_strings(),
             ),
+            Some(ExtraHashFile(path)) => extra_hash_files.push(path.clone()),
             _ => {}
         }
     }
@@ -1278,5 +1283,25 @@ mod test {
         assert_eq!(Cacheable::No, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_parse_fsanitize_blacklist() {
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-fsanitize-blacklist=list.txt"
+        ];
+        let ParsedArguments {
+            common_args,
+            extra_hash_files,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(ovec!["list.txt"], extra_hash_files);
     }
 }
