@@ -516,7 +516,13 @@ pub fn parse_arguments(
                 arg.normalize(NormalizedDisposition::Concatenated)
                     .iter_os_strings(),
             ),
-            Some(ExtraHashFile(path)) => extra_hash_files.push(path.clone()),
+            Some(ExtraHashFile(path)) => {
+                extra_hash_files.push(path.clone());
+                common_args.extend(
+                    arg.normalize(NormalizedDisposition::Concatenated)
+                        .iter_os_strings(),
+                )
+            }
             _ => {}
         }
     }
@@ -1302,6 +1308,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
+        assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], common_args);
         assert_eq!(ovec!["list.txt"], extra_hash_files);
     }
 }
