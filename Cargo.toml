@@ -69,7 +69,6 @@ strip-ansi-escapes = "0.1"
 tar = "0.4"
 tempfile = "3"
 time = "0.1.35"
-tiny_http = "0.7"
 tokio-compat = "0.1"
 tokio-io = "0.1"
 tokio-process = "0.2"
@@ -95,6 +94,10 @@ rouille = { version = "2.2", optional = true, default-features = false, features
 syslog = { version = "5", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.10", optional = true }
+
+[patch.crates-io]
+# Waiting for #151 to make it into a release
+tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680de" }
 
 [dev-dependencies]
 assert_cmd = "1"
