@@ -282,6 +282,9 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
                         );
                     }
                 }
+                ServerStartup::AddrInUse => {
+                    debug!("AddrInUse: possible parallel server bootstraps, retrying..")
+                }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
                 ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
             }
@@ -587,6 +590,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     }
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
+                ServerStartup::AddrInUse => bail!("Server startup failed: Address in use"),
                 ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
             }
         }
