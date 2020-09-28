@@ -90,7 +90,13 @@ impl Storage for AzureBlobCache {
     fn current_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
     }
+
     fn max_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
+    }
+
+    fn clear(&self) -> SFuture<()> {
+        trace!("AzureBlobCache::clear - NOT IMPLEMENTED");
+        f_err(anyhow!("AzureBlobCache::clear is not implemented"))
     }
 }

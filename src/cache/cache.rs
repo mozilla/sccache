@@ -282,6 +282,9 @@ pub trait Storage {
 
     /// Get the maximum storage size, if applicable.
     fn max_size(&self) -> SFuture<Option<u64>>;
+
+    /// Clear the contents of the cache.
+    fn clear(&self) -> SFuture<()>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.

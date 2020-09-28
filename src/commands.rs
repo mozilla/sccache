@@ -376,6 +376,13 @@ where
     }
 }
 
+pub fn request_clear_cache(mut conn: ServerConnection) -> Result<()> {
+    debug!("clear_cache");
+    conn.request(Request::ClearCache)
+        .context("Failed to send data to or receive data from server")?;
+    Ok(())
+}
+
 /// Return the signal that caused a process to exit from `status`.
 #[cfg(unix)]
 #[allow(dead_code)]
@@ -713,6 +720,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 &mut io::stderr(),
             );
             return res.context("failed to execute compile");
+        }
+        Command::ClearCache => {
+            trace!("Command::ClearCache");
+            let conn = connect_or_start_server(get_port())?;
+            request_clear_cache(conn).context("couldn't clear cache on server")?;
         }
     }
 

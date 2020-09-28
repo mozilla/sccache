@@ -542,8 +542,14 @@ impl Storage for GCSCache {
     fn current_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
     }
+
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
+    }
+
+    fn clear(&self) -> SFuture<()> {
+        trace!("GCSCache::clear - NOT IMPLEMENTED");
+        Box::new(future::err(anyhow!("GCSCache::clear is not implemented")))
     }
 }
 

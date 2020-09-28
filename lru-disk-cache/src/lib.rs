@@ -312,6 +312,24 @@ impl LruDiskCache {
             None => Ok(()),
         }
     }
+
+    /// Clear the contents of the cache and reset the datastructures. This will
+    /// iterate of all files and directories in the root path of the cache and
+    /// remove each one. The root directory will be preserved.
+    pub fn clear(&mut self) -> Result<()> {
+        trace!("LruDiskCache::clear");
+        let capacity = self.lru.capacity();
+        for entry in fs::read_dir(self.path())? {
+            let entry = entry?;
+            if entry.path().is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        self.lru = LruCache::with_meter(capacity, FileSize);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -567,5 +585,29 @@ mod tests {
         assert!(!c.contains_key("file2"));
         assert!(!f.tmp().join("cache").join("file2").exists());
         assert!(!p4.exists());
+    }
+
+    #[test]
+    fn test_clear() {
+        let f = TestFixture::new();
+
+        let p1 = f.create_file("file1", 10);
+        let p2 = f.create_file("file2", 10);
+        let p3 = f.create_file("file3", 10);
+
+        let cache_dir = f.tmp().join("cache-dir");
+        let mut cache = LruDiskCache::new(&cache_dir, 35).unwrap();
+
+        cache.insert_file("file1", &p1).unwrap();
+        cache.insert_file("file2", &p2).unwrap();
+        cache.insert_file("file3", &p3).unwrap();
+        assert_eq!(cache.len(), 3);
+
+        cache.clear().unwrap();
+        // Make sure the metadata is gone.
+        assert_eq!(cache.len(), 0);
+
+        // Make sure the cache directory is actually cleared.
+        assert_eq!(fs::read_dir(&cache_dir).unwrap().into_iter().count(), 0)
     }
 }

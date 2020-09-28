@@ -58,4 +58,8 @@ impl Storage for MockStorage {
     fn max_size(&self) -> SFuture<Option<u64>> {
         Box::new(future::ok(None))
     }
+    fn clear(&self) -> SFuture<()> {
+        self.gets.borrow_mut().clear();
+        Box::new(future::ok(()))
+    }
 }

@@ -57,6 +57,8 @@ pub enum Command {
         /// The environment variables to use for execution.
         env_vars: Vec<(OsString, OsString)>,
     },
+    /// Clear the cache of entries.
+    ClearCache,
 }
 
 /// Get the `App` used for argument parsing.
@@ -78,7 +80,8 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
              --stop-server    'stop background server'
              -z, --zero-stats 'zero statistics counters'
              --dist-auth      'authenticate for distributed compilation'
-             --dist-status    'show status of the distributed client'"
+             --dist-status    'show status of the distributed client'
+             --clear-cache    'clear the contents of the on-disk cache'"
                 )
         .arg(Arg::from_usage("--package-toolchain <executable> <out> 'package toolchain for distributed compilation'")
              .required(false))
@@ -151,6 +154,7 @@ pub fn parse() -> Result<Command> {
     let dist_status = matches.is_present("dist-status");
     let package_toolchain = matches.is_present("package-toolchain");
     let cmd = matches.values_of_os("cmd");
+    let clear_cache = matches.is_present("clear-cache");
     // Ensure that we've only received one command to run.
     fn is_some<T>(x: &Option<T>) -> bool {
         x.is_some()
@@ -187,6 +191,8 @@ pub fn parse() -> Result<Command> {
         Ok(Command::DistAuth)
     } else if dist_status {
         Ok(Command::DistStatus)
+    } else if clear_cache {
+        Ok(Command::ClearCache)
     } else if package_toolchain {
         let mut values = matches
             .values_of_os("package-toolchain")

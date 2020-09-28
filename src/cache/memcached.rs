@@ -95,7 +95,13 @@ impl Storage for MemcachedCache {
     fn current_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
     }
+
     fn max_size(&self) -> SFuture<Option<u64>> {
         f_ok(None)
+    }
+
+    fn clear(&self) -> SFuture<()> {
+        trace!("MemcachedCache::clear - NOT IMPLEMENTED");
+        f_err(anyhow!("MemcachedCache::clear is not implemented"))
     }
 }

@@ -15,6 +15,7 @@ pub enum Request {
     Shutdown,
     /// Execute a compile or fetch a cached compilation result.
     Compile(Compile),
+    ClearCache,
 }
 
 /// A server response.
@@ -30,6 +31,8 @@ pub enum Response {
     ShuttingDown(Box<ServerInfo>),
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
+    /// Response for Request::ClearCache.
+    ClearCacheComplete,
 }
 
 /// Possible responses from the server for a `Compile` request.
