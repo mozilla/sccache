@@ -486,12 +486,6 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "677d453a17e8bd2b913fa38e8b9cf04bcdbb5be790aa294f2389661d72036015"
-
-[[package]]
-name = "crossbeam-utils"
 version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04973fa96e96579258a5091af6003abde64af786b860f18622b82e026cca60e6"
@@ -2240,7 +2234,7 @@ dependencies = [
  "chrono",
  "clap",
  "counted-array",
- "crossbeam-utils 0.5.0",
+ "crossbeam-utils 0.8.1",
  "daemonize",
  "directories",
  "env_logger",
