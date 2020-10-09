@@ -45,8 +45,7 @@ use crate::errors::*;
 /// The default sccache server port.
 pub const DEFAULT_PORT: u16 = 4226;
 
-/// The number of milliseconds to wait for server startup.
-const SERVER_STARTUP_TIMEOUT_MS: u32 = 10000;
+const DEFAULT_SERVER_STARTUP_TIMEOUT_MS: u32 = 10000;
 
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
@@ -54,6 +53,14 @@ fn get_port() -> u16 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT)
+}
+
+/// The number of milliseconds to wait for server startup.
+fn get_timeout() -> u32 {
+    env::var("SCCACHE_STARTUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_SERVER_STARTUP_TIMEOUT_MS)
 }
 
 fn read_server_startup_status<R: AsyncRead>(
@@ -96,7 +103,7 @@ fn run_server_process() -> Result<ServerStartup> {
         read_server_startup_status(socket)
     });
 
-    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = Duration::from_millis(get_timeout().into());
     let timeout = Timeout::new(startup, timeout).or_else(|err| {
         if err.is_elapsed() {
             Ok(ServerStartup::TimedOut)
@@ -247,7 +254,7 @@ fn run_server_process() -> Result<ServerStartup> {
 
     let result = read_server_startup_status(server);
 
-    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = Duration::from_millis(get_timeout().into());
     let timeout = Timeout::new(result, timeout).or_else(|err| {
         if err.is_elapsed() {
             Ok(ServerStartup::TimedOut)
