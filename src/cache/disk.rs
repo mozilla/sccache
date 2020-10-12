@@ -15,18 +15,48 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::lru_disk_cache::Error as LruError;
 use crate::lru_disk_cache::LruDiskCache;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
+enum LazyDiskCache {
+    Uninit { root: OsString, max_size: u64 },
+    Init(LruDiskCache),
+}
+
+impl LazyDiskCache {
+    fn get_or_init(&mut self) -> Result<&mut LruDiskCache> {
+        match self {
+            LazyDiskCache::Uninit { root, max_size } => {
+                *self = LazyDiskCache::Init(LruDiskCache::new(&root, *max_size)?);
+                self.get_or_init()
+            }
+            LazyDiskCache::Init(d) => Ok(d),
+        }
+    }
+
+    fn get(&mut self) -> Option<&mut LruDiskCache> {
+        match self {
+            LazyDiskCache::Uninit { .. } => None,
+            LazyDiskCache::Init(d) => Some(d),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            LazyDiskCache::Uninit { root, .. } => root.as_ref(),
+            LazyDiskCache::Init(d) => d.path(),
+        }
+    }
+}
+
 /// A cache that stores entries at local disk paths.
-#[derive(Clone)]
 pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
-    lru: Arc<Mutex<LruDiskCache>>,
+    lru: Arc<Mutex<LazyDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
 }
@@ -34,15 +64,15 @@ pub struct DiskCache {
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
     pub fn new<T: AsRef<OsStr>>(
-        root: &T,
+        root: T,
         max_size: u64,
         pool: &tokio::runtime::Handle,
     ) -> DiskCache {
         DiskCache {
-            //TODO: change this function to return a Result
-            lru: Arc::new(Mutex::new(
-                LruDiskCache::new(root, max_size).expect("Couldn't instantiate disk cache!"),
-            )),
+            lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
+                root: root.as_ref().to_os_string(),
+                max_size,
+            })),
             pool: pool.clone(),
         }
     }
@@ -64,7 +94,7 @@ impl Storage for DiskCache {
         self.pool
             .spawn_blocking(move || {
                 let mut lru = lru.lock().unwrap();
-                let io = match lru.get(&path) {
+                let io = match lru.get_or_init()?.get(&path) {
                     Ok(f) => f,
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get({}): FileNotInCache", key);
@@ -93,7 +123,7 @@ impl Storage for DiskCache {
             .spawn_blocking(move || {
                 let start = Instant::now();
                 let v = entry.finish()?;
-                lru.lock().unwrap().insert_bytes(key, &v)?;
+                lru.lock().unwrap().get_or_init()?.insert_bytes(key, &v)?;
                 Ok(start.elapsed())
             })
             .await?
@@ -104,9 +134,9 @@ impl Storage for DiskCache {
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(Some(self.lru.lock().unwrap().size()))
+        Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
     }
     async fn max_size(&self) -> Result<Option<u64>> {
-        Ok(Some(self.lru.lock().unwrap().capacity()))
+        Ok(self.lru.lock().unwrap().get().map(|l| l.capacity()))
     }
 }
