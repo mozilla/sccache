@@ -164,14 +164,13 @@ The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`
 ### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
 
-You can use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to set the S3 credentials.  Alternately, you can set `AWS_IAM_CREDENTIALS_URL` to a URL that returns credentials in the format supported by the [EC2 metadata service](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#instance-metadata-security-credentials), and credentials will be fetched from that location as needed. In the absence of either of these options, credentials for the instance's IAM role will be fetched from the EC2 metadata service directly.
+You can use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to set the S3 credentials.  Other supported methods are listed in Rusoto's [ChainProvider](https://rusoto.github.io/rusoto/rusoto_credential/struct.ChainProvider.html). To connect to a public bucket anonymously (read only mode), the environment variable `SCCACHE_S3_PUBLIC` must be set to true, to prevent the default behavior of rusoto's [DefaultCredentialsProvider](https://rusoto.github.io/rusoto/rusoto_credential/struct.DefaultCredentialsProvider.html), which is to pass the error of ChainProvider.
 
 You can set the region of your bucket with one of the environment variables `AWS_DEFAULT_REGION`, `AWS_REGION` or `SCCACHE_REGION`.
 If you need to override the default endpoint you can set `SCCACHE_ENDPOINT`. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`.
 Optionally, the endpoint can start with `http://` or `https://` to force the protocol. By default, HTTPS will be used.
 
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the S3 bucket, effectively creating a scope. To do that use the `SCCACHE_S3_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
 
 ### Redis
 Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance. Redis can be configured as a LRU (least recently used) cache with a fixed maximum cache size. Set `maxmemory` and `maxmemory-policy` according to the [Redis documentation](https://redis.io/topics/lru-cache). The `allkeys-lru` policy which discards the *least recently accessed or modified* key fits well for the sccache use case.

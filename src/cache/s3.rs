@@ -49,7 +49,7 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     /// TODO: Handle custom region
-    pub fn new(bucket: &str, region: Option<&str>, endpoint: Option<&str>, key_prefix: &str) -> Result<S3Cache> {
+    pub fn new(bucket: &str, region: Option<&str>, endpoint: Option<&str>, key_prefix: &str, public: bool) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -79,11 +79,16 @@ impl S3Cache {
                 .unwrap_or_else(|| Ok(Region::default()))?,
         };
         
+        // TODO currently only https works with public, TODO
         let client = if endpoint.filter(|endpoint| endpoint.starts_with("https")).is_some() {
             let connector = hyper_rustls::HttpsConnector::new();
             // let client = hyper::client::Client::builder().build(connector);
             let client = rusoto_core::HttpClient::from_connector(connector);
-            let client = rusoto_core::Client::new_with(provider, client);
+            let client = if public {
+                rusoto_core::Client::new_not_signing(client)
+            } else {
+                rusoto_core::Client::new_with(provider, client)
+            };
             S3Client::new_with_client(
                 client,
                 region,
@@ -92,7 +97,6 @@ impl S3Cache {
             S3Client::new(region)
         };
 
-        // TODO verify endpoint is used
         Ok(S3Cache {
             bucket_name,
             client,
