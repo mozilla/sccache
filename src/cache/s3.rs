@@ -17,7 +17,7 @@ use futures::future;
 use futures::future::Future;
 use futures_03::{compat::Compat as _, future::TryFutureExt as _};
 use hyperx::header::CacheDirective;
-use rusoto_core::{self, Region};
+use rusoto_core::{self, Client, HttpClient, Region};
 use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3 as _};
 use std::io;
 use std::str::FromStr;
@@ -43,6 +43,7 @@ impl S3Cache {
         region: Option<&str>,
         endpoint: Option<&str>,
         key_prefix: &str,
+        public: bool,
     ) -> Result<S3Cache> {
         let region = match endpoint {
             Some(endpoint) => Region::Custom {
@@ -56,7 +57,16 @@ impl S3Cache {
                 .unwrap_or_else(|| Ok(Region::default()))?,
         };
 
-        let client = S3Client::new(region);
+        //we could define our own Annonymous StaticProvider here, but we'd have to verify that the DefaultCredentialsProvider would fail first.
+        let client = if public {
+            let client = Client::new_not_signing(
+                HttpClient::new().expect("failed to create request dispatcher"),
+            );
+            S3Client::new_with_client(client, region)
+        } else {
+            S3Client::new(region)
+        };
+
         Ok(S3Cache {
             bucket_name: bucket.to_owned(),
             client,

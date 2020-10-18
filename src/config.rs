@@ -203,6 +203,7 @@ pub struct S3CacheConfig {
     pub key_prefix: Option<String>,
     #[serde(default)]
     pub region: Option<String>,
+    pub public: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -458,12 +459,14 @@ fn config_from_env() -> EnvConfig {
             .map(|s| s.trim_end_matches("/"))
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned() + "/");
+        let public = env::var("SCCACHE_S3_PUBLIC").ok().is_some();
 
         S3CacheConfig {
             bucket,
             endpoint,
             key_prefix,
             region,
+            public,
         }
     });
 
