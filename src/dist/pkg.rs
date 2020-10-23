@@ -64,6 +64,7 @@ mod toolchain_imp {
 
     use crate::errors::*;
 
+    #[derive(Default)]
     pub struct ToolchainPackageBuilder {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)
         dir_set: BTreeMap<PathBuf, PathBuf>,
@@ -72,10 +73,7 @@ mod toolchain_imp {
 
     impl ToolchainPackageBuilder {
         pub fn new() -> Self {
-            ToolchainPackageBuilder {
-                dir_set: BTreeMap::new(),
-                file_set: BTreeMap::new(),
-            }
+            ToolchainPackageBuilder::default()
         }
 
         pub fn add_common(&mut self) -> Result<()> {
@@ -83,7 +81,7 @@ mod toolchain_imp {
         }
 
         pub fn add_executable_and_deps(&mut self, executable: PathBuf) -> Result<()> {
-            let mut remaining = vec![executable.to_owned()];
+            let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
                 assert!(obj_path.is_absolute());
                 let tar_path = tarify_path(&obj_path)?;
