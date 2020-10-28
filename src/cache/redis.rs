@@ -106,13 +106,18 @@ impl Storage for RedisCache {
         Box::new(
             Box::pin(async move {
                 let mut c = me.connect().await?;
-                let h: HashMap<String, usize> = cmd("CONFIG")
+                let result: redis::RedisResult<HashMap<String, usize>> = cmd("CONFIG")
                     .arg("GET")
                     .arg("maxmemory")
                     .query_async(&mut c)
-                    .await?;
-                Ok(h.get("maxmemory")
-                    .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
+                    .await;
+                match result {
+                    Ok(h) => {
+                        Ok(h.get("maxmemory")
+                            .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
+                    }
+                    Err(_) => Ok(None),
+                }
             })
             .compat(),
         )
