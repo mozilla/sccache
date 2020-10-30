@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{cell::RefCell, fmt, io, rc::Rc, time};
+use std::{cell::RefCell, fmt, io, rc::Rc, str::FromStr, time};
 
 use crate::{
     cache::{Cache, CacheRead, CacheWrite, Storage},
@@ -166,8 +166,35 @@ pub struct GCSCredentialProvider {
 /// ServiceAccountInfo either contains a URL to fetch the oauth token
 /// or the service account key
 pub enum ServiceAccountInfo {
-    URL(String),
+    URL(String, URLType),
     AccountKey(ServiceAccountKey),
+}
+
+/// URLType describes the type of server the URL is pointing to
+pub enum URLType {
+   TaskClusterAuth,
+   GoogleMetadataServer,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseURLTypeError(String);
+
+impl fmt::Display for ParseURLTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Unknown URLType: {}", self.0)
+    }
+}
+
+impl FromStr for URLType {
+    type Err = ParseURLTypeError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "tcauth" => Ok(URLType::TaskClusterAuth),
+            "google" => Ok(URLType::GoogleMetadataServer),
+            _ => Err(ParseURLTypeError(s.to_string()))
+        }
+    }
 }
 
 fn deserialize_gcp_key<'de, D>(deserializer: D) -> std::result::Result<Vec<u8>, D::Error>
@@ -244,6 +271,8 @@ struct JwtClaims<'a> {
 #[derive(Deserialize)]
 struct TokenMsg {
     access_token: String,
+    // TODO: Need to determine if this field is also returned by GCS, or just the metadata server
+    expires_in: i64,
 }
 
 /// AuthResponse represents the json response body from taskcluster-auth.gcsCredentials endpoint
@@ -443,6 +472,40 @@ impl GCSCredentialProvider {
         )
     }
 
+    fn request_new_token_from_google_metadata_server(&self, url: &str, client: &Client) -> SFuture<GCSCredential> {
+        Box::new(
+            client
+                .get(url)
+                .header("Metadata-Flavor", "Google")
+                .send()
+                .map_err(Into::into)
+                .and_then(move |res| {
+                    if res.status().is_success() {
+                        Ok(res.into_body())
+                    } else {
+                        Err(BadHttpStatusError(res.status()).into())
+                    }
+                })
+                .and_then(move |body| {
+                    body.fold(Vec::new(), |mut body, chunk| {
+                        body.extend_from_slice(&chunk);
+                        Ok::<_, reqwest::Error>(body)
+                    })
+                    .fcontext("failed to read HTTP body")
+                })
+                .and_then(move |body| {
+                    let body_str = String::from_utf8(body)?;
+                    let token_msg: TokenMsg = serde_json::from_str(&body_str)?;
+                    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(token_msg.expires_in);
+
+                    Ok(GCSCredential {
+                        token: token_msg.access_token,
+                        expiration_time: expires_at,
+                    })
+                }),
+        )
+    }
+
     pub fn credentials(&self, client: &Client) -> SFuture<GCSCredential> {
         let mut future_opt = self.cached_credentials.borrow_mut();
 
@@ -457,7 +520,8 @@ impl GCSCredentialProvider {
                 ServiceAccountInfo::AccountKey(ref sa_key) => {
                     self.request_new_token(sa_key, client)
                 }
-                ServiceAccountInfo::URL(ref url) => self.request_new_token_from_tcauth(url, client),
+                ServiceAccountInfo::URL(ref url, URLType::TaskClusterAuth) => self.request_new_token_from_tcauth(url, client),
+                ServiceAccountInfo::URL(ref url, URLType::GoogleMetadataServer) => self.request_new_token_from_google_metadata_server(url, client),
             };
             *future_opt = Some(credentials.shared());
         };
@@ -565,7 +629,7 @@ fn test_gcs_credential_provider() {
 
     let credential_provider = GCSCredentialProvider::new(
         RWMode::ReadWrite,
-        ServiceAccountInfo::URL("http://127.0.0.1:3000/".to_string()),
+        ServiceAccountInfo::URL("http://127.0.0.1:3000/".to_string(), URLType::TaskClusterAuth),
     );
 
     let client = Client::new();
@@ -580,6 +644,46 @@ fn test_gcs_credential_provider() {
                     .unwrap()
                     .timestamp(),
             );
+        })
+        .map_err(move |err| panic!(err.to_string()));
+
+    server.with_graceful_shutdown(cred_fut);
+}
+
+#[test]
+fn test_gcs_credential_provider_metadata_server() {
+    let addr = ([127, 0, 0, 1], 3001).into();
+    let make_service = || {
+        hyper::service::service_fn_ok(|_| {
+            let token = serde_json::json!({
+                "access_token": "1234567890",
+                "expires_in": 3599,
+                "token_type": "Bearer",
+            });
+            hyper::Response::new(hyper::Body::from(token.to_string()))
+        })
+    };
+
+    let server = hyper::Server::bind(&addr).serve(make_service);
+
+    let credential_provider = GCSCredentialProvider::new(
+        RWMode::ReadWrite,
+        ServiceAccountInfo::URL("http://127.0.0.1:3001/".to_string(), URLType::GoogleMetadataServer),
+    );
+
+    let client = Client::new();
+    let cred_fut = credential_provider
+        .credentials(&client)
+        .map(move |credential| {
+            assert_eq!(credential.token, "1234567890");
+            // TODO: Write assert for expiration_time
+            // assert_eq!(
+            //     credential.expiration_time.timestamp(),
+            //     EXPIRE_TIME
+            //         .parse::<chrono::DateTime<chrono::offset::Utc>>()
+            //         .unwrap()
+            //         .timestamp(),
+            // );
         })
         .map_err(move |err| panic!(err.to_string()));
 

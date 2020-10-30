@@ -178,6 +178,7 @@ pub struct GCSCacheConfig {
     pub bucket: String,
     pub cred_path: Option<PathBuf>,
     pub url: Option<String>,
+    pub url_type: Option<String>,
     pub rw_mode: GCSCacheRWMode,
 }
 
@@ -486,12 +487,18 @@ fn config_from_env() -> EnvConfig {
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
         let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+        let url_type = env::var("SCCACHE_GCS_CREDENTIALS_URL_TYPE").ok();
         let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
         if url.is_some() && cred_path.is_some() {
             warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
             warn!("You should set only one of them!");
             warn!("SCCACHE_GCS_KEY_PATH will take precedence");
+        }
+
+        if url.is_none() && url_type.is_some() {
+            warn!("SCCACHE_GCS_CREDENTIAL_URL_TYPE is set, but SCCACHE_GCS_CREDENTIAL_URL is not");
+            warn!("It will be ignored");
         }
 
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
@@ -512,6 +519,7 @@ fn config_from_env() -> EnvConfig {
             bucket,
             cred_path,
             url,
+            url_type,
             rw_mode,
         }
     });
