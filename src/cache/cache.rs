@@ -338,7 +338,6 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
                                 .map(ServiceAccountInfo::AccountKey)
                         } else if let Some(ref url) = *url {
                             let url_type = url_type.as_ref().and_then(|s| {
-                                let parse_result = s.parse::<URLType>();
                                 match s.parse() {
                                     Ok(x) => Some(x),
                                     Err(e) => {
