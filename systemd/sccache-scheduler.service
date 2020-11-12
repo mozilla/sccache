@@ -1,0 +1,26 @@
+[Unit]
+Description=sccache scheduler
+
+After=suspend.target
+After=hibernate.target
+After=hybrid-sleep.target
+After=network.target
+Requires=network.target
+RequiresMountsFor=/mnt/cache-dir
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=20s
+LimitNOFILE=5000
+TasksMax=1000
+User=root
+Group=root
+Environment=SCCACHE_NO_DAEMON=1
+Environment=RUST_LOG=sccache=trace,sccache-dist=trace
+ExecStartPre=-/usr/bin/mkdir /mnt/cache-dir
+ExecStart=/usr/local/bin/sccache-dist scheduler --config /etc/sccache/scheduler.conf
+SELinuxContext=system_u:object_r:unreserved_port_t:s0
+
+[Install]
+WantedBy=multi-user.target
