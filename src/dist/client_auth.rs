@@ -187,13 +187,12 @@ mod code_grant_pkce {
 
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
-        let mut rng =
-            rand::OsRng::new().context("Failed to initialise a random number generator")?;
+        let mut rng = rand::rngs::OsRng;
         rng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
         let mut hasher = Sha256::new();
-        hasher.input(&code_verifier);
-        let code_challenge = base64::encode_config(&hasher.result(), base64::URL_SAFE_NO_PAD);
+        hasher.update(&code_verifier);
+        let code_challenge = base64::encode_config(&hasher.finalize(), base64::URL_SAFE_NO_PAD);
         Ok((code_verifier, code_challenge))
     }
 
