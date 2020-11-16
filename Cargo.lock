@@ -2462,6 +2462,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsa-export"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e69f9b3af81436bfafd04cd7e9b8d74644f9cfdd5c0c65ef43fa22e4365c73"
+dependencies = [
+ "num-bigint",
+ "num-bigint-dig",
+ "num-integer",
+ "rsa",
+ "simple_asn1",
+]
+
+[[package]]
 name = "rsa-pem"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2588,7 +2601,9 @@ dependencies = [
  "num_cpus",
  "number_prefix",
  "oid",
+ "openssl",
  "picky",
+ "picky-asn1-x509",
  "predicates",
  "rand 0.7.3",
  "redis",
@@ -2599,6 +2614,7 @@ dependencies = [
  "rouille",
  "rsa",
  "rsa-der",
+ "rsa-export",
  "rsa-pem",
  "selenium-rs",
  "serde",

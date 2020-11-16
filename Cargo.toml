@@ -25,7 +25,7 @@ required-features = ["dist-server"]
 anyhow = "1.0"
 ar = { version = "0.8", optional = true }
 atty = "0.2.6"
-base64 = "0.11.0"
+base64 = { version = "0.11.0", features = ["std"] }
 bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
@@ -49,12 +49,17 @@ libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
 rsa = "0.3"
+# both are pkcs8 only
+rsa-pem = "0.2"
+rsa-der = "0.2"
+# exports pkcs#1
+rsa-export = "0.1"
 oid = "0.1.1"
 picky = "6"
+picky-asn1-x509 = "0.3"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.4.0" }
 md-5 = { version = "0.9", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
-openssl = { version = "0.10", optional = true }
 num_cpus = "1.13"
 number_prefix = "0.2"
 rand = "0.7"
@@ -98,6 +103,9 @@ syslog = { version = "5", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.10", optional = true }
 
+# test only
+openssl = { version = "0.10", optional = true }
+
 [patch.crates-io]
 # Waiting for #151 to make it into a release
 tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680de" }
@@ -140,9 +148,11 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
+# Run JWK token crypto against openssl ref impl
+vs_openssl = ["openssl"]
 
 [workspace]
 exclude = ["tests/test-crate"]

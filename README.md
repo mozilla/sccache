@@ -125,38 +125,22 @@ cargo build --release [--features=all|s3|redis|gcs|memcached|azure]
 
 By default, `sccache` supports a local disk cache and S3. Use the `--features` flag to build `sccache` with support for other storage options. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
-### Building portable binaries
-
-When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the steps below before building with `cargo`.
 
 #### Linux
 
-You will need to download and build OpenSSL with `-fPIC` in order to statically link against it.
-
-```bash
-./config -fPIC --prefix=/usr/local --openssldir=/usr/local/ssl
-make
-make install
-export OPENSSL_LIB_DIR=/usr/local/lib
-export OPENSSL_INCLUDE_DIR=/usr/local/include
-export OPENSSL_STATIC=yes
-```
+No native dependencies.
 
 Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### macOS
 
-Just setting the below environment variable will enable static linking.
-
-```bash
-export OPENSSL_STATIC=yes
-```
+No native dependencies.
 
 Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### Windows
 
-On Windows it is fairly straightforward to just ship the required `libcrypto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+On Windows the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
 It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
 
@@ -166,18 +150,6 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 ```
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
-
-In order to statically link against both the CRT and OpenSSL, you will need to either build OpenSSL static libraries (with a statically linked CRT) yourself or get a pre-built distribution that provides these.
-
-Then you can set environment variables which get picked up by the `openssl-sys` crate.
-
-See the following example for using pre-built libraries from [Shining Light Productions](https://slproweb.com/products/Win32OpenSSL.html), assuming an installation in `C:\OpenSSL-Win64`:
-
-```
-set OPENSSL_LIB_DIR=C:\OpenSSL-Win64\lib\VC\static
-set OPENSSL_INCLUDE_DIR=C:\OpenSSL-Win64\include
-set OPENSSL_LIBS=libcrypto64MT:libssl64MT
-```
 
 ---
 
