@@ -149,6 +149,26 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
         },
     }
 }
+
+// #[cfg(feature = "dist-server")]
+macro_rules! podman {
+    ( $($argument:expr),* $(,)? ) => {
+        {
+            print!("Launching > podman");
+            $(
+            print!(" {}", $argument);
+            )*
+            println!("");
+            let mut cmd = Command::new("podman");
+            cmd.arg("--storage-driver=btrfs");
+            $(
+                cmd.arg( { $argument });
+            )*
+            cmd
+        }
+    };
+}
+
 #[cfg(feature = "dist-server")]
 fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
     sccache::config::scheduler::Config {
@@ -210,8 +230,7 @@ pub struct DistSystem {
 impl DistSystem {
     pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
         // Make sure the podman image is available, building it if necessary
-        let mut child = Command::new("podman")
-            .args(&["build", "-q", "-t", DIST_IMAGE, "-"])
+        let mut child = podman!("build", "-q", "-t", DIST_IMAGE, "-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -252,8 +271,7 @@ impl DistSystem {
 
         // Create the scheduler
         let scheduler_name = make_container_name("scheduler");
-        let output = Command::new("podman")
-            .args(&[
+        let output = podman!(
                 "run",
                 "--name",
                 &scheduler_name,
@@ -282,7 +300,7 @@ impl DistSystem {
                 "#,
                     cfg = scheduler_cfg_container_path.to_str().unwrap()
                 ),
-            ])
+            )
             .output()
             .unwrap();
         self.scheduler_name = Some(scheduler_name);
@@ -312,8 +330,7 @@ impl DistSystem {
         let server_cfg_container_path = Path::new(CONFIGS_CONTAINER_PATH).join(server_cfg_relpath);
 
         let server_name = make_container_name("server");
-        let output = Command::new("podman")
-            .args(&[
+        let output = podman!(
                 "run",
                 // Important for the bubblewrap builder
                 "--privileged",
@@ -343,7 +360,7 @@ impl DistSystem {
                 "#,
                     cfg = server_cfg_container_path.to_str().unwrap()
                 ),
-            ])
+            )
             .output()
             .unwrap();
         self.server_names.push(server_name.clone());
@@ -404,8 +421,7 @@ impl DistSystem {
     pub fn restart_server(&mut self, handle: &ServerHandle) {
         match handle {
             ServerHandle::Container { cid, url: _ } => {
-                let output = Command::new("podman")
-                    .args(&["restart", cid])
+                let output = podman!("restart", cid)
                     .output()
                     .unwrap();
                 check_output(&output);
@@ -456,29 +472,27 @@ impl DistSystem {
     }
 
     fn container_ip(&self, name: &str) -> IpAddr {
-        let output = Command::new("podman")
-            .args(&[
+        let output = podman!(
                 "inspect",
                 "--format",
                 "{{ .NetworkSettings.IPAddress }}",
                 name,
-            ])
+            )
             .output()
             .unwrap();
         check_output(&output);
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = dbg!(String::from_utf8(output.stdout)).unwrap();
         stdout.trim().to_owned().parse().unwrap()
     }
 
     // The interface that the host sees on the podman network (typically 'podman0')
     fn host_interface_ip(&self) -> IpAddr {
-        let output = Command::new("podman")
-            .args(&[
+        let output = podman!(
                 "inspect",
                 "--format",
                 "{{ .NetworkSettings.Gateway }}",
                 self.scheduler_name.as_ref().unwrap(),
-            ])
+            )
             .output()
             .unwrap();
         check_output(&output);
@@ -513,30 +527,24 @@ impl Drop for DistSystem {
         let mut exits = vec![];
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
-            droperr!(Command::new("podman")
-                .args(&["logs", scheduler_name])
+            droperr!(podman!("logs", scheduler_name)
                 .output()
                 .map(|o| logs.push((scheduler_name, o))));
-            droperr!(Command::new("podman")
-                .args(&["kill", scheduler_name])
+            droperr!(podman!("kill", scheduler_name)
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
-            droperr!(Command::new("podman")
-                .args(&["rm", "-f", scheduler_name])
+            droperr!(podman!("rm", "-f", scheduler_name)
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
         }
         for server_name in self.server_names.iter() {
-            droperr!(Command::new("podman")
-                .args(&["logs", server_name])
+            droperr!(podman!("logs", server_name)
                 .output()
                 .map(|o| logs.push((server_name, o))));
-            droperr!(Command::new("podman")
-                .args(&["kill", server_name])
+            droperr!(podman!("kill", server_name)
                 .output()
                 .map(|o| outputs.push((server_name, o))));
-            droperr!(Command::new("podman")
-                .args(&["rm", "-f", server_name])
+            droperr!(podman!("rm", "-f", server_name)
                 .output()
                 .map(|o| outputs.push((server_name, o))));
         }
