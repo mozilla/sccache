@@ -152,7 +152,7 @@ dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 # Run JWK token crypto against openssl ref impl
-vs_openssl = ["openssl"]
+vs_openssl = ["openssl", "dist-server"]
 
 [workspace]
 exclude = ["tests/test-crate"]

@@ -372,11 +372,10 @@ impl ValidJWTCheck {
 }
 
 
-#[cfg(test)]
+#[cfg(all(test,feature="vs_openssl"))]
 mod tests {
     use super::*;
 
-    #[cfg(feature = "vs_openssl")]
     #[test]
     fn der_repr() {
 
