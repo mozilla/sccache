@@ -370,8 +370,8 @@ impl FromStr for ServerId {
 #[serde(deny_unknown_fields)]
 pub struct ServerNonce(u64);
 impl ServerNonce {
-    pub fn new() -> Self {
-        ServerNonce(OsRng.next_u64())
+    pub fn from_rng(rng: &mut rand::rngs::OsRng) -> Self {
+        ServerNonce(rng.next_u64())
     }
 }
 

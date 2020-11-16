@@ -1,12 +1,5 @@
-extern crate base64;
 #[macro_use]
 extern crate clap;
-extern crate crossbeam_utils;
-extern crate env_logger;
-extern crate flate2;
-extern crate hyperx;
-extern crate jsonwebtoken as jwt;
-extern crate libmount;
 #[macro_use]
 extern crate log;
 extern crate nix;
@@ -16,11 +9,8 @@ extern crate reqwest;
 extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
-extern crate syslog;
-extern crate tar;
-extern crate void;
 
+use jsonwebtoken as jwt;
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::{rngs::OsRng, RngCore};
@@ -284,7 +274,8 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            OsRng.fill_bytes(&mut bytes);
+            let mut rng = rand::rngs::OsRng;
+            rng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
             Ok(0)

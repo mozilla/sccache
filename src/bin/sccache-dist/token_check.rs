@@ -364,7 +364,8 @@ impl ValidJWTCheck {
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
+        let key = jwt::DecodingKey::from_secret(pkcs1);
+        let _tokendata = jwt::decode::<Claims>(token, &key, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
     }

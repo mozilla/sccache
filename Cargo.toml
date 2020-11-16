@@ -7,7 +7,7 @@ description = "Sccache is a ccache-like tool. It is used as a compiler wrapper a
 repository = "https://github.com/mozilla/sccache/"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
-keywords = ["ccache"]
+keywords = ["ccache", "compile", "cache"]
 edition = "2018"
 
 [badges]
@@ -30,7 +30,7 @@ bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
 chrono = { version = "0.4", optional = true }
-clap = "2.23.0"
+clap = "2.33"
 counted-array = "0.1"
 directories = "3"
 env_logger = "0.8"
@@ -44,23 +44,26 @@ hyper = { version = "0.12", optional = true }
 hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
-lazy_static = "1.0.0"
+lazy_static = "1.4"
 libc = "0.2.10"
 linked-hash-map = "0.5"
 local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
+rsa = "0.3"
+oid = "0.1.1"
+picky = "6"
 memcached-rs = { version = "0.4" , optional = true }
-num_cpus = "1.0"
+num_cpus = "1.13"
 number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
-redis = { version = "0.17", optional = true }
+redis = { version = "0.18", optional = true }
 regex = "1"
-reqwest = { version = "0.9.11", optional = true }
+reqwest = { version = "0.9", features = ["rustls-tls"], optional = true }
 retry = "1"
-ring = { version = "0.16", optional = true, features = ["std"] }
+ring = { version = "0.16.15", optional = true }
 sha-1 = { version = "0.9", optional = true }
 sha2 = { version = "0.9", optional = true }
 serde = "1.0"
