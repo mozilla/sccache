@@ -126,21 +126,22 @@ cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|a
 
 By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
-### Building portable binaries
-
-When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
 
 #### Linux
+
+No native dependencies.
 
 Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### macOS
 
+No native dependencies.
+
 Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### Windows
 
-On Windows, the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+On Windows the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
 It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
 
@@ -150,8 +151,6 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 ```
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
-
-When statically linking with OpenSSL, you will need Perl available in your `$PATH`.
 
 ---
 

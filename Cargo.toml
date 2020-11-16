@@ -25,7 +25,7 @@ required-features = ["dist-server"]
 anyhow = "1.0"
 ar = { version = "0.8", optional = true }
 atty = "0.2.6"
-base64 = "0.13"
+base64 = { version = "0.13.0", features = ["std"] }
 bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
@@ -51,19 +51,24 @@ local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
 rsa = "0.3"
+# both are pkcs8 only
+rsa-pem = "0.2"
+rsa-der = "0.2"
+# exports pkcs#1
+rsa-export = "0.1"
 oid = "0.1.1"
 picky = "6"
+picky-asn1-x509 = "0.3"
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.13"
 number_prefix = "0.4"
-openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
-redis = { version = "0.18", optional = true }
+redis = { version = "0.20", features = ["aio", "tokio-comp"], optional = true }
 regex = "1"
 reqwest = { version = "0.9", features = ["rustls-tls"], optional = true }
 retry = "1"
-ring = { version = "0.16.15", optional = true }
+ring = { version = "0.16.15", features = ["std"], optional = true }
 sha-1 = { version = "0.9", optional = true }
 sha2 = { version = "0.9", optional = true }
 serde = "1.0"
@@ -97,6 +102,9 @@ rouille = { version = "3", optional = true, default-features = false, features =
 syslog = { version = "5", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.11", optional = true }
+
+# test only
+openssl = { version = "0.10", optional = true }
 
 [dev-dependencies]
 assert_cmd = "1"
@@ -136,9 +144,11 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
+# Run JWK token crypto against openssl ref impl
+vs_openssl = ["openssl"]
 
 [workspace]
 exclude = ["tests/test-crate"]
