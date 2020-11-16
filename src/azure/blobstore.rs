@@ -15,7 +15,7 @@
 
 use crate::azure::credentials::*;
 use futures::{Future, Stream};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, Mac, NewMac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
@@ -33,8 +33,8 @@ const BLOB_API_VERSION: &str = "2017-04-17";
 
 fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
-    hmac.input(data);
-    hmac.result().code().iter().copied().collect::<Vec<u8>>()
+    hmac.update(data);
+    hmac.finalize().into_bytes().as_slice().to_vec()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
@@ -45,8 +45,8 @@ fn signature(to_sign: &str, secret: &str) -> String {
 
 fn md5(data: &[u8]) -> String {
     let mut digest = Md5::new();
-    digest.input(data);
-    base64::encode_config(&digest.result(), base64::STANDARD)
+    digest.update(data);
+    base64::encode_config(&digest.finalize(), base64::STANDARD)
 }
 
 pub struct BlobContainer {

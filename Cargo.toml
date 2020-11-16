@@ -7,7 +7,7 @@ description = "Sccache is a ccache-like tool. It is used as a compiler wrapper a
 repository = "https://github.com/mozilla/sccache/"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
-keywords = ["ccache"]
+keywords = ["ccache", "compile", "cache"]
 edition = "2018"
 
 [badges]
@@ -30,7 +30,7 @@ bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
 chrono = { version = "0.4", optional = true }
-clap = "2.23.0"
+clap = "2.33"
 counted-array = "0.1"
 directories = "2"
 env_logger = "0.5"
@@ -38,30 +38,33 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
-hmac = { version = "0.7", optional = true }
+hmac = { version = "0.10", optional = true }
 http = "0.1"
 hyper = { version = "0.12", optional = true }
 hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
-jsonwebtoken = { version = "6.0.1", optional = true }
-lazy_static = "1.0.0"
+jsonwebtoken = { version = "7", optional = true }
+lazy_static = "1.4"
 libc = "0.2.10"
 local-encoding = "0.2.0"
 log = "0.4"
+rsa = "0.3"
+oid = "0.1.1"
+picky = "6"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.4.0" }
-md-5 = { version = "0.8", optional = true }
+md-5 = { version = "0.9", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
-num_cpus = "1.0"
-number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
-rand = "0.5"
+num_cpus = "1.13"
+number_prefix = "0.2"
+rand = "0.7"
 redis = { version = "0.15.0", optional = true }
 regex = "1"
-reqwest = { version = "0.9.11", optional = true }
+reqwest = { version = "0.9", features = ["rustls-tls"], optional = true }
 retry = "0.4.0"
-ring = { version = "0.14.6", optional = true }
-sha-1 = { version = "0.8", optional = true }
-sha2 = { version = "0.8", optional = true }
+ring = { version = "0.16.15", optional = true }
+sha-1 = { version = "0.9", optional = true }
+sha2 = { version = "0.9", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
@@ -87,7 +90,7 @@ zip = { version = "0.5", default-features = false, features = ["deflate"] }
 zstd = { version = "0.5" }
 
 # dist-server only
-crossbeam-utils = { version = "0.5", optional = true }
+crossbeam-utils = { version = "0.8", optional = true }
 libmount = { version = "0.1.10", optional = true }
 nix = { version = "0.17.0", optional = true }
 rouille = { version = "2.2", optional = true, default-features = false, features = ["ssl"] }

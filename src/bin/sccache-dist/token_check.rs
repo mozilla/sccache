@@ -122,7 +122,7 @@ impl MozillaCheck {
         }
         // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
         let unsafe_token =
-            jwt::dangerous_unsafe_decode::<MozillaToken>(token).context("Unable to decode jwt")?;
+            jwt::dangerous_insecure_decode::<MozillaToken>(token).context("Unable to decode jwt")?;
         let user = unsafe_token.claims.sub;
         trace!("Validating token for user {} with mozilla", user);
         if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
@@ -358,12 +358,13 @@ impl ValidJWTCheck {
             .get(&kid)
             .context("kid not found in jwks")?;
         let mut validation = jwt::Validation::new(header.alg);
-        validation.set_audience(&self.audience);
+        validation.set_audience(self.audience.as_bytes());
         validation.iss = Some(self.issuer.clone());
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
+        let key = &jwt::DecodingKey::from_secret(pkcs1);
+        let _tokendata = jwt::decode::<Claims>(token, &key, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
     }
