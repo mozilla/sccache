@@ -1331,17 +1331,13 @@ mod client {
     }
 }
 
-
-
-#[cfg(test)]
+#[cfg(all(test,feature="vs_openssl"))]
 mod tests {
     use super::common::*;
-    use crate::dist::http::server::create_https_cert_and_privkey;
+    use anyhow::{Result, Context};
     use crate::dist::SocketAddr;
-    use anyhow::Result;
-    use anyhow::Context;
+    use crate::dist::http::server::create_https_cert_and_privkey;
 
-    #[cfg(feature="vs_openssl")]
     #[test]
     fn create_cert_and_sk() {
 
