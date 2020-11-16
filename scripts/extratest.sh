@@ -79,8 +79,8 @@ elif [ "$1" = test ]; then
     # if you have multiple test functions in one file.
 
     set +x
-    if ! which docker; then
-        echo -e "WARNING: =====\n\ndocker not present, some tests will fail\n\n=====\n\n\n\n\n"
+    if ! which podman; then
+        echo -e "WARNING: =====\n\npodman not present, some tests will fail\n\n=====\n\n\n\n\n"
         sleep 5
     fi
     if ! which icecc-create-env; then

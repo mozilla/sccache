@@ -155,7 +155,7 @@ impl SeleniumContainer {
                 "SE_OPTS=-debug",
                 "selenium/standalone-chrome-debug:3.14.0",
             ];
-            let output = Command::new("docker").args(args).output().unwrap();
+            let output = Command::new("podman").args(args).output().unwrap();
             check_output(&output);
             let stdout = String::from_utf8(output.stdout).unwrap();
             stdout.trim().to_owned()
@@ -166,11 +166,11 @@ impl SeleniumContainer {
 
 impl Drop for SeleniumContainer {
     fn drop(&mut self) {
-        let Output { stdout, stderr, .. } = Command::new("docker")
+        let Output { stdout, stderr, .. } = Command::new("podman")
             .args(&["logs", &self.cid])
             .output()
             .unwrap();
-        let output = Command::new("docker")
+        let output = Command::new("podman")
             .args(&["kill", &self.cid])
             .output()
             .unwrap();

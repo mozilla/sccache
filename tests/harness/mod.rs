@@ -209,8 +209,8 @@ pub struct DistSystem {
 #[cfg(feature = "dist-server")]
 impl DistSystem {
     pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
-        // Make sure the docker image is available, building it if necessary
-        let mut child = Command::new("docker")
+        // Make sure the podman image is available, building it if necessary
+        let mut child = Command::new("podman")
             .args(&["build", "-q", "-t", DIST_IMAGE, "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -252,7 +252,7 @@ impl DistSystem {
 
         // Create the scheduler
         let scheduler_name = make_container_name("scheduler");
-        let output = Command::new("docker")
+        let output = Command::new("podman")
             .args(&[
                 "run",
                 "--name",
@@ -312,7 +312,7 @@ impl DistSystem {
         let server_cfg_container_path = Path::new(CONFIGS_CONTAINER_PATH).join(server_cfg_relpath);
 
         let server_name = make_container_name("server");
-        let output = Command::new("docker")
+        let output = Command::new("podman")
             .args(&[
                 "run",
                 // Important for the bubblewrap builder
@@ -404,7 +404,7 @@ impl DistSystem {
     pub fn restart_server(&mut self, handle: &ServerHandle) {
         match handle {
             ServerHandle::Container { cid, url: _ } => {
-                let output = Command::new("docker")
+                let output = Command::new("podman")
                     .args(&["restart", cid])
                     .output()
                     .unwrap();
@@ -456,7 +456,7 @@ impl DistSystem {
     }
 
     fn container_ip(&self, name: &str) -> IpAddr {
-        let output = Command::new("docker")
+        let output = Command::new("podman")
             .args(&[
                 "inspect",
                 "--format",
@@ -470,9 +470,9 @@ impl DistSystem {
         stdout.trim().to_owned().parse().unwrap()
     }
 
-    // The interface that the host sees on the docker network (typically 'docker0')
+    // The interface that the host sees on the podman network (typically 'podman0')
     fn host_interface_ip(&self) -> IpAddr {
-        let output = Command::new("docker")
+        let output = Command::new("podman")
             .args(&[
                 "inspect",
                 "--format",
@@ -513,29 +513,29 @@ impl Drop for DistSystem {
         let mut exits = vec![];
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["logs", scheduler_name])
                 .output()
                 .map(|o| logs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["kill", scheduler_name])
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["rm", "-f", scheduler_name])
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
         }
         for server_name in self.server_names.iter() {
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["logs", server_name])
                 .output()
                 .map(|o| logs.push((server_name, o))));
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["kill", server_name])
                 .output()
                 .map(|o| outputs.push((server_name, o))));
-            droperr!(Command::new("docker")
+            droperr!(Command::new("podman")
                 .args(&["rm", "-f", server_name])
                 .output()
                 .map(|o| outputs.push((server_name, o))));

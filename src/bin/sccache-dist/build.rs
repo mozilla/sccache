@@ -466,16 +466,16 @@ const BASE_DOCKER_IMAGE: &str = "aidanhs/busybox";
 const DOCKER_SHELL_INIT: &str = "while true; do /busybox sleep 365d && /busybox true; done";
 
 // Check the diff and clean up the FS
-fn docker_diff(cid: &str) -> Result<String> {
-    Command::new("docker")
+fn podman_diff(cid: &str) -> Result<String> {
+    Command::new("podman")
         .args(&["diff", cid])
         .check_stdout_trim()
         .context("Failed to Docker diff container")
 }
 
 // Force remove the container
-fn docker_rm(cid: &str) -> Result<()> {
-    Command::new("docker")
+fn podman_rm(cid: &str) -> Result<()> {
+    Command::new("podman")
         .args(&["rm", "-f", &cid])
         .check_run()
         .context("Failed to force delete container")
@@ -491,7 +491,7 @@ impl DockerBuilder {
     // having locked a pidfile, or at minimum should loudly detect other running
     // instances - pidfile in /tmp
     pub fn new() -> Result<Self> {
-        info!("Creating docker builder");
+        info!("Creating podman builder");
 
         let ret = Self {
             image_map: Mutex::new(HashMap::new()),
@@ -506,7 +506,7 @@ impl DockerBuilder {
     fn cleanup(&self) -> Result<()> {
         info!("Performing initial Docker cleanup");
 
-        let containers = Command::new("docker")
+        let containers = Command::new("podman")
             .args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
             .check_stdout_trim()
             .context("Unable to list all Docker containers")?;
@@ -528,7 +528,7 @@ impl DockerBuilder {
                 }
             }
             if !containers_to_rm.is_empty() {
-                Command::new("docker")
+                Command::new("podman")
                     .args(&["rm", "-f"])
                     .args(containers_to_rm)
                     .check_run()
@@ -536,10 +536,10 @@ impl DockerBuilder {
             }
         }
 
-        let images = Command::new("docker")
+        let images = Command::new("podman")
             .args(&["images", "--format", "{{.ID}} {{.Repository}}"])
             .check_stdout_trim()
-            .context("Failed to list all docker images")?;
+            .context("Failed to list all podman images")?;
         if images != "" {
             let mut images_to_rm = vec![];
             for line in images.split(|c| c == '\n') {
@@ -558,7 +558,7 @@ impl DockerBuilder {
                 }
             }
             if !images_to_rm.is_empty() {
-                Command::new("docker")
+                Command::new("podman")
                     .args(&["rmi"])
                     .args(images_to_rm)
                     .check_run()
@@ -602,12 +602,12 @@ impl DockerBuilder {
 
     fn clean_container(&self, cid: &str) -> Result<()> {
         // Clean up any running processes
-        Command::new("docker")
+        Command::new("podman")
             .args(&["exec", &cid, "/busybox", "kill", "-9", "-1"])
             .check_run()
             .context("Failed to run kill on all processes in container")?;
 
-        let diff = docker_diff(&cid)?;
+        let diff = podman_diff(&cid)?;
         if diff != "" {
             let mut lastpath = None;
             for line in diff.split(|c| c == '\n') {
@@ -641,7 +641,7 @@ impl DockerBuilder {
                     }
                 }
                 lastpath = Some(changepath.clone());
-                if let Err(e) = Command::new("docker")
+                if let Err(e) = Command::new("podman")
                     .args(&["exec", &cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
                 {
@@ -650,7 +650,7 @@ impl DockerBuilder {
                 }
             }
 
-            let newdiff = docker_diff(&cid)?;
+            let newdiff = podman_diff(&cid)?;
             // See note about changepath == "/tmp" above
             if newdiff != "" && newdiff != "C /tmp" {
                 bail!(
@@ -670,7 +670,7 @@ impl DockerBuilder {
 
         if let Err(e) = self.clean_container(&cid) {
             info!("Failed to clean container {}: {}", cid, e);
-            if let Err(e) = docker_rm(&cid) {
+            if let Err(e) = podman_rm(&cid) {
                 warn!(
                     "Failed to remove container {} after failed clean: {}",
                     cid, e
@@ -688,17 +688,17 @@ impl DockerBuilder {
                 "Was ready to reclaim container {} but toolchain went missing",
                 cid
             );
-            if let Err(e) = docker_rm(&cid) {
+            if let Err(e) = podman_rm(&cid) {
                 warn!("Failed to remove container {}: {}", cid, e);
             }
         }
     }
 
     fn make_image(tc: &Toolchain, tccache: &Mutex<TcCache>) -> Result<String> {
-        let cid = Command::new("docker")
+        let cid = Command::new("podman")
             .args(&["create", BASE_DOCKER_IMAGE, "/busybox", "true"])
             .check_stdout_trim()
-            .context("Failed to create docker container")?;
+            .context("Failed to create podman container")?;
 
         let mut tccache = tccache.lock().unwrap();
         let mut toolchain_rdr = match tccache.get(tc) {
@@ -713,7 +713,7 @@ impl DockerBuilder {
         };
 
         trace!("Copying in toolchain");
-        Command::new("docker")
+        Command::new("podman")
             .args(&["cp", "-", &format!("{}:/", cid)])
             .check_piped(&mut |stdin| {
                 io::copy(&mut toolchain_rdr, stdin)?;
@@ -723,12 +723,12 @@ impl DockerBuilder {
         drop(toolchain_rdr);
 
         let imagename = format!("sccache-builder-{}", &tc.archive_id);
-        Command::new("docker")
+        Command::new("podman")
             .args(&["commit", &cid, &imagename])
             .check_run()
             .context("Failed to commit container after build")?;
 
-        Command::new("docker")
+        Command::new("podman")
             .args(&["rm", "-f", &cid])
             .check_run()
             .context("Failed to remove temporary build container")?;
@@ -737,7 +737,7 @@ impl DockerBuilder {
     }
 
     fn start_container(image: &str) -> Result<String> {
-        Command::new("docker")
+        Command::new("podman")
             .args(&[
                 "run",
                 "-d",
@@ -765,7 +765,7 @@ impl DockerBuilder {
         );
 
         trace!("copying in inputs");
-        Command::new("docker")
+        Command::new("podman")
             .args(&["cp", "-", &format!("{}:/", cid)])
             .check_piped(&mut |stdin| {
                 io::copy(&mut inputs_rdr, stdin)?;
@@ -784,7 +784,7 @@ impl DockerBuilder {
 
         trace!("creating output directories");
         assert!(!output_paths.is_empty());
-        let mut cmd = Command::new("docker");
+        let mut cmd = Command::new("podman");
         cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(cwd);
         for path in output_paths.iter() {
             // If it doesn't have a parent, nothing needs creating
@@ -800,7 +800,7 @@ impl DockerBuilder {
 
         trace!("performing compile");
         // TODO: likely shouldn't perform the compile as root in the container
-        let mut cmd = Command::new("docker");
+        let mut cmd = Command::new("podman");
         cmd.arg("exec");
         for (k, v) in env_vars {
             if k.contains("=") {
@@ -826,7 +826,7 @@ impl DockerBuilder {
         for path in output_paths {
             let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
                                            // TODO: this isn't great, but cp gives it out as a tar
-            let output = Command::new("docker")
+            let output = Command::new("podman")
                 .args(&["exec", cid, "/busybox", "cat"])
                 .arg(abspath)
                 .output()

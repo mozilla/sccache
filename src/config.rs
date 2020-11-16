@@ -751,7 +751,7 @@ pub mod server {
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
     pub enum BuilderType {
-        #[serde(rename = "docker")]
+        #[serde(rename = "podman")]
         Docker,
         #[serde(rename = "overlay")]
         Overlay {

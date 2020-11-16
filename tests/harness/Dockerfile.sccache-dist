@@ -8,7 +8,7 @@ RUN cd /bubblewrap-0.3.1 && \
     ./configure --disable-man && \
     make
 
-FROM aidanhs/ubuntu-docker:18.04-17.03.2-ce
+FROM aidanhs/ubuntu-podman:18.04-17.03.2-ce
 RUN apt-get update && \
     apt-get install libcap2 libssl1.1 && \
     apt-get clean
