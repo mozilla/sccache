@@ -122,8 +122,8 @@ impl MozillaCheck {
             sub: String,
         }
         // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
-        let unsafe_token =
-            jwt::dangerous_insecure_decode::<MozillaToken>(token).context("Unable to decode jwt")?;
+        let unsafe_token = jwt::dangerous_insecure_decode::<MozillaToken>(token)
+            .context("Unable to decode jwt")?;
         let user = unsafe_token.claims.sub;
         trace!("Validating token for user {} with mozilla", user);
         if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
@@ -371,14 +371,12 @@ impl ValidJWTCheck {
     }
 }
 
-
-#[cfg(all(test,feature="vs_openssl"))]
+#[cfg(all(test, feature = "vs_openssl"))]
 mod tests {
     use super::*;
 
     #[test]
     fn der_repr() {
-
         let n_be_bytes = rsa::BigUint::from(23757u32).to_bytes_be();
         let e_be_bytes = rsa::BigUint::from(65537u32).to_bytes_be();
         let n = base64::encode_config(n_be_bytes.as_slice(), base64::URL_SAFE);
@@ -405,9 +403,15 @@ mod tests {
         };
         let der = jwk.to_der_pkcs1().expect("Always able to encode.");
 
-        let truth = openssl::rsa::Rsa::public_key_from_der_pkcs1(&der).expect("Openssl must be able to load pkcs#1 der key");
-        let expected2 = truth.public_key_to_der_pkcs1().expect("Must convert to der pkcs1");
-        assert_eq!(expected, expected2, "Assumption that n and e are correct be slices failed");
+        let truth = openssl::rsa::Rsa::public_key_from_der_pkcs1(&der)
+            .expect("Openssl must be able to load pkcs#1 der key");
+        let expected2 = truth
+            .public_key_to_der_pkcs1()
+            .expect("Must convert to der pkcs1");
+        assert_eq!(
+            expected, expected2,
+            "Assumption that n and e are correct be slices failed"
+        );
 
         assert_eq!(der, expected);
     }
