@@ -303,19 +303,23 @@ mod server {
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
-    use picky::key::{PrivateKey, PublicKey};
 
-    use picky::x509::key_id_gen_method::KeyIdGenMethod;
-    use picky::{hash::HashAlgorithm, signature::SignatureAlgorithm};
-
-    use picky::x509::certificate::CertificateBuilder;
-    use picky::x509::date::UTCDate;
-    use picky::x509::extension::ExtendedKeyUsage;
-    use picky::x509::extension::KeyUsage;
-    use picky::x509::name::{DirectoryName, GeneralNames};
     use chrono::Datelike;
     use chrono::Timelike;
-    use picky::x509::Extensions;
+    use picky::{
+        hash::HashAlgorithm,
+        signature::SignatureAlgorithm,
+        key::{PrivateKey, PublicKey},
+    };
+    use picky::x509::{
+        certificate::CertificateBuilder,
+        date::UTCDate,
+        Extensions,
+        extension::ExtendedKeyUsage,
+        extension::KeyUsage,
+        key_id_gen_method::KeyIdGenMethod,
+        name::{DirectoryName, GeneralNames},
+    };
     use rsa_pem::KeyExt;
     use sha2::Digest;
     use std::ops::DerefMut;
