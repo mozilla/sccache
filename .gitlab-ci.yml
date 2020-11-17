@@ -85,6 +85,6 @@ stable-test:
     - mkdir -p ./artifacts/sccache/
   script:
     - cargo +stable build --verbose --all-features
-    - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose --no-default-features --features="${EXTRA_FEATURES}"
+    - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose --no-default-features
     - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose --all-features
     - mv ./target/release/sccache ./artifacts/sccache/.
