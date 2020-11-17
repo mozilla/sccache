@@ -318,13 +318,12 @@ mod server {
     use picky::x509::extension::ExtendedKeyUsage;
     use picky::x509::extension::KeyUsage;
     use picky::x509::name::{DirectoryName, GeneralNames};
-
     use chrono::Datelike;
     use chrono::Timelike;
     use picky::x509::Extensions;
+    use rsa_pem::KeyExt;
     use sha2::Digest;
     use std::ops::DerefMut;
-
     use std::net::{IpAddr, SocketAddr};
 
     pub(crate) fn create_https_cert_and_privkey(
