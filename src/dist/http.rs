@@ -308,29 +308,28 @@ mod server {
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
+    use picky::key::{PrivateKey, PublicKey};
 
-    use picky::key::{PublicKey, PrivateKey};
-    use picky::pem::{parse_pem, Pem};
-    use picky::{signature::SignatureAlgorithm, hash::HashAlgorithm};
-    use picky::x509::key_id_gen_method::{KeyIdGenError, KeyIdGenMethod};
-    use picky::x509::{certificate::CertType, csr::Csr};
-    use picky::x509::name::{GeneralNames, DirectoryName};
-    use picky::x509::date::UTCDate;
+    use picky::x509::key_id_gen_method::KeyIdGenMethod;
+    use picky::{hash::HashAlgorithm, signature::SignatureAlgorithm};
+
     use picky::x509::certificate::CertificateBuilder;
+    use picky::x509::date::UTCDate;
     use picky::x509::extension::ExtendedKeyUsage;
     use picky::x509::extension::KeyUsage;
-    use picky::x509::Extension;
-    use picky::x509::Extensions;
-    use sha2::{Sha256, Sha512, Digest};
-    use rsa_pem::KeyExt;
+    use picky::x509::name::{DirectoryName, GeneralNames};
+
     use chrono::Datelike;
     use chrono::Timelike;
+    use picky::x509::Extensions;
+    use sha2::Digest;
     use std::ops::DerefMut;
-    use std::convert::TryFrom;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    pub(crate) fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    use std::net::{IpAddr, SocketAddr};
 
+    pub(crate) fn create_https_cert_and_privkey(
+        addr: SocketAddr,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let mut rng = rand::rngs::OsRng;
         let bits = 2048;
         let rsa_key = rsa::RSAPrivateKey::new(&mut rng, bits)?;
@@ -344,8 +343,24 @@ mod server {
 
         let today = chrono::Utc::now().naive_utc();
         let expires = today + chrono::Duration::days(365);
-        let start = UTCDate::new(today.year() as u16, today.month() as u8, today.day() as u8, today.time().hour() as u8, today.time().minute() as u8, today.time().second() as u8).unwrap();
-        let end = UTCDate::new(expires.year() as u16, expires.month() as u8, expires.day() as u8, expires.time().hour() as u8, expires.time().minute() as u8, expires.time().second() as u8).unwrap();
+        let start = UTCDate::new(
+            today.year() as u16,
+            today.month() as u8,
+            today.day() as u8,
+            today.time().hour() as u8,
+            today.time().minute() as u8,
+            today.time().second() as u8,
+        )
+        .unwrap();
+        let end = UTCDate::new(
+            expires.year() as u16,
+            expires.month() as u8,
+            expires.day() as u8,
+            expires.time().hour() as u8,
+            expires.time().minute() as u8,
+            expires.time().second() as u8,
+        )
+        .unwrap();
 
         let extended_key_usage = ExtendedKeyUsage::new(vec![picky::oids::kp_server_auth()]);
 
@@ -366,7 +381,9 @@ mod server {
             .subject_alt_name(subject_alt_name.clone())
             .serial_number(vec![0])
             .signature_hash_type(SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA1))
-            .key_id_gen_method(KeyIdGenMethod::SPKValueHashedLeftmost160(HashAlgorithm::SHA2_256))
+            .key_id_gen_method(KeyIdGenMethod::SPKValueHashedLeftmost160(
+                HashAlgorithm::SHA2_256,
+            ))
             .extended_key_usage(extended_key_usage.clone())
             .self_signed(issuer_name, &sk)
             .build()?;
@@ -382,7 +399,8 @@ mod server {
 
             // let basic = dbg!(picky::x509::Extension::new_key_usage(KeyUsage::new(0)));
             let subject_alt_name = picky::x509::Extension::new_subject_alt_name(subject_alt_name);
-            let extended_key_usage = picky::x509::Extension::new_extended_key_usage(extended_key_usage);
+            let extended_key_usage =
+                picky::x509::Extension::new_extended_key_usage(extended_key_usage);
 
             *extensions = Extensions(vec![
                 subject_alt_name.into_non_critical(),
@@ -397,7 +415,9 @@ mod server {
             let mut state = sha2::Sha256::new();
             state.update(&der);
             state.finalize()
-        }.as_slice().to_vec();
+        }
+        .as_slice()
+        .to_vec();
 
         let cert_pem = cert.to_pem()?;
         let cert_pem = cert_pem.to_string().as_bytes().to_vec();
@@ -1336,20 +1356,20 @@ mod client {
     }
 }
 
-#[cfg(all(test,feature="vs_openssl"))]
+#[cfg(all(test, feature = "vs_openssl"))]
 mod tests {
-    use super::common::*;
-    use anyhow::{Result, Context};
-    use crate::dist::SocketAddr;
+
     use crate::dist::http::server::create_https_cert_and_privkey;
+    use crate::dist::SocketAddr;
+    use anyhow::{Context, Result};
 
     #[test]
     fn create_cert_and_sk() {
-
         let addr = "242.11.9.38:29114".parse().unwrap();
 
-        fn legacy_create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-
+        fn legacy_create_https_cert_and_privkey(
+            addr: SocketAddr,
+        ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
             let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
                 .context("failed to generate rsa privkey")?;
             let privkey_pem = rsa_key
@@ -1436,8 +1456,8 @@ mod tests {
             pub privkey_pem: Vec<u8>,
         };
 
-        impl From<(Vec<u8>,Vec<u8>,Vec<u8>)> for Triple {
-            fn from((cert_digest, cert_pem, privkey_pem) : (Vec<u8>,Vec<u8>,Vec<u8>)) -> Self {
+        impl From<(Vec<u8>, Vec<u8>, Vec<u8>)> for Triple {
+            fn from((cert_digest, cert_pem, privkey_pem): (Vec<u8>, Vec<u8>, Vec<u8>)) -> Self {
                 Self {
                     cert_digest,
                     cert_pem,
@@ -1446,14 +1466,18 @@ mod tests {
             }
         }
 
-
         use std::io::Write;
 
         let convert = |tag: &'static str, data: &[u8]| {
             let mut bufread = std::io::BufReader::new(data);
-            let pem = picky::pem::Pem::read_from( &mut bufread).expect("PEM must be valid. qed");
+            let pem = picky::pem::Pem::read_from(&mut bufread).expect("PEM must be valid. qed");
             println!("{} {}", tag, &pem);
-            let mut f = std::fs::OpenOptions::new().truncate(true).create(true).write(true).open(format!("./{}.cert.pem", tag)).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .truncate(true)
+                .create(true)
+                .write(true)
+                .open(format!("./{}.cert.pem", tag))
+                .unwrap();
             f.write_all(pem.to_string().as_bytes()).unwrap();
             let cert = picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. qed");
             cert
@@ -1466,8 +1490,14 @@ mod tests {
             let expected_cert = convert("exp", &expected.cert_pem);
             let generated_cert = convert("gen", &generated.cert_pem);
             assert_eq!(expected_cert.ty(), generated_cert.ty());
-            assert_eq!(expected_cert.serial_number(), generated_cert.serial_number());
-            assert_eq!(expected_cert.signature_algorithm(), generated_cert.signature_algorithm());
+            assert_eq!(
+                expected_cert.serial_number(),
+                generated_cert.serial_number()
+            );
+            assert_eq!(
+                expected_cert.signature_algorithm(),
+                generated_cert.signature_algorithm()
+            );
             assert_eq!(expected_cert.subject_name(), generated_cert.subject_name());
             assert_eq!(expected_cert.issuer_name(), generated_cert.issuer_name());
             assert_eq!(expected_cert.extensions(), generated_cert.extensions());

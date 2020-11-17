@@ -10,10 +10,10 @@ extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
 
-use jsonwebtoken as jwt;
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
-use rand::{rngs::OsRng, RngCore};
+use jsonwebtoken as jwt;
+use rand::RngCore;
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
