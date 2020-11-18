@@ -38,8 +38,8 @@ impl Jwk {
         let e = rsa::BigUint::from_bytes_be(&e);
         let pk = rsa::RSAPublicKey::new(n, e)?;
 
-        // `rsa_export` `dyn Error` is not bounded by `Send + Sync`.
-        let pkcs1_der: Vec<u8> = rsa_export::pkcs1::public_key(&pk)
+        let pk = rsa_export::RsaKey::new(pk);
+        let pkcs1_der: Vec<u8> = pk.as_pkcs1()
             .map_err(|e| anyhow::anyhow!("{}", e))
             .context("Failed to create rsa pub key from (n, e)")?;
 

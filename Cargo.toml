@@ -53,8 +53,9 @@ rsa = "0.3"
 rsa-pem = "0.2"
 rsa-der = "0.2"
 # exports pkcs#1
-rsa-export = "0.1"
-oid = "0.1.1"
+rsa-export = "0.2"
+# avoid duplicate dependency by sticking to 0.1
+oid = "0.1"
 picky = "6"
 picky-asn1-x509 = "0.3"
 lru-disk-cache = { path = "lru-disk-cache", version = "0.4.0" }

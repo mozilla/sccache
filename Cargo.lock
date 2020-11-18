@@ -1266,7 +1266,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "simple_asn1",
+ "simple_asn1 0.4.1",
 ]
 
 [[package]]
@@ -1651,6 +1651,17 @@ name = "num-bigint"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "090c7f9998ee0ff65aa5b723e4009f7b217707f1fb5ea551329cc4d6231fb304"
+dependencies = [
+ "autocfg 1.0.0",
+ "num-integer",
+ "num-traits 0.2.11",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e9a41747ae4633fce5adffb4d2e81ffc5e89593cb19917f8fb2cc5ff76507bf"
 dependencies = [
  "autocfg 1.0.0",
  "num-integer",
@@ -2446,7 +2457,7 @@ dependencies = [
  "pem",
  "rand 0.7.3",
  "sha2",
- "simple_asn1",
+ "simple_asn1 0.4.1",
  "subtle 2.3.0",
  "thiserror",
  "zeroize",
@@ -2458,20 +2469,20 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1170c86c683547fa781a0e39e6e281ebaedd4515be8a806022984f427ea3d44d"
 dependencies = [
- "simple_asn1",
+ "simple_asn1 0.4.1",
 ]
 
 [[package]]
 name = "rsa-export"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e69f9b3af81436bfafd04cd7e9b8d74644f9cfdd5c0c65ef43fa22e4365c73"
+checksum = "a29a64b407c67f1f7a605538dc0975d40f5f1479fc1b04f7568c78120993f7f7"
 dependencies = [
- "num-bigint",
  "num-bigint-dig",
  "num-integer",
+ "pem",
  "rsa",
- "simple_asn1",
+ "simple_asn1 0.5.0",
 ]
 
 [[package]]
@@ -2482,7 +2493,7 @@ checksum = "3ee7d87640dab9972e4d05503aad4c30a107ca50912d10596d44f8555b7da4ce"
 dependencies = [
  "bit-vec",
  "log 0.4.8",
- "num-bigint",
+ "num-bigint 0.2.6",
  "num-bigint-dig",
  "num-traits 0.2.11",
  "pem",
@@ -2840,7 +2851,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "692ca13de57ce0613a363c8c2f1de925adebc81b04c923ac60c5488bb44abe4b"
 dependencies = [
  "chrono",
- "num-bigint",
+ "num-bigint 0.2.6",
+ "num-traits 0.2.11",
+]
+
+[[package]]
+name = "simple_asn1"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39465bdea3e86aa6f95f69d1b7e3010634fdeda0bc4b6c9124cbcd7419873065"
+dependencies = [
+ "chrono",
+ "num-bigint 0.3.1",
  "num-traits 0.2.11",
 ]
 
@@ -4031,7 +4053,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de7bff972b4f2a06c85f6d8454b09df153af7e3a4ec2aac81db1b105b684ddb"
 dependencies = [
  "bit-vec",
- "num-bigint",
+ "num-bigint 0.2.6",
 ]
 
 [[package]]
