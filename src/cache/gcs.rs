@@ -559,7 +559,7 @@ impl Storage for GCSCache {
 #[test]
 fn test_gcs_credential_provider() {
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
-    let addr = ([127, 0, 0, 1], 3000).into();
+    let addr = ([127, 0, 0, 1], 23535).into();
     let make_service = || {
         hyper::service::service_fn_ok(|_| {
             let token = serde_json::json!({
@@ -574,7 +574,7 @@ fn test_gcs_credential_provider() {
 
     let credential_provider = GCSCredentialProvider::new(
         RWMode::ReadWrite,
-        ServiceAccountInfo::URL("http://127.0.0.1:3000/".to_string()),
+        ServiceAccountInfo::URL(format!("http://{}/", addr)),
     );
 
     let client = Client::new();
