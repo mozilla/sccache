@@ -136,8 +136,8 @@ features = [
 ]
 
 [features]
-default = ["dist-client", "s3"]
-all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
+default = ["dist-client", "dist-server", "redis", "s3", "memcached", "gcs", "azure"]
+all = ["dist-client", "dist-server", "dist-tests", "redis", "s3", "memcached", "gcs", "azure", "vs_openssl"]
 azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
