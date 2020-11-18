@@ -85,7 +85,7 @@ impl BlobContainer {
             "", // content_md5
             "", // content_type
             &canonical_headers,
-            &{url::Url::parse(uri.clone().as_str()).unwrap()},
+            &{ url::Url::parse(uri.clone().as_str()).unwrap() },
             creds,
         );
 
@@ -137,7 +137,11 @@ impl BlobContainer {
                                     len
                                 ));
                             } else {
-                                info!("Read {} bytes from {}", bytes.len(), uri_second_copy.as_str());
+                                info!(
+                                    "Read {} bytes from {}",
+                                    bytes.len(),
+                                    uri_second_copy.as_str()
+                                );
                             }
                         }
                         Ok(bytes)
@@ -170,7 +174,7 @@ impl BlobContainer {
             &content_md5,
             content_type,
             &canonical_headers,
-            &{url::Url::parse(uri.clone().as_str()).unwrap()},
+            &{ url::Url::parse(uri.clone().as_str()).unwrap() },
             creds,
         );
 

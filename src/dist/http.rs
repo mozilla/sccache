@@ -303,27 +303,26 @@ mod server {
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
-
     use chrono::Datelike;
     use chrono::Timelike;
-    use picky::{
-        hash::HashAlgorithm,
-        signature::SignatureAlgorithm,
-        key::{PrivateKey, PublicKey},
-    };
     use picky::x509::{
         certificate::CertificateBuilder,
         date::UTCDate,
-        Extensions,
         extension::ExtendedKeyUsage,
         extension::KeyUsage,
         key_id_gen_method::KeyIdGenMethod,
         name::{DirectoryName, GeneralNames},
+        Extensions,
+    };
+    use picky::{
+        hash::HashAlgorithm,
+        key::{PrivateKey, PublicKey},
+        signature::SignatureAlgorithm,
     };
     use rsa_pem::KeyExt;
     use sha2::Digest;
-    use std::ops::DerefMut;
     use std::net::{IpAddr, SocketAddr};
+    use std::ops::DerefMut;
 
     pub(crate) fn create_https_cert_and_privkey(
         addr: SocketAddr,
