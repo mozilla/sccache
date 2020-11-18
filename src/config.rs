@@ -931,6 +931,7 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
+key_prefix = "prefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -959,6 +960,7 @@ use_ssl = true
                     bucket: "name".to_owned(),
                     endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
                     use_ssl: true,
+                    key_prefix: "prefix".to_owned(),
                 }),
             },
             dist: DistConfig {
