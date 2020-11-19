@@ -4,6 +4,11 @@
 //! http://creativecommons.org/publicdomain/zero/1.0/
 
 #![deny(rust_2018_idioms)]
+#![allow(dead_code, unused_imports)]
+
+mod harness;
+
+use crate::harness::get_stats;
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[macro_use]
@@ -118,33 +123,9 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // so there are two separate compilations, but cargo will build the test crate with
     // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
-    let child = sccache_command()
-        .args(&["--show-stats", "--stats-format=json"])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("Launching process must work. Q.E.D.");
-
-    let output = child
-        .wait_with_output()
-        .expect("Reading stdout in test always works. Q.E.D.");
-    let output = String::from_utf8_lossy(&output.stdout);
-
-    use std::str::FromStr;
-
-    let re = regex::Regex::new(r#""cache_hits":\{"counts":\{"Rust":\s*([0-9]+)\s*\}\}"#)
-        .expect("Provided regex is good. Q.E.D.");
-    let captures = re
-        .captures(&output)
-        .expect("Must have a capture for provided regex. Q.E.D.");
-    assert_eq!(captures.len(), 2); // the full string and the actual first group
-    let mut iter = captures.iter();
-    let _ = iter.next();
-    let m = iter
-        .next()
-        .expect("Must have a number for cached rust compiles. Q.E.D.")
-        .unwrap();
-    let cached_rust_compilations = usize::from_str(m.as_str()).unwrap();
-    assert!(cached_rust_compilations >= 1);
+    get_stats(|info: sccache::server::ServerInfo| {
+        assert_eq!(dbg!(dbg!(info.stats).cache_hits).get("Rust"), Some(&1));
+    });
 
     stop();
 }
