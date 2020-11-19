@@ -64,6 +64,7 @@ mod toolchain_imp {
 
     use crate::errors::*;
 
+    #[derive(Default, Debug)]
     pub struct ToolchainPackageBuilder {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)
         dir_set: BTreeMap<PathBuf, PathBuf>,

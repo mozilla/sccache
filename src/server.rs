@@ -14,6 +14,7 @@
 
 // For tokio_io::codec::length_delimited::Framed;
 #![allow(deprecated)]
+#![allow(clippy::complexity)]
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
@@ -1118,7 +1119,7 @@ where
             let mut stats = me.stats.borrow_mut();
             let mut res = CompileFinished {
                 color_mode,
-                ..Default::default()
+                ..CompileFinished::default()
             };
             match result {
                 Ok((compiled, out)) => {
