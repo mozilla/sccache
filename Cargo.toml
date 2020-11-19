@@ -35,7 +35,7 @@ counted-array = "0.1"
 directories = "3"
 env_logger = "0.8"
 filetime = "0.2"
-flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.0.14", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.1.11"
 futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
 hmac = { version = "0.10", optional = true }
@@ -59,7 +59,7 @@ rsa-export = "0.2"
 # avoid duplicate dependency by sticking to 0.1
 oid = "0.1"
 picky = "6"
-picky-asn1-x509 = "0.3"
+picky-asn1-x509 = "0.5"
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.13"
 number_prefix = "0.4"

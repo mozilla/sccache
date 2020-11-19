@@ -5,11 +5,6 @@
 extern crate clap;
 #[macro_use]
 extern crate log;
-extern crate nix;
-extern crate openssl;
-extern crate rand;
-extern crate reqwest;
-extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
 
@@ -312,8 +307,12 @@ fn run(command: Command) -> Result<i32> {
                     issuer,
                     jwks_url,
                 } => Box::new(
-                    token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
-                        .context("Failed to create a checker for valid JWTs")?,
+                    token_check::ValidJWTCheck::new(
+                        audience,
+                        issuer,
+                        &jwks_url,
+                    )
+                    .context("Failed to create a checker for valid JWTs")?,
                 ),
                 scheduler_config::ClientAuth::Mozilla { required_groups } => {
                     Box::new(token_check::MozillaCheck::new(required_groups))
@@ -445,6 +444,7 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
+#[derive(Default)]
 pub struct Scheduler {
     job_count: AtomicUsize,
 
@@ -468,11 +468,7 @@ struct ServerDetails {
 
 impl Scheduler {
     pub fn new() -> Self {
-        Scheduler {
-            job_count: AtomicUsize::new(0),
-            jobs: Mutex::new(BTreeMap::new()),
-            servers: Mutex::new(HashMap::new()),
-        }
+        Scheduler::default()
     }
 
     fn prune_servers(
