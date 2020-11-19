@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::complexity)]
+
 use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
@@ -194,10 +196,7 @@ where
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let may_dist = match dist_client {
-            Ok(Some(_)) => true,
-            _ => false,
-        };
+        let may_dist = matches!(dist_client, Ok(Some(_)));
         let rewrite_includes_only = match dist_client {
             Ok(Some(ref client)) => client.rewrite_includes_only(),
             _ => false,
@@ -271,7 +270,7 @@ where
                         Box::new(write.then(move |result| match result {
                             Ok(()) => f_ok(CacheLookupResult::Success(hit, output)),
                             Err(e) => {
-                                if let Some(_) = e.downcast_ref::<DecompressionFailure>() {
+                                if e.downcast_ref::<DecompressionFailure>().is_some() {
                                     debug!("[{}]: Failed to decompress object", out_pretty);
                                     f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
                                 } else {
@@ -898,7 +897,7 @@ where
     let env2 = env.to_owned();
     let env3 = env.to_owned();
     let pool = pool.clone();
-    let cwd = cwd.to_owned().clone();
+    let cwd = cwd.to_owned();
     Box::new(
         rustc_vv
             .and_then(move |rustc_vv| match rustc_vv {
@@ -1401,10 +1400,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1438,10 +1434,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1508,10 +1501,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::Ok(_), _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1545,10 +1535,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1622,10 +1609,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::CacheReadError, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1707,10 +1691,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1737,10 +1718,7 @@ LLVM version: 6.0",
             .wait()
             .unwrap();
         // Ensure that the object file was created.
-        assert_eq!(
-            true,
-            fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-        );
+        assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::ForcedRecache, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1901,10 +1879,7 @@ LLVM version: 6.0",
                 .wait()
                 .unwrap();
             // Ensure that the object file was created.
-            assert_eq!(
-                true,
-                fs::metadata(&obj).and_then(|m| Ok(m.len() > 0)).unwrap()
-            );
+            assert_eq!(1, fs::metadata(&obj).map(|m| m.len()).unwrap());
             match cached {
                 CompileResult::CacheMiss(MissType::ForcedRecache, DistType::Error, _, f) => {
                     // wait on cache write future so we don't race with it!

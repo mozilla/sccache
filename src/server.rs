@@ -14,6 +14,7 @@
 
 // For tokio_io::codec::length_delimited::Framed;
 #![allow(deprecated)]
+#![allow(clippy::complexity)]
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
@@ -873,10 +874,7 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
-        let env = env
-            .into_iter()
-            .cloned()
-            .collect::<Vec<(OsString, OsString)>>();
+        let env = env.to_vec();
 
         let resolve_w_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
@@ -902,7 +900,7 @@ where
                     metadata(&path2)
                         .map(|attr| FileTime::from_last_modification_time(&attr))
                         .ok()
-                        .map(move |filetime| (path2.clone(), filetime))
+                        .map(move |filetime| (path2, filetime))
                 }
             };
             f_ok(opt)
@@ -992,7 +990,7 @@ where
                                                 proxy.box_clone();
                                             me.compiler_proxies
                                                 .borrow_mut()
-                                                .insert(path, (proxy, mtime.clone()));
+                                                .insert(path, (proxy, mtime));
                                         }
                                         // TODO add some safety checks in case a proxy exists, that the initial `path` is not
                                         // TODO the same as the resolved compiler binary
@@ -1023,7 +1021,7 @@ where
             },
         );
 
-        return Box::new(obtain);
+        Box::new(obtain)
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.
@@ -1102,7 +1100,7 @@ where
             CacheControl::Default
         };
         let out_pretty = hasher.output_pretty().into_owned();
-        let color_mode = hasher.color_mode();
+        let _color_mode = hasher.color_mode();
         let result = hasher.get_cached_or_compile(
             self.dist_client.get_client(),
             self.creator.clone(),
@@ -1118,8 +1116,10 @@ where
         let task = result.then(move |result| {
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
-            let mut res = CompileFinished::default();
-            res.color_mode = color_mode;
+            let mut res = CompileFinished {
+                color_mode: _color_mode,
+                ..CompileFinished::default()
+            };
             match result {
                 Ok((compiled, out)) => {
                     match compiled {

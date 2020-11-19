@@ -39,7 +39,7 @@ pub trait SpawnExt: task::SpawnExt {
     {
         self.spawn_with_handle(async move { f() })
             .map(|f| Box::new(f.compat()) as _)
-            .unwrap_or_else(|e| f_err(e))
+            .unwrap_or_else(f_err)
     }
 }
 

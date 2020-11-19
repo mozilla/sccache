@@ -82,7 +82,7 @@ impl CCompilerImpl for NVCC {
             }
             command.arg("-x").arg(language).arg(&parsed_args.input);
 
-            return command;
+            command
         };
 
         let dep_before_preprocessor = || {
@@ -109,7 +109,7 @@ impl CCompilerImpl for NVCC {
             if log_enabled!(Trace) {
                 trace!("dep-gen command: {:?}", dep_cmd);
             }
-            return dep_cmd;
+            dep_cmd
         };
 
         trace!("preprocess");
@@ -128,12 +128,12 @@ impl CCompilerImpl for NVCC {
 
         //Need to chain the dependency generation and the preprocessor
         //to emulate a `proper` front end
-        if parsed_args.dependency_args.len() > 0 {
+        if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
-            return Box::new(first.join(second).map(|(f, s)| s));
+            Box::new(first.join(second).map(|(f, s)| s))
         } else {
-            return Box::new(run_input_output(cmd, None));
+            Box::new(run_input_output(cmd, None))
         }
     }
 

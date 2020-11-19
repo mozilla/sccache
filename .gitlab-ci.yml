@@ -71,7 +71,7 @@ nightly-test:
   <<:                              *docker-env
   stage:                           test
   variables:
-    EXTRA_FEATURES:                "unstable"
+    EXTRA_FEATURES:                "$EXTRA_FEATURES unstable"
   script:
     - cargo build --verbose --features="all ${EXTRA_FEATURES}" || exit 1
     - RUST_BACKTRACE=1 cargo test --workspace --verbose --no-default-features --features="${EXTRA_FEATURES}"
