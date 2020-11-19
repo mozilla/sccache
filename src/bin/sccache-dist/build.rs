@@ -369,7 +369,7 @@ impl OverlayBuilder {
                         .arg(cwd);
 
                     for (k, v) in env_vars {
-                        if k.contains("=") {
+                        if k.contains('=') {
                             warn!("Skipping environment variable: {:?}", k);
                             continue;
                         }
@@ -511,7 +511,7 @@ impl DockerBuilder {
             .args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
             .check_stdout_trim()
             .context("Unable to list all Docker containers")?;
-        if containers != "" {
+        if !containers.is_empty() {
             let mut containers_to_rm = vec![];
             for line in containers.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -541,7 +541,7 @@ impl DockerBuilder {
             .args(&["images", "--format", "{{.ID}} {{.Repository}}"])
             .check_stdout_trim()
             .context("Failed to list all docker images")?;
-        if images != "" {
+        if !images.is_empty() {
             let mut images_to_rm = vec![];
             for line in images.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -609,7 +609,7 @@ impl DockerBuilder {
             .context("Failed to run kill on all processes in container")?;
 
         let diff = docker_diff(&cid)?;
-        if diff != "" {
+        if !diff.is_empty() {
             let mut lastpath = None;
             for line in diff.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -641,7 +641,7 @@ impl DockerBuilder {
                         continue;
                     }
                 }
-                lastpath = Some(changepath.clone());
+                lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
                     .args(&["exec", &cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
@@ -653,7 +653,7 @@ impl DockerBuilder {
 
             let newdiff = docker_diff(&cid)?;
             // See note about changepath == "/tmp" above
-            if newdiff != "" && newdiff != "C /tmp" {
+            if !newdiff.is_empty() && newdiff != "C /tmp" {
                 bail!(
                     "Attempted to delete files, but container still has a diff: {:?}",
                     newdiff
@@ -804,7 +804,7 @@ impl DockerBuilder {
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
         for (k, v) in env_vars {
-            if k.contains("=") {
+            if k.contains('=') {
                 warn!("Skipping environment variable: {:?}", k);
                 continue;
             }

@@ -364,7 +364,7 @@ mod server {
         let name = addr.to_string();
 
         let issuer_name = DirectoryName::new_common_name(name.clone());
-        let subject_name = DirectoryName::new_common_name(name.clone());
+        let subject_name = DirectoryName::new_common_name(name);
         let octets = match addr.ip() {
             IpAddr::V4(inner) => inner.octets().to_vec(),
             IpAddr::V6(inner) => inner.octets().to_vec(),

@@ -271,7 +271,7 @@ fn compute_auth_header(
 
 fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
     let mut canonical_resource = String::new();
-    canonical_resource.push_str("/");
+    canonical_resource.push('/');
     canonical_resource.push_str(account_name);
     canonical_resource.push_str(uri.path());
 
