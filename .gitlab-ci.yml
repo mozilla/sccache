@@ -73,9 +73,8 @@ nightly-test:
   variables:
     EXTRA_FEATURES:                "unstable"
   script:
-    - cargo build --verbose --features="all ${EXTRA_FEATURES}" || exit 1
-    - RUST_BACKTRACE=1 cargo test --workspace --verbose --no-default-features --features="${EXTRA_FEATURES}"
-    - RUST_BACKTRACE=1 cargo test --workspace --verbose --features="all ${EXTRA_FEATURES}"
+    - cargo +nightly build --verbose --features="${EXTRA_FEATURES}" || exit 1
+    - RUST_BACKTRACE=1 cargo +nightly test --workspace --verbose --features="${EXTRA_FEATURES}"
 
 stable-test:
   stage:                           test
@@ -84,7 +83,7 @@ stable-test:
   before_script:
     - mkdir -p ./artifacts/sccache/
   script:
-    - cargo +stable build --verbose --all-features
-    - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose --no-default-features
-    - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose --all-features
+    - cargo +stable build --verbose
+    - RUST_BACKTRACE=1 cargo +stable test --workspace --verbose
+    - cargo +stable build --release --features="dist-client,dist-server"
     - mv ./target/release/sccache ./artifacts/sccache/.
