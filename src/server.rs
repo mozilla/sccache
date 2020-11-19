@@ -130,7 +130,7 @@ fn get_signal(status: ExitStatus) -> i32 {
     use std::os::unix::prelude::*;
     status
         .signal()
-        .expect("Signals must exist on unix platforms. qed")
+        .expect("Signals must exist on unix platforms. Q.E.D.")
 }
 #[cfg(windows)]
 fn get_signal(_status: ExitStatus) -> i32 {

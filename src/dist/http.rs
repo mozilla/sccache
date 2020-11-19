@@ -1467,7 +1467,7 @@ mod tests {
 
         let convert = |tag: &'static str, data: &[u8]| {
             let mut bufread = std::io::BufReader::new(data);
-            let pem = picky::pem::Pem::read_from(&mut bufread).expect("PEM must be valid. qed");
+            let pem = picky::pem::Pem::read_from(&mut bufread).expect("PEM must be valid. Q.E.D.");
             println!("{} {}", tag, &pem);
             let mut f = std::fs::OpenOptions::new()
                 .truncate(true)
@@ -1476,7 +1476,7 @@ mod tests {
                 .open(format!("./{}.cert.pem", tag))
                 .unwrap();
             f.write_all(pem.to_string().as_bytes()).unwrap();
-            let cert = picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. qed");
+            let cert = picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. Q.E.D.");
             cert
         };
 
