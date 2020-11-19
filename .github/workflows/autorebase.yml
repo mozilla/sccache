@@ -1,0 +1,32 @@
+on:
+  # Run on every push on every branch
+  push:
+    branches-ignore:
+      # Ignore branches automatically created by github-rebase
+      - rebase-pull-request**
+      - cherry-pick-rebase-pull-request**
+  # Run when pull requests get labeled
+  pull_request:
+    types:                  [labeled]
+
+jobs:
+  auto-rebase:
+    name:                   AutoRebase
+    runs-on:                ubuntu-latest
+    steps:
+      # We can't use the built-in secrets.GITHUB_TOKEN yet because of this limitation:
+      # https://github.community/t5/GitHub-Actions/Triggering-a-new-workflow-from-another-workflow/td-p/31676
+      # In the meantime, use a token granting write access on the repo:
+      # - a GitHub App token
+      #   See https://github.com/marketplace/actions/github-app-token.
+      - name:               GitHub App token
+        id:                 token-generator
+        uses:               tibdex/github-app-token@v1.0.2
+        with:
+          app_id:           ${{ secrets.TOKEN_GEN_APP_ID }}
+          private_key:      ${{ secrets.TOKEN_GEN_PRIVATE_KEY }}
+
+      - name:               Auto Rebase
+        uses:               Label305/AutoRebase@v0.1
+        with:
+          github_token:     ${{ steps.token-generator.outputs.token }}
