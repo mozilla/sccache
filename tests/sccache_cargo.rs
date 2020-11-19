@@ -44,20 +44,19 @@ fn test_rust_cargo_cmd(cmd: &str) {
         );
     }
 
-    drop(
-        env_logger::Builder::new()
-            .format(|f, record| {
-                write!(
-                    f,
-                    "{} [{}] - {}",
-                    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                    record.level(),
-                    record.args()
-                )
-            })
-            .parse(&env::var("RUST_LOG").unwrap_or_default())
-            .try_init(),
-    );
+    let _ = env_logger::Builder::new()
+        .format(|f, record| {
+            write!(
+                f,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .parse(&env::var("RUST_LOG").unwrap_or_default())
+        .try_init();
+
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
     let sccache = assert_cmd::cargo::cargo_bin("sccache");
@@ -119,10 +118,33 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // so there are two separate compilations, but cargo will build the test crate with
     // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
-    sccache_command()
+    let child = sccache_command()
         .args(&["--show-stats", "--stats-format=json"])
-        .assert()
-        .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())
-        .success();
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("Launching process must work. Q.E.D.");
+
+    let output = child
+        .wait_with_output()
+        .expect("Reading stdout in test always works. Q.E.D.");
+    let output = String::from_utf8_lossy(&output.stdout);
+
+    use std::str::FromStr;
+
+    let re = regex::Regex::new(r#""cache_hits":\{"counts":\{"Rust":\s*([0-9]+)\s*\}\}"#)
+        .expect("Provided regex is good. Q.E.D.");
+    let captures = re
+        .captures(&output)
+        .expect("Must have a capture for provided regex. Q.E.D.");
+    assert_eq!(captures.len(), 2); // the full string and the actual first group
+    let mut iter = captures.iter();
+    let _ = iter.next();
+    let m = iter
+        .next()
+        .expect("Must have a number for cached rust compiles. Q.E.D.")
+        .unwrap();
+    let cached_rust_compilations = usize::from_str(m.as_str()).unwrap();
+    assert!(cached_rust_compilations >= 1);
+
     stop();
 }

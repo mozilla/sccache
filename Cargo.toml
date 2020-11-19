@@ -117,6 +117,7 @@ cc = "1.0"
 chrono = "0.4"
 itertools = "0.9"
 predicates = "1"
+regex = "1"
 selenium-rs = "0.1"
 
 [target.'cfg(unix)'.dependencies]
