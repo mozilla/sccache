@@ -117,7 +117,6 @@ cc = "1.0"
 chrono = "0.4"
 itertools = "0.9"
 predicates = "1"
-regex = "1"
 selenium-rs = "0.1"
 
 [target.'cfg(unix)'.dependencies]
@@ -137,16 +136,20 @@ features = [
 ]
 
 [features]
-default = ["dist-client", "s3"]
-all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
+default = ["redis", "s3", "memcached", "gcs", "azure", "dist-client", "dist-server"]
+# legacy compat, do not use
+all = ["redis", "s3", "memcached", "gcs", "azure", "dist-client", "dist-server"]
+
 azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "reqwest", "ring", "untrusted", "url"]
 memcached = ["memcached-rs"]
+
 native-zlib = ["zip/deflate-zlib"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
+
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
