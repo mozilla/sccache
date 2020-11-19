@@ -626,7 +626,7 @@ impl RustupProxy {
             })
             .and_then(move |state| {
                 let state = match state {
-                    ProxyPath::Candidate(_) => { unreachable!("qed") }
+                    ProxyPath::Candidate(_) => { unreachable!("Q.E.D.") }
                     ProxyPath::ToBeDiscovered => {
                         // simple check: is there a rustup in the same parent dir as rustc?
                         // that would be the prefered one
