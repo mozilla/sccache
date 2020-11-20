@@ -112,7 +112,7 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
 pub fn sccache_command() -> Command {
     use sccache::util::OsStrExt;
 
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("sccache"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")));
     for (var, _) in env::vars_os() {
         if var.starts_with("SCCACHE_") {
             cmd.env_remove(var);
