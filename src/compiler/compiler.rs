@@ -1185,7 +1185,7 @@ mod test {
 
     #[test]
     fn test_detect_compiler_kind_msvc() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let pool = ThreadPool::sized(1);
         let f = TestFixture::new();
@@ -1338,7 +1338,7 @@ LLVM version: 6.0",
 
     #[test]
     fn test_compiler_get_cached_or_compile() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);
@@ -1444,7 +1444,7 @@ LLVM version: 6.0",
     #[test]
     #[cfg(feature = "dist-client")]
     fn test_compiler_get_cached_or_compile_dist() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);
@@ -1546,7 +1546,7 @@ LLVM version: 6.0",
     /// Test that a cache read that results in an error is treated as a cache
     /// miss.
     fn test_compiler_get_cached_or_compile_cache_error() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);
@@ -1625,7 +1625,7 @@ LLVM version: 6.0",
 
     #[test]
     fn test_compiler_get_cached_or_compile_force_recache() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);
@@ -1733,7 +1733,7 @@ LLVM version: 6.0",
 
     #[test]
     fn test_compiler_get_cached_or_compile_preprocessor_error() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);
@@ -1804,7 +1804,7 @@ LLVM version: 6.0",
     #[test]
     #[cfg(feature = "dist-client")]
     fn test_compiler_get_cached_or_compile_dist_error() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
         let pool = ThreadPool::sized(1);

@@ -19,18 +19,35 @@ extern crate log;
 #[test]
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo() {
+    use chrono::Local;
+    use std::io::Write;
+    let _ = env_logger::Builder::new()
+        .format(|f, record| {
+            writeln!(
+                f,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .is_test(true)
+        .filter_level(log::LevelFilter::Trace)
+        .try_init();
+
+    trace!("cargo check");
     test_rust_cargo_cmd("check");
+
+    trace!("cargo build");
     test_rust_cargo_cmd("build");
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo_cmd(cmd: &str) {
     use assert_cmd::prelude::*;
-    use chrono::Local;
     use predicates::prelude::*;
     use std::env;
     use std::fs;
-    use std::io::Write;
     use std::path::Path;
     use std::process::{Command, Stdio};
 
@@ -48,19 +65,6 @@ fn test_rust_cargo_cmd(cmd: &str) {
                 .status(),
         );
     }
-
-    let _ = env_logger::Builder::new()
-        .format(|f, record| {
-            write!(
-                f,
-                "{} [{}] - {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                record.level(),
-                record.args()
-            )
-        })
-        .parse(&env::var("RUST_LOG").unwrap_or_default())
-        .try_init();
 
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);

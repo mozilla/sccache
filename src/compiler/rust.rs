@@ -2907,7 +2907,7 @@ c:/foo/bar.rs:
 
     #[test]
     fn test_generate_hash_key() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let f = TestFixture::new();
         const FAKE_DIGEST: &str = "abcd1234";
         // We'll just use empty files for each of these.

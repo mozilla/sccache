@@ -211,7 +211,7 @@ fn test_server_unsupported_compiler() {
 
 #[test]
 fn test_server_compile() {
-    let _ = env_logger::try_init();
+    let _ = env_logger::Builder::new().is_test(true).try_init();
     let f = TestFixture::new();
     let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
     // Connect to the server.
