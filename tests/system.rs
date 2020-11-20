@@ -308,7 +308,8 @@ int main(int argc, char** argv) {
     });
 
     // Now doing the same again with `UNDEFINED` defined
-    // should produce a cache miss.
+    // should produce a cache hit too, after preproc
+    // it's still the same source file
     args.extend(vec_from!(OsString, "-DUNDEFINED"));
     trace!("compile source.c (4)");
     sccache_command()
@@ -318,10 +319,10 @@ int main(int argc, char** argv) {
         .assert()
         .success();
     get_stats(|info| {
-        assert_eq!(3, info.stats.cache_hits.all());
-        assert_eq!(1, info.stats.cache_misses.all());
-        assert_eq!(&3, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        assert_eq!(4, info.stats.cache_hits.all());
+        assert_eq!(0, info.stats.cache_misses.all());
+        assert_eq!(&4, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
     });
 }
 
