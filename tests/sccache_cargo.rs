@@ -52,7 +52,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use std::process::{Command, Stdio};
 
     fn sccache_command() -> Command {
-        Command::new(assert_cmd::cargo::cargo_bin("sccache"))
+        Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
     }
 
     fn stop() {
@@ -81,7 +81,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
 
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
-    let sccache = assert_cmd::cargo::cargo_bin("sccache");
+    let sccache = assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME"));
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.
