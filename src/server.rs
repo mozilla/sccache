@@ -70,12 +70,15 @@ use tower::Service;
 use crate::errors::*;
 
 /// If the server is idle for this many seconds, shut down.
-const DEFAULT_IDLE_TIMEOUT: u64 = 600;
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// If the dist client couldn't be created, retry creation at this number
 /// of seconds from now (or later)
 #[cfg(feature = "dist-client")]
 const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// On shutdown, wait this duration for all connections to close.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -91,11 +94,12 @@ pub enum ServerStartup {
 }
 
 /// Get the time the server should idle for before shutting down.
-fn get_idle_timeout() -> u64 {
+fn get_idle_timeout() -> Duration {
     // A value of 0 disables idle shutdown entirely.
     env::var("SCCACHE_IDLE_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
+        .map(|timeout| Duration::from_secs(timeout))
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
 }
 
@@ -465,7 +469,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             listener,
             rx,
             service,
-            timeout: Duration::from_secs(get_idle_timeout()),
+            timeout: get_idle_timeout(),
             wait,
         })
     }
@@ -576,8 +580,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         runtime.block_on_std(server)?;
 
         info!(
-            "moving into the shutdown phase now, waiting at most 10 seconds \
-             for all client requests to complete"
+            "moving into the shutdown phase now, waiting at most {} seconds \
+             for all client requests to complete",
+            SHUTDOWN_TIMEOUT.as_secs()
         );
 
         // Once our server has shut down either due to inactivity or a manual
@@ -589,7 +594,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // don't want to wait *too* long.
         runtime
             .block_on_std(async {
-                time::timeout(Duration::new(30, 0), wait)
+                time::timeout(SHUTDOWN_TIMEOUT, wait)
                     .await
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
                     .unwrap_or_else(|e| Err(io::Error::new(io::ErrorKind::Other, e)))
