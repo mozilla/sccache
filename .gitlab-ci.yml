@@ -21,6 +21,8 @@ workflow:
 .docker-env:                       &docker-env
   image:                           paritytech/ink-ci-linux:latest
   before_script:
+    - which gcc && gcc --version
+    - which clang && clang --version
     - rustup show
     - cargo --version
     - sccache -s
