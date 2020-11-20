@@ -23,8 +23,8 @@ workflow:
   before_script:
     - which gcc && gcc --version
     - which clang && clang --version
-    - rustup show
-    - cargo --version
+    - rustc +stable --version
+    - rustc +nightly --version
     - sccache -s
   retry:
     max: 2
