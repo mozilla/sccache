@@ -14,23 +14,40 @@ use crate::harness::get_stats;
 #[macro_use]
 extern crate log;
 
+use std::io::Write;
+
 /// Test that building a simple Rust crate with cargo using sccache results in a cache hit
 /// when built a second time.
 #[test]
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo() {
+    let _ = env_logger::Builder::new()
+        .format(|f, record| {
+            writeln!(
+                f,
+                "{} [{}] - {}",
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .is_test(true)
+        .filter_level(log::LevelFilter::Trace)
+        .try_init();
+
+    trace!("cargo check");
     test_rust_cargo_cmd("check");
+
+    trace!("cargo build");
     test_rust_cargo_cmd("build");
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo_cmd(cmd: &str) {
     use assert_cmd::prelude::*;
-    use chrono::Local;
     use predicates::prelude::*;
     use std::env;
     use std::fs;
-    use std::io::Write;
     use std::path::Path;
     use std::process::{Command, Stdio};
 
@@ -54,7 +71,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
             write!(
                 f,
                 "{} [{}] - {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
                 record.level(),
                 record.args()
             )

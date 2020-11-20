@@ -111,7 +111,7 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
 
 // Override any environment variables that could adversely affect test execution.
 pub fn sccache_command() -> Command {
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("sccache"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")));
     cmd.env("SCCACHE_CONF", "nonexistent_conf_path")
         .env("SCCACHE_CACHED_CONF", "nonexistent_cached_conf_path");
     cmd

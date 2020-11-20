@@ -28,7 +28,7 @@ atty = "0.2.6"
 base64 = { version = "0.13.0", features = ["std"] }
 bincode = "1"
 blake3 = "0.3"
-byteorder = "1.0"
+byteorder = "1"
 chrono = { version = "0.4", optional = true }
 clap = "2.33"
 counted-array = "0.1"
@@ -45,8 +45,8 @@ hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
 lazy_static = "1.4"
-libc = "0.2.10"
-linked-hash-map = "0.5"
+libc = "^0.2.10"
+linked-hash-map = "0.5.4"
 local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
