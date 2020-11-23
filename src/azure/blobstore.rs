@@ -16,11 +16,9 @@
 use crate::azure::credentials::*;
 use futures::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
-use hyper::header::HeaderValue;
-use hyper::Method;
 use hyperx::header;
 use md5::{Digest, Md5};
-use reqwest::r#async::{Client, Request};
+use reqwest::{Client, Request, Method, header::HeaderValue};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
@@ -72,7 +70,7 @@ impl BlobContainer {
         })
     }
 
-    pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
+    pub async fn get(&self, key: &str, creds: &AzureCredentials) -> Result<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
@@ -107,46 +105,42 @@ impl BlobContainer {
             );
         }
 
-        Box::new(
-            self.client
-                .execute(request)
-                .fwith_context(move || format!("failed GET: {}", uri_copy))
-                .and_then(|res| {
-                    if res.status().is_success() {
-                        let content_length = res
-                            .headers()
-                            .get_hyperx::<header::ContentLength>()
-                            .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), uri_second_copy);
-                            }
-                        }
-                        Ok(bytes)
-                    })
-                }),
-        )
+        let res = self.client
+            .execute(request).map_err(move || format!("failed GET: {}", uri_copy)).await?;
+        
+
+        let (body, content_length) = if res.status().is_success() {
+            let content_length = res
+                .headers()
+                .get_hyperx::<header::ContentLength>()
+                .map(|header::ContentLength(len)| len);
+            Ok((res.into_body(), content_length))
+        } else {
+            return Err(BadHttpStatusError(res.status()).into())
+        };
+
+        let bytes = body.fold(Vec::new(), |mut body, chunk| {
+            body.extend_from_slice(&chunk);
+            Ok::<_, reqwest::Error>(body)
+        }).map_err(|err| {
+            err.context("failed to read HTTP body")
+        })?;
+
+        if let Some(len) = content_length {
+            if len != bytes.len() as u64 {
+                bail!(format!(
+                    "Bad HTTP body size read: {}, expected {}",
+                    bytes.len(),
+                    len
+                ));
+            } else {
+                info!("Read {} bytes from {}", bytes.len(), uri_second_copy);
+            }
+        }
+        Ok(bytes)
     }
 
-    pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
+    pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let date = time::now_utc().rfc822().to_string();
@@ -204,7 +198,7 @@ impl BlobContainer {
 
         *request.body_mut() = Some(content.into());
 
-        Box::new(self.client.execute(request).then(|result| match result {
+        match self.client.execute(request).await {
             Ok(res) => {
                 if res.status().is_success() {
                     trace!("PUT succeeded");
@@ -218,7 +212,7 @@ impl BlobContainer {
                 trace!("PUT failed with error: {:?}", e);
                 Err(e.into())
             }
-        }))
+        }
     }
 }
 

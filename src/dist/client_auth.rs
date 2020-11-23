@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio_compat::runtime::current_thread::Runtime;
 use url::Url;
 use uuid::Uuid;
+use std::pin::Pin;
 
 use crate::util::RequestExt;
 
@@ -30,14 +31,14 @@ const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
 
 trait ServeFn:
-    Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
+    Fn(Request<Body>) -> Pin<Box<dyn futures_03::Future<Output = std::result::Result<Response<Body>, hyper::Error>> + Send>>
     + Copy
     + Send
     + 'static
 {
 }
 impl<T> ServeFn for T where
-    T: Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
+    T: Fn(Request<Body>) -> Pin<Box<dyn futures_03::Future<Output = std::result::Result<Response<Body>, hyper::Error>> + Send>>
         + Copy
         + Send
         + 'static
@@ -47,7 +48,7 @@ impl<T> ServeFn for T where
 fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> impl ServeFn {
     move |req: Request<Body>| {
         let uri = req.uri().to_owned();
-        Box::new(serve(req).or_else(move |e| {
+        let fut = serve(req).or_else(move |e| {
             // `{:?}` prints the full cause chain and backtrace.
             let body = format!("{:?}", e);
             eprintln!(
@@ -55,14 +56,27 @@ fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> imp
                 uri, body
             );
             let len = body.len();
-            let mut builder = Response::builder();
-            builder.status(StatusCode::INTERNAL_SERVER_ERROR);
+            let builder = Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR);
             Ok(builder
                 .set_header(ContentType::text())
                 .set_header(ContentLength(len as u64))
                 .body(body.into())
                 .unwrap())
-        })) as Box<dyn Future<Item = _, Error = _> + Send>
+        });
+        
+        let fut = futures_03::compat::Compat01As03::new(fut);
+        Box::pin(fut) as 
+            Pin<
+                Box<
+                    dyn futures_03::Future<
+                        Output = std::result::Result<
+                            hyper::Response<hyper::Body>,
+                            hyper::Error>
+                        >
+                    + std::marker::Send
+                >
+            >
     }
 }
 
@@ -468,7 +482,7 @@ mod implicit {
 fn service_fn<F, R, S>(f: F) -> ServiceFn<F, R>
 where
     F: Fn(Request<R>) -> S,
-    S: IntoFuture,
+    S: futures_03::Future,
 {
     ServiceFn {
         f,
@@ -476,41 +490,40 @@ where
     }
 }
 
+
 struct ServiceFn<F, R> {
     f: F,
     _req: PhantomData<fn(R)>,
 }
 
-impl<F, ReqBody, Ret, ResBody> Service<ReqBody> for ServiceFn<F, ReqBody>
+use futures_03::compat::Future01CompatExt;
+
+impl<'a, F, ReqBody, Ret, ResBody> Service<Request<ReqBody>> for ServiceFn<F, ReqBody>
 where
     F: Fn(Request<ReqBody>) -> Ret,
     ReqBody: HttpBody,
-    Ret: IntoFuture<Item = Response<ResBody>>,
-    Ret::Error: Into<Box<dyn StdError + Send + Sync>>,
+    Ret: futures_03::Future<Output = std::result::Result<Response<ResBody>, hyper::Error>>,
     ResBody: HttpBody,
 {
-    type Response = ResBody;
-    type Error = Ret::Error;
-    type Future = Ret::Future;
+    type Response = Response<ResBody>;
+    type Error = hyper::Error;
+    // must be futures 0.3
+    type Future = Pin<Box< dyn futures_03::Future<Output = std::result::Result<Self::Response, Self::Error>>>>;
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        (self.f)(req).into_future()
+        Box::pin(async move { (self.f)(req).await })
+    }
+    
+    fn poll_ready<'f>(&mut self, cx: &mut futures_03::task::Context<'f>) -> futures_03::task::Poll<std::result::Result<(), Self::Error>> {
+        // dummy
+        futures_03::ready!(())
     }
 }
 
-impl<F, R> IntoFuture for ServiceFn<F, R> {
-    type Future = future::FutureResult<Self::Item, Self::Error>;
-    type Item = Self;
-    type Error = hyper::Error;
-
-    fn into_future(self) -> Self::Future {
-        future::ok(self)
-    }
-}
-
-fn try_serve<T>(serve: T) -> Result<Server<AddrIncoming, impl Fn() -> ServiceFn<T, Body>>>
+fn try_serve<T,F>(serve: T) -> Result<Server<AddrIncoming, F>>
 where
     T: ServeFn,
+    F: FnMut(&AddrIncoming) -> ServiceFn<T, Body>,
 {
     // Try all the valid ports
     for &port in VALID_PORTS {
@@ -533,9 +546,19 @@ where
             }
         }
 
-        let new_service = move || service_fn(serve);
+        use hyper::service::make_service_fn;
+        use hyper::server::conn::AddrStream;
+        
+        let new_service = make_service_fn(
+            move |socket: &AddrStream| async move {
+                Ok::<_,hyper::Error>(service_fn::<_,Body,_>(serve))
+            }
+        );
+        
         match Server::try_bind(&addr) {
-            Ok(s) => return Ok(s.serve(new_service)),
+            Ok(s) => {
+                return Ok(s.serve(new_service))
+            },
             Err(ref err)
                 if err
                     .source()

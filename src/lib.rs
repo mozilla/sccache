@@ -54,8 +54,6 @@ mod jobserver;
 mod mock_command;
 mod protocol;
 pub mod server;
-#[cfg(feature = "simple-s3")]
-mod simples3;
 #[doc(hidden)]
 pub mod util;
 
