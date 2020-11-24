@@ -24,6 +24,14 @@ matrix:
         apt:
           packages:
           - musl-tools
+    - env: DEPLOY=1 TARGET=aarch64-unknown-linux-musl CC_aarch64_unknown_linux_musl=musl-gcc
+      before_script: rustup target add aarch64-unknown-linux-musl
+      script: cargo build --release --target $TARGET --features=openssl/vendored
+      arch: arm64
+      addons:
+        apt:
+          packages:
+          - musl-tools
   allow_failures:
     - rust: nightly
 
