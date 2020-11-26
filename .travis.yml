@@ -4,6 +4,8 @@ matrix:
   include:
     # OS compat
     - os: linux
+    - os: linux
+      arch: arm64
     - os: osx
 
     # rustc version compat
