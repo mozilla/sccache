@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
+use std::convert::TryFrom;
 
 use crate::errors::*;
 
@@ -364,7 +365,9 @@ pub use self::http_extension::{HeadersExt, RequestExt};
 
 #[cfg(feature = "hyperx")]
 mod http_extension {
-    use http::header::HeaderValue;
+    use std::convert::TryFrom;
+
+    use reqwest::header::{HeaderValue, HeaderMap, InvalidHeaderName, InvalidHeaderValue};
     use std::fmt;
 
     pub trait HeadersExt {
@@ -377,14 +380,14 @@ mod http_extension {
             H: hyperx::header::Header;
     }
 
-    impl HeadersExt for http::HeaderMap {
+    impl HeadersExt for HeaderMap {
         fn set<H>(&mut self, header: H)
         where
             H: hyperx::header::Header + fmt::Display,
         {
             self.insert(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
             );
         }
 
@@ -392,7 +395,7 @@ mod http_extension {
         where
             H: hyperx::header::Header,
         {
-            http::HeaderMap::get(self, H::header_name())
+            HeaderMap::get(self, H::header_name())
                 .and_then(|header| H::parse_header(&header.as_bytes().into()).ok())
         }
     }
@@ -410,7 +413,7 @@ mod http_extension {
         {
             self.header(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
             );
             self
         }
@@ -423,22 +426,9 @@ mod http_extension {
         {
             self.header(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
             );
             self
-        }
-    }
-
-    #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::r#async::RequestBuilder {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
-            )
         }
     }
 
@@ -450,7 +440,20 @@ mod http_extension {
         {
             self.header(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
+            )
+        }
+    }
+
+    #[cfg(feature = "reqwest")]
+    impl RequestExt for ::reqwest::blocking::RequestBuilder {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
             )
         }
     }

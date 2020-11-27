@@ -127,8 +127,9 @@ impl S3Cache {
     }
 }
 
+#[async_trait]
 impl Storage for S3Cache {
-    fn get(&self, key: &str) -> SFuture<Cache> {
+    async fn get(&self, key: &str) -> Result<Cache> {
         let key = self.normalize_key(key);
 
         let client = self.client.clone();
@@ -138,10 +139,11 @@ impl Storage for S3Cache {
             ..Default::default()
         };
 
-        Box::new(Box::pin(Self::get_object(client, request)).compat())
+        Self::get_object(client, request).await
+        // Box::new(Box::pin(Self::get_object(client, request)).compat())
     }
 
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let key = self.normalize_key(&key);
         let start = Instant::now();
         let data = match entry.finish() {
@@ -162,21 +164,23 @@ impl Storage for S3Cache {
             ..Default::default()
         };
 
-        Box::new(
-            Box::pin(Self::put_object(client, request))
-                .compat()
-                .then(move |_| future::ok(start.elapsed())),
-        )
+        Self::put_object(client, request).await
+        
+        // Box::new(
+        //     Box::pin(Self::put_object(client, request))
+        //         .compat()
+        //         .then(move |_| future::ok(start.elapsed())),
+        // )
     }
 
     fn location(&self) -> String {
         format!("S3, bucket: {}", self.bucket_name)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
 }

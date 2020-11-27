@@ -16,6 +16,8 @@
 #![deny(clippy::perf)]
 #![deny(rust_2018_idioms)]
 #![recursion_limit = "256"]
+#[macro_use]
+extern crate async_trait;
 
 #[macro_use]
 extern crate clap;

@@ -845,11 +845,10 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.borrow().clone();
         let cache_location = self.storage.location();
-        future::try_join(
-            self.storage.current_size().compat(),
-            self.storage.max_size().compat(),
+        futures_03::try_join!(
+            self.storage.current_size(),
+            self.storage.max_size(),
         )
-        .await
         .map(move |(cache_size, max_cache_size)| ServerInfo {
             stats,
             cache_location,

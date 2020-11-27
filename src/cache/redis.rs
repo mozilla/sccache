@@ -44,39 +44,42 @@ impl RedisCache {
     }
 }
 
+#[async_trait]
 impl Storage for RedisCache {
     /// Open a connection and query for a key.
-    fn get(&self, key: &str) -> SFuture<Cache> {
-        let key = key.to_owned();
-        let me = self.clone();
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
+    async fn get(&self, key: &str) -> Result<Cache> {
+        // let key = key.to_owned();
+        // let me = self.clone();
+        // Box::new(
+        //     Box::pin(async move {
+                // let mut c = me.connect().await?;
+                let mut c = self.connect().await?;
                 let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
                 if d.is_empty() {
                     Ok(Cache::Miss)
                 } else {
                     CacheRead::from(Cursor::new(d)).map(Cache::Hit)
                 }
-            })
-            .compat(),
-        )
+            // })
+            // .compat(),
+        // )
     }
 
     /// Open a connection and store a object in the cache.
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
-        let key = key.to_owned();
-        let me = self.clone();
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        // let key = key.to_owned();
+        // let me = self.clone();
         let start = Instant::now();
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
+        // Box::new(
+        //     Box::pin(async move {
+                // let mut c = me.connect().await?;
+                let mut c = self.connect().await?;
                 let d = entry.finish()?;
                 cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
                 Ok(start.elapsed())
-            })
-            .compat(),
-        )
+            // })
+            // .compat(),
+        // )
     }
 
     /// Returns the cache location.
@@ -86,26 +89,28 @@ impl Storage for RedisCache {
 
     /// Returns the current cache size. This value is aquired via
     /// the Redis INFO command (used_memory).
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        let me = self.clone(); // TODO Remove clone
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
+    async fn current_size(&self) -> Result<Option<u64>> {
+        // let me = self.clone(); // TODO Remove clone
+        // Box::new(
+        //     Box::pin(async move {
+                // let mut c = me.connect().await?;
+                let mut c = self.connect().await?;
                 let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
                 Ok(v.get("used_memory"))
-            })
-            .compat(),
-        )
+        //     })
+        //     .compat(),
+        // )
     }
 
     /// Returns the maximum cache size. This value is read via
     /// the Redis CONFIG command (maxmemory). If the server has no
     /// configured limit, the result is None.
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        let me = self.clone(); // TODO Remove clone
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
+    async fn max_size(&self) -> Result<Option<u64>> {
+        // let me = self.clone(); // TODO Remove clone
+        // Box::new(
+        //     Box::pin(async move {
+                // let mut c = me.connect().await?;
+                let mut c = self.connect().await?;
                 let h: HashMap<String, usize> = cmd("CONFIG")
                     .arg("GET")
                     .arg("maxmemory")
@@ -113,8 +118,8 @@ impl Storage for RedisCache {
                     .await?;
                 Ok(h.get("maxmemory")
                     .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
-            })
-            .compat(),
-        )
+        //     })
+        //     .compat(),
+        // )
     }
 }

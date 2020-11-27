@@ -95,6 +95,8 @@ pub struct CacheRead {
     zip: ZipArchive<Box<dyn ReadSeek>>,
 }
 
+unsafe impl Send for CacheRead {}
+
 /// Represents a failure to decompress stored object data.
 #[derive(Debug)]
 pub struct DecompressionFailure;
@@ -257,6 +259,7 @@ impl Default for CacheWrite {
 }
 
 /// An interface to cache storage.
+#[async_trait]
 pub trait Storage {
     /// Get a cache entry by `key`.
     ///
@@ -265,22 +268,22 @@ pub trait Storage {
     /// it should return a `Cache::Miss`.
     /// If the entry is successfully found in the cache, it should
     /// return a `Cache::Hit`.
-    fn get(&self, key: &str) -> SFuture<Cache>;
+    async fn get(&self, key: &str) -> Result<Cache>;
 
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
 
     /// Get the storage location.
     fn location(&self) -> String;
 
     /// Get the current storage usage, if applicable.
-    fn current_size(&self) -> SFuture<Option<u64>>;
+    async fn current_size(&self) -> Result<Option<u64>>;
 
     /// Get the maximum storage size, if applicable.
-    fn max_size(&self) -> SFuture<Option<u64>>;
+    async fn max_size(&self) -> Result<Option<u64>>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.

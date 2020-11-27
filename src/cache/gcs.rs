@@ -26,7 +26,7 @@ use futures::{
 };
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
-use reqwest::r#async::{Client, Request};
+use reqwest::{Client, Request};
 use serde::de;
 use url::{
     form_urlencoded,
@@ -52,7 +52,7 @@ impl Bucket {
         Ok(Bucket { name, client })
     }
 
-    fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> SFuture<Vec<u8>> {
+    async fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> Result<Vec<u8>> {
         let url = format!(
             "https://www.googleapis.com/download/storage/v1/b/{}/o/{}?alt=media",
             percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
@@ -61,53 +61,42 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let Some(ref cred_provider) = *cred_provider {
-            future::Either::A(
-                cred_provider
-                    .credentials(&self.client)
-                    .map_err(|err| {
-                        warn!("Error getting credentials: {:?}", err);
-                        err
-                    })
-                    .map(Some),
-            )
+        let creds_opt = if let Some(ref cred_provider) = *cred_provider {
+            cred_provider
+                .credentials(&self.client)
+                .await
+                .map_err(|err| {
+                    warn!("Error getting credentials: {:?}", err);
+                    err
+                })
+                .map(Some)?
         } else {
-            future::Either::B(future::ok(None))
+            None
         };
 
-        Box::new(creds_opt_future.and_then(move |creds_opt| {
-            let mut request = Request::new(Method::GET, url.parse().unwrap());
-            if let Some(creds) = creds_opt {
-                request
-                    .headers_mut()
-                    .set(Authorization(Bearer { token: creds.token }));
-            }
-            client
-                .execute(request)
-                .fwith_context(move || format!("failed GET: {}", url))
-                .and_then(|res| {
-                    if res.status().is_success() {
-                        Ok(res.into_body())
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(|body| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                })
-        }))
+        let mut request = Request::new(Method::GET, url.parse().unwrap());
+        if let Some(creds) = creds_opt {
+            request
+                .headers_mut()
+                .set(Authorization(Bearer { token: creds.token }));
+        }
+        let res = client
+            .execute(request).await
+            .map_err(|_e| format!("failed GET: {}", url));
+
+        if res.status().is_success() {
+            Ok(res.bytes().await.map_err(|_e| "failed to read HTTP body")?)
+        } else {
+            Err(BadHttpStatusError(res.status()).into())
+        }
     }
 
-    fn put(
+    async fn put(
         &self,
         key: &str,
         content: Vec<u8>,
         cred_provider: &Option<GCSCredentialProvider>,
-    ) -> SFuture<()> {
+    ) -> Result<()> {
         let url = format!(
             "https://www.googleapis.com/upload/storage/v1/b/{}/o?name={}&uploadType=media",
             percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
@@ -116,40 +105,38 @@ impl Bucket {
 
         let client = self.client.clone();
 
-        let creds_opt_future = if let Some(ref cred_provider) = cred_provider {
+        let creds_opt = if let Some(ref cred_provider) = cred_provider {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
-        };
+        }.await;
 
-        Box::new(creds_opt_future.and_then(move |creds_opt| {
-            let mut request = Request::new(Method::POST, url.parse().unwrap());
-            {
-                let headers = request.headers_mut();
-                if let Some(creds) = creds_opt {
-                    headers.set(Authorization(Bearer { token: creds.token }));
-                }
-                headers.set(ContentType::octet_stream());
-                headers.set(ContentLength(content.len() as u64));
+        let mut request = Request::new(Method::POST, url.parse().unwrap());
+        {
+            let headers = request.headers_mut();
+            if let Some(creds) = creds_opt {
+                headers.set(Authorization(Bearer { token: creds.token }));
             }
-            *request.body_mut() = Some(content.into());
+            headers.set(ContentType::octet_stream());
+            headers.set(ContentLength(content.len() as u64));
+        }
+        *request.body_mut() = Some(content.into());
 
-            client.execute(request).then(|result| match result {
-                Ok(res) => {
-                    if res.status().is_success() {
-                        trace!("PUT succeeded");
-                        Ok(())
-                    } else {
-                        trace!("PUT failed with HTTP status: {}", res.status());
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
+        match client.execute(request).await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    trace!("PUT succeeded");
+                    Ok(())
+                } else {
+                    trace!("PUT failed with HTTP status: {}", res.status());
+                    Err(BadHttpStatusError(res.status()).into())
                 }
-                Err(e) => {
-                    trace!("PUT failed with error: {:?}", e);
-                    Err(e.into())
-                }
-            })
-        }))
+            }
+            Err(e) => {
+                trace!("PUT failed with error: {:?}", e);
+                Err(e.into())
+            }
+        }
     }
 }
 
@@ -355,92 +342,62 @@ impl GCSCredentialProvider {
         .unwrap())
     }
 
-    fn request_new_token(
+    async fn request_new_token(
         &self,
         sa_key: &ServiceAccountKey,
         client: &Client,
-    ) -> SFuture<GCSCredential> {
+    ) -> Result<GCSCredential> {
         let client = client.clone();
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
         let auth_jwt = self.auth_request_jwt(sa_key, &expires_at);
         let url = sa_key.token_uri.clone();
 
         // Request credentials
-        Box::new(
-            future::result(auth_jwt)
-                .and_then(move |auth_jwt| {
-                    let params = form_urlencoded::Serializer::new(String::new())
-                        .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
-                        .append_pair("assertion", &auth_jwt)
-                        .finish();
 
-                    let mut request = Request::new(Method::POST, url.parse().unwrap());
-                    {
-                        let headers = request.headers_mut();
-                        headers.set(ContentType::form_url_encoded());
-                        headers.set(ContentLength(params.len() as u64));
-                    }
-                    *request.body_mut() = Some(params.into());
+        let params = form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+            .append_pair("assertion", &auth_jwt)
+            .finish();
 
-                    client.execute(request).map_err(Into::into)
-                })
-                .and_then(move |res| {
-                    if res.status().is_success() {
-                        Ok(res.into_body())
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(move |body| {
-                    // Concatenate body chunks into a single Vec<u8>
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                })
-                .and_then(move |body| {
-                    // Convert body to string and parse the token out of the response
-                    let body_str = String::from_utf8(body)?;
-                    let token_msg: TokenMsg = serde_json::from_str(&body_str)?;
+        let mut request = Request::new(Method::POST, url.parse().unwrap());
+        {
+            let headers = request.headers_mut();
+            headers.set(ContentType::form_url_encoded());
+            headers.set(ContentLength(params.len() as u64));
+        }
+        *request.body_mut() = Some(params.into());
 
-                    Ok(GCSCredential {
-                        token: token_msg.access_token,
-                        expiration_time: expires_at,
-                    })
-                }),
-        )
+        let res = client.execute(request).await.map_err(Into::into)?;
+
+        let res_status = res.status();
+        let token_msg = if res_status.is_success() {
+            let token_msg = res.json::<TokenMsg>().await.map_err(|e| e.context("failed to read HTTP body"))?;
+            Ok(token_msg)
+        } else {
+            Err(BadHttpStatusError(res_status).into())
+        };
+
+        Ok(GCSCredential {
+            token: token_msg.access_token,
+            expiration_time: expires_at,
+        })
     }
 
-    fn request_new_token_from_tcauth(&self, url: &str, client: &Client) -> SFuture<GCSCredential> {
-        Box::new(
+    async fn request_new_token_from_tcauth(&self, url: &str, client: &Client) -> Result<GCSCredential> {
+        let res = 
             client
                 .get(url)
-                .send()
-                .map_err(Into::into)
-                .and_then(move |res| {
-                    if res.status().is_success() {
-                        Ok(res.into_body())
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(move |body| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                })
-                .and_then(move |body| {
-                    let body_str = String::from_utf8(body)?;
-                    let resp: AuthResponse = serde_json::from_str(&body_str)?;
-                    Ok(GCSCredential {
-                        token: resp.access_token,
-                        expiration_time: resp.expire_time.parse()?,
-                    })
-                }),
-        )
+                .send().await?;
+    
+        if res.status().is_success() {
+            let resp = res.res.json::<TokenMsg>().await.map_err(|_e| "failed to read HTTP body")?; 
+            Ok(GCSCredential {
+                token: resp.access_token,
+                expiration_time: resp.expire_time.parse()?,
+            })
+        } else {
+            Err(BadHttpStatusError(res.status()).into())
+        }
     }
 
     pub fn credentials(&self, client: &Client) -> SFuture<GCSCredential> {
@@ -499,6 +456,7 @@ impl GCSCache {
     }
 }
 
+#[async_trait]
 impl Storage for GCSCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         Box::new(

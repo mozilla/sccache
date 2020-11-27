@@ -1,3 +1,4 @@
+// Copyright 2020 Bernhard
 // Copyright 2018 Benjamin Bader
 // Copyright 2016 Mozilla Foundation
 //
@@ -18,11 +19,12 @@ use futures::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
 use hyperx::header;
 use md5::{Digest, Md5};
-use reqwest::{Client, Request, Method, header::HeaderValue};
+use reqwest::{Client, Request, Response, Method, header::HeaderValue};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use url::Url;
+use reqwest::Url;
+use bytes::Buf;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
@@ -87,10 +89,7 @@ impl BlobContainer {
             creds,
         );
 
-        let uri_copy = uri.clone();
-        let uri_second_copy = uri.clone();
-
-        let mut request = Request::new(Method::GET, uri);
+        let mut request = Request::new(Method::GET, uri.clone());
         request.headers_mut().insert(
             "x-ms-date",
             HeaderValue::from_str(&date).expect("Date is an invalid header value"),
@@ -106,25 +105,20 @@ impl BlobContainer {
         }
 
         let res = self.client
-            .execute(request).map_err(move || format!("failed GET: {}", uri_copy)).await?;
-        
+            .execute(request).await
+            .map_err(|_e| anyhow::anyhow!("failed GET: {}", &uri))?;
 
-        let (body, content_length) = if res.status().is_success() {
+        let res_status = res.status();
+        let (bytes, content_length) = if res_status.is_success() {
+            // TOOD use `res.content_length()`
             let content_length = res
                 .headers()
                 .get_hyperx::<header::ContentLength>()
                 .map(|header::ContentLength(len)| len);
-            Ok((res.into_body(), content_length))
+            (res.bytes().await?, content_length)
         } else {
-            return Err(BadHttpStatusError(res.status()).into())
+            return Err(BadHttpStatusError(res_status).into())
         };
-
-        let bytes = body.fold(Vec::new(), |mut body, chunk| {
-            body.extend_from_slice(&chunk);
-            Ok::<_, reqwest::Error>(body)
-        }).map_err(|err| {
-            err.context("failed to read HTTP body")
-        })?;
 
         if let Some(len) = content_length {
             if len != bytes.len() as u64 {
@@ -134,10 +128,10 @@ impl BlobContainer {
                     len
                 ));
             } else {
-                info!("Read {} bytes from {}", bytes.len(), uri_second_copy);
+                info!("Read {} bytes from {}", bytes.len(), &uri);
             }
         }
-        Ok(bytes)
+        Ok(bytes.bytes().to_vec())
     }
 
     pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {

@@ -30,7 +30,9 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
+use futures_03::prelude::*;
 use futures_03::executor::ThreadPool;
+use futures_03::compat::{Compat01As03, Future01CompatExt, Compat};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -234,7 +236,16 @@ where
             let cache_status = if cache_control == CacheControl::ForceRecache {
                 f_ok(Cache::Recache)
             } else {
-                storage.get(&key)
+                let key = key.to_owned(); 
+                let storage = storage.clone();
+                Box::new(
+                    futures_03::compat::Compat::new(
+
+                        Box::pin(async move {
+                            storage.get(&key).await
+                        })
+                    )
+                )
             };
 
             // Set a maximum time limit for the cache to respond before we forge
@@ -368,8 +379,16 @@ where
 
                                                 // Try to finish storing the newly-written cache
                                                 // entry. We'll get the result back elsewhere.
-                                                let future =
-                                                    storage.put(&key, entry).then(move |res| {
+                                                let future = {
+                                                    let key = key.clone();
+                                                    let storage = storage.clone();
+                                                    Box::new(
+                                                        futures_03::compat::Compat::new(
+                                                            Box::pin(async move {
+                                                                storage.put(&key, entry).await
+                                                    })))
+                                                }
+                                                .then(move |res| {
                                                         match res {
                                                             Ok(_) => debug!(
 							    "[{}]: Stored in cache successfully!",

@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::util::SpawnExt;
 use futures_03::executor::ThreadPool;
+use futures_03::compat::Future01CompatExt;
+use futures_03::task::SpawnExt as X;
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::LruDiskCache;
 use std::ffi::OsStr;
@@ -51,15 +52,16 @@ fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
+#[async_trait]
 impl Storage for DiskCache {
-    fn get(&self, key: &str) -> SFuture<Cache> {
+    async fn get(&self, key: &str) -> Result<Cache> {
         trace!("DiskCache::get({})", key);
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
-        Box::new(self.pool.spawn_fn(move || {
+        let fut = async move {
             let mut lru = lru.lock().unwrap();
-            let f = match lru.get(&path) {
+            let io = match lru.get(&path) {
                 Ok(f) => f,
                 Err(LruError::FileNotInCache) => {
                     trace!("DiskCache::get({}): FileNotInCache", key);
@@ -71,33 +73,37 @@ impl Storage for DiskCache {
                 }
                 Err(_) => unreachable!(),
             };
-            let hit = CacheRead::from(f)?;
+            let hit = CacheRead::from(io)?;
             Ok(Cache::Hit(hit))
-        }))
+        };
+        let handle = self.pool.spawn_with_handle(fut)?;
+        handle.await
     }
 
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        Box::new(self.pool.spawn_fn(move || {
+        let fut = async move  {
             let start = Instant::now();
             let v = entry.finish()?;
             lru.lock().unwrap().insert_bytes(key, &v)?;
             Ok(start.elapsed())
-        }))
+        };
+        let handle = self.pool.spawn_with_handle(fut)?;
+        handle.await
     }
 
     fn location(&self) -> String {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        f_ok(Some(self.lru.lock().unwrap().size()))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(Some(self.lru.lock().unwrap().size()))
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        f_ok(Some(self.lru.lock().unwrap().capacity()))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(Some(self.lru.lock().unwrap().capacity()))
     }
 }
