@@ -111,16 +111,6 @@ macro_rules! ftry {
     };
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
-macro_rules! ftry_send {
-    ($e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => return Box::new(futures::future::err(e)) as SFutureSend<_>,
-        }
-    };
-}
-
 pub fn f_ok<T>(t: T) -> SFuture<T>
 where
     T: 'static,

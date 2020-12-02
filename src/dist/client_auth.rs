@@ -297,6 +297,28 @@ mod code_grant_pkce {
 
         Ok(response)
     }
+    
+    use futures_03::task as task_03;
+    use std::result;
+    
+    pub struct CodeGrant;
+    
+    impl hyper::service::Service<Request<Body>> for CodeGrant {   
+        type Response = Response<Body>;
+        type Error = anyhow::Error;
+        type Future = std::pin::Pin<Box<dyn futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>>;
+
+        fn poll_ready(&mut self, cx: &mut task_03::Context<'_>) -> task_03::Poll<result::Result<(), Self::Error>> {
+            task_03::Poll::Ready(Ok(()))
+        }
+        
+        fn call(&mut self, req: Request<Body>) -> Self::Future {
+            let fut = async move {
+                serve(req).await
+            };
+            Box::pin(fut)
+        }
+    }
 
     pub fn code_to_token(
         token_url: &str,
@@ -494,29 +516,27 @@ use std::result;
 use std::error;
 use std::fmt;
 
-use hyper::server::conn::AddrStream;
-
 /// a better idea
-pub struct ServiceFnWrapper<F: ServeFn + Send> {
+pub struct ServiceFnWrapper<F> {
     f: F,
 }
 
-impl<'t, F: ServeFn + Send> Service<&'t AddrStream> for ServiceFnWrapper<F>
+impl<F: ServeFn + Send> Service<Request<Body>> for ServiceFnWrapper<F>
 {
     type Error = hyper::Error;
     type Response = hyper::Response<hyper::Body>;
-    type Future = Pin<Box<dyn futures_03::Future<Output = result::Result<hyper::Response<hyper::Body>, hyper::Error>>>>;
+    type Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&mut self, _cx: &mut task_03::Context<'_>) -> task_03::Poll<result::Result<(), Self::Error>> {
         task_03::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, target: &'t AddrStream) -> Self::Future {
-        Box::pin((self.f)(*target))
+    fn call(&mut self, target: Request<Body>) -> Self::Future {
+        Box::pin((self.f)(target))
     }
 }
 
-impl<F: ServeFn + Send> ServiceFnWrapper<F> {
+impl<F> ServiceFnWrapper<F> {
     pub fn new(f: F) -> Self {
         Self {
             f,
@@ -524,8 +544,56 @@ impl<F: ServeFn + Send> ServiceFnWrapper<F> {
     }
 }
 
+use hyper::server::conn::AddrStream;
 
-fn try_serve<F: ServeFn + Send>(serve: F) -> Result<Server<AddrIncoming, ServiceFnWrapper<F>>>
+/// A service to spawn other services
+///
+/// Needed to reduce the shit generic surface of Fn
+struct ServiceSpawner<F> {
+    spawn: Box<
+    dyn 'static + Send + for<'t> Fn(&'t AddrStream) -> Pin<
+        Box<dyn
+            'static + Send +
+             futures_03::Future<
+                Output = result::Result<
+                    ServiceFnWrapper<F>,
+                    hyper::Error
+                >
+            >
+            
+        >,
+    >>
+}
+
+impl<F> ServiceSpawner<F> {
+    fn new<G>(spawn: G) -> Self where G:'static + Send + for<'t> Fn(&'t AddrStream) -> Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<ServiceFnWrapper<F>, hyper::Error>>>>{ 
+        Self {
+            spawn: Box::new(spawn),
+        }
+    }
+}
+
+impl<'t, F> Service<&'t AddrStream> for ServiceSpawner<F> where F: ServeFn + Send + 'static {
+    type Error = hyper::Error;
+    type Response = ServiceFnWrapper<F>;
+    type Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>>;
+
+    fn poll_ready(&mut self, _cx: &mut task_03::Context<'_>) -> task_03::Poll<result::Result<(), Self::Error>> {
+        task_03::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, target: &'t AddrStream) -> Self::Future {
+        let fut = (self.spawn)(target);
+        fut
+    }
+}
+
+
+fn try_serve<'t, F: ServeFn + Send>(serve: F)
+    -> Result<Server<
+        AddrIncoming,
+        ServiceSpawner<F>,
+    >>
 {
     // Try all the valid ports
     for &port in VALID_PORTS {
@@ -548,13 +616,17 @@ fn try_serve<F: ServeFn + Send>(serve: F) -> Result<Server<AddrIncoming, Service
             }
         }
 
-        use hyper::server::conn::AddrStream;
-
-        let new_service = ServiceFnWrapper::new(serve);
+        
+        let spawner = ServiceSpawner::new(move |addr: &AddrStream| {
+            Box::pin(async move {
+                let new_service = ServiceFnWrapper::new(serve);
+                Ok(new_service)
+            })
+        });
         
         match Server::try_bind(&addr) {
             Ok(s) => {
-                return Ok(s.serve(new_service))
+                return Ok(s.serve(spawner))
             },
             Err(ref err)
                 if err
