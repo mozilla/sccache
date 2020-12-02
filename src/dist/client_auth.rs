@@ -1,8 +1,9 @@
 use futures_03::channel::oneshot;
 use futures_03::compat::Future01CompatExt;
-use futures_03::prelude::*;
-use http::StatusCode;
+use futures_03::task as task_03;
 use hyper::body::HttpBody;
+use http::StatusCode;
+use futures::prelude::*;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
@@ -10,6 +11,7 @@ use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::result;
 use std::io;
 use std::marker::PhantomData;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -39,7 +41,7 @@ where
 impl<T, R> ServeFn<R> for T
 where
     R: 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
-    T: FnOnce(Request<Body>) -> R + Copy + Send + Sized + 'static,
+    T: Copy + Send + 'static + FnOnce(Request<Body>) -> R,
 {
 }
 
@@ -249,30 +251,27 @@ mod code_grant_pkce {
         Ok(response)
     }
 
-    use futures_03::task as task_03;
-    use std::result;
+    // pub struct CodeGrant;
 
-    pub struct CodeGrant;
+    // impl hyper::service::Service<Request<Body>> for CodeGrant {
+    //     type Response = Response<Body>;
+    //     type Error = anyhow::Error;
+    //     type Future = std::pin::Pin<
+    //         Box<dyn futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
+    //     >;
 
-    impl hyper::service::Service<Request<Body>> for CodeGrant {
-        type Response = Response<Body>;
-        type Error = anyhow::Error;
-        type Future = std::pin::Pin<
-            Box<dyn futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
-        >;
+    //     fn poll_ready(
+    //         &mut self,
+    //         cx: &mut task_03::Context<'_>,
+    //     ) -> task_03::Poll<result::Result<(), Self::Error>> {
+    //         task_03::Poll::Ready(Ok(()))
+    //     }
 
-        fn poll_ready(
-            &mut self,
-            cx: &mut task_03::Context<'_>,
-        ) -> task_03::Poll<result::Result<(), Self::Error>> {
-            task_03::Poll::Ready(Ok(()))
-        }
-
-        fn call(&mut self, req: Request<Body>) -> Self::Future {
-            let fut = async move { serve(req).await };
-            Box::pin(fut)
-        }
-    }
+    //     fn call(&mut self, req: Request<Body>) -> Self::Future {
+    //         let fut = async move { serve(req).await };
+    //         Box::pin(fut)
+    //     }
+    // }
 
     pub fn code_to_token(
         token_url: &str,
@@ -471,16 +470,14 @@ use std::fmt;
 use std::result;
 
 /// a better idea
-pub struct ServiceFnWrapper<F, R> {
+pub struct ServiceFnWrapper<F, R> where F: ServeFn<R> {
     f: F,
-    _phantom: std::marker::PhantomData<R>,
 }
 
-impl<F, R> ServiceFnWrapper<F, R> {
-    pub fn new(f: F) -> Self {
+impl<F, R> ServiceFnWrapper<F, R> where F: ServeFn<R> {
+    fn new(f: F) {
         Self {
             f,
-            _phantom: Default::default(),
         }
     }
 }
@@ -510,26 +507,29 @@ where
         let serve = self.f;
         // make it gracious
 
-        let fut = async move {
-            let uri = req.uri().to_owned();
-            let res = serve(req).await;
-            res.or_else(|e| {
-                // `{:?}` prints the full cause chain and backtrace.
-                let body = format!("{:?}", e);
-                eprintln!(
-                    "sccache: Error during a request to {} on the client auth web server\n{}",
-                    uri, body
-                );
-                let len = body.len();
-                let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
-                let res = builder
-                    .set_header(ContentType::text())
-                    .set_header(ContentLength(len as u64))
-                    .body(body.into())
-                    .unwrap();
-                Ok::<Self::Response, Self::Error>(res)
-            })
-        };
+        let fut = serve(req);
+        
+        // let fut = async move {
+        //     let uri = req.uri().to_owned();
+        //     let fut: R = serve(req);
+        //     let res = fut.await;
+        //     res.or_else(|e| {
+        //         // `{:?}` prints the full cause chain and backtrace.
+        //         let body = format!("{:?}", e);
+        //         eprintln!(
+        //             "sccache: Error during a request to {} on the client auth web server\n{}",
+        //             uri, body
+        //         );
+        //         let len = body.len();
+        //         let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
+        //         let res = builder
+        //             .set_header(ContentType::text())
+        //             .set_header(ContentLength(len as u64))
+        //             .body(body.into())
+        //             .unwrap();
+        //         Ok::<Self::Response, Self::Error>(res)
+        //     })
+        // };
 
         Box::pin(fut)
     }
@@ -555,10 +555,10 @@ struct ServiceSpawner<F, R> {
                 >,
             >,
     >,
-    _phantom: std::marker::PhantomData<R>,
 }
 
 impl<F, R> ServiceSpawner<F, R> {
+    /// use a service generator function
     fn new<G>(spawn: G) -> Self
     where
         G: 'static
@@ -570,14 +570,16 @@ impl<F, R> ServiceSpawner<F, R> {
                     dyn 'static
                         + Send
                         + futures_03::Future<
-                            Output = result::Result<ServiceFnWrapper<F, R>, hyper::Error>,
+                            Output = result::Result<
+                                ServiceFnWrapper<F, R>,
+                                hyper::Error
+                            >,
                         >,
                 >,
             >,
     {
         Self {
             spawn: Box::new(spawn),
-            _phantom: Default::default(),
         }
     }
 }
@@ -633,7 +635,7 @@ fn try_serve<'t, R, F: ServeFn<R>>(serve: F) -> Result<Server<AddrIncoming, Serv
 
         let spawner = ServiceSpawner::new(move |addr: &AddrStream| {
             Box::pin(async move {
-                let new_service = ServiceFnWrapper::new(serve);
+                let new_service = ServiceFnWrapper::<F, R>::new(serve);
                 Ok(new_service)
             })
         });
