@@ -1,21 +1,23 @@
+use futures::prelude::*;
 use futures_03::channel::oneshot;
 use futures_03::compat::Future01CompatExt;
 use futures_03::task as task_03;
-use hyper::body::HttpBody;
 use http::StatusCode;
-use futures::prelude::*;
+use hyper::body::HttpBody;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
 use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::error;
 use std::error::Error as StdError;
-use std::result;
+use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::pin::Pin;
+use std::result;
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio_02::runtime::Runtime;
@@ -32,16 +34,34 @@ pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
 const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
 
-trait ServeFn<R>: FnOnce(Request<Body>) -> R + Copy + Send + 'static
-where
-    R: 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+trait ServeFn:
+    Copy
+    + FnOnce(
+        Request<Body>,
+    ) -> Pin<
+        Box<
+            dyn 'static
+                + Send
+                + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+        >,
+    > + Send
+    + 'static
 {
 }
 
-impl<T, R> ServeFn<R> for T
-where
-    R: 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
-    T: Copy + Send + 'static + FnOnce(Request<Body>) -> R,
+impl<T> ServeFn for T where
+    T: Copy
+        + Send
+        + 'static
+        + FnOnce(
+            Request<Body>,
+        ) -> Pin<
+            Box<
+                dyn 'static
+                    + Send
+                    + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+            >,
+        >
 {
 }
 
@@ -250,28 +270,35 @@ mod code_grant_pkce {
 
         Ok(response)
     }
+    use super::*;
 
-    // pub struct CodeGrant;
+    #[derive(Copy,Clone,Debug)]
+    pub struct CodeGrant;
 
-    // impl hyper::service::Service<Request<Body>> for CodeGrant {
-    //     type Response = Response<Body>;
-    //     type Error = anyhow::Error;
-    //     type Future = std::pin::Pin<
-    //         Box<dyn futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
-    //     >;
+    impl hyper::service::Service<Request<Body>> for CodeGrant {
+        type Response = Response<Body>;
+        type Error = hyper::Error;
+        type Future = std::pin::Pin<
+            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
+        >;
 
-    //     fn poll_ready(
-    //         &mut self,
-    //         cx: &mut task_03::Context<'_>,
-    //     ) -> task_03::Poll<result::Result<(), Self::Error>> {
-    //         task_03::Poll::Ready(Ok(()))
-    //     }
+        fn poll_ready(
+            &mut self,
+            cx: &mut task_03::Context<'_>,
+        ) -> task_03::Poll<result::Result<(), Self::Error>> {
+            task_03::Poll::Ready(Ok(()))
+        }
 
-    //     fn call(&mut self, req: Request<Body>) -> Self::Future {
-    //         let fut = async move { serve(req).await };
-    //         Box::pin(fut)
-    //     }
-    // }
+        fn call(&mut self, req: Request<Body>) -> Self::Future {
+            let uri = req.uri().clone();
+            let fut = async move {
+                serve(req)
+                    .await
+                    .or_else(|e| super::error_code_response(uri, e))
+            };
+            Box::pin(fut)
+        }
+    }
 
     pub fn code_to_token(
         token_url: &str,
@@ -320,8 +347,8 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
-    use futures::sync::oneshot;
+    use futures_03::channel::oneshot;
+    use futures_03::future;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use std::collections::HashMap;
     use std::sync::mpsc;
@@ -462,135 +489,155 @@ mod implicit {
 
         Ok(response)
     }
-}
 
-use futures_03::task as task_03;
-use std::error;
-use std::fmt;
-use std::result;
+    use super::*;
+    pub struct Implicit;
 
-/// a better idea
-pub struct ServiceFnWrapper<F, R> where F: ServeFn<R> {
-    f: F,
-}
+    impl hyper::service::Service<Request<Body>> for Implicit {
+        type Response = Response<Body>;
+        type Error = hyper::Error;
+        type Future = std::pin::Pin<
+            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
+        >;
 
-impl<F, R> ServiceFnWrapper<F, R> where F: ServeFn<R> {
-    fn new(f: F) {
-        Self {
-            f,
+        fn poll_ready(
+            &mut self,
+            cx: &mut task_03::Context<'_>,
+        ) -> task_03::Poll<result::Result<(), Self::Error>> {
+            task_03::Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: Request<Body>) -> Self::Future {
+            let uri = req.uri().clone();
+            let fut = async move {
+                serve(req)
+                    .await
+                    .or_else(|e| super::error_code_response(uri, e))
+            };
+            Box::pin(fut)
         }
     }
 }
 
-impl<R, F: ServeFn<R>> Service<Request<Body>> for ServiceFnWrapper<F, R>
+fn error_code_response<E>(uri: hyper::Uri, e: E) -> result::Result<Response<Body>, hyper::Error>
 where
-    R: 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+    E: fmt::Debug,
 {
-    type Error = hyper::Error;
-    type Response = hyper::Response<hyper::Body>;
-    type Future = Pin<
-        Box<
-            dyn 'static
-                + Send
-                + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
-        >,
-    >;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut task_03::Context<'_>,
-    ) -> task_03::Poll<result::Result<(), Self::Error>> {
-        task_03::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let serve = self.f;
-        // make it gracious
-
-        let fut = serve(req);
-        
-        // let fut = async move {
-        //     let uri = req.uri().to_owned();
-        //     let fut: R = serve(req);
-        //     let res = fut.await;
-        //     res.or_else(|e| {
-        //         // `{:?}` prints the full cause chain and backtrace.
-        //         let body = format!("{:?}", e);
-        //         eprintln!(
-        //             "sccache: Error during a request to {} on the client auth web server\n{}",
-        //             uri, body
-        //         );
-        //         let len = body.len();
-        //         let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
-        //         let res = builder
-        //             .set_header(ContentType::text())
-        //             .set_header(ContentLength(len as u64))
-        //             .body(body.into())
-        //             .unwrap();
-        //         Ok::<Self::Response, Self::Error>(res)
-        //     })
-        // };
-
-        Box::pin(fut)
-    }
+    let body = format!("{:?}", e);
+    eprintln!(
+        "sccache: Error during a request to {} on the client auth web server\n{}",
+        uri, body
+    );
+    let len = body.len();
+    let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
+    let res = builder
+        .set_header(ContentType::text())
+        .set_header(ContentLength(len as u64))
+        .body(body.into())
+        .unwrap();
+    Ok::<Response<Body>, hyper::Error>(res)
 }
+
 use hyper::server::conn::AddrStream;
+
+trait Servix:
+'static + Send
+    + Copy
+    + hyper::service::Service<
+        Request<Body>,
+        Response = Response<Body>,
+        Error = hyper::Error,
+        Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>>>,
+    >
+{
+}
+impl<T> Servix for T where
+    T: 'static+ Send
+        + Copy
+        + hyper::service::Service<
+            Request<Body>,
+            Response = Response<Body>,
+            Error = hyper::Error,
+            Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>>>        >
+{
+}
+
+trait MkSr<S>:
+    'static +Send
+    + for<'t> hyper::service::Service<
+        &'t AddrStream,
+        Response = S,
+        Error = hyper::Error,
+        Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>>>
+where
+    S: Servix,
+{
+}
+
+impl<S, T> MkSr<S> for T
+where
+    S: Servix,
+    T: 'static + Send
+        + for<'t> hyper::service::Service<
+            &'t AddrStream,
+            Response = S,
+            Error = hyper::Error,
+            Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>>,
+        >,
+{
+}
+
+trait SpawnerFn<S>:
+    'static
+    + Send
+    + Copy
+    + for<'t> FnOnce(
+        &'t AddrStream,
+    ) -> Pin<
+        Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+    >
+where
+    S: Servix,
+{
+}
+
+impl<T, S> SpawnerFn<S> for T
+where
+    S: Servix,
+    T: 'static
+        + Send
+        + Copy
+        + for<'t> FnOnce(
+            &'t AddrStream,
+        ) -> Pin<
+            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+        >,
+{
+}
 
 /// A service to spawn other services
 ///
 /// Needed to reduce the shit generic surface of Fn
-struct ServiceSpawner<F, R> {
-    spawn: Box<
-        dyn 'static
-            + Send
-            + for<'t> Fn(
-                &'t AddrStream,
-            ) -> Pin<
-                Box<
-                    dyn 'static
-                        + Send
-                        + futures_03::Future<
-                            Output = result::Result<ServiceFnWrapper<F, R>, hyper::Error>,
-                        >,
-                >,
-            >,
-    >,
+#[derive(Clone)]
+struct ServiceSpawner<S,C> {
+    spawn: C,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<F, R> ServiceSpawner<F, R> {
+impl<S: Servix, C: SpawnerFn<S>> ServiceSpawner<S,C> {
     /// use a service generator function
-    fn new<G>(spawn: G) -> Self
-    where
-        G: 'static
-            + Send
-            + for<'t> Fn(
-                &'t AddrStream,
-            ) -> Pin<
-                Box<
-                    dyn 'static
-                        + Send
-                        + futures_03::Future<
-                            Output = result::Result<
-                                ServiceFnWrapper<F, R>,
-                                hyper::Error
-                            >,
-                        >,
-                >,
-            >,
+    pub fn new(spawn: C) -> Self
     {
         Self {
-            spawn: Box::new(spawn),
+            spawn,
+            _phantom: Default::default(),
         }
     }
 }
 
-impl<'t, F, R> Service<&'t AddrStream> for ServiceSpawner<F, R>
-where
-    F: ServeFn<R>,
-    R: Send,
-{
+impl<'t, S: Servix,C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<S,C> {
+    type Response = S;
     type Error = hyper::Error;
-    type Response = ServiceFnWrapper<F, R>;
     type Future = Pin<
         Box<
             dyn 'static
@@ -612,7 +659,7 @@ where
     }
 }
 
-fn try_serve<'t, R, F: ServeFn<R>>(serve: F) -> Result<Server<AddrIncoming, ServiceSpawner<F, R>>> {
+fn try_serve<S: Servix, C: SpawnerFn<S>>(spawner: ServiceSpawner<S,C>) -> Result<Server<AddrIncoming, ServiceSpawner<S,C>>> {
     // Try all the valid ports
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port)
@@ -632,13 +679,6 @@ fn try_serve<'t, R, F: ServeFn<R>>(serve: F) -> Result<Server<AddrIncoming, Serv
                 return Err(e).context(format!("Failed to check {} is available for binding", addr))
             }
         }
-
-        let spawner = ServiceSpawner::new(move |addr: &AddrStream| {
-            Box::pin(async move {
-                let new_service = ServiceFnWrapper::<F, R>::new(serve);
-                Ok(new_service)
-            })
-        });
 
         match Server::try_bind(&addr) {
             Ok(s) => return Ok(s.serve(spawner)),
@@ -663,7 +703,18 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    let server = try_serve(code_grant_pkce::serve)?;
+    use code_grant_pkce::CodeGrant;
+    
+    let spawner = ServiceSpawner::<code_grant_pkce::CodeGrant,_>::new( 
+        move |stream: &AddrStream| { 
+            let f = Box::pin(async move {
+                Ok(CodeGrant)
+            });
+            f as Pin::<Box::<dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>> + std::marker::Send + 'static>>
+        });
+
+    let server = try_serve(spawner)?;
+
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -696,8 +747,7 @@ pub fn get_token_oauth2_code_grant_pkce(
     let mut runtime = Runtime::new()?;
     runtime
         .block_on(server.with_graceful_shutdown(async move { 
-            let x = shutdown_signal.await;
-            let _ = x;
+            let _ = shutdown_signal.await;
         } ))
         // .map_err(|e| {
         //     warn!(
@@ -717,39 +767,44 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let server = try_serve(implicit::serve)?;
-    let port = server.local_addr().port();
+    // let server = try_serve(implicit::Implicit)?;
+    // let port = server.local_addr().port();
 
-    let redirect_uri = format!("http://localhost:{}/redirect", port);
-    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
-    implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
+    // let redirect_uri = format!("http://localhost:{}/redirect", port);
+    // let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
+    // implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
-    info!("Listening on http://localhost:{} with 1 thread.", port);
-    println!(
-        "sccache: Please visit http://localhost:{} in your browser",
-        port
-    );
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (token_tx, token_rx) = mpsc::sync_channel(1);
-    let state = implicit::State {
-        auth_url: auth_url.to_string(),
-        auth_state_value,
-        token_tx,
-        shutdown_tx: Some(shutdown_tx),
-    };
-    *implicit::STATE.lock().unwrap() = Some(state);
-    let shutdown_signal = shutdown_rx.map_err(|e| {
-        warn!(
-            "Something went wrong while waiting for auth server shutdown: {}",
-            e
-        )
-    });
+    // info!("Listening on http://localhost:{} with 1 thread.", port);
+    // println!(
+    //     "sccache: Please visit http://localhost:{} in your browser",
+    //     port
+    // );
+    // let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    // let (token_tx, token_rx) = mpsc::sync_channel(1);
+    // let state = implicit::State {
+    //     auth_url: auth_url.to_string(),
+    //     auth_state_value,
+    //     token_tx,
+    //     shutdown_tx: Some(shutdown_tx),
+    // };
+    // *implicit::STATE.lock().unwrap() = Some(state);
+    // let shutdown_signal = shutdown_rx;
 
-    let mut runtime = Runtime::new()?;
-    runtime.block_on(server.with_graceful_shutdown(shutdown_signal))?;
+    // let mut runtime = Runtime::new()?;
+    // runtime.block_on(server.with_graceful_shutdown(async move {
+    //     let _ = shutdown_signal;
+    // }))
+    // // .map_err(|e| {
+    // //     warn!(
+    // //         "Something went wrong while waiting for auth server shutdown: {}",
+    // //         e
+    // //     )
+    // // })
+    // ?;
 
-    info!("Server finished, returning token");
-    Ok(token_rx
-        .try_recv()
-        .expect("Hyper shutdown but token not available - internal error"))
+    // info!("Server finished, returning token");
+    // Ok(token_rx
+    //     .try_recv()
+    //     .expect("Hyper shutdown but token not available - internal error"))
+    unimplemented!()
 }

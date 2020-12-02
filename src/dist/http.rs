@@ -833,7 +833,7 @@ mod server {
                         trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
                         let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem } = heartbeat_server;
-                        let guard = requester.client.lock().unwrap();
+                        let mut guard = requester.client.lock().unwrap();
                         try_or_500_log!(req_id, maybe_update_certs(
                             &mut *guard,
                             &mut server_certificates.lock().unwrap(),
@@ -1240,7 +1240,7 @@ mod client {
                         bincode_req_fut(req)
                             .map_err(|e| e.context("GET to scheduler server_certificate failed"))
                             .and_then(move |res: ServerCertificateHttpResponse| {
-                                let guard = client.lock().unwrap();
+                                let mut guard = client.lock().unwrap();
                                 ftry!(Self::update_certs(
                                     &mut *guard,
                                     &mut client_async.lock().unwrap(),
