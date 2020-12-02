@@ -363,6 +363,7 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
 #[cfg(feature = "hyperx")]
 pub use self::http_extension::{HeadersExt, RequestExt};
 
+// TODO delete all of it
 #[cfg(feature = "hyperx")]
 mod http_extension {
     use std::convert::TryFrom;
@@ -385,9 +386,10 @@ mod http_extension {
         where
             H: hyperx::header::Header + fmt::Display,
         {
+            let h = header.to_string();
             self.insert(
                 H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
+                HeaderValue::from_bytes(h.as_bytes()).unwrap(),
             );
         }
 
@@ -395,8 +397,10 @@ mod http_extension {
         where
             H: hyperx::header::Header,
         {
-            HeaderMap::get(self, H::header_name())
-                .and_then(|header| H::parse_header(&header.as_bytes().into()).ok())
+            HeaderMap::get(self, H::header_name()).and_then(|header| {
+                let s = header.as_bytes().into();
+                H::parse_header(&s).ok()
+            })
         }
     }
 
@@ -411,11 +415,11 @@ mod http_extension {
         where
             H: hyperx::header::Header + fmt::Display,
         {
+            let h = header.to_string();
             self.header(
                 H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
-            );
-            self
+                HeaderValue::from_bytes(h.as_bytes()).unwrap(),
+            )
         }
     }
 
@@ -424,11 +428,11 @@ mod http_extension {
         where
             H: hyperx::header::Header + fmt::Display,
         {
+            let h = header.to_string();
             self.header(
                 H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
-            );
-            self
+                HeaderValue::from_bytes(h.as_bytes()).unwrap(),
+            )
         }
     }
 
@@ -438,9 +442,10 @@ mod http_extension {
         where
             H: hyperx::header::Header + fmt::Display,
         {
+            let h = header.to_string();
             self.header(
                 H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
+                HeaderValue::from_bytes(h.as_bytes()).unwrap(),
             )
         }
     }
@@ -451,9 +456,10 @@ mod http_extension {
         where
             H: hyperx::header::Header + fmt::Display,
         {
+            let h = header.to_string();
             self.header(
                 H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string().as_bytes()).unwrap(),
+                HeaderValue::from_bytes(h.as_bytes()).unwrap(),
             )
         }
     }

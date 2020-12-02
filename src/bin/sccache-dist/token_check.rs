@@ -30,9 +30,9 @@ impl Jwk {
 
         // JWK is big-endian, openssl bignum from_slice is big-endian
         let n = base64::decode_config(&self.n, base64::URL_SAFE)
-            .context("Failed to base64 decode n")?;
+            .context("Failed to base64 decode n".to_owned())?;
         let e = base64::decode_config(&self.e, base64::URL_SAFE)
-            .context("Failed to base64 decode e")?;
+            .context("Failed to base64 decode e".to_owned())?;
 
         let n = rsa::BigUint::from_bytes_be(&n);
         let e = rsa::BigUint::from_bytes_be(&e);
@@ -42,7 +42,7 @@ impl Jwk {
         let pkcs1_der: Vec<u8> = pk
             .as_pkcs1()
             .map_err(|e| anyhow::anyhow!("{}", e))
-            .context("Failed to create rsa pub key from (n, e)")?;
+            .context("Failed to create rsa pub key from (n, e)".to_owned())?;
 
         Ok(pkcs1_der)
     }
@@ -79,7 +79,7 @@ const MOZ_USERINFO_ENDPOINT: &str = "https://auth.mozilla.auth0.com/userinfo";
 // Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
 pub struct MozillaCheck {
     auth_cache: Mutex<HashMap<String, Instant>>, // token, token_expiry
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     required_groups: Vec<String>,
 }
 
@@ -98,7 +98,7 @@ impl MozillaCheck {
     pub fn new(required_groups: Vec<String>) -> Self {
         Self {
             auth_cache: Mutex::new(HashMap::new()),
-            client: reqwest::Client::new(),
+            client: reqwest::blocking::Client::new(),
             required_groups,
         }
     }
@@ -152,22 +152,19 @@ impl MozillaCheck {
             .get(url.clone())
             .set_header(header)
             .send()
-            .context("Failed to make request to mozilla userinfo")?;
+            .context("Failed to make request to mozilla userinfo".to_owned())?;
+        let status = res.status();
         let res_text = res
             .text()
-            .context("Failed to interpret response from mozilla userinfo as string")?;
-        if !res.status().is_success() {
-            bail!(
-                "JWT forwarded to {} returned {}: {}",
-                url,
-                res.status(),
-                res_text
-            )
+            .context("Failed to interpret response from mozilla userinfo as string".to_owned())?;
+        if status.is_success() {
+            bail!("JWT forwarded to {} returned {}: {}", url, status, res_text)
         }
 
         // The API didn't return a HTTP error code, let's check the response
-        let () = check_mozilla_profile(&user, &self.required_groups, &res_text)
-            .with_context(|| format!("Validation of the user profile failed for {}", user))?;
+        let () = check_mozilla_profile(&user, &self.required_groups, &res_text).context(
+            format!("Validation of the user profile failed for {}", user),
+        )?;
 
         // Validation success, cache the token
         debug!("Validation for user {} succeeded, caching", user);
@@ -243,7 +240,7 @@ fn test_auth_verify_check_mozilla_profile() {
 // Don't check a token is valid (it may not even be a JWT) just forward it to
 // an API and check for success
 pub struct ProxyTokenCheck {
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>>,
     url: String,
 }
@@ -267,7 +264,7 @@ impl ProxyTokenCheck {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::blocking::Client::new(),
             maybe_auth_cache,
             url,
         }
@@ -295,7 +292,7 @@ impl ProxyTokenCheck {
             .get(&self.url)
             .set_header(header)
             .send()
-            .context("Failed to make request to proxying url")?;
+            .context("Failed to make request to proxying url".to_owned())?;
         if !res.status().is_success() {
             bail!("Token forwarded to {} returned {}", self.url, res.status());
         }
@@ -332,7 +329,8 @@ impl ClientAuthCheck for ValidJWTCheck {
 
 impl ValidJWTCheck {
     pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let mut res = reqwest::get(jwks_url).context("Failed to make request to JWKs url")?;
+        let mut res =
+            reqwest::blocking::get(jwks_url).context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }

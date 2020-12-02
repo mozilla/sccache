@@ -272,14 +272,18 @@ mod code_grant_pkce {
     }
     use super::*;
 
-    #[derive(Copy,Clone,Debug)]
+    #[derive(Copy, Clone, Debug)]
     pub struct CodeGrant;
 
     impl hyper::service::Service<Request<Body>> for CodeGrant {
         type Response = Response<Body>;
         type Error = hyper::Error;
         type Future = std::pin::Pin<
-            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
+            Box<
+                dyn 'static
+                    + Send
+                    + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+            >,
         >;
 
         fn poll_ready(
@@ -491,13 +495,18 @@ mod implicit {
     }
 
     use super::*;
+    #[derive(Copy, Clone, Debug)]
     pub struct Implicit;
 
     impl hyper::service::Service<Request<Body>> for Implicit {
         type Response = Response<Body>;
         type Error = hyper::Error;
         type Future = std::pin::Pin<
-            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>>,
+            Box<
+                dyn 'static
+                    + Send
+                    + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+            >,
         >;
 
         fn poll_ready(
@@ -541,34 +550,53 @@ where
 use hyper::server::conn::AddrStream;
 
 trait Servix:
-'static + Send
+    'static
+    + Send
     + Copy
     + hyper::service::Service<
         Request<Body>,
         Response = Response<Body>,
         Error = hyper::Error,
-        Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>>>,
+        Future = Pin<
+            Box<
+                dyn 'static
+                    + Send
+                    + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+            >,
+        >,
     >
 {
 }
 impl<T> Servix for T where
-    T: 'static+ Send
+    T: 'static
+        + Send
         + Copy
         + hyper::service::Service<
             Request<Body>,
             Response = Response<Body>,
             Error = hyper::Error,
-            Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>>>        >
+            Future = Pin<
+                Box<
+                    dyn 'static
+                        + Send
+                        + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                >,
+            >,
+        >
 {
 }
 
 trait MkSr<S>:
-    'static +Send
+    'static
+    + Send
     + for<'t> hyper::service::Service<
         &'t AddrStream,
         Response = S,
         Error = hyper::Error,
-        Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>>>
+        Future = Pin<
+            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+        >,
+    >
 where
     S: Servix,
 {
@@ -577,12 +605,19 @@ where
 impl<S, T> MkSr<S> for T
 where
     S: Servix,
-    T: 'static + Send
+    T: 'static
+        + Send
         + for<'t> hyper::service::Service<
             &'t AddrStream,
             Response = S,
             Error = hyper::Error,
-            Future = Pin<Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>>,
+            Future = Pin<
+                Box<
+                    dyn 'static
+                        + Send
+                        + futures_03::Future<Output = result::Result<S, hyper::Error>>,
+                >,
+            >,
         >,
 {
 }
@@ -619,15 +654,14 @@ where
 ///
 /// Needed to reduce the shit generic surface of Fn
 #[derive(Clone)]
-struct ServiceSpawner<S,C> {
+struct ServiceSpawner<S, C> {
     spawn: C,
     _phantom: std::marker::PhantomData<S>,
 }
 
-impl<S: Servix, C: SpawnerFn<S>> ServiceSpawner<S,C> {
+impl<S: Servix, C: SpawnerFn<S>> ServiceSpawner<S, C> {
     /// use a service generator function
-    pub fn new(spawn: C) -> Self
-    {
+    pub fn new(spawn: C) -> Self {
         Self {
             spawn,
             _phantom: Default::default(),
@@ -635,7 +669,7 @@ impl<S: Servix, C: SpawnerFn<S>> ServiceSpawner<S,C> {
     }
 }
 
-impl<'t, S: Servix,C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<S,C> {
+impl<'t, S: Servix, C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<S, C> {
     type Response = S;
     type Error = hyper::Error;
     type Future = Pin<
@@ -659,7 +693,9 @@ impl<'t, S: Servix,C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<S
     }
 }
 
-fn try_serve<S: Servix, C: SpawnerFn<S>>(spawner: ServiceSpawner<S,C>) -> Result<Server<AddrIncoming, ServiceSpawner<S,C>>> {
+fn try_serve<S: Servix, C: SpawnerFn<S>>(
+    spawner: ServiceSpawner<S, C>,
+) -> Result<Server<AddrIncoming, ServiceSpawner<S, C>>> {
     // Try all the valid ports
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port)
@@ -704,13 +740,17 @@ pub fn get_token_oauth2_code_grant_pkce(
     token_url: &str,
 ) -> Result<String> {
     use code_grant_pkce::CodeGrant;
-    
-    let spawner = ServiceSpawner::<code_grant_pkce::CodeGrant,_>::new( 
-        move |stream: &AddrStream| { 
-            let f = Box::pin(async move {
-                Ok(CodeGrant)
-            });
-            f as Pin::<Box::<dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>> + std::marker::Send + 'static>>
+
+    let spawner =
+        ServiceSpawner::<CodeGrant, _>::new(move |stream: &AddrStream| {
+            let f = Box::pin(async move { Ok(CodeGrant) });
+            f as Pin<
+                Box<
+                    dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
+                        + std::marker::Send
+                        + 'static,
+                >,
+            >
         });
 
     let server = try_serve(spawner)?;
@@ -746,7 +786,7 @@ pub fn get_token_oauth2_code_grant_pkce(
 
     let mut runtime = Runtime::new()?;
     runtime
-        .block_on(server.with_graceful_shutdown(async move { 
+        .block_on(server.with_graceful_shutdown(async move {
             let _ = shutdown_signal.await;
         } ))
         // .map_err(|e| {
@@ -767,44 +807,57 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    // let server = try_serve(implicit::Implicit)?;
-    // let port = server.local_addr().port();
+    use implicit::Implicit;
 
-    // let redirect_uri = format!("http://localhost:{}/redirect", port);
-    // let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
-    // implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
+    let spawner =
+        ServiceSpawner::<Implicit, _>::new(move |stream: &AddrStream| {
+            let f = Box::pin(async move { Ok(Implicit) });
+            f as Pin<
+                Box<
+                    dyn futures_03::Future<Output = std::result::Result<Implicit, hyper::Error>>
+                        + std::marker::Send
+                        + 'static,
+                >,
+            >
+        });
 
-    // info!("Listening on http://localhost:{} with 1 thread.", port);
-    // println!(
-    //     "sccache: Please visit http://localhost:{} in your browser",
-    //     port
-    // );
-    // let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    // let (token_tx, token_rx) = mpsc::sync_channel(1);
-    // let state = implicit::State {
-    //     auth_url: auth_url.to_string(),
-    //     auth_state_value,
-    //     token_tx,
-    //     shutdown_tx: Some(shutdown_tx),
-    // };
-    // *implicit::STATE.lock().unwrap() = Some(state);
-    // let shutdown_signal = shutdown_rx;
+    let server = try_serve(spawner)?;
+    let port = server.local_addr().port();
 
-    // let mut runtime = Runtime::new()?;
-    // runtime.block_on(server.with_graceful_shutdown(async move {
-    //     let _ = shutdown_signal;
-    // }))
-    // // .map_err(|e| {
-    // //     warn!(
-    // //         "Something went wrong while waiting for auth server shutdown: {}",
-    // //         e
-    // //     )
-    // // })
-    // ?;
+    let redirect_uri = format!("http://localhost:{}/redirect", port);
+    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
+    implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
-    // info!("Server finished, returning token");
-    // Ok(token_rx
-    //     .try_recv()
-    //     .expect("Hyper shutdown but token not available - internal error"))
-    unimplemented!()
+    info!("Listening on http://localhost:{} with 1 thread.", port);
+    println!(
+        "sccache: Please visit http://localhost:{} in your browser",
+        port
+    );
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (token_tx, token_rx) = mpsc::sync_channel(1);
+    let state = implicit::State {
+        auth_url: auth_url.to_string(),
+        auth_state_value,
+        token_tx,
+        shutdown_tx: Some(shutdown_tx),
+    };
+    *implicit::STATE.lock().unwrap() = Some(state);
+    let shutdown_signal = shutdown_rx;
+
+    let mut runtime = Runtime::new()?;
+    runtime.block_on(server.with_graceful_shutdown(async move {
+        let _ = shutdown_signal;
+    }))
+    // .map_err(|e| {
+    //     warn!(
+    //         "Something went wrong while waiting for auth server shutdown: {}",
+    //         e
+    //     )
+    // })
+    ?;
+
+    info!("Server finished, returning token");
+    Ok(token_rx
+        .try_recv()
+        .expect("Hyper shutdown but token not available - internal error"))
 }
