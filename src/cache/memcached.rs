@@ -78,13 +78,12 @@ impl Storage for MemcachedCache {
         };
         let handle = self.pool.spawn_with_hande(fut).await?;
         handle.await
-
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let key = key.to_owned();
         let me = self.clone();
-        let fut = async move{
+        let fut = async move {
             let start = Instant::now();
             let d = entry.finish()?;
             me.exec(|c| c.set_noreply(&key.as_bytes(), &d, 0, 0))?;

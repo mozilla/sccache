@@ -52,7 +52,11 @@ impl Bucket {
         Ok(Bucket { name, client })
     }
 
-    async fn get(&self, key: &str, cred_provider: &Option<GCSCredentialProvider>) -> Result<Vec<u8>> {
+    async fn get(
+        &self,
+        key: &str,
+        cred_provider: &Option<GCSCredentialProvider>,
+    ) -> Result<Vec<u8>> {
         let url = format!(
             "https://www.googleapis.com/download/storage/v1/b/{}/o/{}?alt=media",
             percent_encode(self.name.as_bytes(), PATH_SEGMENT_ENCODE_SET),
@@ -81,7 +85,8 @@ impl Bucket {
                 .set(Authorization(Bearer { token: creds.token }));
         }
         let res = client
-            .execute(request).await
+            .execute(request)
+            .await
             .map_err(|_e| format!("failed GET: {}", url));
 
         if res.status().is_success() {
@@ -109,7 +114,8 @@ impl Bucket {
             future::Either::A(cred_provider.credentials(&self.client).map(Some))
         } else {
             future::Either::B(future::ok(None))
-        }.await;
+        }
+        .await;
 
         let mut request = Request::new(Method::POST, url.parse().unwrap());
         {
@@ -371,7 +377,10 @@ impl GCSCredentialProvider {
 
         let res_status = res.status();
         let token_msg = if res_status.is_success() {
-            let token_msg = res.json::<TokenMsg>().await.map_err(|e| e.context("failed to read HTTP body"))?;
+            let token_msg = res
+                .json::<TokenMsg>()
+                .await
+                .map_err(|e| e.context("failed to read HTTP body"))?;
             Ok(token_msg)
         } else {
             Err(BadHttpStatusError(res_status).into())
@@ -383,14 +392,19 @@ impl GCSCredentialProvider {
         })
     }
 
-    async fn request_new_token_from_tcauth(&self, url: &str, client: &Client) -> Result<GCSCredential> {
-        let res = 
-            client
-                .get(url)
-                .send().await?;
-    
+    async fn request_new_token_from_tcauth(
+        &self,
+        url: &str,
+        client: &Client,
+    ) -> Result<GCSCredential> {
+        let res = client.get(url).send().await?;
+
         if res.status().is_success() {
-            let resp = res.res.json::<TokenMsg>().await.map_err(|_e| "failed to read HTTP body")?; 
+            let resp = res
+                .res
+                .json::<TokenMsg>()
+                .await
+                .map_err(|_e| "failed to read HTTP body")?;
             Ok(GCSCredential {
                 token: resp.access_token,
                 expiration_time: resp.expire_time.parse()?,

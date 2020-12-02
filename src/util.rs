@@ -20,6 +20,7 @@ use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
 use futures_03::task;
 use serde::Serialize;
+use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
@@ -28,7 +29,6 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
-use std::convert::TryFrom;
 
 use crate::errors::*;
 
@@ -367,7 +367,7 @@ pub use self::http_extension::{HeadersExt, RequestExt};
 mod http_extension {
     use std::convert::TryFrom;
 
-    use reqwest::header::{HeaderValue, HeaderMap, InvalidHeaderName, InvalidHeaderValue};
+    use reqwest::header::{HeaderMap, HeaderValue, InvalidHeaderName, InvalidHeaderValue};
     use std::fmt;
 
     pub trait HeadersExt {

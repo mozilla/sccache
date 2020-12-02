@@ -30,9 +30,9 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
-use futures_03::prelude::*;
+use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
-use futures_03::compat::{Compat01As03, Future01CompatExt, Compat};
+use futures_03::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -236,16 +236,11 @@ where
             let cache_status = if cache_control == CacheControl::ForceRecache {
                 f_ok(Cache::Recache)
             } else {
-                let key = key.to_owned(); 
+                let key = key.to_owned();
                 let storage = storage.clone();
-                Box::new(
-                    futures_03::compat::Compat::new(
-
-                        Box::pin(async move {
-                            storage.get(&key).await
-                        })
-                    )
-                )
+                Box::new(futures_03::compat::Compat::new(Box::pin(async move {
+                    storage.get(&key).await
+                })))
             };
 
             // Set a maximum time limit for the cache to respond before we forge
@@ -382,28 +377,28 @@ where
                                                 let future = {
                                                     let key = key.clone();
                                                     let storage = storage.clone();
-                                                    Box::new(
-                                                        futures_03::compat::Compat::new(
-                                                            Box::pin(async move {
-                                                                storage.put(&key, entry).await
-                                                    })))
+                                                    Box::new(futures_03::compat::Compat::new(
+                                                        Box::pin(async move {
+                                                            storage.put(&key, entry).await
+                                                        }),
+                                                    ))
                                                 }
                                                 .then(move |res| {
-                                                        match res {
-                                                            Ok(_) => debug!(
-							    "[{}]: Stored in cache successfully!",
-							    out_pretty2
-							),
-                                                            Err(ref e) => debug!(
-                                                                "[{}]: Cache write error: {:?}",
-                                                                out_pretty2, e
-                                                            ),
-                                                        }
-                                                        res.map(|duration| CacheWriteInfo {
-                                                            object_file_pretty: out_pretty2,
-                                                            duration,
-                                                        })
-                                                    });
+                                                    match res {
+                                                        Ok(_) => debug!(
+                                                            "[{}]: Stored in cache successfully!",
+                                                            out_pretty2
+                                                        ),
+                                                        Err(ref e) => debug!(
+                                                            "[{}]: Cache write error: {:?}",
+                                                            out_pretty2, e
+                                                        ),
+                                                    }
+                                                    res.map(|duration| CacheWriteInfo {
+                                                        object_file_pretty: out_pretty2,
+                                                        duration,
+                                                    })
+                                                });
                                                 let future = Box::new(future);
                                                 Ok((
                                                     CompileResult::CacheMiss(

@@ -12,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::errors::*;
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::errors::*;
 use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
-use futures_03::{future::TryFutureExt as _};
-use rusoto_core::{Region, credential::{AutoRefreshingProvider, ChainProvider, ProfileProvider}};
-use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3, Bucket};
-use std::io;
-use std::time::{Duration, Instant};
-use std::rc::Rc;
-use tokio_02::io::AsyncReadExt as _;
-use hyper_rustls;
+use futures_03::future::TryFutureExt as _;
 use hyper::Client;
+use hyper_rustls;
 use hyperx::header::CacheDirective;
+use rusoto_core::{
+    credential::{AutoRefreshingProvider, ChainProvider, ProfileProvider},
+    Region,
+};
+use rusoto_s3::{Bucket, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3};
+use std::io;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+use tokio_02::io::AsyncReadExt as _;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
@@ -37,7 +40,6 @@ pub struct S3Cache {
     /// Prefix to be used for bucket keys.
     key_prefix: String,
 }
-
 
 // TODO create a custom credential provider that also reads
 // TODO `AWS_SESSION_TOKEN`, `AWS_ACCESS_KEY_ID` besides the config vars.
@@ -57,9 +59,7 @@ impl S3Cache {
             ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
         ];
         let provider =
-            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(
-                profile_providers
-            ));
+            AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         let bucket_name = bucket.to_owned();
         let url = "https://s3"; // FIXME
         let bucket = Rc::new(Bucket::new(url)?);
@@ -70,12 +70,12 @@ impl S3Cache {
             S3Client::new_with_client(
                 hyper::client::Client::builder(),
                 hyper_rustls::HttpsConnector::new(),
-                region
+                region,
             )
         } else {
             S3Client::new(region);
         };
-        
+
         Ok(S3Cache {
             bucket_name: bucket.to_owned(),
             client,
@@ -165,7 +165,7 @@ impl Storage for S3Cache {
         };
 
         Self::put_object(client, request).await
-        
+
         // Box::new(
         //     Box::pin(Self::put_object(client, request))
         //         .compat()

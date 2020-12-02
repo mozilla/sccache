@@ -93,31 +93,26 @@ mod common {
     pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::RequestBuilder,
     ) -> SFuture<T> {
-        Box::new(
-            futures_03::compat::Compat::new(
-            Box::pin(
-                async move {
-                    let res = req.send().await?;
-                    let status = res.status();
-                    let bytes = res.bytes().await?;
-                    if !status.is_success() {
-                        let errmsg = format!(
-                            "Error {}: {}",
-                            status.as_u16(),
-                            String::from_utf8_lossy(&bytes)
-                        );
-                        if status.is_client_error() {
-                            anyhow::bail!(HttpClientError(errmsg));
-                        } else {
-                            anyhow::bail!(errmsg);
-                        }
-                    } else {
-                        let bc = bincode::deserialize(&*bytes)?;
-                        Ok(bc)
-                    }
+        Box::new(futures_03::compat::Compat::new(Box::pin(async move {
+            let res = req.send().await?;
+            let status = res.status();
+            let bytes = res.bytes().await?;
+            if !status.is_success() {
+                let errmsg = format!(
+                    "Error {}: {}",
+                    status.as_u16(),
+                    String::from_utf8_lossy(&bytes)
+                );
+                if status.is_client_error() {
+                    anyhow::bail!(HttpClientError(errmsg));
+                } else {
+                    anyhow::bail!(errmsg);
                 }
-            ))
-        )
+            } else {
+                let bc = bincode::deserialize(&*bytes)?;
+                Ok(bc)
+            }
+        })))
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -1278,10 +1273,9 @@ mod client {
 
                     Box::new(self.pool.spawn_fn(move || {
                         let toolchain_file_size = toolchain_file.metadata()?.len();
-                        let body = reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
-                        let req = req
-                            .bearer_auth(job_alloc.auth.clone())
-                            .body(body);
+                        let body =
+                            reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
+                        let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
                         bincode_req(req)
                     }))
                 }

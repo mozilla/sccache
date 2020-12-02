@@ -72,7 +72,8 @@ impl Storage for AzureBlobCache {
 
         let response = self
             .container
-            .put(key, data, &self.credentials).await
+            .put(key, data, &self.credentials)
+            .await
             .map_err(|e| e.context("Failed to put cache entry in Azure"))
             .map(move |_| start.elapsed())?;
         Ok(response)
@@ -89,4 +90,3 @@ impl Storage for AzureBlobCache {
         Ok(None)
     }
 }
-

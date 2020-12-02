@@ -15,16 +15,16 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
+use bytes::Buf;
 use futures::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
 use hyperx::header;
 use md5::{Digest, Md5};
-use reqwest::{Client, Request, Response, Method, header::HeaderValue};
+use reqwest::Url;
+use reqwest::{header::HeaderValue, Client, Method, Request, Response};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use reqwest::Url;
-use bytes::Buf;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
@@ -104,8 +104,10 @@ impl BlobContainer {
             );
         }
 
-        let res = self.client
-            .execute(request).await
+        let res = self
+            .client
+            .execute(request)
+            .await
             .map_err(|_e| anyhow::anyhow!("failed GET: {}", &uri))?;
 
         let res_status = res.status();
@@ -117,7 +119,7 @@ impl BlobContainer {
                 .map(|header::ContentLength(len)| len);
             (res.bytes().await?, content_length)
         } else {
-            return Err(BadHttpStatusError(res_status).into())
+            return Err(BadHttpStatusError(res_status).into());
         };
 
         if let Some(len) = content_length {

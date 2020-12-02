@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures_03::executor::ThreadPool;
 use futures_03::compat::Future01CompatExt;
+use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as X;
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::LruDiskCache;
@@ -86,7 +86,7 @@ impl Storage for DiskCache {
         trace!("DiskCache::finish_put({})", key);
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        let fut = async move  {
+        let fut = async move {
             let start = Instant::now();
             let v = entry.finish()?;
             lru.lock().unwrap().insert_bytes(key, &v)?;

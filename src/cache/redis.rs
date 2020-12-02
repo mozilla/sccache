@@ -52,16 +52,16 @@ impl Storage for RedisCache {
         // let me = self.clone();
         // Box::new(
         //     Box::pin(async move {
-                // let mut c = me.connect().await?;
-                let mut c = self.connect().await?;
-                let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
-                if d.is_empty() {
-                    Ok(Cache::Miss)
-                } else {
-                    CacheRead::from(Cursor::new(d)).map(Cache::Hit)
-                }
-            // })
-            // .compat(),
+        // let mut c = me.connect().await?;
+        let mut c = self.connect().await?;
+        let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
+        if d.is_empty() {
+            Ok(Cache::Miss)
+        } else {
+            CacheRead::from(Cursor::new(d)).map(Cache::Hit)
+        }
+        // })
+        // .compat(),
         // )
     }
 
@@ -72,13 +72,13 @@ impl Storage for RedisCache {
         let start = Instant::now();
         // Box::new(
         //     Box::pin(async move {
-                // let mut c = me.connect().await?;
-                let mut c = self.connect().await?;
-                let d = entry.finish()?;
-                cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
-                Ok(start.elapsed())
-            // })
-            // .compat(),
+        // let mut c = me.connect().await?;
+        let mut c = self.connect().await?;
+        let d = entry.finish()?;
+        cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
+        Ok(start.elapsed())
+        // })
+        // .compat(),
         // )
     }
 
@@ -93,10 +93,10 @@ impl Storage for RedisCache {
         // let me = self.clone(); // TODO Remove clone
         // Box::new(
         //     Box::pin(async move {
-                // let mut c = me.connect().await?;
-                let mut c = self.connect().await?;
-                let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
-                Ok(v.get("used_memory"))
+        // let mut c = me.connect().await?;
+        let mut c = self.connect().await?;
+        let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
+        Ok(v.get("used_memory"))
         //     })
         //     .compat(),
         // )
@@ -109,15 +109,15 @@ impl Storage for RedisCache {
         // let me = self.clone(); // TODO Remove clone
         // Box::new(
         //     Box::pin(async move {
-                // let mut c = me.connect().await?;
-                let mut c = self.connect().await?;
-                let h: HashMap<String, usize> = cmd("CONFIG")
-                    .arg("GET")
-                    .arg("maxmemory")
-                    .query_async(&mut c)
-                    .await?;
-                Ok(h.get("maxmemory")
-                    .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
+        // let mut c = me.connect().await?;
+        let mut c = self.connect().await?;
+        let h: HashMap<String, usize> = cmd("CONFIG")
+            .arg("GET")
+            .arg("maxmemory")
+            .query_async(&mut c)
+            .await?;
+        Ok(h.get("maxmemory")
+            .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
         //     })
         //     .compat(),
         // )
