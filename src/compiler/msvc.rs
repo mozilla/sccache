@@ -66,7 +66,7 @@ impl CCompilerImpl for MSVC {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
-        _rewrite_includes_only: bool,
+        rewrite_includes_only: bool,
     ) -> SFuture<process::Output>
     where
         T: CommandCreatorSync,
@@ -79,6 +79,8 @@ impl CCompilerImpl for MSVC {
             env_vars,
             may_dist,
             &self.includes_prefix,
+            rewrite_includes_only,
+            self.is_clang,
         )
     }
 
@@ -694,6 +696,8 @@ pub fn preprocess<T>(
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
     includes_prefix: &str,
+    rewrite_includes_only: bool,
+    is_clang: bool,
 ) -> SFuture<process::Output>
 where
     T: CommandCreatorSync,
@@ -722,6 +726,9 @@ where
         .current_dir(&cwd);
     if parsed_args.depfile.is_some() || parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
+    }
+    if rewrite_includes_only && is_clang {
+        cmd.arg("-clang:-frewrite-includes");
     }
 
     if log_enabled!(Debug) {
