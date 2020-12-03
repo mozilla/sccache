@@ -741,17 +741,16 @@ pub fn get_token_oauth2_code_grant_pkce(
 ) -> Result<String> {
     use code_grant_pkce::CodeGrant;
 
-    let spawner =
-        ServiceSpawner::<CodeGrant, _>::new(move |stream: &AddrStream| {
-            let f = Box::pin(async move { Ok(CodeGrant) });
-            f as Pin<
-                Box<
-                    dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
-                        + std::marker::Send
-                        + 'static,
-                >,
-            >
-        });
+    let spawner = ServiceSpawner::<CodeGrant, _>::new(move |stream: &AddrStream| {
+        let f = Box::pin(async move { Ok(CodeGrant) });
+        f as Pin<
+            Box<
+                dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
+                    + std::marker::Send
+                    + 'static,
+            >,
+        >
+    });
 
     let server = try_serve(spawner)?;
 
@@ -809,17 +808,16 @@ pub fn get_token_oauth2_code_grant_pkce(
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
     use implicit::Implicit;
 
-    let spawner =
-        ServiceSpawner::<Implicit, _>::new(move |stream: &AddrStream| {
-            let f = Box::pin(async move { Ok(Implicit) });
-            f as Pin<
-                Box<
-                    dyn futures_03::Future<Output = std::result::Result<Implicit, hyper::Error>>
-                        + std::marker::Send
-                        + 'static,
-                >,
-            >
-        });
+    let spawner = ServiceSpawner::<Implicit, _>::new(move |stream: &AddrStream| {
+        let f = Box::pin(async move { Ok(Implicit) });
+        f as Pin<
+            Box<
+                dyn futures_03::Future<Output = std::result::Result<Implicit, hyper::Error>>
+                    + std::marker::Send
+                    + 'static,
+            >,
+        >
+    });
 
     let server = try_serve(spawner)?;
     let port = server.local_addr().port();

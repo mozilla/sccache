@@ -26,9 +26,9 @@ use rusoto_core::{
     credential::{AutoRefreshingProvider, ChainProvider, ProfileProvider},
     Region,
 };
-use std::rc::Rc;
 use rusoto_s3::{Bucket, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3};
 use std::io;
+use std::rc::Rc;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tokio_02::io::AsyncReadExt as _;
@@ -49,7 +49,13 @@ pub struct S3Cache {
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
     /// TODO: Handle custom region
-    pub fn new(bucket: &str, region: Option<&str>, endpoint: Option<&str>, key_prefix: &str, public: bool) -> Result<S3Cache> {
+    pub fn new(
+        bucket: &str,
+        region: Option<&str>,
+        endpoint: Option<&str>,
+        key_prefix: &str,
+        public: bool,
+    ) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -61,7 +67,7 @@ impl S3Cache {
             // ProfileProvider::with_configuration(home.join(".boto"), "Credentials"),
         ;
         let provider =
-            AutoRefreshingProvider::new(ChainProvider::with_profile_provider(profile_provider) )?;
+            AutoRefreshingProvider::new(ChainProvider::with_profile_provider(profile_provider))?;
         let bucket_name = bucket.to_owned();
         let bucket = Rc::new(Bucket {
             creation_date: None,
@@ -78,9 +84,12 @@ impl S3Cache {
                 .map(FromStr::from_str)
                 .unwrap_or_else(|| Ok(Region::default()))?,
         };
-        
+
         // TODO currently only https works with public, TODO
-        let client = if endpoint.filter(|endpoint| endpoint.starts_with("https")).is_some() {
+        let client = if endpoint
+            .filter(|endpoint| endpoint.starts_with("https"))
+            .is_some()
+        {
             let connector = hyper_rustls::HttpsConnector::new();
             // let client = hyper::client::Client::builder().build(connector);
             let client = rusoto_core::HttpClient::from_connector(connector);
@@ -89,10 +98,7 @@ impl S3Cache {
             } else {
                 rusoto_core::Client::new_with(provider, client)
             };
-            S3Client::new_with_client(
-                client,
-                region,
-            )
+            S3Client::new_with_client(client, region)
         } else {
             S3Client::new(region)
         };
