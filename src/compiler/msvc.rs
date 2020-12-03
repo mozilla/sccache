@@ -692,15 +692,27 @@ pub fn preprocess<T>(
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    _may_dist: bool,
+    may_dist: bool,
     includes_prefix: &str,
 ) -> SFuture<process::Output>
 where
     T: CommandCreatorSync,
 {
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-EP")
-        .arg(&parsed_args.input)
+
+    // When performing distributed compilation, line number info is important for error
+    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
+    // fails due to exceptions transitively included in the stdlib).
+    // With -fprofile-generate line number information is important, so use -E.
+    // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
+    // emitted) and improve performance.
+    if may_dist || parsed_args.profile_generate {
+        cmd.arg("-E");
+    } else {
+        cmd.arg("-EP");
+    }
+
+    cmd.arg(&parsed_args.input)
         .arg("-nologo")
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
