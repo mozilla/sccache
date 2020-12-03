@@ -2947,6 +2947,7 @@ dependencies = [
  "syslog",
  "tar",
  "tempfile",
+ "thiserror",
  "time 0.1.43",
  "tokio 0.2.21",
  "tokio-compat",
