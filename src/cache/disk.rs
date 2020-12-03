@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures_03::compat::Future01CompatExt;
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as X;
 use lru_disk_cache::Error as LruError;
