@@ -131,7 +131,7 @@ pub fn hex(bytes: &[u8]) -> String {
 pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    futures_03::join(files.iter().map(move |f| Digest::file(f, &pool).compat())).map(
+    futures_03::join_all(files.iter().map(move |f| Digest::file(f, &pool).compat())).map(
         move |hashes| {
             trace!(
                 "Hashed {} files in {}",

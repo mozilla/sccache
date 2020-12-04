@@ -1,5 +1,7 @@
 use crate::dist::Toolchain;
+use crate::util::SpawnExt;
 use anyhow::{anyhow, Result};
+use futures_03::task::SpawnExt as SpawnExt_03;
 use lru_disk_cache::Result as LruResult;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use std::fs;

@@ -35,6 +35,7 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct NVCC;
 
+#[async_trait]
 impl CCompilerImpl for NVCC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::NVCC
@@ -50,7 +51,7 @@ impl CCompilerImpl for NVCC {
         gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
     }
 
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -59,7 +60,7 @@ impl CCompilerImpl for NVCC {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -135,6 +136,8 @@ impl CCompilerImpl for NVCC {
         } else {
             Box::new(run_input_output(cmd, None))
         }
+        .compat()
+        .await
     }
 
     fn generate_compile_commands(

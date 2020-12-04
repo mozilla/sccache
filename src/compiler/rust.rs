@@ -336,7 +336,7 @@ where
     }
     let outputs = run_input_output(cmd, None).compat().await?;
 
-    let outstr = String::from_utf8(output.stdout).context("Error parsing rustc output")?;
+    let outstr = String::from_utf8(outputs.stdout).context("Error parsing rustc output")?;
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", outstr);
     }

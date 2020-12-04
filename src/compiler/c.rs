@@ -164,6 +164,7 @@ pub enum CCompilerKind {
 }
 
 /// An interface to a specific C compiler.
+#[async_trait::async_trait]
 pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     /// Return the kind of compiler.
     fn kind(&self) -> CCompilerKind;
@@ -175,9 +176,10 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments>;
+
     /// Run the C preprocessor with the specified set of arguments.
     #[allow(clippy::too_many_arguments)]
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -186,9 +188,10 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
+
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
     fn generate_compile_commands(
@@ -206,14 +209,15 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> SFuture<CCompiler<I>> {
-        Box::new(
-            Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
+    pub async fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> Result<CCompiler<I>> {
+        Digest::file(executable.clone(), &pool)
+            .compat()
+            .await
+            .map(move |digest| CCompiler {
                 executable,
                 executable_digest: digest,
                 compiler,
-            }),
-        )
+            })
     }
 }
 
@@ -284,7 +288,6 @@ where
                 may_dist,
                 rewrite_includes_only,
             )
-            .compat()
             .await;
         let out_pretty = parsed_args.output_pretty().into_owned();
         let result = result.map_err(move |e| {

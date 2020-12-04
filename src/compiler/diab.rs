@@ -34,6 +34,7 @@ use std::process;
 #[derive(Clone, Debug)]
 pub struct Diab;
 
+#[async_trait::async_trait]
 impl CCompilerImpl for Diab {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Diab
@@ -49,7 +50,7 @@ impl CCompilerImpl for Diab {
         parse_arguments(arguments, cwd, &ARGS[..])
     }
 
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -58,7 +59,7 @@ impl CCompilerImpl for Diab {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         _rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -284,14 +285,14 @@ where
     })
 }
 
-pub fn preprocess<T>(
+pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     _may_dist: bool,
-) -> SFuture<process::Output>
+) -> Result<process::Output>
 where
     T: CommandCreatorSync,
 {
@@ -308,7 +309,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    Box::new(run_input_output(cmd, None))
+    run_input_output(cmd, None).compat().await
 }
 
 pub fn generate_compile_commands(

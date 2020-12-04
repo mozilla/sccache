@@ -676,7 +676,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             use futures_03::executor::ThreadPool;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let mut runtime = Runtime::new()?;
+            let mut runtime = tokio_02::runtime::Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();
@@ -684,11 +684,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
-            let compiler =
-                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
-            let packager = compiler.map(|c| c.0.get_toolchain_packager());
-            let res = packager.and_then(|p| p.write_pkg(out_file));
-            runtime.block_on(res)?
+            runtime.block_on(async move {
+                let compiler =
+                    compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None)
+                        .await;
+                let packager = compiler.map(|c| c.0.get_toolchain_packager());
+                let res = packager.and_then(|p| p.write_pkg(out_file));
+                res
+            })?
         }
         #[cfg(not(feature = "dist-client"))]
         Command::PackageToolchain(_executable, _out) => bail!(

@@ -90,29 +90,27 @@ mod common {
         }
     }
     #[cfg(feature = "dist-client")]
-    pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
+    pub async fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::RequestBuilder,
-    ) -> SFuture<T> {
-        Box::new(futures_03::compat::Compat::new(Box::pin(async move {
-            let res = req.send().await?;
-            let status = res.status();
-            let bytes = res.bytes().await?;
-            if !status.is_success() {
-                let errmsg = format!(
-                    "Error {}: {}",
-                    status.as_u16(),
-                    String::from_utf8_lossy(&bytes)
-                );
-                if status.is_client_error() {
-                    anyhow::bail!(HttpClientError(errmsg));
-                } else {
-                    anyhow::bail!(errmsg);
-                }
+    ) -> Result<T> {
+        let res = req.send().await?;
+        let status = res.status();
+        let bytes = res.bytes().await?;
+        if !status.is_success() {
+            let errmsg = format!(
+                "Error {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(&bytes)
+            );
+            if status.is_client_error() {
+                anyhow::bail!(HttpClientError(errmsg));
             } else {
-                let bc = bincode::deserialize(&*bytes)?;
-                Ok(bc)
+                anyhow::bail!(errmsg);
             }
-        })))
+        } else {
+            let bc = bincode::deserialize(&*bytes)?;
+            Ok(bc)
+        }
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -1206,17 +1204,19 @@ mod client {
         }
     }
 
+    #[async_trait::async_trait]
     impl dist::Client for Client {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_alloc_job(&scheduler_url);
             let mut req = self.client_async.lock().unwrap().post(url);
-            req = ftry!(req.bearer_auth(self.auth_token.clone()).bincode(&tc));
+            req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
 
             let client = self.client.clone();
             let client_async = self.client_async.clone();
             let server_certs = self.server_certs.clone();
-            Box::new(bincode_req_fut(req).and_then(move |res| match res {
+            let res = bincode_req_fut(req).await;
+            match res {
                 AllocJobHttpResponse::Success {
                     job_alloc,
                     need_toolchain,
@@ -1236,48 +1236,51 @@ mod client {
                     );
                     let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
                     let req = client_async.lock().unwrap().get(url);
-                    Box::new(
-                        bincode_req_fut(req)
-                            .map_err(|e| e.context("GET to scheduler server_certificate failed"))
-                            .and_then(move |res: ServerCertificateHttpResponse| {
-                                let mut guard = client.lock().unwrap();
-                                ftry!(Self::update_certs(
-                                    &mut *guard,
-                                    &mut client_async.lock().unwrap(),
-                                    &mut server_certs.lock().unwrap(),
-                                    res.cert_digest,
-                                    res.cert_pem,
-                                ));
-                                alloc_job_res
-                            }),
+                    let res: ServerCertificateHttpResponse = bincode_req_fut(req)
+                        .await
+                        .context("GET to scheduler server_certificate failed")?;
+
+                    let mut guard = client.lock().unwrap();
+                    Self::update_certs(
+                        &mut *guard,
+                        &mut client_async.lock().unwrap(),
+                        &mut server_certs.lock().unwrap(),
+                        res.cert_digest,
+                        res.cert_pem,
                     )
+                    .compat()
+                    .await?;
+
+                    alloc_job_res
                 }
-                AllocJobHttpResponse::Fail { msg } => f_ok(AllocJobResult::Fail { msg }),
-            }))
+                AllocJobHttpResponse::Fail { msg } => Ok(AllocJobResult::Fail { msg }),
+            }
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
-            Box::new(self.pool.spawn_fn(move || bincode_req(req)))
+            self.pool.spawn_with_handle(move || bincode_req(req))?.await
         }
-        fn do_submit_toolchain(
+        async fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> SFuture<SubmitToolchainResult> {
+        ) -> Result<SubmitToolchainResult> {
             match self.tc_cache.get_toolchain(&tc) {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
 
-                    Box::new(self.pool.spawn_fn(move || {
-                        let toolchain_file_size = toolchain_file.metadata()?.len();
-                        let body =
-                            reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
-                        let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
-                        bincode_req(req)
-                    }))
+                    self.pool
+                        .spawn_with_handle(move || {
+                            let toolchain_file_size = toolchain_file.metadata()?.len();
+                            let body =
+                                reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
+                            let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
+                            bincode_req(req)
+                        })?
+                        .await
                 }
                 Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => f_err(e),

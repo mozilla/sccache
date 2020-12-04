@@ -253,13 +253,16 @@ impl DistClientContainer {
                 cfg.scheduler_url.clone(),
                 "enabled, not connected, will retry".to_string(),
             ),
-            DistClientState::Some(cfg, client) => match client.do_get_status().wait() {
-                Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
-                Err(_) => DistInfo::NotConnected(
-                    cfg.scheduler_url.clone(),
-                    "could not communicate with scheduler".to_string(),
-                ),
-            },
+            DistClientState::Some(cfg, client) => {
+                let runtime = tokio_02::runtime::Runtime::new()?;
+                match runtime.block_on(client.do_get_status()) {
+                    Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
+                    Err(_) => DistInfo::NotConnected(
+                        cfg.scheduler_url.clone(),
+                        "could not communicate with scheduler".to_string(),
+                    ),
+                }
+            }
         }
     }
 
@@ -973,7 +976,6 @@ where
                         &me.pool,
                         dist_info.clone().map(|(p, _)| p),
                     )
-                    .compat()
                     .await;
 
                 match info {

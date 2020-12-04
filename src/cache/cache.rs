@@ -26,6 +26,7 @@ use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 use crate::util::SpawnExt;
 use futures_03::executor::ThreadPool;
+use futures_03::task::SpawnExt as SpawnExt_03;
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -151,11 +152,11 @@ impl CacheRead {
         bytes
     }
 
-    pub fn extract_objects<T>(mut self, objects: T, pool: &ThreadPool) -> SFuture<()>
+    pub async fn extract_objects<T>(mut self, objects: T, pool: &ThreadPool) -> Result<()>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        Box::new(pool.spawn_fn(move || {
+        pool.spawn_with_handle(move || {
             for (key, path) in objects {
                 let dir = match path.parent() {
                     Some(d) => d,
@@ -172,7 +173,8 @@ impl CacheRead {
                 }
             }
             Ok(())
-        }))
+        })?
+        .await
     }
 }
 

@@ -43,6 +43,7 @@ pub struct MSVC {
     pub is_clang: bool,
 }
 
+#[async_trait]
 impl CCompilerImpl for MSVC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::MSVC
@@ -58,7 +59,7 @@ impl CCompilerImpl for MSVC {
         parse_arguments(arguments, cwd, self.is_clang)
     }
 
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -67,7 +68,7 @@ impl CCompilerImpl for MSVC {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         _rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -80,6 +81,7 @@ impl CCompilerImpl for MSVC {
             may_dist,
             &self.includes_prefix,
         )
+        .await
     }
 
     fn generate_compile_commands(
@@ -100,94 +102,91 @@ fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
-pub fn detect_showincludes_prefix<T>(
+pub async fn detect_showincludes_prefix<T>(
     creator: &T,
     exe: &OsStr,
     is_clang: bool,
     env: Vec<(OsString, OsString)>,
     pool: &ThreadPool,
-) -> SFuture<String>
+) -> Result<String>
 where
     T: CommandCreatorSync,
 {
-    let write = write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec());
+    let (tempdir, input) =
+        write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec())
+            .compat()
+            .await;
 
     let exe = exe.to_os_string();
     let mut creator = creator.clone();
     let pool = pool.clone();
-    let write2 = write.and_then(move |(tempdir, input)| {
-        let header = tempdir.path().join("test.h");
-        pool.spawn_fn(move || -> Result<_> {
-            let mut file = File::create(&header)?;
-            file.write_all(b"/* empty */\n")?;
-            Ok((tempdir, input))
-        })
-        .fcontext("failed to write temporary file")
-    });
-    let output = write2.and_then(move |(tempdir, input)| {
-        let mut cmd = creator.new_command_sync(&exe);
-        // clang.exe on Windows reports the same set of built-in preprocessor defines as clang-cl,
-        // but it doesn't accept MSVC commandline arguments unless you pass --driver-mode=cl.
-        // clang-cl.exe will accept this argument as well, so always add it in this case.
-        if is_clang {
-            cmd.arg("--driver-mode=cl");
-        }
-        cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
-            .arg(&input)
-            .current_dir(&tempdir.path())
-            // The MSDN docs say the -showIncludes output goes to stderr,
-            // but that's not true unless running with -E.
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-        trace!("detect_showincludes_prefix: {:?}", cmd);
 
-        run_input_output(cmd, None).map(|e| {
-            // Keep the tempdir around so test.h still exists for the
-            // checks below.
-            (e, tempdir)
-        })
-    });
+    let header = tempdir.path().join("test.h");
+    pool.spawn_with_handle(move || async move {
+        let mut file = File::create(&header)?;
+        file.write_all(b"/* empty */\n")?;
+        Ok((tempdir, input))
+    })?
+    .await
+    .context("failed to write temporary file")?;
 
-    Box::new(output.and_then(|(output, tempdir)| {
-        if !output.status.success() {
-            bail!("Failed to detect showIncludes prefix")
+    let mut cmd = creator.new_command_sync(&exe);
+    // clang.exe on Windows reports the same set of built-in preprocessor defines as clang-cl,
+    // but it doesn't accept MSVC commandline arguments unless you pass --driver-mode=cl.
+    // clang-cl.exe will accept this argument as well, so always add it in this case.
+    if is_clang {
+        cmd.arg("--driver-mode=cl");
+    }
+    cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
+        .arg(&input)
+        .current_dir(&tempdir.path())
+        // The MSDN docs say the -showIncludes output goes to stderr,
+        // but that's not true unless running with -E.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    trace!("detect_showincludes_prefix: {:?}", cmd);
+
+    let output = run_input_output(cmd, None).compat().await?;
+
+    if !output.status.success() {
+        bail!("Failed to detect showIncludes prefix")
+    }
+
+    let process::Output {
+        stdout: stdout_bytes,
+        ..
+    } = output;
+
+    let stdout = from_local_codepage(&stdout_bytes)
+        .context("Failed to convert compiler stdout while detecting showIncludes prefix")?;
+    for line in stdout.lines() {
+        if !line.ends_with("test.h") {
+            continue;
         }
-
-        let process::Output {
-            stdout: stdout_bytes,
-            ..
-        } = output;
-        let stdout = from_local_codepage(&stdout_bytes)
-            .context("Failed to convert compiler stdout while detecting showIncludes prefix")?;
-        for line in stdout.lines() {
-            if !line.ends_with("test.h") {
+        for (i, c) in line.char_indices().rev() {
+            if c != ' ' {
                 continue;
             }
-            for (i, c) in line.char_indices().rev() {
-                if c != ' ' {
-                    continue;
-                }
-                let path = tempdir.path().join(&line[i + 1..]);
-                // See if the rest of this line is a full pathname.
-                if path.exists() {
-                    // Everything from the beginning of the line
-                    // to this index is the prefix.
-                    return Ok(line[..=i].to_owned());
-                }
+            let path = tempdir.path().join(&line[i + 1..]);
+            // See if the rest of this line is a full pathname.
+            if path.exists() {
+                // Everything from the beginning of the line
+                // to this index is the prefix.
+                return Ok(line[..=i].to_owned());
             }
         }
-        drop(tempdir);
+    }
+    drop(tempdir);
 
-        debug!(
-            "failed to detect showIncludes prefix with output: {}",
-            stdout
-        );
+    debug!(
+        "failed to detect showIncludes prefix with output: {}",
+        stdout
+    );
 
-        bail!("Failed to detect showIncludes prefix")
-    }))
+    bail!("Failed to detect showIncludes prefix")
 }
 
 #[cfg(unix)]
@@ -684,7 +683,7 @@ fn normpath(path: &str) -> String {
     path.to_owned()
 }
 
-pub fn preprocess<T>(
+pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
     parsed_args: &ParsedArguments,
@@ -692,7 +691,7 @@ pub fn preprocess<T>(
     env_vars: &[(OsString, OsString)],
     _may_dist: bool,
     includes_prefix: &str,
-) -> SFuture<process::Output>
+) -> Result<process::Output>
 where
     T: CommandCreatorSync,
 {
@@ -718,65 +717,65 @@ where
     let includes_prefix = includes_prefix.to_string();
     let cwd = cwd.to_owned();
 
-    Box::new(run_input_output(cmd, None).and_then(move |output| {
-        let parsed_args = &parsed_args;
-        if let (Some(ref objfile), &Some(ref depfile)) =
-            (parsed_args.outputs.get("obj"), &parsed_args.depfile)
-        {
-            let f = File::create(cwd.join(depfile))?;
-            let mut f = BufWriter::new(f);
+    let output = run_input_output(cmd, None).compat().await?;
 
-            encode_path(&mut f, &objfile)
-                .with_context(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
-            write!(f, ": ")?;
-            encode_path(&mut f, &parsed_args.input)
-                .with_context(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
-            write!(f, " ")?;
-            let process::Output {
-                status,
-                stdout,
-                stderr: stderr_bytes,
-            } = output;
-            let stderr = from_local_codepage(&stderr_bytes)
-                .context("Failed to convert preprocessor stderr")?;
-            let mut deps = HashSet::new();
-            let mut stderr_bytes = vec![];
-            for line in stderr.lines() {
-                if line.starts_with(&includes_prefix) {
-                    let dep = normpath(line[includes_prefix.len()..].trim());
-                    trace!("included: {}", dep);
-                    if deps.insert(dep.clone()) && !dep.contains(' ') {
-                        write!(f, "{} ", dep)?;
-                    }
-                    if !parsed_args.msvc_show_includes {
-                        continue;
-                    }
+    let parsed_args = &parsed_args;
+    if let (Some(ref objfile), &Some(ref depfile)) =
+        (parsed_args.outputs.get("obj"), &parsed_args.depfile)
+    {
+        let f = File::create(cwd.join(depfile))?;
+        let mut f = BufWriter::new(f);
+
+        encode_path(&mut f, &objfile)
+            .with_context(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
+        write!(f, ": ")?;
+        encode_path(&mut f, &parsed_args.input)
+            .with_context(|| format!("Couldn't encode input filename: '{:?}'", objfile))?;
+        write!(f, " ")?;
+        let process::Output {
+            status,
+            stdout,
+            stderr: stderr_bytes,
+        } = output;
+        let stderr =
+            from_local_codepage(&stderr_bytes).context("Failed to convert preprocessor stderr")?;
+        let mut deps = HashSet::new();
+        let mut stderr_bytes = vec![];
+        for line in stderr.lines() {
+            if line.starts_with(&includes_prefix) {
+                let dep = normpath(line[includes_prefix.len()..].trim());
+                trace!("included: {}", dep);
+                if deps.insert(dep.clone()) && !dep.contains(' ') {
+                    write!(f, "{} ", dep)?;
                 }
-                stderr_bytes.extend_from_slice(line.as_bytes());
-                stderr_bytes.push(b'\n');
-            }
-            writeln!(f)?;
-            // Write extra rules for each dependency to handle
-            // removed files.
-            encode_path(&mut f, &parsed_args.input)
-                .with_context(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
-            writeln!(f, ":")?;
-            let mut sorted = deps.into_iter().collect::<Vec<_>>();
-            sorted.sort();
-            for dep in sorted {
-                if !dep.contains(' ') {
-                    writeln!(f, "{}:", dep)?;
+                if !parsed_args.msvc_show_includes {
+                    continue;
                 }
             }
-            Ok(process::Output {
-                status,
-                stdout,
-                stderr: stderr_bytes,
-            })
-        } else {
-            Ok(output)
+            stderr_bytes.extend_from_slice(line.as_bytes());
+            stderr_bytes.push(b'\n');
         }
-    }))
+        writeln!(f)?;
+        // Write extra rules for each dependency to handle
+        // removed files.
+        encode_path(&mut f, &parsed_args.input)
+            .with_context(|| format!("Couldn't encode filename: '{:?}'", parsed_args.input))?;
+        writeln!(f, ":")?;
+        let mut sorted = deps.into_iter().collect::<Vec<_>>();
+        sorted.sort();
+        for dep in sorted {
+            if !dep.contains(' ') {
+                writeln!(f, "{}:", dep)?;
+            }
+        }
+        Ok(process::Output {
+            status,
+            stdout,
+            stderr: stderr_bytes,
+        })
+    } else {
+        Ok(output)
+    }
 }
 
 fn generate_compile_commands(

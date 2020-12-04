@@ -70,7 +70,7 @@ pub struct CompileCommand {
 }
 
 impl CompileCommand {
-    pub fn execute<T>(self, creator: &T) -> SFuture<process::Output>
+    pub async fn execute<T>(self, creator: &T) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -79,7 +79,7 @@ impl CompileCommand {
             .env_clear()
             .envs(self.env_vars)
             .current_dir(self.cwd);
-        Box::new(run_input_output(cmd, None))
+        run_input_output(cmd, None).compat().await
     }
 }
 
@@ -404,43 +404,41 @@ where
 }
 
 #[cfg(not(feature = "dist-client"))]
-fn dist_or_local_compile<T>(
+async fn dist_or_local_compile<T>(
     _dist_client: Result<Option<Arc<dyn dist::Client>>>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
     _weak_toolchain_key: String,
     out_pretty: String,
-) -> SFuture<(Cacheable, DistType, process::Output)>
+) -> Result<(Cacheable, DistType, process::Output)>
 where
     T: CommandCreatorSync,
 {
     let mut path_transformer = dist::PathTransformer::default();
-    let compile_commands = compilation
+    let (compile_cmd, _dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, true)
-        .context("Failed to generate compile commands");
-    let (compile_cmd, _dist_compile_cmd, cacheable) = match compile_commands {
-        Ok(cmds) => cmds,
-        Err(e) => return f_err(e),
-    };
+        .compat()
+        .await
+        .context("Failed to generate compile commands")?;
 
     debug!("[{}]: Compiling locally", out_pretty);
-    Box::new(
-        compile_cmd
-            .execute(&creator)
-            .map(move |o| (cacheable, DistType::NoDist, o)),
-    )
+    compile_cmd
+        .execute(&creator)
+        .compat()
+        .await
+        .map(move |o| (cacheable, DistType::NoDist, o))
 }
 
 #[cfg(feature = "dist-client")]
-fn dist_or_local_compile<T>(
+async fn dist_or_local_compile<T>(
     dist_client: Result<Option<Arc<dyn dist::Client>>>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
     weak_toolchain_key: String,
     out_pretty: String,
-) -> SFuture<(Cacheable, DistType, process::Output)>
+) -> Result<(Cacheable, DistType, process::Output)>
 where
     T: CommandCreatorSync,
 {
@@ -464,14 +462,15 @@ where
         Ok(Some(dc)) => dc,
         Ok(None) => {
             debug!("[{}]: Compiling locally", out_pretty);
-            return Box::new(
-                compile_cmd
-                    .execute(&creator)
-                    .map(move |o| (cacheable, DistType::NoDist, o)),
-            );
+
+            return compile_cmd
+                .execute(&creator)
+                .compat()
+                .await
+                .map(move |o| (cacheable, DistType::NoDist, o));
         }
         Err(e) => {
-            return f_err(e);
+            return Err(e);
         }
     };
 
@@ -482,7 +481,7 @@ where
     let compile_out_pretty4 = out_pretty;
     let local_executable = compile_cmd.executable.clone();
     let local_executable2 = local_executable.clone();
-    // TODO: the number of map_errs is subideal, but there's no futures-based carrier trait AFAIK
+
     Box::new(future::result(dist_compile_cmd.context("Could not create distributed compile command"))
         .and_then(move |dist_compile_cmd| {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
@@ -606,7 +605,7 @@ where
                 Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
             }
         })
-        .map(move |(dt, o)| (cacheable, dt, o))
+        .map(move |(dt, o)| (cacheable, dt, o)).compat().await
     )
 }
 
@@ -839,7 +838,7 @@ pub fn write_temp_file(
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
-fn detect_compiler<T>(
+async fn detect_compiler<T>(
     creator: T,
     executable: &Path,
     cwd: &Path,
@@ -875,7 +874,7 @@ where
         })
     } else {
         Ok(None)
-    };
+    }?;
 
     let creator1 = creator.clone();
     let creator2 = creator.clone();
@@ -949,20 +948,18 @@ where
         }
         Some(Err(e)) => Err(e),
         None => {
-            let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool)
-                .compat()
-                .await;
+            let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool).await;
             cc.map(|c: Box<dyn Compiler<T>>| (c, None))
         }
     }
 }
 
-fn detect_c_compiler<T>(
+async fn detect_c_compiler<T>(
     creator: T,
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
     pool: ThreadPool,
-) -> SFuture<Box<dyn Compiler<T>>>
+) -> Result<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
@@ -989,100 +986,96 @@ diab
 #endif
 "
     .to_vec();
-    let write = write_temp_file(&pool, "testfile.c".as_ref(), test);
+    let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test)
+        .compat()
+        .await?;
 
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
-    let output = write.and_then(move |(tempdir, src)| {
-        cmd.arg("-E").arg(src);
-        trace!("compiler {:?}", cmd);
-        cmd.spawn()
-            .and_then(|child| {
-                child
-                    .wait_with_output()
-                    .fcontext("failed to read child output")
-            })
-            .map(|e| {
-                drop(tempdir);
-                e
-            })
-    });
 
-    Box::new(output.and_then(move |output| -> SFuture<_> {
-        let stdout = match str::from_utf8(&output.stdout) {
-            Ok(s) => s,
-            Err(_) => return f_err(anyhow!("Failed to parse output")),
-        };
-        for line in stdout.lines() {
-            //TODO: do something smarter here.
-            match line {
-                "clang" | "clang++" => {
-                    debug!("Found {}", line);
-                    return Box::new(
-                        CCompiler::new(
-                            Clang {
-                                clangplusplus: line == "clang++",
-                            },
-                            executable,
-                            &pool,
-                        )
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                    );
-                }
-                "diab" => {
-                    debug!("Found diab");
-                    return Box::new(
-                        CCompiler::new(Diab, executable, &pool)
-                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                    );
-                }
-                "gcc" | "g++" => {
-                    debug!("Found {}", line);
-                    return Box::new(
-                        CCompiler::new(
-                            GCC {
-                                gplusplus: line == "g++",
-                            },
-                            executable,
-                            &pool,
-                        )
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                    );
-                }
-                "msvc" | "msvc-clang" => {
-                    let is_clang = line == "msvc-clang";
-                    debug!("Found MSVC (is clang: {})", is_clang);
-                    let prefix = msvc::detect_showincludes_prefix(
-                        &creator,
-                        executable.as_ref(),
-                        is_clang,
-                        env,
+    cmd.arg("-E").arg(src);
+    trace!("compiler {:?}", cmd);
+    let child = cmd.spawn().compat().await;
+    let output = child
+        .wait_with_output()
+        .context("failed to read child output")
+        .map(|e| e)?;
+
+    drop(tempdir);
+
+    let stdout = match str::from_utf8(&output.stdout) {
+        Ok(s) => s,
+        Err(_) => bail!("Failed to parse output"),
+    };
+    for line in stdout.lines() {
+        //TODO: do something smarter here.
+        match line {
+            "clang" | "clang++" => {
+                debug!("Found {}", line);
+                return Box::new(
+                    CCompiler::new(
+                        Clang {
+                            clangplusplus: line == "clang++",
+                        },
+                        executable,
                         &pool,
-                    );
-                    return Box::new(prefix.and_then(move |prefix| {
-                        trace!("showIncludes prefix: '{}'", prefix);
-                        CCompiler::new(
-                            MSVC {
-                                includes_prefix: prefix,
-                                is_clang,
-                            },
-                            executable,
-                            &pool,
-                        )
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
-                    }));
-                }
-                "nvcc" => {
-                    debug!("Found NVCC");
-                    return Box::new(
-                        CCompiler::new(NVCC, executable, &pool)
-                            .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                    );
-                }
-                _ => (),
+                    )
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                );
             }
+            "diab" => {
+                debug!("Found diab");
+                return Box::new(
+                    CCompiler::new(Diab, executable, &pool)
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                );
+            }
+            "gcc" | "g++" => {
+                debug!("Found {}", line);
+                return Box::new(
+                    CCompiler::new(
+                        GCC {
+                            gplusplus: line == "g++",
+                        },
+                        executable,
+                        &pool,
+                    )
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                );
+            }
+            "msvc" | "msvc-clang" => {
+                let is_clang = line == "msvc-clang";
+                debug!("Found MSVC (is clang: {})", is_clang);
+                let prefix = msvc::detect_showincludes_prefix(
+                    &creator,
+                    executable.as_ref(),
+                    is_clang,
+                    env,
+                    &pool,
+                );
+                return Box::new(prefix.and_then(move |prefix| {
+                    trace!("showIncludes prefix: '{}'", prefix);
+                    CCompiler::new(
+                        MSVC {
+                            includes_prefix: prefix,
+                            is_clang,
+                        },
+                        executable,
+                        &pool,
+                    )
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                }));
+            }
+            "nvcc" => {
+                debug!("Found NVCC");
+                return Box::new(
+                    CCompiler::new(NVCC, executable, &pool)
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
+                );
+            }
+            _ => (),
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1090,24 +1083,25 @@ diab
         debug!("compiler status: {}", output.status);
         debug!("compiler stderr:\n{}", stderr);
 
-        f_err(anyhow!(stderr.into_owned()))
-    }))
+        bail!(stderr.into_owned())
+    }
+    Ok(())
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
-pub fn get_compiler_info<T>(
+pub async fn get_compiler_info<T>(
     creator: T,
     executable: &Path,
     cwd: &Path,
     env: &[(OsString, OsString)],
     pool: &ThreadPool,
     dist_archive: Option<PathBuf>,
-) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, cwd, env, &pool, dist_archive)
+    detect_compiler(creator, executable, cwd, env, &pool, dist_archive).await
 }
 
 #[cfg(test)]
@@ -1892,14 +1886,15 @@ mod test_dist {
             Arc::new(ErrorPutToolchainClient)
         }
     }
+    #[async_trait::async_trait]
     impl dist::Client for ErrorPutToolchainClient {
-        fn do_alloc_job(&self, _: Toolchain) -> SFuture<AllocJobResult> {
+        fn do_alloc_job(&self, _: Toolchain) -> Result<AllocJobResult> {
             unreachable!()
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
-        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
+        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> Result<SubmitToolchainResult> {
             unreachable!()
         }
         fn do_run_job(
@@ -1908,7 +1903,7 @@ mod test_dist {
             _: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
         fn put_toolchain(
@@ -1916,7 +1911,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_err(anyhow!("put toolchain failure"))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1940,15 +1935,16 @@ mod test_dist {
             })
         }
     }
+    #[async_trait::async_trait]
     impl dist::Client for ErrorAllocJobClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert_eq!(self.tc, tc);
             f_err(anyhow!("alloc job failure"))
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
-        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
+        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> Result<SubmitToolchainResult> {
             unreachable!()
         }
         fn do_run_job(
@@ -1957,7 +1953,7 @@ mod test_dist {
             _: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
         fn put_toolchain(
@@ -1965,7 +1961,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1991,11 +1987,13 @@ mod test_dist {
             })
         }
     }
+
+    #[async_trait::async_trait]
     impl dist::Client for ErrorSubmitToolchainClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
-            f_ok(AllocJobResult::Success {
+            Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
@@ -2004,33 +2002,33 @@ mod test_dist {
                 need_toolchain: true,
             })
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
-        fn do_submit_toolchain(
+        async fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> SFuture<SubmitToolchainResult> {
+        ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            f_err(anyhow!("submit toolchain failure"))
+            bail!("submit toolchain failure")
         }
-        fn do_run_job(
+        async fn do_run_job(
             &self,
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
-        fn put_toolchain(
+        async fn put_toolchain(
             &self,
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -2056,8 +2054,9 @@ mod test_dist {
             })
         }
     }
+    #[async_trait::async_trait]
     impl dist::Client for ErrorRunJobClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
             f_ok(AllocJobResult::Success {
@@ -2069,14 +2068,14 @@ mod test_dist {
                 need_toolchain: true,
             })
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
         fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> SFuture<SubmitToolchainResult> {
+        ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
             f_ok(SubmitToolchainResult::Success)
@@ -2087,7 +2086,7 @@ mod test_dist {
             command: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
             f_err(anyhow!("run job failure"))
@@ -2097,7 +2096,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((
                 self.tc.clone(),
                 Some((
@@ -2134,7 +2133,7 @@ mod test_dist {
     }
 
     impl dist::Client for OneshotClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
 
@@ -2147,14 +2146,14 @@ mod test_dist {
                 need_toolchain: true,
             })
         }
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
         fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> SFuture<SubmitToolchainResult> {
+        ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
 
@@ -2166,7 +2165,7 @@ mod test_dist {
             command: CompileCommand,
             outputs: Vec<String>,
             inputs_packager: Box<dyn pkg::InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
 
@@ -2191,7 +2190,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((
                 self.tc.clone(),
                 Some((
