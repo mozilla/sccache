@@ -17,12 +17,14 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use crate::util::SpawnExt;
 use futures_03::executor::ThreadPool;
+use futures_03::task::SpawnExt as SpawnExt_03;
 use memcached::client::Client;
 use memcached::proto::NoReplyOperation;
 use memcached::proto::Operation;
 use memcached::proto::ProtoType::Binary;
 use std::cell::RefCell;
 use std::io::Cursor;
+
 use std::time::{Duration, Instant};
 
 thread_local! {
@@ -76,7 +78,7 @@ impl Storage for MemcachedCache {
                 .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
                 .unwrap_or(Ok(Cache::Miss))
         };
-        let handle = self.pool.spawn_with_hande(fut).await?;
+        let handle = self.pool.spawn_with_handle(fut)?;
         handle.await
     }
 
@@ -89,7 +91,7 @@ impl Storage for MemcachedCache {
             me.exec(|c| c.set_noreply(&key.as_bytes(), &d, 0, 0))?;
             Ok(start.elapsed())
         };
-        let handle = self.pool.spawn_with_hande(fut).await?;
+        let handle = self.pool.spawn_with_handle(fut)?;
         handle.await
     }
 
