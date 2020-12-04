@@ -26,6 +26,7 @@ use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
 use serde::de;
+use std::sync;
 use std::{cell::RefCell, fmt, io, pin::Pin, result, sync::Arc, time};
 use url::{
     form_urlencoded,
@@ -186,15 +187,24 @@ impl Bucket {
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
     sa_info: ServiceAccountInfo,
-    cached_credentials: RefCell<
+    cached_credentials: sync::RwLock<
         Option<
-            Shared<Pin<Box<dyn futures_03::Future<Output = result::Result<GCSCredential, Error>>>>>,
+            Shared<
+                Pin<
+                    Box<
+                        dyn 'static
+                            + Send
+                            + futures_03::Future<Output = result::Result<GCSCredential, Error>>,
+                    >,
+                >,
+            >,
         >,
     >,
 }
 
 /// ServiceAccountInfo either contains a URL to fetch the oauth token
 /// or the service account key
+#[derive(Clone)]
 pub enum ServiceAccountInfo {
     URL(String),
     AccountKey(ServiceAccountKey),
@@ -244,7 +254,7 @@ where
 ///
 /// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
 /// structure minimal and not list all the fields present in a service account credential file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ServiceAccountKey {
     #[serde(deserialize_with = "deserialize_gcp_key")]
     private_key: Vec<u8>,
@@ -354,16 +364,16 @@ impl GCSCredentialProvider {
         GCSCredentialProvider {
             rw_mode,
             sa_info,
-            cached_credentials: RefCell::new(None),
+            cached_credentials: sync::RwLock::new(None),
         }
     }
 
     fn auth_request_jwt(
-        &self,
+        rw_mode: RWMode,
         sa_key: &ServiceAccountKey,
         expire_at: &chrono::DateTime<chrono::offset::Utc>,
     ) -> result::Result<String, Error> {
-        let scope = match self.rw_mode {
+        let scope = match rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         };
@@ -386,14 +396,15 @@ impl GCSCredentialProvider {
     }
 
     async fn request_new_token(
-        &self,
-        sa_key: &ServiceAccountKey,
-        client: &Client,
+        rw_mode: RWMode,
+        sa_key: ServiceAccountKey,
+        client: Client,
     ) -> result::Result<GCSCredential, Error> {
-        let client = client.clone();
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
-        let auth_jwt = self.auth_request_jwt(sa_key, &expires_at)?;
-        let url = sa_key.token_uri.clone();
+
+        let auth_jwt = Self::auth_request_jwt(rw_mode, &sa_key, &expires_at)?;
+
+        let url = &sa_key.token_uri;
 
         // Request credentials
 
@@ -430,11 +441,10 @@ impl GCSCredentialProvider {
     }
 
     async fn request_new_token_from_tcauth(
-        &self,
-        url: &str,
-        client: &Client,
+        url: String,
+        client: Client,
     ) -> result::Result<GCSCredential, Error> {
-        let res = client.get(url).send().await?;
+        let res = client.get(&url).send().await?;
 
         if res.status().is_success() {
             let resp = res
@@ -443,7 +453,10 @@ impl GCSCredentialProvider {
                 .map_err(|_e| "failed to read HTTP body")?;
             Ok(GCSCredential {
                 token: resp.access_token,
-                expiration_time: resp.expire_time.parse().map_err(|e| "Failed to parse GCS expiration time")?,
+                expiration_time: resp
+                    .expire_time
+                    .parse()
+                    .map_err(|e| "Failed to parse GCS expiration time")?,
             })
         } else {
             Err(Error::from(BadHttpStatusError(res.status())))
@@ -451,46 +464,63 @@ impl GCSCredentialProvider {
     }
 
     pub async fn credentials(&self, client: &Client) -> result::Result<GCSCredential, Error> {
-        let mut future_opt = self.cached_credentials.borrow_mut();
-
-        let needs_refresh = match Option::as_mut(&mut future_opt) {
-            None => true,
-            Some(future_opt) => {
-                let ret = future_opt.await;
-                ret.ok()
-                    .filter(|creds| creds.expiration_time < chrono::offset::Utc::now())
-                    .is_some()
-            }
-            _ => false,
+        let client = client.clone();
+        let shared = {
+            let shared = (self.cached_credentials.read().unwrap());
+            let shared = shared.clone();
+            shared
+        };
+        // let sa_info = self.sa_info.clone();
+        let rw_mode = self.rw_mode;
+        let needs_refresh = if let Some(shared) = shared {
+            // query the result of the last shared response or wait for the current ongoing
+            let ret = shared.await;
+            let maybe_creds = ret
+                .ok()
+                .filter(|creds| creds.expiration_time < chrono::offset::Utc::now());
+            maybe_creds
+        } else {
+            None
         };
 
-        if needs_refresh {
-            let credentials = match self.sa_info {
-                ServiceAccountInfo::AccountKey(ref sa_key) => {
-                    Box::pin(self.request_new_token(sa_key, client))
+        let creds = if let Some(mut still_good) = needs_refresh {
+            still_good
+        } else {
+            let credentials = match &self.sa_info {
+                ServiceAccountInfo::AccountKey(sa_key) => {
+                    Box::pin(Self::request_new_token(rw_mode, sa_key.clone(), client))
                         as Pin<
                             Box<
-                                dyn futures_03::Future<
-                                    Output = result::Result<GCSCredential, Error>,
-                                >,
+                                dyn 'static
+                                    + Send
+                                    + futures_03::Future<
+                                        Output = result::Result<GCSCredential, Error>,
+                                    >,
                             >,
                         >
                 }
-                ServiceAccountInfo::URL(ref url) => {
-                    Box::pin(self.request_new_token_from_tcauth(url, client))
+                ServiceAccountInfo::URL(url) => {
+                    Box::pin(Self::request_new_token_from_tcauth(url.to_owned(), client))
                         as Pin<
                             Box<
-                                dyn futures_03::Future<
-                                    Output = result::Result<GCSCredential, Error>,
-                                >,
+                                dyn 'static
+                                    + Send
+                                    + futures_03::Future<
+                                        Output = result::Result<GCSCredential, Error>,
+                                    >,
                             >,
                         >
                 }
             };
-            *future_opt = Some(credentials.shared());
+            let credentials = credentials.shared();
+            {
+                let mut write = self.cached_credentials.write().unwrap();
+                *write = Some(credentials.clone());
+            }
+            let creds = credentials.await?;
+            creds
         };
 
-        let creds = Option::as_mut(&mut future_opt).unwrap().clone().await?;
         Ok(creds)
     }
 }
@@ -523,14 +553,14 @@ impl GCSCache {
 #[async_trait]
 impl Storage for GCSCache {
     async fn get(&self, key: &str) -> Result<Cache> {
-        self.bucket.get(&key, &self.credential_provider).await
-        .and_then(|data| {
-            Ok(Cache::Hit(CacheRead::from(io::Cursor::new(data))?))
-        })
-        .or_else(|e| {
-            warn!("Got GCS error: {:?}", e);
-            Ok(Cache::Miss)
-        })
+        self.bucket
+            .get(&key, &self.credential_provider)
+            .await
+            .and_then(|data| Ok(Cache::Hit(CacheRead::from(io::Cursor::new(data))?)))
+            .or_else(|e| {
+                warn!("Got GCS error: {:?}", e);
+                Ok(Cache::Miss)
+            })
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<time::Duration> {
@@ -557,6 +587,7 @@ impl Storage for GCSCache {
     async fn current_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
