@@ -115,13 +115,13 @@ impl Bucket {
         let res = client
             .execute(request)
             .await
-            .map_err(|e| anyhow!("failed GET: {}", url).context(e))?;
+            .map_err(|e| Error::from(format!("failed GET: {}", url)))?;
         let status = res.status();
         if status.is_success() {
             let bytes = res
                 .bytes()
                 .await
-                .map_err(|e| anyhow!("failed to read HTTP body").context(e))?;
+                .map_err(|e| Error::from("failed to read HTTP body"))?;
             Ok(bytes.iter().copied().collect())
         } else {
             Err(BadHttpStatusError(status).into())
@@ -417,10 +417,10 @@ impl GCSCredentialProvider {
             let token_msg = res
                 .json::<TokenMsg>()
                 .await
-                .map_err(|e| e.context("failed to read HTTP body"))?;
+                .map_err(|e| "failed to read HTTP body")?;
             Ok(token_msg)
         } else {
-            Err(BadHttpStatusError(res_status).into())
+            Err(Error::from(BadHttpStatusError(res_status)))
         }?;
 
         Ok(GCSCredential {
@@ -438,15 +438,15 @@ impl GCSCredentialProvider {
 
         if res.status().is_success() {
             let resp = res
-                .json::<TokenMsg>()
+                .json::<AuthResponse>()
                 .await
                 .map_err(|_e| "failed to read HTTP body")?;
             Ok(GCSCredential {
                 token: resp.access_token,
-                expiration_time: expire_time.parse()?,
+                expiration_time: resp.expire_time.parse().map_err(|e| "Failed to parse GCS expiration time")?,
             })
         } else {
-            Err(BadHttpStatusError(res.status()).into())
+            Err(Error::from(BadHttpStatusError(res.status())))
         }
     }
 
@@ -523,13 +523,13 @@ impl GCSCache {
 #[async_trait]
 impl Storage for GCSCache {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.bucket.get(&key, &self.credential_provider).await {
-            Ok(data) => CacheRead::from(io::Cursor::new(data))?,
-        }
-        .map(|data| {})
+        self.bucket.get(&key, &self.credential_provider).await
+        .and_then(|data| {
+            Ok(Cache::Hit(CacheRead::from(io::Cursor::new(data))?))
+        })
         .or_else(|e| {
             warn!("Got GCS error: {:?}", e);
-            Ok(CacheRead::Miss)
+            Ok(Cache::Miss)
         })
     }
 

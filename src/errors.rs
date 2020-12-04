@@ -28,13 +28,13 @@ use std::process;
 // - There are some combinators below for working with futures.
 
 #[cfg(feature = "hyper")]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BadHttpStatusError(pub hyper::StatusCode);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HttpClientError(pub String);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessError(pub process::Output);
 
 #[cfg(feature = "hyper")]
