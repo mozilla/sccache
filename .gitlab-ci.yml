@@ -12,6 +12,9 @@ variables:
   GIT_STRATEGY:                    fetch
   GIT_DEPTH:                       100
   CARGO_INCREMENTAL:               0
+  # this var is changed to "-:staging" when the CI image gets rebuilt
+  # read more https://github.com/paritytech/scripts/pull/244
+  CI_IMAGE:                        "paritytech/sccache-ci-ubuntu:production"
 
 workflow:
   rules:
@@ -19,7 +22,7 @@ workflow:
     - if: $CI_COMMIT_BRANCH
 
 .docker-env:                       &docker-env
-  image:                           paritytech/ink-ci-linux:latest
+  image:                           "${CI_IMAGE}"
   before_script:
     - which gcc && gcc --version
     - which clang && clang --version
