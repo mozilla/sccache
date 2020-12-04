@@ -16,6 +16,7 @@ use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
+use futures_03::compat::Future01CompatExt;
 use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
 use futures_03::task;
@@ -32,6 +33,7 @@ use std::time::Duration;
 
 use crate::errors::*;
 
+/// Exists for forward compat to make the transition in the future easier
 pub trait SpawnExt: task::SpawnExt {
     fn spawn_fn<F, T>(&self, f: F) -> SFuture<T>
     where
@@ -126,25 +128,18 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
-pub fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> SFuture<Vec<String>> {
+pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    let pool = pool.clone();
-    Box::new(
-        future::join_all(
-            files
-                .iter()
-                .map(move |f| Digest::file(f, &pool))
-                .collect::<Vec<_>>(),
-        )
-        .map(move |hashes| {
+    futures_03::join(files.iter().map(move |f| Digest::file(f, &pool).compat())).map(
+        move |hashes| {
             trace!(
                 "Hashed {} files in {}",
                 count,
                 fmt_duration_as_secs(&start.elapsed())
             );
             hashes
-        }),
+        },
     )
 }
 

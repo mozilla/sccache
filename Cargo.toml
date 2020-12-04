@@ -40,6 +40,7 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "^0.1.11"
 futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
+
 hmac = { version = "0.10", optional = true }
 http = "^0.2.1"
 hyper = { version = "0.13", optional = true }
@@ -87,7 +88,7 @@ tempfile = "3"
 # which is necessary for some trait objects
 thiserror = "1"
 time = "0.1.35"
-tokio_02 = { package = "tokio", version = "0.2", features = ["io-util"], optional = true }
+tokio_02 = { package = "tokio", version = "0.2", features = ["io-util", "time"], optional = true }
 tokio-compat = "0.1"
 tokio-io = "0.1"
 tokio-process = "0.2"

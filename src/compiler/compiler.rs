@@ -30,6 +30,7 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
+use futures_03::channel::oneshot;
 use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
 use futures_03::prelude::*;
@@ -139,6 +140,7 @@ impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
     }
 }
 
+#[async_trait]
 pub trait CompilerProxy<T>: Send + 'static
 where
     T: CommandCreatorSync + Sized,
@@ -148,12 +150,12 @@ where
     /// Returns the absolute path to the true compiler and the timestamp of
     /// timestamp of the true compiler. Iff the resolution fails,
     /// the returned future resolves to an error with more information.
-    fn resolve_proxied_executable(
+    async fn resolve_proxied_executable(
         &self,
         creator: T,
         cwd: PathBuf,
         env_vars: &[(OsString, OsString)],
-    ) -> SFuture<(PathBuf, FileTime)>;
+    ) -> Result<(PathBuf, FileTime)>;
 
     /// Create a clone of `Self` and puts it in a `Box`
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
@@ -161,6 +163,7 @@ where
 
 /// An interface to a compiler for hash key generation, the result of
 /// argument parsing.
+#[async_trait::async_trait]
 pub trait CompilerHasher<T>: fmt::Debug + Send + 'static
 where
     T: CommandCreatorSync,
@@ -168,7 +171,7 @@ where
     /// Given information about a compiler command, generate a hash key
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
-    fn generate_hash_key(
+    async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
         cwd: PathBuf,
@@ -176,7 +179,7 @@ where
         may_dist: bool,
         pool: &ThreadPool,
         rewrite_includes_only: bool,
-    ) -> SFuture<HashResult>;
+    ) -> Result<HashResult>;
 
     /// Return the state of any `--color` option passed to the compiler.
     fn color_mode(&self) -> ColorMode;
@@ -184,7 +187,7 @@ where
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     #[allow(clippy::too_many_arguments)]
-    fn get_cached_or_compile(
+    async fn get_cached_or_compile(
         self: Box<Self>,
         dist_client: Result<Option<Arc<dyn dist::Client>>>,
         creator: T,
@@ -194,7 +197,7 @@ where
         env_vars: Vec<(OsString, OsString)>,
         cache_control: CacheControl,
         pool: ThreadPool,
-    ) -> SFuture<(CompileResult, process::Output)> {
+    ) -> Result<(CompileResult, process::Output)> {
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
@@ -203,221 +206,192 @@ where
             Ok(Some(ref client)) => client.rewrite_includes_only(),
             _ => false,
         };
-        let result = self.generate_hash_key(
-            &creator,
-            cwd.clone(),
-            env_vars,
-            may_dist,
-            &pool,
-            rewrite_includes_only,
+        let result = self
+            .generate_hash_key(
+                &creator,
+                cwd.clone(),
+                env_vars,
+                may_dist,
+                &pool,
+                rewrite_includes_only,
+            )
+            .await;
+        debug!(
+            "[{}]: generate_hash_key took {}",
+            out_pretty,
+            fmt_duration_as_secs(&start.elapsed())
         );
-        Box::new(result.then(move |res| -> SFuture<_> {
-            debug!(
-                "[{}]: generate_hash_key took {}",
-                out_pretty,
-                fmt_duration_as_secs(&start.elapsed())
-            );
-            let (key, compilation, weak_toolchain_key) = match res {
-                Err(e) => {
-                    return match e.downcast::<ProcessError>() {
-                        Ok(ProcessError(output)) => f_ok((CompileResult::Error, output)),
-                        Err(e) => f_err(e),
-                    };
+        let (key, compilation, weak_toolchain_key) = match result {
+            Err(e) => {
+                return match e.downcast::<ProcessError>() {
+                    Ok(ProcessError(output)) => Ok((CompileResult::Error, output)),
+                    Err(e) => Err(e),
+                };
+            }
+            Ok(HashResult {
+                key,
+                compilation,
+                weak_toolchain_key,
+            }) => (key, compilation, weak_toolchain_key),
+        };
+        trace!("[{}]: Hash key: {}", out_pretty, key);
+        // If `ForceRecache` is enabled, we won't check the cache.
+        let start = Instant::now();
+        let cache_status = if cache_control == CacheControl::ForceRecache {
+            Ok(Cache::Recache)
+        } else {
+            // let key = key.to_owned();
+            // let storage = storage.clone();
+            // Box::new(futures_03::compat::Compat::new(Box::pin(async move {
+            let timeout = Duration::new(60, 0);
+            let r = tokio_02::time::timeout(timeout, storage.get(&key)).await;
+            // })))
+
+            // first error level is timeout
+            r?
+        };
+
+        // Set a maximum time limit for the cache to respond before we forge
+        // ahead ourselves with a compilation.
+
+        // Check the result of the cache lookup.
+        let out_pretty2 = out_pretty.clone();
+        let duration = start.elapsed();
+        let outputs = compilation
+            .outputs()
+            .map(|(key, path)| (key.to_string(), cwd.join(path)))
+            .collect::<HashMap<_, _>>();
+
+        let lookup = match cache_status {
+            Ok(Cache::Hit(mut entry)) => {
+                debug!(
+                    "[{}]: Cache hit in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                let stdout = entry.get_stdout();
+                let stderr = entry.get_stderr();
+                let write = entry.extract_objects(outputs.clone(), &pool).compat().await;
+                let output = process::Output {
+                    status: exit_status(0),
+                    stdout,
+                    stderr,
+                };
+                let hit = CompileResult::CacheHit(duration);
+                match write {
+                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+                    Err(e) => {
+                        if e.downcast_ref::<DecompressionFailure>().is_some() {
+                            debug!("[{}]: Failed to decompress object", out_pretty);
+                            return Ok(CacheLookupResult::Miss(MissType::CacheReadError));
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
-                Ok(HashResult {
-                    key,
+            }
+            Ok(Cache::Miss) => {
+                debug!(
+                    "[{}]: Cache miss in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                Err(CacheLookupResult::Miss(MissType::Normal))
+            }
+            Ok(Cache::Recache) => {
+                debug!(
+                    "[{}]: Cache recache in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
+            }
+            Err(err) => {
+                if err.is_elapsed() {
+                    debug!(
+                        "[{}]: Cache timed out {}",
+                        out_pretty,
+                        fmt_duration_as_secs(&duration)
+                    );
+                    Ok(CacheLookupResult::Miss(MissType::TimedOut))
+                } else {
+                    error!("[{}]: Cache read error: {}", out_pretty, err);
+                    if err.is_inner() {
+                        let err = err.into_inner().unwrap();
+                        for e in err.chain().skip(1) {
+                            error!("[{}] \t{}", out_pretty, e);
+                        }
+                    }
+                    Ok(CacheLookupResult::Miss(MissType::CacheReadError))
+                }
+            }
+        }?;
+
+        match lookup {
+            CacheLookupResult::Success(compile_result, output) => Ok((compile_result, output)),
+            CacheLookupResult::Miss(miss_type) => {
+                // Cache miss, so compile it.
+                let start = Instant::now();
+                let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
+                    dist_client,
+                    creator,
+                    cwd,
                     compilation,
                     weak_toolchain_key,
-                }) => (key, compilation, weak_toolchain_key),
-            };
-            trace!("[{}]: Hash key: {}", out_pretty, key);
-            // If `ForceRecache` is enabled, we won't check the cache.
-            let start = Instant::now();
-            let cache_status = if cache_control == CacheControl::ForceRecache {
-                f_ok(Cache::Recache)
-            } else {
-                let key = key.to_owned();
-                let storage = storage.clone();
-                Box::new(futures_03::compat::Compat::new(Box::pin(async move {
-                    storage.get(&key).await
-                })))
-            };
+                    out_pretty2.clone(),
+                )
+                .compat()
+                .await?;
 
-            // Set a maximum time limit for the cache to respond before we forge
-            // ahead ourselves with a compilation.
-            let timeout = Duration::new(60, 0);
-            let cache_status = Timeout::new(cache_status, timeout);
-
-            // Check the result of the cache lookup.
-            Box::new(cache_status.then(move |result| {
-                let out_pretty2 = out_pretty.clone();
                 let duration = start.elapsed();
-                let outputs = compilation
-                    .outputs()
-                    .map(|(key, path)| (key.to_string(), cwd.join(path)))
-                    .collect::<HashMap<_, _>>();
+                if !compiler_result.status.success() {
+                    debug!(
+                        "[{}]: Compiled but failed, not storing in cache",
+                        out_pretty2
+                    );
+                    return Ok((CompileResult::CompileFailed, compiler_result));
+                }
+                if cacheable != Cacheable::Yes {
+                    // Not cacheable
+                    debug!("[{}]: Compiled but not cacheable", out_pretty2);
+                    return Ok((CompileResult::NotCacheable, compiler_result));
+                }
+                debug!(
+                    "[{}]: Compiled in {}, storing in cache",
+                    out_pretty2,
+                    fmt_duration_as_secs(&duration)
+                );
+                let entry = CacheWrite::from_objects(outputs, &pool)
+                    .compat()
+                    .await
+                    .context("failed to zip up compiler outputs")?;
+                let o = out_pretty2.clone();
 
-                let miss_type = Box::new(match result {
-                    Ok(Cache::Hit(mut entry)) => {
-                        debug!(
-                            "[{}]: Cache hit in {}",
-                            out_pretty,
-                            fmt_duration_as_secs(&duration)
-                        );
-                        let stdout = entry.get_stdout();
-                        let stderr = entry.get_stderr();
-                        let write = entry.extract_objects(outputs.clone(), &pool);
-                        let output = process::Output {
-                            status: exit_status(0),
-                            stdout,
-                            stderr,
-                        };
-                        let hit = CompileResult::CacheHit(duration);
-                        Box::new(write.then(move |result| match result {
-                            Ok(()) => f_ok(CacheLookupResult::Success(hit, output)),
-                            Err(e) => {
-                                if e.downcast_ref::<DecompressionFailure>().is_some() {
-                                    debug!("[{}]: Failed to decompress object", out_pretty);
-                                    f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
-                                } else {
-                                    f_err(e)
-                                }
-                            }
-                        }))
-                    }
-                    Ok(Cache::Miss) => {
-                        debug!(
-                            "[{}]: Cache miss in {}",
-                            out_pretty,
-                            fmt_duration_as_secs(&duration)
-                        );
-                        f_ok(CacheLookupResult::Miss(MissType::Normal))
-                    }
-                    Ok(Cache::Recache) => {
-                        debug!(
-                            "[{}]: Cache recache in {}",
-                            out_pretty,
-                            fmt_duration_as_secs(&duration)
-                        );
-                        f_ok(CacheLookupResult::Miss(MissType::ForcedRecache))
-                    }
-                    Err(err) => {
-                        if err.is_elapsed() {
-                            debug!(
-                                "[{}]: Cache timed out {}",
-                                out_pretty,
-                                fmt_duration_as_secs(&duration)
-                            );
-                            f_ok(CacheLookupResult::Miss(MissType::TimedOut))
-                        } else {
-                            error!("[{}]: Cache read error: {}", out_pretty, err);
-                            if err.is_inner() {
-                                let err = err.into_inner().unwrap();
-                                for e in err.chain().skip(1) {
-                                    error!("[{}] \t{}", out_pretty, e);
-                                }
-                            }
-                            f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
-                        }
-                    }
+                entry.put_stdout(&compiler_result.stdout)?;
+                entry.put_stderr(&compiler_result.stderr)?;
+
+                // Try to finish storing the newly-written cache
+                // entry. We'll get the result back elsewhere.
+
+                let key = key.clone();
+                let storage = storage.clone();
+                let res = storage.put(&key, entry).await;
+                match res {
+                    Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
+                    Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
+                }
+                res.map(|duration| CacheWriteInfo {
+                    object_file_pretty: out_pretty2,
+                    duration,
                 });
 
-                Box::new(miss_type.and_then(move |result| {
-                    match result {
-                        CacheLookupResult::Success(compile_result, output) => {
-                            f_ok((compile_result, output))
-                        }
-                        CacheLookupResult::Miss(miss_type) => {
-                            // Cache miss, so compile it.
-                            let start = Instant::now();
-                            let compile = dist_or_local_compile(
-                                dist_client,
-                                creator,
-                                cwd,
-                                compilation,
-                                weak_toolchain_key,
-                                out_pretty2.clone(),
-                            );
-
-                            Box::new(compile.and_then(
-                                move |(cacheable, dist_type, compiler_result)| {
-                                    let duration = start.elapsed();
-                                    if !compiler_result.status.success() {
-                                        debug!(
-                                            "[{}]: Compiled but failed, not storing in cache",
-                                            out_pretty2
-                                        );
-                                        return f_ok((CompileResult::CompileFailed, compiler_result))
-                                            as SFuture<_>;
-                                    }
-                                    if cacheable != Cacheable::Yes {
-                                        // Not cacheable
-                                        debug!("[{}]: Compiled but not cacheable", out_pretty2);
-                                        return f_ok((
-                                            CompileResult::NotCacheable,
-                                            compiler_result,
-                                        ));
-                                    }
-                                    debug!(
-                                        "[{}]: Compiled in {}, storing in cache",
-                                        out_pretty2,
-                                        fmt_duration_as_secs(&duration)
-                                    );
-                                    let write = CacheWrite::from_objects(outputs, &pool);
-                                    let write = write.fcontext("failed to zip up compiler outputs");
-                                    let o = out_pretty2.clone();
-                                    Box::new(
-                                        write
-                                            .and_then(move |mut entry| {
-                                                entry.put_stdout(&compiler_result.stdout)?;
-                                                entry.put_stderr(&compiler_result.stderr)?;
-
-                                                // Try to finish storing the newly-written cache
-                                                // entry. We'll get the result back elsewhere.
-                                                let future = {
-                                                    let key = key.clone();
-                                                    let storage = storage.clone();
-                                                    Box::new(futures_03::compat::Compat::new(
-                                                        Box::pin(async move {
-                                                            storage.put(&key, entry).await
-                                                        }),
-                                                    ))
-                                                }
-                                                .then(move |res| {
-                                                    match res {
-                                                        Ok(_) => debug!(
-                                                            "[{}]: Stored in cache successfully!",
-                                                            out_pretty2
-                                                        ),
-                                                        Err(ref e) => debug!(
-                                                            "[{}]: Cache write error: {:?}",
-                                                            out_pretty2, e
-                                                        ),
-                                                    }
-                                                    res.map(|duration| CacheWriteInfo {
-                                                        object_file_pretty: out_pretty2,
-                                                        duration,
-                                                    })
-                                                });
-                                                let future = Box::new(future);
-                                                Ok((
-                                                    CompileResult::CacheMiss(
-                                                        miss_type, dist_type, duration, future,
-                                                    ),
-                                                    compiler_result,
-                                                ))
-                                            })
-                                            .fwith_context(move || {
-                                                format!("failed to store `{}` to cache", o)
-                                            }),
-                                    )
-                                },
-                            ))
-                        }
-                    }
-                }))
-            }))
-        }))
+                Ok((
+                    CompileResult::CacheMiss(miss_type, dist_type, duration, future),
+                    compiler_result,
+                ))
+            }
+        }
+        .with_context(move || format!("failed to store `{}` to cache", out_pretty))
     }
 
     /// A descriptive string about the file that we're going to be producing.
@@ -770,7 +744,7 @@ pub enum CompileResult {
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
     /// being stored in the cache.
-    CacheMiss(MissType, DistType, Duration, SFuture<CacheWriteInfo>),
+    CacheMiss(MissType, DistType, Duration, Receiver<CacheWriteInfo>),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
     /// Not in cache, but compilation failed.
@@ -872,7 +846,7 @@ fn detect_compiler<T>(
     env: &[(OsString, OsString)],
     pool: &ThreadPool,
     dist_archive: Option<PathBuf>,
-) -> SFuture<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
@@ -891,16 +865,16 @@ where
         let mut child = creator.clone().new_command_sync(executable);
         child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
-        Box::new(run_input_output(child, None).map(|output| {
+        run_input_output(child, None).compat().await.map(|output| {
             if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
                 if stdout.starts_with("rustc ") {
                     return Some(Ok(stdout));
                 }
             }
             Some(Err(ProcessError(output)))
-        }))
+        })
     } else {
-        f_ok(None)
+        Ok(None)
     };
 
     let creator1 = creator.clone();
@@ -912,87 +886,75 @@ where
     let env3 = env.to_owned();
     let pool = pool.clone();
     let cwd = cwd.to_owned();
-    Box::new(
-        rustc_vv
-            .and_then(move |rustc_vv| match rustc_vv {
-            Some(Ok(rustc_verbose_version)) => {
-                debug!("Found rustc");
+    match rustc_vv {
+        Some(Ok(rustc_verbose_version)) => {
+            debug!("Found rustc");
 
-                Box::new(
-                    RustupProxy::find_proxy_executable::<T>(&executable2,"rustup", creator, &env1)
-                        .and_then(move |proxy : Result<Option<RustupProxy>>| -> SFuture<(Option<RustupProxy>, PathBuf)> {
-                            match proxy {
-                                Ok(Some(proxy)) => {
-                                    trace!("Found rustup proxy executable");
-                                    let fut =
-                                        proxy
-                                            .resolve_proxied_executable(creator1, cwd, &env2)
-                                            .then(move |res| {
-                                                // take the pathbuf for rustc as resolved by the proxy
-                                                match res {
-                                                    Ok((resolved_path, _time)) => {
-                                                        trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                                                        f_ok((Some(proxy), resolved_path))
-                                                    },
-                                                    Err(e) => {
-                                                        trace!("Could not resolve compiler with rustup proxy: {}", e);
-                                                        f_ok((None, executable))
-                                                    },
-                                                }
-                                            });
-                                    Box::new(fut)
-                                },
-                                Ok(None) => {
-                                    trace!("Did not find rustup");
-                                    f_ok((None, executable))
-                                },
-                                Err(e) => {
-                                    trace!("Did not find rustup due to {}", e);
-                                    f_ok((None, executable))
-                                },
-                            }
-                        })
-                        .then(move |res: Result<(Option<RustupProxy>, PathBuf)>| {
-                            let (proxy, resolved_rustc) : (_, PathBuf)
-                                = res
-                                    .map(|(proxy,resolved_compiler_executable)| {
-                                        (
-                                            proxy.map(Box::new).map(|x : Box<RustupProxy>| {
-                                                x as Box<dyn CompilerProxy<T>>
-                                            }),
-                                            resolved_compiler_executable
-                                        )
-                                    })
-                                    .unwrap_or_else(|_e| {
-                                        trace!("Compiling rust without proxy");
-                                        (None, executable2)
-                                    });
+            let proxy =
+                RustupProxy::find_proxy_executable::<T>(&executable2, "rustup", creator, &env1);
 
-                            Rust::new(
-                                creator2,
-                                resolved_rustc,
-                                &env3,
-                                &rustc_verbose_version,
-                                dist_archive,
-                                pool,
-                            )
-                            .map(|c| {
-                                (
-                                    Box::new(c) as Box<dyn Compiler<T> >,
-                                    proxy as Option<Box<dyn CompilerProxy<T>>>
-                                )
-                            })
+            let res = match proxy {
+                Ok(Some(proxy)) => {
+                    trace!("Found rustup proxy executable");
+                    // take the pathbuf for rustc as resolved by the proxy
+                    match proxy.resolve_proxied_executable(creator1, cwd, &env2).await {
+                        Ok((resolved_path, _time)) => {
+                            trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                            (Some(proxy), resolved_path)
+                        }
+                        Err(e) => {
+                            trace!("Could not resolve compiler with rustup proxy: {}", e);
+                            (None, executable)
+                        }
                     }
-                )
+                }
+                Ok(None) => {
+                    trace!("Did not find rustup");
+                    (None, executable)
+                }
+                Err(e) => {
+                    trace!("Did not find rustup due to {}", e);
+                    (None, executable)
+                }
+            };
+
+            let (proxy, resolved_rustc): (_, PathBuf) = res
+                .map(|(proxy, resolved_compiler_executable)| {
+                    (
+                        proxy
+                            .map(Box::new)
+                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+                        resolved_compiler_executable,
+                    )
+                })
+                .unwrap_or_else(|_e| {
+                    trace!("Compiling rust without proxy");
+                    (None, executable2)
+                });
+
+            Rust::new(
+                creator2,
+                resolved_rustc,
+                &env3,
+                &rustc_verbose_version,
+                dist_archive,
+                pool,
             )
-            }
-            Some(Err(e)) => f_err(e),
-            None => {
-                let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool);
-                Box::new(cc.map(|c : Box<dyn Compiler<T>>| { (c, None ) }))
-            },
-        })
-    )
+            .map(|c| {
+                (
+                    Box::new(c) as Box<dyn Compiler<T>>,
+                    proxy as Option<Box<dyn CompilerProxy<T>>>,
+                )
+            })
+        }
+        Some(Err(e)) => Err(e),
+        None => {
+            let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool)
+                .compat()
+                .await;
+            cc.map(|c: Box<dyn Compiler<T>>| (c, None))
+        }
+    }
 }
 
 fn detect_c_compiler<T>(

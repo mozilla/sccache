@@ -1095,18 +1095,16 @@ where
         };
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let result = hasher
-            .get_cached_or_compile(
-                self.dist_client.get_client(),
-                self.creator.clone(),
-                self.storage.clone(),
-                arguments,
-                cwd,
-                env_vars,
-                cache_control,
-                self.pool.clone(),
-            )
-            .compat();
+        let result = hasher.get_cached_or_compile(
+            self.dist_client.get_client(),
+            self.creator.clone(),
+            self.storage.clone(),
+            arguments,
+            cwd,
+            env_vars,
+            cache_control,
+            self.pool.clone(),
+        );
         let me = self.clone();
         let kind = compiler.kind();
         let task = async move {
