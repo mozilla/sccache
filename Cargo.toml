@@ -43,7 +43,7 @@ http = "0.1"
 hyper = { version = "0.12", optional = true }
 hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
-jsonwebtoken = { version = "6.0.1", optional = true }
+jsonwebtoken = { version = "7.2.0", optional = true }
 lazy_static = "1.0.0"
 libc = "0.2.10"
 local-encoding = "0.2.0"
@@ -59,7 +59,7 @@ redis = { version = "0.15.0", optional = true }
 regex = "1"
 reqwest = { version = "0.9.11", optional = true }
 retry = "0.4.0"
-ring = { version = "0.14.6", optional = true }
+ring = { version = "0.16.19", optional = true }
 sha-1 = { version = "0.8", optional = true }
 sha2 = { version = "0.8", optional = true }
 serde = "1.0"
