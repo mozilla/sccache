@@ -15,7 +15,7 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use futures::future;
 use futures::future::Future;
-use futures_03::{compat::Compat as _, future::TryFutureExt as _};
+use futures_03::{future::TryFutureExt as _};
 use hyperx::header::CacheDirective;
 use rusoto_core::{self, Client, HttpClient, Region};
 use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3 as _};
