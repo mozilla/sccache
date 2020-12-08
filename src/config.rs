@@ -463,7 +463,7 @@ fn config_from_env() -> EnvConfig {
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
             .as_ref()
-            .map(|s| s.trim_end_matches("/"))
+            .map(|s| s.trim_end_matches('/'))
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();

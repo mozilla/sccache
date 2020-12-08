@@ -194,10 +194,7 @@ where
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let may_dist = match dist_client {
-            Ok(Some(_)) => true,
-            _ => false,
-        };
+        let may_dist = matches!(dist_client, Ok(Some(_)));
         let rewrite_includes_only = match dist_client {
             Ok(Some(ref client)) => client.rewrite_includes_only(),
             _ => false,
@@ -271,7 +268,7 @@ where
                         Box::new(write.then(move |result| match result {
                             Ok(()) => f_ok(CacheLookupResult::Success(hit, output)),
                             Err(e) => {
-                                if let Some(_) = e.downcast_ref::<DecompressionFailure>() {
+                                if e.downcast_ref::<DecompressionFailure>().is_some() {
                                     debug!("[{}]: Failed to decompress object", out_pretty);
                                     f_ok(CacheLookupResult::Miss(MissType::CacheReadError))
                                 } else {
@@ -898,7 +895,7 @@ where
     let env2 = env.to_owned();
     let env3 = env.to_owned();
     let pool = pool.clone();
-    let cwd = cwd.to_owned().clone();
+    let cwd = cwd.to_owned();
     Box::new(
         rustc_vv
             .and_then(move |rustc_vv| match rustc_vv {

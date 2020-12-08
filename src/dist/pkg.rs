@@ -83,7 +83,7 @@ mod toolchain_imp {
         }
 
         pub fn add_executable_and_deps(&mut self, executable: PathBuf) -> Result<()> {
-            let mut remaining = vec![executable.to_owned()];
+            let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
                 assert!(obj_path.is_absolute());
                 let tar_path = tarify_path(&obj_path)?;

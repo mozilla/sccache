@@ -357,7 +357,7 @@ impl IntoArg for PathBuf {
         self.into()
     }
     fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
-        transformer(&self).ok_or_else(|| ArgToStringError::FailedPathTransform(self))
+        transformer(&self).ok_or(ArgToStringError::FailedPathTransform(self))
     }
 }
 impl IntoArg for String {

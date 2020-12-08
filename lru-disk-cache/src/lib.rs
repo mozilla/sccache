@@ -79,7 +79,7 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{:?}", self)
     }
 }
 
@@ -228,7 +228,7 @@ impl LruDiskCache {
             None => fs::metadata(path)?.len(),
         };
         self.add_file(AddFile::RelPath(rel_path), size)
-            .or_else(|e| {
+            .map_err(|e| {
                 error!(
                     "Failed to insert file `{}`: {}",
                     rel_path.to_string_lossy(),
@@ -236,7 +236,7 @@ impl LruDiskCache {
                 );
                 fs::remove_file(&self.rel_to_abs_path(rel_path))
                     .expect("Failed to remove file we just created!");
-                Err(e)
+                e
             })
     }
 

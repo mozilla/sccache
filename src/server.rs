@@ -873,10 +873,7 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
-        let env = env
-            .into_iter()
-            .cloned()
-            .collect::<Vec<(OsString, OsString)>>();
+        let env = env.to_vec();
 
         let resolve_w_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
@@ -902,7 +899,7 @@ where
                     metadata(&path2)
                         .map(|attr| FileTime::from_last_modification_time(&attr))
                         .ok()
-                        .map(move |filetime| (path2.clone(), filetime))
+                        .map(move |filetime| (path2, filetime))
                 }
             };
             f_ok(opt)
@@ -992,7 +989,7 @@ where
                                                 proxy.box_clone();
                                             me.compiler_proxies
                                                 .borrow_mut()
-                                                .insert(path, (proxy, mtime.clone()));
+                                                .insert(path, (proxy, mtime));
                                         }
                                         // TODO add some safety checks in case a proxy exists, that the initial `path` is not
                                         // TODO the same as the resolved compiler binary
@@ -1023,7 +1020,7 @@ where
             },
         );
 
-        return Box::new(obtain);
+        Box::new(obtain)
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.

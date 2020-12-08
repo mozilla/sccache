@@ -516,7 +516,7 @@ where
         let lookup = run_input_output(child, None)
             .map_err(|e| anyhow!("Failed to execute rustup which rustc: {}", e))
             .and_then(move |output| {
-                String::from_utf8(output.stdout.clone())
+                String::from_utf8(output.stdout)
                     .map_err(|e| anyhow!("Failed to parse output of rustup which rustc: {}", e))
                     .and_then(|stdout| {
                         let proxied_compiler = PathBuf::from(stdout.trim());
@@ -681,14 +681,14 @@ impl RustupProxy {
                     let mut child = creator.new_command_sync(proxy_executable.to_owned());
                     child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
                     let rustup_candidate_check = run_input_output(child, None).map(move |output| {
-                        String::from_utf8(output.stdout.clone())
+                        String::from_utf8(output.stdout)
                             .map_err(|_e| {
                                 anyhow!("Response of `rustup --version` is not valid UTF-8")
                             })
                             .and_then(|stdout| {
                                 if stdout.trim().starts_with("rustup ") {
                                     trace!("PROXY rustup --version produced: {}", &stdout);
-                                    Self::new(&proxy_executable).map(|proxy| Some(proxy))
+                                    Self::new(&proxy_executable).map(Some)
                                 } else {
                                     Err(anyhow!("Unexpected output or `rustup --version`"))
                                 }
@@ -754,7 +754,7 @@ impl IntoArg for ArgCrateTypes {
             .chain(if rlib { Some("rlib") } else { None })
             .chain(if staticlib { Some("staticlib") } else { None })
             .collect();
-        types.sort();
+        types.sort_unstable();
         let types_string = types.join(",");
         types_string.into()
     }
@@ -770,7 +770,7 @@ impl IntoArg for ArgCrateTypes {
             .chain(if rlib { Some("rlib") } else { None })
             .chain(if staticlib { Some("staticlib") } else { None })
             .collect();
-        types.sort();
+        types.sort_unstable();
         let types_string = types.join(",");
         Ok(types_string)
     }
@@ -1845,15 +1845,13 @@ impl pkg::InputsPackager for RustInputsPackager {
 
         // If we're just creating an rlib then the only thing inspected inside dependency rlibs is the
         // metadata, in which case we can create a trimmed rlib (which is actually a .a) with the metadata
-        let can_trim_rlibs = if let CrateTypes {
-            rlib: true,
-            staticlib: false,
-        } = crate_types
-        {
-            true
-        } else {
-            false
-        };
+        let can_trim_rlibs = matches!(
+            crate_types,
+            CrateTypes {
+                rlib: true,
+                staticlib: false,
+            }
+        );
 
         let mut builder = tar::Builder::new(wtr);
 
