@@ -83,7 +83,7 @@ uuid = { version = "0.7", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
 which = { version = "4", default-features = false }
-zip = { version = "0.5", default-features = false, features = ["deflate"] }
+zip = { version = "0.5", default-features = false }
 zstd = { version = "0.5" }
 
 # dist-server only
@@ -131,7 +131,6 @@ s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "reqwest", "ring", "untrusted", "url"]
 memcached = ["memcached-rs"]
-native-zlib = ["zip/deflate-zlib"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
