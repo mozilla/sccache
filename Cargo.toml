@@ -54,6 +54,7 @@ memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
+percent-encoding = { version = "2", optional = true }
 rand = "0.7"
 redis = { version = "0.17", optional = true }
 regex = "1"
@@ -78,7 +79,7 @@ tokio-tcp = "0.1"
 tokio-timer = "0.2"
 toml = "0.5"
 untrusted = { version = "0.7", optional = true }
-url = { version = "1.0", optional = true }
+url = { version = "2", optional = true }
 uuid = { version = "0.8", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
@@ -129,7 +130,7 @@ all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "hyperx", "reqwest", "ring", "untrusted", "url"]
+gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "untrusted", "url"]
 memcached = ["memcached-rs"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []

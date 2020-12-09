@@ -21,10 +21,10 @@ use hyper::Method;
 use hyperx::header;
 use md5::{Digest, Md5};
 use reqwest::r#async::{Client, Request};
+use reqwest::Url;
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use url::Url;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
