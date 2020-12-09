@@ -52,7 +52,7 @@ lru-disk-cache = { path = "lru-disk-cache", version = "0.4.0" }
 md-5 = { version = "0.9", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
-number_prefix = "0.2.5"
+number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
