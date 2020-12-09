@@ -145,12 +145,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b41b7ea54a0c9d92199de89e20e58d49f02f8e699814ef3fdf266f6f748d15c7"
-
-[[package]]
-name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3441f0f7b02788e948e47f457ca01f1d7e6d92c693bc132c22b087d3141c03ff"
@@ -2251,7 +2245,7 @@ dependencies = [
  "ar",
  "assert_cmd",
  "atty",
- "base64 0.11.0",
+ "base64 0.13.0",
  "bincode 1.3.1",
  "blake3",
  "byteorder",
