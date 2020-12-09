@@ -298,8 +298,8 @@ fn sign_rsa(
     key: &[u8],
     alg: &'static dyn signature::RsaEncoding,
 ) -> Result<String> {
-    let key_pair = signature::RsaKeyPair::from_pkcs8(untrusted::Input::from(key))
-        .context("failed to deserialize rsa key")?;
+    let key_pair =
+        signature::RsaKeyPair::from_pkcs8(key).context("failed to deserialize rsa key")?;
 
     let mut signature = vec![0; key_pair.public_modulus_len()];
     let rng = ring::rand::SystemRandom::new();
