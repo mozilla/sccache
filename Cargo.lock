@@ -2286,7 +2286,6 @@ dependencies = [
  "syslog",
  "tar",
  "tempfile",
- "time",
  "tokio-compat",
  "tokio-io",
  "tokio-named-pipes",
