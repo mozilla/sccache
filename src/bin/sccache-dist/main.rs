@@ -252,7 +252,7 @@ fn create_jwt_server_token(
     let key = jwt::EncodingKey::from_secret(key);
     jwt::encode(&header, &ServerJwt { server_id }, &key).map_err(Into::into)
 }
-fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
+fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
     jwt::dangerous_insecure_decode::<ServerJwt>(&server_token)
         .map(|res| res.claims.server_id)
         .ok()
@@ -391,7 +391,7 @@ fn run(command: Command) -> Result<i32> {
                 }
                 server_config::SchedulerAuth::JwtToken { token } => {
                     let token_server_id: ServerId =
-                        dangerous_unsafe_extract_jwt_server_token(&token)
+                        dangerous_insecure_extract_jwt_server_token(&token)
                             .context("Could not decode scheduler auth jwt")?;
                     if token_server_id != server_id {
                         bail!(

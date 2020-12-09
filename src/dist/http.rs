@@ -647,14 +647,14 @@ mod server {
     impl dist::JobAuthorizer for JWTJobAuthorizer {
         fn generate_token(&self, job_id: JobId) -> Result<String> {
             let claims = JobJwt { job_id };
-            let encoding_key = &jwt::EncodingKey::from_secret(&self.server_key);
-            jwt::encode(&JWT_HEADER, &claims, encoding_key)
+            let key = jwt::EncodingKey::from_secret(&self.server_key);
+            jwt::encode(&JWT_HEADER, &claims, &key)
                 .map_err(|e| anyhow!("Failed to create JWT for job: {}", e))
         }
         fn verify_token(&self, job_id: JobId, token: &str) -> Result<()> {
             let valid_claims = JobJwt { job_id };
-            let decoding_key = &jwt::DecodingKey::from_secret(&self.server_key);
-            jwt::decode(&token, decoding_key, &JWT_VALIDATION)
+            let key = jwt::DecodingKey::from_secret(&self.server_key);
+            jwt::decode(&token, &key, &JWT_VALIDATION)
                 .map_err(|e| anyhow!("JWT decode failed: {}", e))
                 .and_then(|res| {
                     fn identical_t<T>(_: &T, _: &T) {}
