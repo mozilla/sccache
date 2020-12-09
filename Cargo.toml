@@ -32,7 +32,7 @@ byteorder = "1.0"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
 counted-array = "0.1"
-directories = "2"
+directories = "3"
 env_logger = "0.5"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
@@ -55,7 +55,7 @@ num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
 rand = "0.5"
-redis = { version = "0.15.0", optional = true }
+redis = { version = "0.17", optional = true }
 regex = "1"
 reqwest = { version = "0.9.11", optional = true }
 retry = "0.4.0"
@@ -77,9 +77,9 @@ tower = "0.1"
 tokio-tcp = "0.1"
 tokio-timer = "0.2"
 toml = "0.5"
-untrusted = { version = "0.6.0", optional = true }
+untrusted = { version = "0.7", optional = true }
 url = { version = "1.0", optional = true }
-uuid = { version = "0.7", features = ["v4"] }
+uuid = { version = "0.8", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
 which = { version = "4", default-features = false }
@@ -89,8 +89,8 @@ zstd = { version = "0.5" }
 # dist-server only
 crossbeam-utils = { version = "0.5", optional = true }
 libmount = { version = "0.1.10", optional = true }
-nix = { version = "0.17.0", optional = true }
-rouille = { version = "2.2", optional = true, default-features = false, features = ["ssl"] }
+nix = { version = "0.18", optional = true }
+rouille = { version = "3", optional = true, default-features = false, features = ["ssl"] }
 syslog = { version = "5", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.11", optional = true }
