@@ -46,7 +46,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
     let s = hmac(signing_key.as_bytes(), string_to_sign.as_bytes());
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
+    base64::encode_config(&s, base64::STANDARD)
 }
 
 /// An S3 bucket.

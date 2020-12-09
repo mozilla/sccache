@@ -25,7 +25,7 @@ required-features = ["dist-server"]
 anyhow = "1.0"
 ar = { version = "0.8", optional = true }
 atty = "^0.2.6"
-base64 = { version = "0.11.0", features = ["std"] }
+base64 = { version = "0.13.0", features = ["std"] }
 bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
