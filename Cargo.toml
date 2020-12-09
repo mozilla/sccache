@@ -54,7 +54,7 @@ memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.2.5"
 openssl = { version = "0.10", optional = true }
-rand = "0.5"
+rand = "0.7"
 redis = { version = "0.17", optional = true }
 regex = "1"
 reqwest = { version = "0.9.11", optional = true }

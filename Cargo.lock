@@ -2525,7 +2525,7 @@ dependencies = [
  "number_prefix",
  "openssl",
  "predicates",
- "rand 0.5.6",
+ "rand 0.7.3",
  "redis",
  "regex",
  "reqwest",
