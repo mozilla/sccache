@@ -382,7 +382,7 @@ impl DistSystem {
         let server =
             dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
                 .unwrap();
-        let pid = match nix::unistd::fork().unwrap() {
+        let pid = match unsafe { nix::unistd::fork() }.unwrap() {
             ForkResult::Parent { child } => {
                 self.server_pids.push(child);
                 child
