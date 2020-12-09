@@ -35,7 +35,7 @@ use filetime::FileTime;
 use futures::Future as _;
 use futures_03::executor::ThreadPool;
 use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
-use number_prefix::{binary_prefix, Prefixed, Standalone};
+use number_prefix::NumberPrefix;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -1507,9 +1507,11 @@ impl ServerInfo {
             ("Max cache size", &self.max_cache_size),
         ] {
             if let Some(val) = *val {
-                let (val, suffix) = match binary_prefix(val as f64) {
-                    Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
-                    Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
+                let (val, suffix) = match NumberPrefix::binary(val as f64) {
+                    NumberPrefix::Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
+                    NumberPrefix::Prefixed(prefix, n) => {
+                        (format!("{:.0}", n), format!("{}B", prefix))
+                    }
                 };
                 println!(
                     "{:<name_width$} {:>stat_width$} {}",
