@@ -4,10 +4,7 @@ matrix:
   include:
     # OS compat
     - os: linux
-    # As of this writing, stable Rust (1.44.0) and the OS X version on TravisCI
-    # do not work well together.
     - os: osx
-      rust: 1.43.1
 
     # rustc version compat
     - rust: 1.42.0 # oldest supported version, keep in sync with README.md
