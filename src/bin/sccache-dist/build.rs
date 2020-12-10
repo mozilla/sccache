@@ -813,7 +813,7 @@ impl DockerBuilder {
             env.push_str(&v);
             cmd.arg("-e").arg(env);
         }
-        let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
+        let shell_cmd = "cd \"$1\" && shift && exec \"$@\"";
         cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
         cmd.arg(&executable);
         cmd.arg(cwd);
