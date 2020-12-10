@@ -565,6 +565,7 @@ pub fn parse_arguments(
                 Some(DiagnosticsColor(_))
                 | Some(DiagnosticsColorFlag)
                 | Some(NoDiagnosticsColorFlag)
+                | Some(Arch(_))
                 | Some(PassThrough(_))
                 | Some(PassThroughPath(_)) => &mut common_args,
 
