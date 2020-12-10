@@ -1223,6 +1223,25 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_multiple_arch() {
+        match parse_arguments_(
+            stringvec!["-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+
+        match parse_arguments_(
+            stringvec!["-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+    }
+
+    #[test]
     fn at_signs() {
         let td = tempfile::Builder::new()
             .prefix("sccache")
