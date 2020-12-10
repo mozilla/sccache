@@ -88,14 +88,14 @@ fn test_rust_cargo_cmd(cmd: &str) {
     ];
     Command::new(&cargo)
         .args(&["clean"])
-        .envs(envs.iter().map(|v| *v))
+        .envs(envs.iter().copied())
         .current_dir(&crate_dir)
         .assert()
         .success();
     // Now build the crate with cargo.
     Command::new(&cargo)
         .args(&[cmd, "--color=never"])
-        .envs(envs.iter().map(|v| *v))
+        .envs(envs.iter().copied())
         .current_dir(&crate_dir)
         .assert()
         .stderr(predicates::str::contains("\x1b[").from_utf8().not())
@@ -103,13 +103,13 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // Clean it so we can build it again.
     Command::new(&cargo)
         .args(&["clean"])
-        .envs(envs.iter().map(|v| *v))
+        .envs(envs.iter().copied())
         .current_dir(&crate_dir)
         .assert()
         .success();
     Command::new(&cargo)
         .args(&[cmd, "--color=always"])
-        .envs(envs.iter().map(|v| *v))
+        .envs(envs.iter().copied())
         .current_dir(&crate_dir)
         .assert()
         .stderr(predicates::str::contains("\x1b[").from_utf8())
