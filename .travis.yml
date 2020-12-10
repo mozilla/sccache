@@ -15,11 +15,11 @@ matrix:
 
     # deployments
     - env: DEPLOY=1 TARGET=x86_64-apple-darwin OPENSSL_STATIC=yes
-      script: cargo build --release --target $TARGET --features=all
+      script: cargo build --release --target $TARGET
       os: osx
     - env: DEPLOY=1 TARGET=x86_64-unknown-linux-musl OPENSSL_DIR=$HOME/openssl-musl
       before_script: ./scripts/travis-musl-openssl.sh
-      script: cargo build --release --target $TARGET --features=all
+      script: cargo build --release --target $TARGET
       addons:
         apt:
           packages:
@@ -34,11 +34,11 @@ before_script:
   - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server"; fi
 
 script:
-  - cargo build --verbose --features="all ${EXTRA_FEATURES}" || exit 1
+  - cargo build --verbose --features="${EXTRA_FEATURES}" || exit 1
   - RUST_BACKTRACE=1 cargo test --all --verbose --no-default-features --features="${EXTRA_FEATURES}" 
-  - RUST_BACKTRACE=1 cargo test --all --verbose --features="all ${EXTRA_FEATURES}"
+  - RUST_BACKTRACE=1 cargo test --all --verbose --features="${EXTRA_FEATURES}"
   # Requires PR #321
-  #- if [[ "${DIST_SCCACHE}" = "1" ]]; then RUST_BACKTRACE=1 cargo test --all --verbose --features="all dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1; fi
+  #- if [[ "${DIST_SCCACHE}" = "1" ]]; then RUST_BACKTRACE=1 cargo test --all --verbose --features="dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1; fi
 
 before_deploy:
   - "./scripts/prep_deploy.sh"

@@ -120,10 +120,10 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--features=all|s3|redis|gcs|memcached|azure]
+cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure]
 ```
 
-By default, `sccache` supports a local disk cache and S3. Use the `--features` flag to build `sccache` with support for other storage options. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
 ### Building portable binaries
 
