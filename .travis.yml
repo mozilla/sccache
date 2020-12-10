@@ -7,6 +7,7 @@ matrix:
     - os: linux
       arch: arm64
     - os: osx
+    - os: windows
 
     # rustc version compat
     - rust: 1.43.0 # oldest supported version, keep in sync with README.md
@@ -48,6 +49,12 @@ matrix:
         apt:
           packages:
           - musl-tools
+    - env: DEPLOY=1 TARGET=x86_64-pc-windows-msvc RUSTFLAGS=-Ctarget-feature=+crt-static EXE_SUFFIX=.exe
+      before_script:
+        - choco install activeperl
+        - export PATH=/c/Perl64/bin:$PATH
+      script: cargo build --release --target $TARGET --features=openssl/vendored
+      os: windows
   allow_failures:
     - rust: nightly
 

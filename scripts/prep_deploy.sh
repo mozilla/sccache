@@ -2,7 +2,7 @@
 
 name="sccache$SUFFIX-$TRAVIS_TAG-$TARGET"
 mkdir $name
-cp target/$TARGET/release/sccache$SUFFIX $name/
+cp target/$TARGET/release/sccache$SUFFIX$EXE_SUFFIX $name/
 cp README.md LICENSE $name/
 tar czvf $name.tar.gz $name
 
