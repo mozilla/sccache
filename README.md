@@ -193,6 +193,13 @@ the container for you - you'll need to do that yourself.
 
 ---
 
+Overwriting the cache
+---------------------
+
+In situations where the cache contains broken build artifacts, it can be necessary to overwrite the contents in the cache. That can be achieved by setting the `SCCACHE_RECACHE` environment variable.
+
+---
+
 Debugging
 ---------
 
