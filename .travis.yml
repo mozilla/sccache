@@ -11,9 +11,10 @@ matrix:
     # rustc version compat
     - rust: 1.43.0 # oldest supported version, keep in sync with README.md
     - rust: 1.43.0
-      env: DIST_SCCACHE=1
+      env: EXTRA_FEATURES="dist-server openssl/vendored"
     - rust: beta
     - rust: nightly
+      env: EXTRA_FEATURES="unstable"
 
     # deployments
     - env: DEPLOY=1 TARGET=x86_64-apple-darwin
@@ -44,16 +45,13 @@ matrix:
     - rust: nightly
 
 before_script:
-  - export EXTRA_FEATURES=
   - if [[ "${TRAVIS_RUST_VERSION}" = "stable" ]]; then rustup component add rustfmt && cargo fmt -- --check; fi
-  - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES unstable"; fi
-  - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server openssl/vendored"; fi
 
 script:
   - cargo build --verbose --features="${EXTRA_FEATURES}" || exit 1
   - RUST_BACKTRACE=1 cargo test --all --verbose --no-default-features --features="${EXTRA_FEATURES}" 
   - RUST_BACKTRACE=1 cargo test --all --verbose --features="${EXTRA_FEATURES}"
-  - if [[ "${DIST_SCCACHE}" = "1" ]]; then RUST_BACKTRACE=1 cargo test --all --verbose --features="dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1; fi
+  - case "${EXTRA_FEATURES}" in *dist-server*) RUST_BACKTRACE=1 cargo test --all --verbose --features="dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1 ;; esac
 
 before_deploy:
   - "./scripts/prep_deploy.sh"
