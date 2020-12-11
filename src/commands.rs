@@ -84,7 +84,9 @@ fn run_server_process() -> Result<ServerStartup> {
     let mut runtime = Runtime::new()?;
     let listener = tokio_uds::UnixListener::bind(&socket_path)?;
     let exe_path = env::current_exe()?;
-    let _child = process::Command::new(exe_path)
+    let workdir = exe_path.parent().expect("executable path has no parent?!");
+    let _child = process::Command::new(&exe_path)
+        .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
@@ -209,6 +211,13 @@ fn run_server_process() -> Result<ServerStartup> {
         v.push(0);
         v
     };
+    let workdir = exe_path
+        .parent()
+        .expect("executable path has no parent?!")
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0u16))
+        .collect::<Vec<u16>>();
 
     // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
     //       standard library's `Command` type and then use that instead.
@@ -229,7 +238,7 @@ fn run_server_process() -> Result<ServerStartup> {
             FALSE,
             CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             envp.as_mut_ptr() as LPVOID,
-            ptr::null(),
+            workdir.as_ptr(),
             &mut si,
             &mut pi,
         ) == TRUE
