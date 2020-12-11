@@ -33,6 +33,13 @@ matrix:
         apt:
           packages:
           - musl-tools
+    - env: DEPLOY=1 TARGET=x86_64-unknown-linux-musl SUFFIX=-dist
+      before_script: rustup target add x86_64-unknown-linux-musl
+      script: cargo build --release --target $TARGET --no-default-features --features="openssl/vendored dist-server"
+      addons:
+        apt:
+          packages:
+          - musl-tools
     - env: DEPLOY=1 TARGET=aarch64-unknown-linux-musl CC_aarch64_unknown_linux_musl=musl-gcc
       before_script: rustup target add aarch64-unknown-linux-musl
       script: cargo build --release --target $TARGET --features=openssl/vendored
