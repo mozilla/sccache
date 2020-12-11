@@ -43,6 +43,18 @@ for:
         RELEASE: --release
         RUSTFLAGS: -Ctarget-feature=+crt-static
 
+  after_build:
+    - ps: |
+          $NAME = "sccache-${env:APPVEYOR_REPO_TAG_NAME}-${env:TARGET}"
+          New-Item -Path $NAME -ItemType directory
+          Copy-Item target/release/sccache.exe "${NAME}/"
+          Copy-Item LICENSE "${NAME}/"
+          Copy-Item README.md "${NAME}/"
+          7z a -ttar "${NAME}.tar" "${NAME}"
+          7z a "${NAME}.tar.gz" "${NAME}.tar"
+          (Get-FileHash "${NAME}.tar.gz").Hash | Out-File "${NAME}.tar.gz.sha256" -NoNewline
+          Push-AppveyorArtifact "${NAME}.tar.gz"
+          Push-AppveyorArtifact "${NAME}.tar.gz.sha256"
 -
   branches:
     only:
