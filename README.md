@@ -85,7 +85,8 @@ Note that you need to use cargo 1.40 or newer for this to work.
 Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 
 ```bash
-RUSTC_WRAPPER=/path/to/sccache cargo build
+export RUSTC_WRAPPER=/path/to/sccache
+cargo build
 ```
 
 sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
