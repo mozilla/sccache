@@ -44,10 +44,10 @@ matrix:
     - rust: nightly
 
 before_script:
-  - export EXTRA_FEATURES=openssl/vendored
+  - export EXTRA_FEATURES=
   - if [[ "${TRAVIS_RUST_VERSION}" = "stable" ]]; then rustup component add rustfmt && cargo fmt -- --check; fi
   - if [[ "${TRAVIS_RUST_VERSION}" = "nightly" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES unstable"; fi
-  - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server"; fi
+  - if [[ "${DIST_SCCACHE}" = "1" ]]; then export EXTRA_FEATURES="$EXTRA_FEATURES dist-client dist-server openssl/vendored"; fi
 
 script:
   - cargo build --verbose --features="${EXTRA_FEATURES}" || exit 1
