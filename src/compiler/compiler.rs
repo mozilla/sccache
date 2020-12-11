@@ -992,14 +992,17 @@ where
 {
     trace!("detect_c_compiler");
 
-    //NVCC needs to be first as msvc, clang, or gcc could
-    //be the underlying host compiler for nvcc
+    // NVCC needs to be first as msvc, clang, or gcc could
+    // be the underlying host compiler for nvcc
+    // Both clang and clang-cl define _MSC_VER on Windows, so we first
+    // check for MSVC, then check whether _MT is defined, which is the
+    // difference between clang and clang-cl.
     let test = b"#if defined(__NVCC__)
 nvcc
-#elif defined(_MSC_VER) && defined(__clang__)
-msvc-clang
-#elif defined(_MSC_VER)
+#elif defined(_MSC_VER) && !defined(__clang__)
 msvc
+#elif defined(_MSC_VER) && defined(_MT)
+msvc-clang
 #elif defined(__clang__) && defined(__cplusplus)
 clang++
 #elif defined(__clang__)
