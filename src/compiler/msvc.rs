@@ -254,7 +254,7 @@ macro_rules! msvc_args {
 msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("?", SuppressCompilation),
     msvc_flag!("C", PassThrough), // Ignored unless a preprocess-only flag is specified.
-    msvc_take_arg!("D", OsString, Concatenated, PreprocessorArgument),
+    msvc_take_arg!("D", OsString, CanBeSeparated, PreprocessorArgument),
     msvc_flag!("E", SuppressCompilation),
     msvc_take_arg!("EH", OsString, Concatenated, PassThroughWithSuffix), // /EH[acsr\-]+ - TODO: use a regex?
     msvc_flag!("EP", SuppressCompilation),
