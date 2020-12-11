@@ -16,10 +16,10 @@ install:
 - cargo -V
 
 build_script:
-- cmd: cargo build %RELEASE% --verbose --features="all %EXTRA_FEATURES%"
+- cmd: cargo build %RELEASE% --verbose --features="openssl/vendored %EXTRA_FEATURES%"
 
 test_script:
-- cmd: cargo test --all %RELEASE% --verbose --features="all %EXTRA_FEATURES%"
+- cmd: cargo test --all %RELEASE% --verbose --features="openssl/vendored %EXTRA_FEATURES%"
 
 for:
 
@@ -41,6 +41,7 @@ for:
       - channel: stable
         target: x86_64-pc-windows-msvc
         RELEASE: --release
+        RUSTFLAGS: -Ctarget-feature=+crt-static
 
 -
   branches:
@@ -51,6 +52,7 @@ for:
     channel: stable
     target: x86_64-pc-windows-msvc
     RELEASE: --release
+    RUSTFLAGS: -Ctarget-feature=+crt-static
 
   before_deploy:
     - ps: |
