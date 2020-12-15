@@ -521,7 +521,7 @@ pub fn parse_arguments(
                     .iter_os_strings(),
             ),
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 common_args.extend(
                     arg.normalize(NormalizedDisposition::Concatenated)
                         .iter_os_strings(),
@@ -574,7 +574,7 @@ pub fn parse_arguments(
                     &mut common_args
                 }
                 Some(ExtraHashFile(path)) => {
-                    extra_hash_files.push(path.clone());
+                    extra_hash_files.push(cwd.join(path));
                     &mut common_args
                 }
                 Some(PreprocessorArgumentFlag)
@@ -884,14 +884,13 @@ fn generate_compile_commands(
 mod test {
     use super::*;
     use crate::compiler::*;
-    use crate::env;
     use crate::mock_command::*;
     use crate::test::utils::*;
     use futures::Future;
     use futures_03::executor::ThreadPool;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
-        super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)
+        super::parse_arguments(&arguments, &std::env::current_dir().unwrap(), false)
     }
 
     #[test]
@@ -1331,6 +1330,9 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], common_args);
-        assert_eq!(ovec!["list.txt"], extra_hash_files);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("list.txt")],
+            extra_hash_files
+        );
     }
 }
