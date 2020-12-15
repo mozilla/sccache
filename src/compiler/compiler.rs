@@ -330,63 +330,72 @@ where
         match lookup {
             CacheLookupResult::Success(compile_result, output) => Ok((compile_result, output)),
             CacheLookupResult::Miss(miss_type) => {
-                // Cache miss, so compile it.
+
+                let (tx, rx) = oneshot::channel();
+
                 let start = Instant::now();
+
                 let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
-                    dist_client,
-                    creator,
-                    cwd,
-                    compilation,
-                    weak_toolchain_key,
-                    out_pretty2.clone(),
-                )
-                .compat()
-                .await?;
-
-                let duration = start.elapsed();
-                if !compiler_result.status.success() {
-                    debug!(
-                        "[{}]: Compiled but failed, not storing in cache",
-                        out_pretty2
-                    );
-                    return Ok((CompileResult::CompileFailed, compiler_result));
-                }
-                if cacheable != Cacheable::Yes {
-                    // Not cacheable
-                    debug!("[{}]: Compiled but not cacheable", out_pretty2);
-                    return Ok((CompileResult::NotCacheable, compiler_result));
-                }
-                debug!(
-                    "[{}]: Compiled in {}, storing in cache",
-                    out_pretty2,
-                    fmt_duration_as_secs(&duration)
-                );
-                let entry = CacheWrite::from_objects(outputs, &pool)
+                        dist_client,
+                        creator,
+                        cwd,
+                        compilation,
+                        weak_toolchain_key,
+                        out_pretty2.clone(),
+                    )
                     .compat()
-                    .await
-                    .context("failed to zip up compiler outputs")?;
-                let o = out_pretty2.clone();
+                    .await?;
 
-                entry.put_stdout(&compiler_result.stdout)?;
-                entry.put_stderr(&compiler_result.stderr)?;
+                pool.spawn_with_handle(async move {
+                    // Cache miss, so compile it.
+                    let duration = start.elapsed();
+                    if !compiler_result.status.success() {
+                        debug!(
+                            "[{}]: Compiled but failed, not storing in cache",
+                            out_pretty2
+                        );
+                        return Ok((CompileResult::CompileFailed, compiler_result));
+                    }
+                    if cacheable != Cacheable::Yes {
+                        // Not cacheable
+                        debug!("[{}]: Compiled but not cacheable", out_pretty2);
+                        return Ok((CompileResult::NotCacheable, compiler_result));
+                    }
+                    debug!(
+                        "[{}]: Compiled in {}, storing in cache",
+                        out_pretty2,
+                        fmt_duration_as_secs(&duration)
+                    );
+                    let entry = CacheWrite::from_objects(outputs, &pool)
+                        .compat()
+                        .await
+                        .context("failed to zip up compiler outputs")?;
+                    let o = out_pretty2.clone();
 
-                // Try to finish storing the newly-written cache
-                // entry. We'll get the result back elsewhere.
+                    entry.put_stdout(&compiler_result.stdout)?;
+                    entry.put_stderr(&compiler_result.stderr)?;
 
-                let key = key.clone();
-                let storage = storage.clone();
-                let res = storage.put(&key, entry).await;
-                match res {
-                    Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
-                    Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
-                }
-                res.map(|duration| CacheWriteInfo {
-                    object_file_pretty: out_pretty2,
-                    duration,
-                });
+                    // Try to finish storing the newly-written cache
+                    // entry. We'll get the result back elsewhere.
+
+                    let key = key.clone();
+                    let storage = storage.clone();
+                    let res = storage.put(&key, entry).await;
+                    match res {
+                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
+                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
+                    }
+
+                    let write_info = CacheWriteInfo {
+                        object_file_pretty: out_pretty2,
+                        duration,
+                    };
+                    tx.send(tx)?;
+                    Ok(())
+                })?;
 
                 Ok((
-                    CompileResult::CacheMiss(miss_type, dist_type, duration, future),
+                    CompileResult::CacheMiss(miss_type, dist_type, duration, rx),
                     compiler_result,
                 ))
             }
@@ -453,10 +462,7 @@ where
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
         .context("Failed to generate compile commands");
-    let (compile_cmd, dist_compile_cmd, cacheable) = match compile_commands {
-        Ok(cmds) => cmds,
-        Err(e) => return f_err(e),
-    };
+    let (compile_cmd, dist_compile_cmd, cacheable) = compile_commands?;
 
     let dist_client = match dist_client {
         Ok(Some(dc)) => dc,
@@ -465,7 +471,6 @@ where
 
             return compile_cmd
                 .execute(&creator)
-                .compat()
                 .await
                 .map(move |o| (cacheable, DistType::NoDist, o));
         }
@@ -482,131 +487,114 @@ where
     let local_executable = compile_cmd.executable.clone();
     let local_executable2 = local_executable.clone();
 
-    Box::new(future::result(dist_compile_cmd.context("Could not create distributed compile command"))
-        .and_then(move |dist_compile_cmd| {
+    match dist_compile_cmd.context("Could not create distributed compile command") {
+        Ok(dist_compile_cmd) => {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
                 .map(|(_key, path)| path_transformer.as_dist_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .context("Failed to adapt an output path for distributed compile")?;
-            compilation.into_dist_packagers(path_transformer)
-                .map(|packagers| (dist_compile_cmd, packagers, dist_output_paths))
-        })
-        .and_then(move |(mut dist_compile_cmd, (inputs_packager, toolchain_packager, outputs_rewriter), dist_output_paths)| {
+            let (mut dist_compile_cmd, (inputs_packager, toolchain_packager, outputs_rewriter), dist_output_paths) = compilation.into_dist_packagers(path_transformer)?;
+
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
-            dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager)
-                .and_then(|(dist_toolchain, maybe_dist_compile_executable)| {
-                    let mut tc_archive = None;
-                    if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
-                        dist_compile_cmd.executable = dist_compile_executable;
-                        tc_archive = Some(archive_path);
-                    }
-                    Ok((dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths, tc_archive))
-                })
-        })
-        .and_then(move |(dist_client, dist_compile_cmd, dist_toolchain, inputs_packager, outputs_rewriter, dist_output_paths, tc_archive)| {
+            let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).await?;
+            let mut tc_archive = None;
+            if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
+                dist_toolchain.executable = dist_compile_executable;
+                tc_archive = Some(archive_path);
+            }
+
             debug!("[{}]: Requesting allocation", compile_out_pretty3);
-            dist_client.do_alloc_job(dist_toolchain.clone())
-                .and_then(move |jares| {
-                    let alloc = match jares {
-                        dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
-                            debug!("[{}]: Sending toolchain {} for job {}",
-                                compile_out_pretty3, dist_toolchain.archive_id, job_alloc.job_id);
-                            Box::new(dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain)
-                                .and_then(move |res| {
-                                    match res {
-                                        dist::SubmitToolchainResult::Success => Ok(job_alloc),
-                                        dist::SubmitToolchainResult::JobNotFound =>
-                                            bail!("Job {} not found on server", job_alloc.job_id),
-                                        dist::SubmitToolchainResult::CannotCache =>
-                                            bail!("Toolchain for job {} could not be cached by server", job_alloc.job_id),
+            let jares = dist_client.do_alloc_job(dist_toolchain.clone()).await?;
+            let job_alloc = match jares {
+                dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
+                    debug!("[{}]: Sending toolchain {} for job {}",
+                        compile_out_pretty3, dist_toolchain.archive_id, job_alloc.job_id);
+
+                    match dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain).await.map_err(|e| e.context("Could not submit toolchain"))? {
+                        dist::SubmitToolchainResult::Success => Ok(job_alloc),
+                        dist::SubmitToolchainResult::JobNotFound =>
+                            bail!("Job {} not found on server", job_alloc.job_id),
+                        dist::SubmitToolchainResult::CannotCache =>
+                            bail!("Toolchain for job {} could not be cached by server", job_alloc.job_id),
+                    }
+                },
+                dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
+                    Ok(job_alloc),
+                dist::AllocJobResult::Fail { msg } =>
+                    Err(anyhow!("Failed to allocate job").context(msg)),
+            }?;
+            let job_id = job_alloc.job_id;
+            let server_id = job_alloc.server_id;
+            debug!("[{}]: Running job", compile_out_pretty3);
+            let (jres, path_transformer) = dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager).await
+                .map(move |res| ((job_id, server_id), res))
+                .fwith_context(move || format!("could not run distributed compilation job on {:?}", server_id))?;
+
+            let jc = match jres {
+                dist::RunJobResult::Complete(jc) => jc,
+                dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
+            };
+            info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.lens().to_string())).collect::<Vec<_>>());
+            let mut output_paths: Vec<PathBuf> = vec![];
+            macro_rules! try_or_cleanup {
+                ($v:expr) => {{
+                    match $v {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // Do our best to clear up. We may end up deleting a file that we just wrote over
+                            // the top of, but it's better to clear up too much than too little
+                            for local_path in output_paths.iter() {
+                                if let Err(e) = fs::remove_file(local_path) {
+                                    if e.kind() != io::ErrorKind::NotFound {
+                                        warn!("{} while attempting to clear up {}", e, local_path.display())
                                     }
-                                })
-                                .fcontext("Could not submit toolchain"))
-                        },
-                        dist::AllocJobResult::Success { job_alloc, need_toolchain: false } =>
-                            f_ok(job_alloc),
-                        dist::AllocJobResult::Fail { msg } =>
-                            f_err(anyhow!("Failed to allocate job").context(msg)),
-                    };
-                    alloc
-                        .and_then(move |job_alloc| {
-                            let job_id = job_alloc.job_id;
-                            let server_id = job_alloc.server_id;
-                            debug!("[{}]: Running job", compile_out_pretty3);
-                            dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager)
-                                .map(move |res| ((job_id, server_id), res))
-                                .fwith_context(move || format!("could not run distributed compilation job on {:?}", server_id))
-                        })
-                })
-                .and_then(move |((job_id, server_id), (jres, path_transformer))| {
-                    let jc = match jres {
-                        dist::RunJobResult::Complete(jc) => jc,
-                        dist::RunJobResult::JobNotFound => bail!("Job {} not found on server", job_id),
-                    };
-                    info!("fetched {:?}", jc.outputs.iter().map(|&(ref p, ref bs)| (p, bs.lens().to_string())).collect::<Vec<_>>());
-                    let mut output_paths: Vec<PathBuf> = vec![];
-                    macro_rules! try_or_cleanup {
-                        ($v:expr) => {{
-                            match $v {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    // Do our best to clear up. We may end up deleting a file that we just wrote over
-                                    // the top of, but it's better to clear up too much than too little
-                                    for local_path in output_paths.iter() {
-                                        if let Err(e) = fs::remove_file(local_path) {
-                                            if e.kind() != io::ErrorKind::NotFound {
-                                                warn!("{} while attempting to clear up {}", e, local_path.display())
-                                            }
-                                        }
-                                    }
-                                    return Err(e)
-                                },
+                                }
                             }
-                        }};
+                            return Err(e)
+                        },
                     }
+                }};
+            }
 
-                    for (path, output_data) in jc.outputs {
-                        let len = output_data.lens().actual;
-                        let local_path = try_or_cleanup!(path_transformer.to_local(&path)
-                            .with_context(|| format!("unable to transform output path {}", path)));
-                        output_paths.push(local_path);
-                        // Do this first so cleanup works correctly
-                        let local_path = output_paths.last().expect("nothing in vec after push");
+            for (path, output_data) in jc.outputs {
+                let len = output_data.lens().actual;
+                let local_path = try_or_cleanup!(path_transformer.to_local(&path)
+                    .with_context(|| format!("unable to transform output path {}", path)));
+                output_paths.push(local_path);
+                // Do this first so cleanup works correctly
+                let local_path = output_paths.last().expect("nothing in vec after push");
 
-                        let mut file = try_or_cleanup!(File::create(&local_path)
-                            .with_context(|| format!("Failed to create output file {}", local_path.display())));
-                        let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
-                            .with_context(|| format!("Failed to write output to {}", local_path.display())));
+                let mut file = try_or_cleanup!(File::create(&local_path)
+                    .with_context(|| format!("Failed to create output file {}", local_path.display())));
+                let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
+                    .with_context(|| format!("Failed to write output to {}", local_path.display())));
 
-                        assert!(count == len);
-                    }
-                    let extra_inputs = match tc_archive {
-                        Some(p) => vec![p],
-                        None => vec![],
-                    };
-                    try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths, &extra_inputs)
-                        .with_context(|| "failed to rewrite outputs from compile"));
-                    Ok((DistType::Ok(server_id), jc.output.into()))
-                })
-        })
-        .or_else(move |e| {
+                assert!(count == len);
+            }
+            let extra_inputs = tc_archive.into_iter().collect::<Vec<_>>();
+            try_or_cleanup!(outputs_rewriter.handle_outputs(&path_transformer, &output_paths, &extra_inputs)
+                .with_context(|| "failed to rewrite outputs from compile"));
+            Ok((DistType::Ok(server_id), jc.output.into()))
+
+        },
+        Err(e) => {
             if let Some(HttpClientError(_)) = e.downcast_ref::<HttpClientError>() {
-                f_err(e)
+                Err(e)
             } else if let Some(lru_disk_cache::Error::FileTooLarge) = e.downcast_ref::<lru_disk_cache::Error>() {
-                f_err(anyhow!(
+                Err(anyhow!(
                     "Could not cache dist toolchain for {:?} locally.
-                     Increase `toolchain_cache_size` or decrease the toolchain archive size.",
+                    Increase `toolchain_cache_size` or decrease the toolchain archive size.",
                     local_executable2))
             } else {
                 // `{:#}` prints the error and the causes in a single line.
                 let errmsg = format!("{:#}", e);
                 warn!("[{}]: Could not perform distributed compile, falling back to local: {}", compile_out_pretty4, errmsg);
-                Box::new(compile_cmd.execute(&creator).map(|o| (DistType::Error, o)))
+                compile_cmd.execute(&creator).await.map(|o| (DistType::Error, o))
             }
-        })
-        .map(move |(dt, o)| (cacheable, dt, o)).compat().await
-    )
+        }
+    }
+    .map(move |(dt, o)| (cacheable, dt, o))
 }
 
 impl<T: CommandCreatorSync> Clone for Box<dyn CompilerHasher<T>> {
@@ -743,7 +731,7 @@ pub enum CompileResult {
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
     /// being stored in the cache.
-    CacheMiss(MissType, DistType, Duration, Receiver<CacheWriteInfo>),
+    CacheMiss(MissType, DistType, Duration, oneshot::Receiver<CacheWriteInfo>),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
     /// Not in cache, but compilation failed.
@@ -890,7 +878,7 @@ where
             debug!("Found rustc");
 
             let proxy =
-                RustupProxy::find_proxy_executable::<T>(&executable2, "rustup", creator, &env1);
+                RustupProxy::find_proxy_executable::<T>(&executable2, "rustup", creator, &env1).await;
 
             let res = match proxy {
                 Ok(Some(proxy)) => {
@@ -921,8 +909,7 @@ where
                 .map(|(proxy, resolved_compiler_executable)| {
                     (
                         proxy
-                            .map(Box::new)
-                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+                            .map(|x| Box::new(x) as Box<dyn CompilerProxy<T>>),
                         resolved_compiler_executable,
                     )
                 })
@@ -1014,36 +1001,32 @@ diab
         match line {
             "clang" | "clang++" => {
                 debug!("Found {}", line);
-                return Box::new(
+                return
                     CCompiler::new(
                         Clang {
                             clangplusplus: line == "clang++",
                         },
                         executable,
                         &pool,
-                    )
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                );
+                    ).await
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
             }
             "diab" => {
                 debug!("Found diab");
-                return Box::new(
-                    CCompiler::new(Diab, executable, &pool)
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                );
+                return
+                    CCompiler::new(Diab, executable, &pool).await
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
             }
             "gcc" | "g++" => {
                 debug!("Found {}", line);
-                return Box::new(
-                    CCompiler::new(
+                return CCompiler::new(
                         GCC {
                             gplusplus: line == "g++",
                         },
                         executable,
                         &pool,
-                    )
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                );
+                    ).await
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
             }
             "msvc" | "msvc-clang" => {
                 let is_clang = line == "msvc-clang";
@@ -1054,9 +1037,9 @@ diab
                     is_clang,
                     env,
                     &pool,
-                );
-                return Box::new(prefix.and_then(move |prefix| {
-                    trace!("showIncludes prefix: '{}'", prefix);
+                ).await?;
+                trace!("showIncludes prefix: '{}'", prefix);
+                return
                     CCompiler::new(
                         MSVC {
                             includes_prefix: prefix,
@@ -1064,16 +1047,14 @@ diab
                         },
                         executable,
                         &pool,
-                    )
+                    ).await
                     .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
-                }));
             }
             "nvcc" => {
                 debug!("Found NVCC");
-                return Box::new(
-                    CCompiler::new(NVCC, executable, &pool)
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                );
+                return
+                    CCompiler::new(NVCC, executable, &pool).await
+                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
             }
             _ => (),
         }

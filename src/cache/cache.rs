@@ -156,7 +156,7 @@ impl CacheRead {
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        pool.spawn_with_handle(move || {
+        pool.spawn_with_handle(async move {
             for (key, path) in objects {
                 let dir = match path.parent() {
                     Some(d) => d,

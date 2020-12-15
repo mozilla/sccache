@@ -486,7 +486,7 @@ impl GCSCredentialProvider {
         // TODO make this better, and avoid serialized writes
         // TODO by using `futures_util::lock()` instead of `std::sync` primitives.
 
-        let creds = if let Some(mut still_good) = needs_refresh {
+        let creds = if let Some(still_good) = needs_refresh {
             still_good
         } else {
             let credentials = match &self.sa_info {

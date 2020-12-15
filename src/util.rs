@@ -16,9 +16,10 @@ use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
-use futures_03::compat::Future01CompatExt;
+use futures_03::{compat::Future01CompatExt, stream::FuturesUnordered};
 use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
+use futures_03::TryStreamExt;
 use futures_03::task;
 use serde::Serialize;
 use std::convert::TryFrom;
@@ -126,21 +127,25 @@ pub fn hex(bytes: &[u8]) -> String {
     }
 }
 
+
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
 pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    futures_03::join_all(files.iter().map(move |f| Digest::file(f, &pool).compat())).map(
-        move |hashes| {
-            trace!(
-                "Hashed {} files in {}",
-                count,
-                fmt_duration_as_secs(&start.elapsed())
-            );
-            hashes
-        },
-    )
+    let hashes =
+        files
+            .iter()
+            .map(move |f| {
+                Box::pin(Digest::file(f, &pool).compat())
+            }).collect::<FuturesUnordered<_>>();
+    let hashes = hashes.try_collect().await?;
+    trace!(
+        "Hashed {} files in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes)
 }
 
 /// Format `duration` as seconds with a fractional component.
