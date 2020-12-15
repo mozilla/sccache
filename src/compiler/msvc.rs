@@ -230,6 +230,8 @@ ArgData! {
     PassThrough, // Miscellaneous flags that don't prevent caching.
     PassThroughWithPath(PathBuf), // As above, recognised by prefix.
     PassThroughWithSuffix(OsString), // As above, recognised by prefix.
+    Ignore, // The flag is not passed to the compiler.
+    IgnoreWithSuffix(OsString), // As above, recognized by prefix.
     ExtraHashFile(PathBuf),
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
@@ -266,7 +268,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("FC", TooHardFlag), // Use absolute paths in error messages.
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
-    msvc_flag!("FS", TooHardFlag),
+    msvc_flag!("FS", Ignore),
     msvc_take_arg!("FU", PathBuf, CanBeSeparated, TooHardPath),
     msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
@@ -311,9 +313,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("LDd", PassThrough),
     msvc_flag!("MD", PassThrough),
     msvc_flag!("MDd", PassThrough),
-    // MP would normally be TooHardFlag but multiple inputs are not supported.
-    // With a single input, it's fine to passthrough.
-    msvc_take_arg!("MP", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("MP", OsString, Concatenated, IgnoreWithSuffix),
     msvc_flag!("MT", PassThrough),
     msvc_flag!("MTd", PassThrough),
     msvc_flag!("O1", PassThrough),
@@ -492,6 +492,8 @@ pub fn parse_arguments(
             Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
             | Some(ExtraHashFile(_))
+            | Some(Ignore)
+            | Some(IgnoreWithSuffix(_))
             | Some(ExternalIncludePath(_)) => {}
             Some(SuppressCompilation) => {
                 return CompilerArguments::NotCompilation;
@@ -537,6 +539,26 @@ pub fn parse_arguments(
                 arg.normalize(NormalizedDisposition::Separated)
                     .iter_os_strings(),
             ),
+            // We ignore -MP and -FS and never pass them down to the compiler.
+            //
+            // -MP tells the compiler to build with multiple processes and is used
+            // to spread multiple compilations when there are multiple inputs.
+            // Either we have multiple inputs on the command line, and we're going
+            // to bail out and not cache, or -MP is not going to be useful.
+            // -MP also implies -FS.
+            //
+            // -FS forces synchronous access to PDB files via a MSPDBSRV process.
+            // This option is only useful when multiple compiler invocations are going
+            // to share the same PDB file, which is not supported by sccache. So either
+            // -Fd was passed with a pdb that is not shared and sccache is going to
+            // handle the compile, in which case -FS is not needed, or -Fd was not passed
+            // and we're going to bail out and not cache.
+            //
+            // In both cases, the flag is not going to be useful if we are going to cache,
+            // so we just skip them entirely. -FS may also have a side effect of creating
+            // race conditions in which we may try to read the PDB before MSPDBSRC is done
+            // writing it, so we're better off ignoring the flags.
+            Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
             _ => {}
         }
     }
