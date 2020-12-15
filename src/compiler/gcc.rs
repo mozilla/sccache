@@ -342,7 +342,7 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -401,7 +401,7 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
