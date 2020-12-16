@@ -488,19 +488,19 @@ where
     let local_executable2 = local_executable.clone();
 
     match dist_compile_cmd.context("Could not create distributed compile command") {
-        Ok(dist_compile_cmd) => {
+        Ok(mut dist_compile_cmd) => {
             debug!("[{}]: Creating distributed compile request", compile_out_pretty);
             let dist_output_paths = compilation.outputs()
                 .map(|(_key, path)| path_transformer.as_dist_abs(&cwd.join(path)))
                 .collect::<Option<_>>()
                 .context("Failed to adapt an output path for distributed compile")?;
-            let (mut dist_compile_cmd, (inputs_packager, toolchain_packager, outputs_rewriter), dist_output_paths) = compilation.into_dist_packagers(path_transformer)?;
+            let (inputs_packager, toolchain_packager, outputs_rewriter) = compilation.into_dist_packagers(path_transformer)?;
 
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
             let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).await?;
             let mut tc_archive = None;
             if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
-                dist_toolchain.executable = dist_compile_executable;
+                dist_compile_cmd.executable = dist_compile_executable;
                 tc_archive = Some(archive_path);
             }
 
@@ -524,12 +524,13 @@ where
                 dist::AllocJobResult::Fail { msg } =>
                     Err(anyhow!("Failed to allocate job").context(msg)),
             }?;
+            // FIXME something is a bit odd here
             let job_id = job_alloc.job_id;
             let server_id = job_alloc.server_id;
             debug!("[{}]: Running job", compile_out_pretty3);
-            let (jres, path_transformer) = dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager).await
+            let ((job_id, server_id), (jres, path_transformer)) = dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager).await
                 .map(move |res| ((job_id, server_id), res))
-                .fwith_context(move || format!("could not run distributed compilation job on {:?}", server_id))?;
+                .with_context(|| format!("could not run distributed compilation job on {:?}", server_id))?;
 
             let jc = match jres {
                 dist::RunJobResult::Complete(jc) => jc,
@@ -841,7 +842,7 @@ where
 
     // First, see if this looks like rustc.
     let filename = match executable.file_stem() {
-        None => return f_err(anyhow!("could not determine compiler kind")),
+        None => bail!("could not determine compiler kind"),
         Some(f) => f,
     };
     let filename = filename.to_string_lossy().to_lowercase();
@@ -852,25 +853,20 @@ where
         let mut child = creator.clone().new_command_sync(executable);
         child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
-        run_input_output(child, None).compat().await.map(|output| {
-            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-                if stdout.starts_with("rustc ") {
-                    return Some(Ok(stdout));
+        run_input_output(child, None).compat().await
+            .map(|output| {
+                if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+                    if stdout.starts_with("rustc ") {
+                        return Some(Ok(stdout));
+                    }
                 }
-            }
-            Some(Err(ProcessError(output)))
-        })
+                Some(Err(ProcessError(output)))
+            })?
     } else {
-        Ok(None)
-    }?;
+        None
+    };
 
-    let creator1 = creator.clone();
-    let creator2 = creator.clone();
     let executable = executable.to_owned();
-    let executable2 = executable.clone();
-    let env1 = env.to_owned();
-    let env2 = env.to_owned();
-    let env3 = env.to_owned();
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     match rustc_vv {
@@ -878,16 +874,17 @@ where
             debug!("Found rustc");
 
             let proxy =
-                RustupProxy::find_proxy_executable::<T>(&executable2, "rustup", creator, &env1).await;
+                RustupProxy::find_proxy_executable::<T>(&executable, "rustup", creator.clone(), &env).await;
 
-            let res = match proxy {
-                Ok(Some(proxy)) => {
+            let (proxy, resolved_rustc) = match proxy {
+                Ok(Ok(Some(proxy))) => {
                     trace!("Found rustup proxy executable");
                     // take the pathbuf for rustc as resolved by the proxy
-                    match proxy.resolve_proxied_executable(creator1, cwd, &env2).await {
-                        Ok((resolved_path, _time)) => {
-                            trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                            (Some(proxy), resolved_path)
+                    match proxy.resolve_proxied_executable(creator.clone(), cwd, &env).await {
+                        Ok((resolved_compiler_executable, _time)) => {
+                            trace!("Resolved path with rustup proxy {}", &resolved_compiler_executable.display());
+                            let proxy = Box::new(proxy) as Box<dyn CompilerProxy<T>>;
+                            (Some(proxy), resolved_compiler_executable)
                         }
                         Err(e) => {
                             trace!("Could not resolve compiler with rustup proxy: {}", e);
@@ -895,37 +892,28 @@ where
                         }
                     }
                 }
-                Ok(None) => {
+                Ok(Ok(None)) => {
                     trace!("Did not find rustup");
                     (None, executable)
                 }
+                Ok(Err(e)) => {
+                    trace!("Did not find rustup due to {}, compiling without proxy", e);
+                    (None, executable)
+                }
                 Err(e) => {
-                    trace!("Did not find rustup due to {}", e);
+                    trace!("Did not find rustup due to {}, compiling without proxy", e);
                     (None, executable)
                 }
             };
 
-            let (proxy, resolved_rustc): (_, PathBuf) = res
-                .map(|(proxy, resolved_compiler_executable)| {
-                    (
-                        proxy
-                            .map(|x| Box::new(x) as Box<dyn CompilerProxy<T>>),
-                        resolved_compiler_executable,
-                    )
-                })
-                .unwrap_or_else(|_e| {
-                    trace!("Compiling rust without proxy");
-                    (None, executable2)
-                });
-
             Rust::new(
-                creator2,
+                creator,
                 resolved_rustc,
-                &env3,
+                &env,
                 &rustc_verbose_version,
                 dist_archive,
                 pool,
-            )
+            ).await
             .map(|c| {
                 (
                     Box::new(c) as Box<dyn Compiler<T>>,
@@ -933,9 +921,9 @@ where
                 )
             })
         }
-        Some(Err(e)) => Err(e),
+        Some(Err(e)) => Err(e).context("Failed to launch subprocess for compiler determination"),
         None => {
-            let cc = detect_c_compiler(creator, executable, env1.to_vec(), pool).await;
+            let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
             cc.map(|c: Box<dyn Compiler<T>>| (c, None))
         }
     }
