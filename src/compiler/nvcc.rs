@@ -132,12 +132,10 @@ impl CCompilerImpl for NVCC {
         if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
-            Box::new(first.join(second).map(|(f, s)| s))
+            first.join(second).map(|(f, s)| s).compat().await
         } else {
-            Box::new(run_input_output(cmd, None))
+            run_input_output(cmd, None).compat().await
         }
-        .compat()
-        .await
     }
 
     fn generate_compile_commands(

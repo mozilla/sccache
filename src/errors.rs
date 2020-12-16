@@ -101,15 +101,6 @@ where
     }
 }
 
-/// Like `try`, but returns an SFuture instead of a Result.
-macro_rules! ftry {
-    ($e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => return Box::new(futures::future::err(e.into())) as SFuture<_>,
-        }
-    };
-}
 
 pub fn f_ok<T>(t: T) -> SFuture<T>
 where

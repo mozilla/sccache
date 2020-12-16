@@ -80,9 +80,9 @@ pub trait CommandChild {
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
-pub trait RunCommand: fmt::Debug {
+pub trait RunCommand: fmt::Debug + Send {
     /// The type returned by `spawn`.
-    type C: CommandChild + 'static;
+    type C: CommandChild + Send + 'static;
 
     /// Append `arg` to the process commandline.
     fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self;

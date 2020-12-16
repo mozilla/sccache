@@ -28,6 +28,7 @@ use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
 use futures::Future;
 use futures_03::executor::ThreadPool;
+use futures_03::task::SpawnExt as SpawnExt_03;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -358,12 +359,12 @@ impl Rust {
         T: CommandCreatorSync,
     {
         // Taken from Cargo
-        let host = ftry!(rustc_verbose_version
+        let host = rustc_verbose_version
             .lines()
             .find(|l| l.starts_with("host: "))
             .map(|l| &l[6..])
-            .context("rustc verbose version didn't have a line for `host:`"))
-        .to_string();
+            .ok_or_else(|| anyhow!("rustc verbose version didn't have a line for `host:`"))?
+            .to_owned();
 
         // it's fine to use the `executable` directly no matter if proxied or not
         let mut cmd = creator.new_command_sync(&executable);
@@ -400,7 +401,7 @@ impl Rust {
                 libs.push(path);
             };
             libs.sort();
-            Ok((sysroot, libs))
+            Ok::<_, anyhow::Error>((sysroot, libs))
         };
 
         #[cfg(feature = "dist-client")]
@@ -408,13 +409,15 @@ impl Rust {
             let rlib_dep_reader = {
                 let executable = executable.clone();
                 let env_vars = env_vars.to_owned();
-                pool.spawn_with_handle(move || {
-                    Ok(RlibDepReader::new_with_check(executable, &env_vars))
-                })?
+                pool.spawn_fn(move || {
+                    RlibDepReader::new_with_check(executable, &env_vars)
+                }).compat()
             };
 
-            let ((sysroot, libs), rlib_dep_reader) =
+            let (sysroot_and_libs, rlib_dep_reader)=
                 futures_03::join!(sysroot_and_libs, rlib_dep_reader);
+
+            let (sysroot, libs) = sysroot_and_libs.context("Determining sysroot + libs failed")?;
 
             let rlib_dep_reader = match rlib_dep_reader {
                 Ok(r) => Some(Arc::new(r)),
@@ -423,7 +426,7 @@ impl Rust {
                     None
                 }
             };
-            hash_all(&libs, &pool).map(move |digests| Rust {
+            hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
                 sysroot,
@@ -518,23 +521,18 @@ where
 
         let output = run_input_output(child, None)
             .compat()
-            .await
-            .map_err(|e| anyhow!("Failed to execute rustup which rustc: {}", e))?;
+            .await;
+        let output = output.with_context(|| format!("Failed to execute rustup which rustc"))?;
 
         let stdout = String::from_utf8(output.stdout)
-            .map_err(|e| anyhow!("Failed to parse output of rustup which rustc: {}", e))?;
+            .with_context(|| format!("Failed to parse output of rustup which rustc"))?;
 
         let proxied_compiler = PathBuf::from(stdout.trim());
         trace!(
             "proxy: rustup which rustc produced: {:?}",
             &proxied_compiler
         );
-        let attr = fs::metadata(proxied_compiler.as_path()).map_err(|e| {
-            anyhow!(
-                "Failed to obtain metadata of the resolved, true rustc: {}",
-                e
-            )
-        })?;
+        let attr = fs::metadata(proxied_compiler.as_path()).context("Failed to obtain metadata of the resolved, true rustc")?;
         let res = if attr.is_file() {
             Ok(FileTime::from_last_modification_time(&attr))
         } else {
@@ -551,6 +549,8 @@ where
         Box::new((*self).clone())
     }
 }
+
+use futures_03::compat::Future01CompatExt;
 
 impl RustupProxy {
     pub fn new<P>(proxy_executable: P) -> Result<Self>
@@ -627,8 +627,8 @@ impl RustupProxy {
             });
 
         let state = match state {
-            ProxyPath::Candidate(_) => unreachable!("Q.E.D."),
-            ProxyPath::ToBeDiscovered => {
+            Ok(ProxyPath::Candidate(_)) => unreachable!("Q.E.D."),
+            Ok(ProxyPath::ToBeDiscovered) => {
                 // simple check: is there a rustup in the same parent dir as rustc?
                 // that would be the prefered one
                 Ok(
@@ -653,7 +653,7 @@ impl RustupProxy {
                     },
                 )
             }
-            x => Ok(x),
+            x => x,
         };
         let state = match state {
             Ok(ProxyPath::ToBeDiscovered) => {
@@ -685,16 +685,16 @@ impl RustupProxy {
                 // verify the candidate is a rustup
                 let mut child = creator.new_command_sync(proxy_executable.to_owned());
                 child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
-                let output = run_input_output(child, None).compat().await;
+                let output = run_input_output(child, None).compat().await?;
 
                 let stdout = String::from_utf8(output.stdout)
                     .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;
-                if stdout.trim().starts_with("rustup ") {
+                Ok(if stdout.trim().starts_with("rustup ") {
                     trace!("PROXY rustup --version produced: {}", &stdout);
                     Self::new(&proxy_executable).map(Some)
                 } else {
                     Err(anyhow!("Unexpected output or `rustup --version`"))
-                }
+                })
             }
         }
     }

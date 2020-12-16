@@ -22,6 +22,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, SpawnExt};
 use futures::future::Future;
 use futures_03::executor::ThreadPool;
+use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
@@ -100,6 +101,7 @@ impl CCompilerImpl for MSVC {
 fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
 }
+use futures_03::task::SpawnExt as SpawnExt_03;
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
 pub async fn detect_showincludes_prefix<T>(
@@ -115,20 +117,20 @@ where
     let (tempdir, input) =
         write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec())
             .compat()
-            .await;
+            .await?;
 
     let exe = exe.to_os_string();
     let mut creator = creator.clone();
     let pool = pool.clone();
 
     let header = tempdir.path().join("test.h");
-    pool.spawn_with_handle(move || async move {
+    let tempdir = pool.spawn_with_handle(async move {
         let mut file = File::create(&header)?;
         file.write_all(b"/* empty */\n")?;
-        Ok((tempdir, input))
+        Ok::<_,std::io::Error>(tempdir)
     })?
     .await
-    .context("failed to write temporary file")?;
+    .context("Failed to write temporary file")?;
 
     let mut cmd = creator.new_command_sync(&exe);
     // clang.exe on Windows reports the same set of built-in preprocessor defines as clang-cl,

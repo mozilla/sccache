@@ -254,8 +254,8 @@ impl DistClientContainer {
                 "enabled, not connected, will retry".to_string(),
             ),
             DistClientState::Some(cfg, client) => {
-                let runtime = tokio_02::runtime::Runtime::new()?;
-                match runtime.block_on(client.do_get_status()) {
+                let runtime = tokio_02::runtime::Runtime::new().expect("Creating the runtime succeeds");
+                match runtime.block_on(async move { client.do_get_status().compat().await }) {
                     Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
                     Err(_) => DistInfo::NotConnected(
                         cfg.scheduler_url.clone(),
@@ -362,7 +362,8 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                match dist_client.do_get_status().wait() {
+                let mut rt = tokio_02::runtime::Runtime::new().expect("Creating a runtime always works");
+                match rt.block_on(async move { dist_client.do_get_status().compat().await }) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -533,12 +534,15 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                 trace!("incoming connection");
                 tokio_compat::runtime::current_thread::TaskExecutor::current()
                     .spawn_local(Box::new(
-                        Box::pin(service.bind(socket).map_err(|err| {
-                            error!("{}", err);
-                        }))
+                        Box::pin(
+                            service.bind(socket)
+                                .map_err(|err| {
+                                    error!("{}", err);
+                                })
+                        )
                         .compat(),
                     ))
-                    .unwrap();
+                    .expect("Spawning a task with compat executor always works");
                 Ok(())
             }
         });
@@ -1152,7 +1156,7 @@ where
                             }
                             stats.cache_misses.increment(&kind);
                             stats.cache_read_miss_duration += duration;
-                            cache_write = Some(future.compat());
+                            cache_write = Some(future);
                         }
                         CompileResult::NotCacheable => {
                             stats.cache_misses.increment(&kind);
@@ -1220,7 +1224,7 @@ where
             let send = Box::pin(async move { tx.send(Ok(Response::CompileFinished(res))).await });
 
             let me = me.clone();
-            let cache_write = async {
+            let cache_write = async move {
                 if let Some(cache_write) = cache_write {
                     match cache_write.await {
                         Err(e) => {
@@ -1242,11 +1246,12 @@ where
                 Ok(())
             };
 
-            future::try_join(send, cache_write).map(|_| Ok(())).await
+            futures_03::try_join!(send, cache_write);
+            Ok(())
         };
 
         tokio_compat::runtime::current_thread::TaskExecutor::current()
-            .spawn_local(Box::new(Box::pin(task).compat()))
+            .spawn_local(Box::pin(task).compat())
             .unwrap();
     }
 }

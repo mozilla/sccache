@@ -16,7 +16,7 @@ use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures::{future, Future};
-use futures_03::{compat::Future01CompatExt, stream::FuturesUnordered};
+use futures_03::{compat::Future01CompatExt, pin_mut, stream::FuturesUnordered};
 use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
 use futures_03::TryStreamExt;
@@ -139,7 +139,11 @@ pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String
             .map(move |f| {
                 Box::pin(Digest::file(f, &pool).compat())
             }).collect::<FuturesUnordered<_>>();
-    let hashes = hashes.try_collect().await?;
+    let f = hashes.try_collect();
+
+    futures_03::pin_mut!(f);
+
+    let hashes = f.await?;
     trace!(
         "Hashed {} files in {}",
         count,

@@ -238,7 +238,7 @@ where
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
         let cache_status = if cache_control == CacheControl::ForceRecache {
-            Ok(Cache::Recache)
+            Ok(Ok(Cache::Recache))
         } else {
             // let key = key.to_owned();
             // let storage = storage.clone();
@@ -248,7 +248,7 @@ where
             // })))
 
             // first error level is timeout
-            r?
+            r
         };
 
         // Set a maximum time limit for the cache to respond before we forge
@@ -263,7 +263,7 @@ where
             .collect::<HashMap<_, _>>();
 
         let lookup = match cache_status {
-            Ok(Cache::Hit(mut entry)) => {
+            Ok(Ok(Cache::Hit(mut entry))) => {
                 debug!(
                     "[{}]: Cache hit in {}",
                     out_pretty,
@@ -271,7 +271,7 @@ where
                 );
                 let stdout = entry.get_stdout();
                 let stderr = entry.get_stderr();
-                let write = entry.extract_objects(outputs.clone(), &pool).compat().await;
+                let write = entry.extract_objects(outputs.clone(), &pool).await;
                 let output = process::Output {
                     status: exit_status(0),
                     stdout,
@@ -283,14 +283,14 @@ where
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
-                            return Ok(CacheLookupResult::Miss(MissType::CacheReadError));
+                            Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         } else {
-                            return Err(e);
+                            Err(e)?
                         }
                     }
                 }
             }
-            Ok(Cache::Miss) => {
+            Ok(Ok(Cache::Miss)) => {
                 debug!(
                     "[{}]: Cache miss in {}",
                     out_pretty,
@@ -298,7 +298,7 @@ where
                 );
                 Err(CacheLookupResult::Miss(MissType::Normal))
             }
-            Ok(Cache::Recache) => {
+            Ok(Ok(Cache::Recache)) => {
                 debug!(
                     "[{}]: Cache recache in {}",
                     out_pretty,
@@ -306,26 +306,27 @@ where
                 );
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
-            Err(err) => {
-                if err.is_elapsed() {
-                    debug!(
-                        "[{}]: Cache timed out {}",
-                        out_pretty,
-                        fmt_duration_as_secs(&duration)
-                    );
-                    Ok(CacheLookupResult::Miss(MissType::TimedOut))
-                } else {
-                    error!("[{}]: Cache read error: {}", out_pretty, err);
-                    if err.is_inner() {
-                        let err = err.into_inner().unwrap();
-                        for e in err.chain().skip(1) {
-                            error!("[{}] \t{}", out_pretty, e);
-                        }
+            Ok(Err(err)) => {
+                error!("[{}]: Cache read error: {}", out_pretty, err);
+                if err.is_inner() {
+                    let err = err.into_inner().unwrap();
+                    for e in err.chain().skip(1) {
+                        error!("[{}] \t{}", out_pretty, e);
                     }
-                    Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                 }
+                Ok(CacheLookupResult::Miss(MissType::CacheReadError))
+            }
+            Err(err) => {
+                debug!(
+                    "[{}]: Cache timed out {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&duration)
+                );
+                Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
         }?;
+
+        use futures_03::task::SpawnExt as SpawnExt_03;
 
         match lookup {
             CacheLookupResult::Success(compile_result, output) => Ok((compile_result, output)),
@@ -343,7 +344,6 @@ where
                         weak_toolchain_key,
                         out_pretty2.clone(),
                     )
-                    .compat()
                     .await?;
 
                 pool.spawn_with_handle(async move {
@@ -390,7 +390,7 @@ where
                         object_file_pretty: out_pretty2,
                         duration,
                     };
-                    tx.send(tx)?;
+                    tx.send(write_info)?;
                     Ok(())
                 })?;
 
@@ -497,7 +497,7 @@ where
             let (inputs_packager, toolchain_packager, outputs_rewriter) = compilation.into_dist_packagers(path_transformer)?;
 
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
-            let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).await?;
+            let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).compat().await?;
             let mut tc_archive = None;
             if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
                 dist_compile_cmd.executable = dist_compile_executable;
@@ -505,13 +505,13 @@ where
             }
 
             debug!("[{}]: Requesting allocation", compile_out_pretty3);
-            let jares = dist_client.do_alloc_job(dist_toolchain.clone()).await?;
+            let jares  = dist_client.do_alloc_job(dist_toolchain.clone()).compat().await?;
             let job_alloc = match jares {
                 dist::AllocJobResult::Success { job_alloc, need_toolchain: true } => {
                     debug!("[{}]: Sending toolchain {} for job {}",
                         compile_out_pretty3, dist_toolchain.archive_id, job_alloc.job_id);
 
-                    match dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain).await.map_err(|e| e.context("Could not submit toolchain"))? {
+                    match dist_client.do_submit_toolchain(job_alloc.clone(), dist_toolchain).compat().await.map_err(|e| e.context("Could not submit toolchain"))? {
                         dist::SubmitToolchainResult::Success => Ok(job_alloc),
                         dist::SubmitToolchainResult::JobNotFound =>
                             bail!("Job {} not found on server", job_alloc.job_id),
@@ -528,7 +528,7 @@ where
             let job_id = job_alloc.job_id;
             let server_id = job_alloc.server_id;
             debug!("[{}]: Running job", compile_out_pretty3);
-            let ((job_id, server_id), (jres, path_transformer)) = dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager).await
+            let ((job_id, server_id), (jres, path_transformer)) = dist_client.do_run_job(job_alloc, dist_compile_cmd, dist_output_paths, inputs_packager).compat().await
                 .map(move |res| ((job_id, server_id), res))
                 .with_context(|| format!("could not run distributed compilation job on {:?}", server_id))?;
 
@@ -972,11 +972,10 @@ diab
 
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
-    let child = cmd.spawn().compat().await;
+    let child = cmd.spawn().compat().await?;
     let output = child
-        .wait_with_output()
-        .context("failed to read child output")
-        .map(|e| e)?;
+        .wait_with_output().compat().await
+        .context("failed to read child output")?;
 
     drop(tempdir);
 
@@ -1054,7 +1053,8 @@ diab
 
         bail!(stderr.into_owned())
     }
-    Ok(())
+    debug!("compiler status: {}", output.status);
+    bail!("Zero lines in stdout output of compiler")
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
@@ -1857,13 +1857,13 @@ mod test_dist {
     }
     #[async_trait::async_trait]
     impl dist::Client for ErrorPutToolchainClient {
-        fn do_alloc_job(&self, _: Toolchain) -> Result<AllocJobResult> {
+        fn do_alloc_job(&self, _: Toolchain) -> SFuture<AllocJobResult> {
             unreachable!()
         }
-        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             unreachable!()
         }
-        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> Result<SubmitToolchainResult> {
+        fn do_submit_toolchain(&self, _: JobAlloc, _: Toolchain) -> SFuture<SubmitToolchainResult> {
             unreachable!()
         }
         fn do_run_job(
@@ -1872,7 +1872,7 @@ mod test_dist {
             _: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> Result<(RunJobResult, PathTransformer)> {
+        ) -> SFuture<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
         fn put_toolchain(
@@ -1880,7 +1880,7 @@ mod test_dist {
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             f_err(anyhow!("put toolchain failure"))
         }
         fn rewrite_includes_only(&self) -> bool {
@@ -1959,7 +1959,7 @@ mod test_dist {
 
     #[async_trait::async_trait]
     impl dist::Client for ErrorSubmitToolchainClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
+        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
             Ok(AllocJobResult::Success {
@@ -1971,33 +1971,33 @@ mod test_dist {
                 need_toolchain: true,
             })
         }
-        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             unreachable!()
         }
-        async fn do_submit_toolchain(
+        fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> Result<SubmitToolchainResult> {
+        ) -> SFuture<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
             bail!("submit toolchain failure")
         }
-        async fn do_run_job(
+        fn do_run_job(
             &self,
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
             _: Box<dyn pkg::InputsPackager>,
-        ) -> Result<(RunJobResult, PathTransformer)> {
+        ) -> SFuture<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
-        async fn put_toolchain(
+        fn put_toolchain(
             &self,
             _: &Path,
             _: &str,
             _: Box<dyn pkg::ToolchainPackager>,
-        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {

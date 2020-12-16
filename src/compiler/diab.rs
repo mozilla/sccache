@@ -63,7 +63,7 @@ impl CCompilerImpl for Diab {
     where
         T: CommandCreatorSync,
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist)
+        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist).await
     }
 
     fn generate_compile_commands(
@@ -284,6 +284,8 @@ where
         color_mode: ColorMode::Auto,
     })
 }
+
+use futures_03::compat::Future01CompatExt;
 
 pub async fn preprocess<T>(
     creator: &T,
