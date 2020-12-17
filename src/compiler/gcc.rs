@@ -64,17 +64,19 @@ impl CCompilerImpl for GCC {
     where
         T: CommandCreatorSync,
     {
-        preprocess(
-            creator,
-            executable,
-            parsed_args,
-            cwd,
-            env_vars,
-            may_dist,
-            self.kind(),
-            rewrite_includes_only,
-        )
-        .await
+        let fut = async move {
+            preprocess(
+                creator,
+                executable,
+                parsed_args,
+                cwd,
+                env_vars,
+                may_dist,
+                self.kind(),
+                rewrite_includes_only,
+            ).await
+        };
+        fut.await
     }
 
     fn generate_compile_commands(

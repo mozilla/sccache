@@ -1212,12 +1212,13 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_alloc_job(&scheduler_url);
             let mut req = self.client_async.lock().unwrap().post(url);
-            req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
 
             let client = self.client.clone();
             let client_async = self.client_async.clone();
             let server_certs = self.server_certs.clone();
             let fut = async move {
+                req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
+
                 let res = bincode_req_fut(req).await?;
                 match res {
                     AllocJobHttpResponse::Success {
@@ -1255,17 +1256,21 @@ mod client {
 
                         alloc_job_res
                     }
-                    AllocJobHttpResponse::Fail { msg } => Ok(AllocJobResult::Fail { msg }),
+                    AllocJobHttpResponse::Fail { msg } => {
+                        Ok(AllocJobResult::Fail { msg })
+                    }
                 }
             };
-            Box::new(futures_03::compat::Compat::new(fut)) as Box<dyn futures::Future<Error=anyhow::Error, Item=AllocJobResult>>
+            Box::new(futures_03::compat::Compat::new(fut)) as SFutureSend<AllocJobResult>
         }
+
         fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
             self.pool.spawn_fn(move || bincode_req(req))
         }
+
         fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,

@@ -192,11 +192,11 @@ impl CacheWrite {
     }
 
     /// Create a new cache entry populated with the contents of `objects`.
-    pub fn from_objects<T>(objects: T, pool: &ThreadPool) -> SFuture<CacheWrite>
+    pub async fn from_objects<T>(objects: T, pool: &ThreadPool) -> Result<CacheWrite>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
+        let handle = pool.spawn_with_handle(async move {
             let mut entry = CacheWrite::new();
             for (key, path) in objects {
                 let mut f = fs::File::open(&path)?;
@@ -206,7 +206,8 @@ impl CacheWrite {
                     .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
             }
             Ok(entry)
-        }))
+        })?;
+        handle.await
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
@@ -262,7 +263,7 @@ impl Default for CacheWrite {
 
 /// An interface to cache storage.
 #[async_trait]
-pub trait Storage {
+pub trait Storage: Send + Sync {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.

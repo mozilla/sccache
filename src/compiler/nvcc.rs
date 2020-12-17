@@ -22,6 +22,7 @@ use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use futures::future::{self, Future};
+use futures_03::compat::Future01CompatExt;
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;
@@ -130,11 +131,15 @@ impl CCompilerImpl for NVCC {
         //Need to chain the dependency generation and the preprocessor
         //to emulate a `proper` front end
         if !parsed_args.dependency_args.is_empty() {
-            let first = run_input_output(dep_before_preprocessor(), None);
-            let second = run_input_output(cmd, None);
-            first.join(second).map(|(f, s)| s).compat().await
+            let first = Box::pin( async move { run_input_output(dep_before_preprocessor(), None).compat().await });
+            let second = Box::pin(async move { run_input_output(cmd, None).compat().await });
+            let (_f, s) = futures_03::try_join!(first, second)?;
+            Ok(s)
         } else {
-            run_input_output(cmd, None).compat().await
+            let fut = Box::pin(async move {
+                run_input_output(cmd, None).compat().await
+            });
+            fut.await
         }
     }
 

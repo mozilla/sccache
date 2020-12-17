@@ -712,7 +712,7 @@ pub trait BuilderIncoming: Send + Sync {
 /////////
 
 // #[async_trait::async_trait]
-pub trait Client {
+pub trait Client: Send {
     // To Scheduler
     fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult>;
     // To Scheduler

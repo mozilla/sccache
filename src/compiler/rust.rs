@@ -230,9 +230,9 @@ where
     // Parse the dep-info file, then hash the contents of those files.
     let pool = pool.clone();
     let cwd = cwd.to_owned();
-    let name2 = crate_name.clone();
+    let name2 = crate_name.to_owned();
     let parsed = pool
-        .spawn_with_handle(|_| {
+        .spawn_with_handle(async move {
             parse_dep_file(&dep_file, &cwd)
                 .with_context(|| format!("Failed to parse dep info for {}", name2))
         })?
@@ -519,10 +519,14 @@ where
             .envs(ref_env(&env))
             .args(&["which", "rustc"]);
 
-        let output = run_input_output(child, None)
-            .compat()
-            .await;
-        let output = output.with_context(|| format!("Failed to execute rustup which rustc"))?;
+        let fut = Box::pin(async move {
+            run_input_output(child, None)
+            .compat().await
+        });
+        let output = fut
+            .await
+            .with_context(|| format!("Failed to execute rustup which rustc"))?;
+
 
         let stdout = String::from_utf8(output.stdout)
             .with_context(|| format!("Failed to parse output of rustup which rustc"))?;

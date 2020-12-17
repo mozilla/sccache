@@ -63,7 +63,10 @@ impl CCompilerImpl for Diab {
     where
         T: CommandCreatorSync,
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist).await
+        let fut = Box::pin(preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist));
+        async move {
+            fut.await
+        }.await
     }
 
     fn generate_compile_commands(

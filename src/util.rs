@@ -133,17 +133,18 @@ pub fn hex(bytes: &[u8]) -> String {
 pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    let hashes =
-        files
-            .iter()
-            .map(move |f| {
-                Box::pin(Digest::file(f, &pool).compat())
-            }).collect::<FuturesUnordered<_>>();
-    let f = hashes.try_collect();
-
-    futures_03::pin_mut!(f);
-
-    let hashes = f.await?;
+    let iter = files
+    .iter()
+    .map(move |f| {
+        Box::pin(async move {
+            Digest::file(f, &pool).compat().await
+        })
+    });
+    let hashes: Vec<Result<String>> = futures_03::future::join_all(iter).await;
+    let hashes: Vec<String> = hashes.into_iter().try_fold(Vec::with_capacity(files.len()), |mut acc, item| -> Result<Vec<String>> {
+        acc.push(item?);
+        Ok(acc)
+    })?;
     trace!(
         "Hashed {} files in {}",
         count,

@@ -906,15 +906,13 @@ where
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
 
             if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                let fut = compiler_proxy
-                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice())
-                    .compat();
-                Box::pin(fut.map(|res: Result<_>| res.ok())) as Pin<Box<dyn Future<Output = _>>>
+                let res = compiler_proxy
+                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice()).await;
+                res.ok()
             } else {
-                Box::pin(async { None })
+                None
             }
-        }
-        .await;
+        };
 
         // use the supplied compiler path as fallback, lookup its modification time too
 

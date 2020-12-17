@@ -33,6 +33,7 @@ use futures::Future;
 use futures_03::channel::oneshot;
 use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
+use futures_03::task::SpawnExt as SpawnExt_03;
 use futures_03::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -255,7 +256,7 @@ where
         // ahead ourselves with a compilation.
 
         // Check the result of the cache lookup.
-        let out_pretty2 = out_pretty.clone();
+        let out_pretty = out_pretty.clone();
         let duration = start.elapsed();
         let outputs = compilation
             .outputs()
@@ -296,7 +297,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                Err(CacheLookupResult::Miss(MissType::Normal))
+                Ok(CacheLookupResult::Miss(MissType::Normal))
             }
             Ok(Ok(Cache::Recache)) => {
                 debug!(
@@ -307,13 +308,7 @@ where
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
             Ok(Err(err)) => {
-                error!("[{}]: Cache read error: {}", out_pretty, err);
-                if err.is_inner() {
-                    let err = err.into_inner().unwrap();
-                    for e in err.chain().skip(1) {
-                        error!("[{}] \t{}", out_pretty, e);
-                    }
-                }
+                error!("[{}]: Cache read error: {:?}", out_pretty, err);
                 Ok(CacheLookupResult::Miss(MissType::CacheReadError))
             }
             Err(err) => {
@@ -326,7 +321,6 @@ where
             }
         }?;
 
-        use futures_03::task::SpawnExt as SpawnExt_03;
 
         match lookup {
             CacheLookupResult::Success(compile_result, output) => Ok((compile_result, output)),
@@ -337,40 +331,44 @@ where
                 let start = Instant::now();
 
                 let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
-                        dist_client,
-                        creator,
-                        cwd,
-                        compilation,
-                        weak_toolchain_key,
-                        out_pretty2.clone(),
-                    )
-                    .await?;
+                    dist_client,
+                    creator,
+                    cwd,
+                    compilation,
+                    weak_toolchain_key,
+                    out_pretty.clone(),
+                )
+                .await?;
 
-                pool.spawn_with_handle(async move {
+                if !compiler_result.status.success() {
+                    debug!(
+                        "[{}]: Compiled but failed, not storing in cache",
+                        out_pretty
+                    );
+                    return Ok((CompileResult::CompileFailed, compiler_result));
+                }
+                if cacheable != Cacheable::Yes {
+                    // Not cacheable
+                    debug!("[{}]: Compiled but not cacheable", out_pretty);
+                    return Ok((CompileResult::NotCacheable, compiler_result));
+                }
+
+                let fut = async move {
+
                     // Cache miss, so compile it.
                     let duration = start.elapsed();
-                    if !compiler_result.status.success() {
-                        debug!(
-                            "[{}]: Compiled but failed, not storing in cache",
-                            out_pretty2
-                        );
-                        return Ok((CompileResult::CompileFailed, compiler_result));
-                    }
-                    if cacheable != Cacheable::Yes {
-                        // Not cacheable
-                        debug!("[{}]: Compiled but not cacheable", out_pretty2);
-                        return Ok((CompileResult::NotCacheable, compiler_result));
-                    }
                     debug!(
                         "[{}]: Compiled in {}, storing in cache",
-                        out_pretty2,
+                        out_pretty,
                         fmt_duration_as_secs(&duration)
                     );
-                    let entry = CacheWrite::from_objects(outputs, &pool)
-                        .compat()
-                        .await
-                        .context("failed to zip up compiler outputs")?;
-                    let o = out_pretty2.clone();
+                    let entry = {
+                        CacheWrite::from_objects(outputs, &pool)
+                            .await
+                        .context("failed to zip up compiler outputs")
+                    }?;
+
+                    let o = out_pretty.clone();
 
                     entry.put_stdout(&compiler_result.stdout)?;
                     entry.put_stderr(&compiler_result.stderr)?;
@@ -382,17 +380,21 @@ where
                     let storage = storage.clone();
                     let res = storage.put(&key, entry).await;
                     match res {
-                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
-                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
+                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty),
+                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty, e),
                     }
 
                     let write_info = CacheWriteInfo {
-                        object_file_pretty: out_pretty2,
+                        object_file_pretty: out_pretty,
                         duration,
                     };
                     tx.send(write_info)?;
                     Ok(())
-                })?;
+                };
+
+                let fut = Box::pin(fut);
+
+                pool.spawn_with_handle(fut);
 
                 Ok((
                     CompileResult::CacheMiss(miss_type, dist_type, duration, rx),
@@ -481,7 +483,7 @@ where
 
     debug!("[{}]: Attempting distributed compilation", out_pretty);
     let compile_out_pretty = out_pretty.clone();
-    let compile_out_pretty2 = out_pretty.clone();
+    let compile_out_pretty = out_pretty.clone();
     let compile_out_pretty3 = out_pretty.clone();
     let compile_out_pretty4 = out_pretty;
     let local_executable = compile_cmd.executable.clone();
@@ -496,7 +498,7 @@ where
                 .context("Failed to adapt an output path for distributed compile")?;
             let (inputs_packager, toolchain_packager, outputs_rewriter) = compilation.into_dist_packagers(path_transformer)?;
 
-            debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty2, local_executable);
+            debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty, local_executable);
             let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).compat().await?;
             let mut tc_archive = None;
             if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
@@ -605,7 +607,7 @@ impl<T: CommandCreatorSync> Clone for Box<dyn CompilerHasher<T>> {
 }
 
 /// An interface to a compiler for actually invoking compilation.
-pub trait Compilation {
+pub trait Compilation: Send {
     /// Given information about a compiler command, generate a command that can
     /// execute the compiler.
     fn generate_compile_commands(

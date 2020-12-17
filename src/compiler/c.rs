@@ -271,30 +271,35 @@ where
         pool: &ThreadPool,
         rewrite_includes_only: bool,
     ) -> Result<HashResult> {
-        let me = *self;
         let CCompilerHasher {
             parsed_args,
             executable,
             executable_digest,
             compiler,
-        } = me;
-        let result = compiler
-            .preprocess(
-                creator,
-                &executable,
-                &parsed_args,
-                &cwd,
-                &env_vars,
-                may_dist,
-                rewrite_includes_only,
-            )
-            .await;
+        } = *self;
+
+        let res = {
+            let compiler = compiler.clone();
+            let fut = compiler
+                .preprocess(
+                    creator,
+                    &executable,
+                    &parsed_args,
+                    &cwd,
+                    &env_vars,
+                    may_dist,
+                    rewrite_includes_only,
+                );
+
+            Box::pin(fut).await
+        };
         let out_pretty = parsed_args.output_pretty().into_owned();
-        let result = result.map_err(move |e| {
+
+        let result = res.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });
-        let out_pretty = parsed_args.output_pretty().into_owned();
+
         let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
         let outputs = parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
