@@ -1,11 +1,11 @@
 use std::io;
-use std::process::Command;
+use tokio_02::process::Command;
 use std::sync::Arc;
 
-use futures::future;
-use futures::prelude::*;
-use futures::sync::mpsc;
-use futures::sync::oneshot;
+use futures_03::future;
+use futures_03::prelude::*;
+use futures_03::channel::mpsc;
+use futures_03::channel::oneshot;
 
 use crate::errors::*;
 
@@ -39,7 +39,7 @@ impl Client {
             (None, None)
         } else {
             let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let mut rx = rx.wait();
+            let mut rx = tokio_02::runtime::Runtime::new().unwrap().block_on(async move { rx.await });
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
@@ -64,18 +64,17 @@ impl Client {
     /// This should be invoked before any "work" is spawned (for whatever the
     /// definition of "work" is) to ensure that the system is properly
     /// rate-limiting itself.
-    pub fn acquire(&self) -> SFuture<Acquired> {
+    pub async fn acquire(&self) -> Result<Acquired> {
         let (helper, tx) = match (self.helper.as_ref(), self.tx.as_ref()) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Box::new(future::ok(Acquired { _token: None })),
+            _ => return Ok(Acquired { _token: None }),
         };
         let (mytx, myrx) = oneshot::channel();
         helper.request_token();
         tx.unbounded_send(mytx).unwrap();
-        Box::new(
-            myrx.fcontext("jobserver helper panicked")
-                .and_then(|t| t.context("failed to acquire jobserver token"))
-                .map(|t| Acquired { _token: Some(t) }),
-        )
+
+        let acquired = rx.await.context("jobserver helper panicked")?
+            .context("failed to acquire jobserver token")?;
+        Ok(Acquired { _token: Some(acquired) })
     }
 }

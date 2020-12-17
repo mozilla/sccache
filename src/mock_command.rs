@@ -52,13 +52,15 @@ use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
+use std::result;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_process::{self, ChildStderr, ChildStdin, ChildStdout, CommandExt};
+use tokio_02::io::{AsyncRead, AsyncWrite};
+use tokio_02::process::{self, ChildStderr, ChildStdin, ChildStdout};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
+#[async_trait::async_trait]
 pub trait CommandChild {
     /// The type of the process' standard input.
     type I: AsyncWrite + Sync + Send + 'static;
@@ -74,12 +76,13 @@ pub trait CommandChild {
     /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
     /// Wait for the process to complete and return its exit status.
-    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>>;
+    async fn wait(self) -> result::Result<ExitStatus, io::Error>;
     /// Wait for the process to complete and return its output.
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>>;
+    async fn wait_with_output(self) -> result::Result<ExitStatus, io::Error>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
+#[async_trait::async_trait]
 pub trait RunCommand: fmt::Debug + Send {
     /// The type returned by `spawn`.
     type C: CommandChild + Send + 'static;
@@ -112,7 +115,7 @@ pub trait RunCommand: fmt::Debug + Send {
     /// Set the process' stderr from `cfg`.
     fn stderr(&mut self, cfg: Stdio) -> &mut Self;
     /// Execute the process and return a process object.
-    fn spawn(&mut self) -> SFuture<Self::C>;
+    async fn spawn(&mut self) -> Result<Self::C>;
 }
 
 /// A trait that provides a means to create objects implementing `RunCommand`.
@@ -141,11 +144,12 @@ pub trait CommandCreatorSync: Clone + 'static + std::marker::Send + std::marker:
 }
 
 pub struct Child {
-    inner: tokio_process::Child,
+    inner: tokio_02::process::Child,
     token: Acquired,
 }
 
 /// Trivial implementation of `CommandChild` for `std::process::Child`.
+#[async_trait::async_trait]
 impl CommandChild for Child {
     type I = ChildStdin;
     type O = ChildStdout;
@@ -161,42 +165,43 @@ impl CommandChild for Child {
         self.inner.stderr().take()
     }
 
-    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
+    async fn wait(self) -> result::Result<ExitStatus, io::Error> {
         let Child { inner, token } = self;
-        Box::new(inner.map(|ret| {
+        inner.status().await.map(|ret| {
             drop(token);
             ret
-        }))
+        })
     }
 
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
+    async fn wait_with_output(self) -> result::Result<Output, io::Error> {
         let Child { inner, token } = self;
-        Box::new(inner.wait_with_output().map(|ret| {
+        inner.wait_with_output().await.map(|ret| {
             drop(token);
             ret
-        }))
+        })
     }
 }
 
 pub struct AsyncCommand {
-    inner: Option<Command>,
+    inner: Option<tokio_02::process::Command>,
     jobserver: Client,
 }
 
 impl AsyncCommand {
     pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
         AsyncCommand {
-            inner: Some(Command::new(program)),
+            inner: Some(tokio_02::process::Command::new(program)),
             jobserver,
         }
     }
 
-    fn inner(&mut self) -> &mut Command {
+    fn inner(&mut self) -> &mut tokio_02::process::Command {
         self.inner.as_mut().expect("can't reuse commands")
     }
 }
 
 /// Trivial implementation of `RunCommand` for `std::process::Command`.
+#[async_trait::async_trait]
 impl RunCommand for AsyncCommand {
     type C = Child;
 
@@ -259,21 +264,22 @@ impl RunCommand for AsyncCommand {
         self.inner().stderr(cfg);
         self
     }
-    fn spawn(&mut self) -> SFuture<Child> {
+    async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
         inner.env_remove("MAKEFLAGS");
         inner.env_remove("MFLAGS");
         inner.env_remove("CARGO_MAKEFLAGS");
         self.jobserver.configure(&mut inner);
-        Box::new(self.jobserver.acquire().and_then(move |token| {
-            let child = inner
-                .spawn_async()
-                .with_context(|| format!("failed to spawn {:?}", inner))?;
-            Ok(Child {
-                inner: child,
-                token,
-            })
-        }))
+
+        let token = self.jobserver.acquire().await?;
+        let child = inner
+            .spawn()
+            .with_context(|| format!("failed to spawn {:?}", inner))?;
+
+        Ok(Child {
+            inner: child,
+            token,
+        })
     }
 }
 
@@ -377,6 +383,7 @@ impl MockChild {
     }
 }
 
+#[async_trait::async_trait]
 impl CommandChild for MockChild {
     type I = io::Cursor<Vec<u8>>;
     type O = io::Cursor<Vec<u8>>;
@@ -392,11 +399,11 @@ impl CommandChild for MockChild {
         self.stderr.take()
     }
 
-    fn wait(mut self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
-        Box::new(future::result(self.wait_result.take().unwrap()))
+    async fn wait(mut self) -> result::Result<ExitStatus,io::Error> {
+        Ok(self.wait_result.take().unwrap())
     }
 
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
+    async fn wait_with_output(self) -> result::Result<Output,io::Error> {
         let MockChild {
             stdout,
             stderr,
@@ -408,7 +415,7 @@ impl CommandChild for MockChild {
             stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
             stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
         });
-        Box::new(future::result(result))
+        result
     }
 }
 
@@ -434,6 +441,7 @@ pub struct MockCommand {
     pub args: Vec<OsString>,
 }
 
+#[async_trait::async_trait]
 impl RunCommand for MockCommand {
     type C = MockChild;
 

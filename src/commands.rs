@@ -35,8 +35,8 @@ use std::path::Path;
 use std::process;
 use strip_ansi_escapes::Writer;
 use tokio_compat::runtime::current_thread::Runtime;
-use tokio_io::io::read_exact;
-use tokio_io::AsyncRead;
+use tokio_02::io::AsyncReadExt;
+use tokio_02::io::AsyncRead;
 use tokio_timer::Timeout;
 use which::which_in;
 
@@ -56,19 +56,19 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-fn read_server_startup_status<R: AsyncRead>(
-    server: R,
-) -> impl Future<Item = ServerStartup, Error = Error> {
+async fn read_server_startup_status<R: AsyncReadExt>(
+    mut server: R,
+) -> Result<ServerStartup> {
     // This is an async equivalent of ServerConnection::read_one_response
-    read_exact(server, [0u8; 4])
-        .map_err(Error::from)
-        .and_then(|(server, bytes)| {
-            let len = BigEndian::read_u32(&bytes);
-            let data = vec![0; len as usize];
-            read_exact(server, data)
-                .map_err(Error::from)
-                .and_then(|(_server, data)| Ok(bincode::deserialize(&data)?))
-        })
+    let mut bytes = [0u8; 4];
+    server.read_exact(&bytes[..]).await?;
+
+    let len = BigEndian::read_u32(&bytes);
+    let data = vec![0; len as usize];
+    server.read_exact( data.as_mut_slice()).await?;
+
+    let s = bincode::deserialize(&data)?;
+    s
 }
 
 /// Re-execute the current executable as a background server, and wait

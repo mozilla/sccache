@@ -290,7 +290,6 @@ where
                     may_dist,
                     rewrite_includes_only,
                 );
-
             Box::pin(fut).await
         };
         let out_pretty = parsed_args.output_pretty().into_owned();

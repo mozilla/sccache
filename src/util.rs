@@ -34,16 +34,23 @@ use std::time::Duration;
 
 use crate::errors::*;
 
+
+#[derive(Debug, thiserror::Error)]
+pub enum UtilError {
+    #[error(transparent)]
+    Spawn(ProcessError),
+}
+
+
 /// Exists for forward compat to make the transition in the future easier
+#[async_trait::async_trait]
 pub trait SpawnExt: task::SpawnExt {
-    fn spawn_fn<F, T>(&self, f: F) -> SFuture<T>
+    async fn spawn_fn<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce() -> Result<T> + std::marker::Send + 'static,
         T: std::marker::Send + 'static,
     {
         self.spawn_with_handle(async move { f() })
-            .map(|f| Box::new(f.compat()) as _)
-            .unwrap_or_else(f_err)
     }
 }
 
@@ -63,7 +70,7 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn file<T>(path: T, pool: &ThreadPool) -> SFuture<String>
+    pub async fn file<T>(path: T, pool: &ThreadPool) -> Result<String>
     where
         T: AsRef<Path>,
     {
@@ -88,12 +95,12 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn reader(path: PathBuf, pool: &ThreadPool) -> SFuture<String> {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
+    pub async fn reader(path: PathBuf, pool: &ThreadPool) -> Result<String> {
+        pool.spawn_fn(move || -> Result<_> {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
             Digest::reader_sync(reader)
-        }))
+        }).await
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -137,7 +144,7 @@ pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String
     .iter()
     .map(move |f| {
         Box::pin(async move {
-            Digest::file(f, &pool).compat().await
+            Digest::file(f, &pool).await
         })
     });
     let hashes: Vec<Result<String>> = futures_03::future::join_all(iter).await;
@@ -162,48 +169,47 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> SFuture<process::Output>
+async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Result<process::Output>
 where
     T: CommandChild + 'static,
 {
-    use tokio_io::io::{read_to_end, write_all};
+    use tokio_02::io::{BufReader, AsyncReadExt};
+    use tokio_02::io::{BufWriter, AsyncWriteExt};
+    use tokio_02::process::Command;
+    let mut child = Box::pin(child);
     let stdin = input.and_then(|i| {
         child
             .take_stdin()
-            .map(|stdin| write_all(stdin, i).fcontext("failed to write stdin"))
+            .map(|mut stdin| Box::pin(async move { stdin.write_all(i).await.context("failed to write stdin")}))
     });
     let stdout = child
         .take_stdout()
-        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stdout"));
+        .map(|mut io| Box::pin(async move { io.read_to_end(Vec::new()).await.context("failed to read stdout")}));
     let stderr = child
         .take_stderr()
-        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stderr"));
+        .map(|mut io| Box::pin(async move { io.read_to_end(Vec::new()).await.context("failed to read stderr")}));
 
     // Finish writing stdin before waiting, because waiting drops stdin.
-    let status = Future::and_then(stdin, |io| {
-        drop(io);
-        child.wait().fcontext("failed to wait for child")
-    });
 
-    Box::new(status.join3(stdout, stderr).map(|(status, out, err)| {
-        let stdout = out.map(|p| p.1);
-        let stderr = err.map(|p| p.1);
-        process::Output {
-            status,
-            stdout: stdout.unwrap_or_default(),
-            stderr: stderr.unwrap_or_default(),
-        }
-    }))
+    stdin.await;
+    let status = child.wait().await.context("failed to wait for child")?;
+    let (stdout, stderr) = futures_03::join!(stdout, stderr);
+
+    Ok(process::Output {
+        status,
+        stdout: stdout.unwrap_or_default().1,
+        stderr: stderr.unwrap_or_default().1,
+    })
 }
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
 ///
 /// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
-pub fn run_input_output<C>(
+pub async fn run_input_output<C>(
     mut command: C,
     input: Option<Vec<u8>>,
-) -> impl Future<Item = process::Output, Error = Error>
+) -> Result<process::Output>
 where
     C: RunCommand,
 {
@@ -216,17 +222,17 @@ where
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn();
+        .spawn().compat().await?;
 
-    child.and_then(|child| {
-        wait_with_input_output(child, input).and_then(|output| {
+
+    wait_with_input_output(child, input).compat().await
+        .and_then(|output| {
             if output.status.success() {
-                f_ok(output)
+                Ok(output)
             } else {
-                f_err(ProcessError(output))
+                Err(ProcessError(output))?
             }
         })
-    })
 }
 
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
