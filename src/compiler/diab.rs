@@ -63,10 +63,10 @@ impl CCompilerImpl for Diab {
     where
         T: CommandCreatorSync,
     {
-        let fut = Box::pin(preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist));
-        async move {
-            fut.await
-        }.await
+        let fut = Box::pin(async move {
+            preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist).await
+        });
+        fut.await
     }
 
     fn generate_compile_commands(
@@ -314,7 +314,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    run_input_output(cmd, None).compat().await
+    run_input_output(cmd, None).await
 }
 
 pub fn generate_compile_commands(

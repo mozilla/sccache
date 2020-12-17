@@ -71,7 +71,8 @@ impl CCompilerImpl for Clang {
     where
         T: CommandCreatorSync,
     {
-        gcc::preprocess(
+        let fut = Box::pin(async move {
+            gcc::preprocess(
             creator,
             executable,
             parsed_args,
@@ -80,8 +81,8 @@ impl CCompilerImpl for Clang {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-        )
-        .await
+        ).await});
+        fut.await
     }
 
     fn generate_compile_commands(

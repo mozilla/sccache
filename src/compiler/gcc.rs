@@ -541,7 +541,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    run_input_output(cmd, None).compat().await
+    run_input_output(cmd, None).await
 }
 
 pub fn generate_compile_commands(

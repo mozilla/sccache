@@ -153,7 +153,7 @@ where
     }
     trace!("detect_showincludes_prefix: {:?}", cmd);
 
-    let output = run_input_output(cmd, None).compat().await?;
+    let output = run_input_output(cmd, None).await?;
 
     if !output.status.success() {
         bail!("Failed to detect showIncludes prefix")
@@ -721,7 +721,7 @@ where
     let includes_prefix = includes_prefix.to_string();
     let cwd = cwd.to_owned();
 
-    let output = run_input_output(cmd, None).compat().await?;
+    let output = run_input_output(cmd, None).await?;
 
     let parsed_args = &parsed_args;
     if let (Some(ref objfile), &Some(ref depfile)) =

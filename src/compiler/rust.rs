@@ -226,7 +226,7 @@ where
         .envs(ref_env(env_vars))
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
-    let dep_info = run_input_output(cmd, None).compat().await?;
+    let dep_info = run_input_output(cmd, None).await?;
     // Parse the dep-info file, then hash the contents of those files.
     let pool = pool.clone();
     let cwd = cwd.to_owned();
@@ -335,7 +335,7 @@ where
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", cmd);
     }
-    let outputs = run_input_output(cmd, None).compat().await?;
+    let outputs = run_input_output(cmd, None).await?;
 
     let outstr = String::from_utf8(outputs.stdout).context("Error parsing rustc output")?;
     if log_enabled!(Trace) {
@@ -373,7 +373,7 @@ impl Rust {
             .arg("--print=sysroot")
             .env_clear()
             .envs(ref_env(env_vars));
-        let output = run_input_output(cmd, None).compat().await?;
+        let output = run_input_output(cmd, None).await?;
         let sysroot_and_libs = async move {
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
@@ -519,11 +519,7 @@ where
             .envs(ref_env(&env))
             .args(&["which", "rustc"]);
 
-        let fut = Box::pin(async move {
-            run_input_output(child, None)
-            .compat().await
-        });
-        let output = fut
+        let output = run_input_output(child, None)
             .await
             .with_context(|| format!("Failed to execute rustup which rustc"))?;
 
@@ -618,7 +614,6 @@ impl RustupProxy {
         let mut child = creator.new_command_sync(compiler_executable.to_owned());
         child.env_clear().envs(ref_env(&env1)).args(&["+stable"]);
         let state = run_input_output(child, None)
-            .compat()
             .await
             .map(move |output| {
                 if output.status.success() {
@@ -689,7 +684,7 @@ impl RustupProxy {
                 // verify the candidate is a rustup
                 let mut child = creator.new_command_sync(proxy_executable.to_owned());
                 child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
-                let output = run_input_output(child, None).compat().await?;
+                let output = run_input_output(child, None).await?;
 
                 let stdout = String::from_utf8(output.stdout)
                     .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;

@@ -131,13 +131,13 @@ impl CCompilerImpl for NVCC {
         //Need to chain the dependency generation and the preprocessor
         //to emulate a `proper` front end
         if !parsed_args.dependency_args.is_empty() {
-            let first = Box::pin( async move { run_input_output(dep_before_preprocessor(), None).compat().await });
-            let second = Box::pin(async move { run_input_output(cmd, None).compat().await });
+            let first = Box::pin( async move { run_input_output(dep_before_preprocessor(), None).await });
+            let second = Box::pin(async move { run_input_output(cmd, None).await });
             let (_f, s) = futures_03::try_join!(first, second)?;
             Ok(s)
         } else {
             let fut = Box::pin(async move {
-                run_input_output(cmd, None).compat().await
+                run_input_output(cmd, None).await
             });
             fut.await
         }

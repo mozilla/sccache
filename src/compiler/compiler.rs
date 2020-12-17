@@ -80,7 +80,7 @@ impl CompileCommand {
             .env_clear()
             .envs(self.env_vars)
             .current_dir(self.cwd);
-        run_input_output(cmd, None).compat().await
+        run_input_output(cmd, None).await
     }
 }
 
@@ -242,10 +242,10 @@ where
             Ok(Ok(Cache::Recache))
         } else {
             // let key = key.to_owned();
-            // let storage = storage.clone();
+            let storage = storage.clone();
             // Box::new(futures_03::compat::Compat::new(Box::pin(async move {
             let timeout = Duration::new(60, 0);
-            let r = tokio_02::time::timeout(timeout, storage.get(&key)).await;
+            let r = tokio_02::time::timeout(timeout, async move { storage.get(&key).await }).await;
             // })))
 
             // first error level is timeout
@@ -272,21 +272,20 @@ where
                 );
                 let stdout = entry.get_stdout();
                 let stderr = entry.get_stderr();
-                let write = entry.extract_objects(outputs.clone(), &pool).await;
                 let output = process::Output {
                     status: exit_status(0),
                     stdout,
                     stderr,
                 };
                 let hit = CompileResult::CacheHit(duration);
-                match write {
+                match entry.extract_objects(outputs.clone(), &pool).await {
                     Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
                             Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         } else {
-                            Err(e)?
+                            Err(e).context("Failed to extract objects")
                         }
                     }
                 }
@@ -319,11 +318,13 @@ where
                 );
                 Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
-        }?;
+        };
+
+        let lookup = lookup?;
 
 
         match lookup {
-            CacheLookupResult::Success(compile_result, output) => Ok((compile_result, output)),
+            CacheLookupResult::Success(compile_result, output) => Ok::<_,Error>((compile_result, output)),
             CacheLookupResult::Miss(miss_type) => {
 
                 let (tx, rx) = oneshot::channel();
@@ -353,7 +354,7 @@ where
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
 
-                let fut = async move {
+                let fut = Box::pin(async move {
 
                     // Cache miss, so compile it.
                     let duration = start.elapsed();
@@ -362,11 +363,9 @@ where
                         out_pretty,
                         fmt_duration_as_secs(&duration)
                     );
-                    let entry = {
-                        CacheWrite::from_objects(outputs, &pool)
-                            .await
-                        .context("failed to zip up compiler outputs")
-                    }?;
+                    let entry: Result<CacheWrite> = CacheWrite::from_objects(outputs, &pool)
+                        .await;
+                    let entry = entry.context("failed to zip up compiler outputs")?;
 
                     let o = out_pretty.clone();
 
@@ -390,9 +389,7 @@ where
                     };
                     tx.send(write_info)?;
                     Ok(())
-                };
-
-                let fut = Box::pin(fut);
+                }) as std::pin::Pin<Box<dyn futures_03::Future<Output=Result<()>> + Send>>;
 
                 pool.spawn_with_handle(fut);
 
@@ -855,7 +852,7 @@ where
         let mut child = creator.clone().new_command_sync(executable);
         child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
-        run_input_output(child, None).compat().await
+        run_input_output(child, None).await
             .map(|output| {
                 if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
                     if stdout.starts_with("rustc ") {
