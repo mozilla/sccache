@@ -1,6 +1,6 @@
 [package]
 name = "lru-disk-cache"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Ted Mielczarek <ted@mielczarek.org>"]
 license = "Apache-2.0"
 description = "A LRU cache for files on disk."
