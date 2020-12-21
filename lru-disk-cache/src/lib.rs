@@ -79,7 +79,11 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Error::FileTooLarge => write!(f, "File too large"),
+            Error::FileNotInCache => write!(f, "File not in cache"),
+            Error::Io(ref e) => write!(f, "{}", e),
+        }
     }
 }
 
