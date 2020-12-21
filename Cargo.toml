@@ -96,7 +96,7 @@ walkdir = "2"
 # by default which pulls in an outdated failure version
 which = { version = "4", default-features = false }
 zip = { version = "0.5", default-features = false, features = ["deflate"] }
-zstd = { version = "0.5" }
+zstd = "0.6"
 
 # dist-server only
 crossbeam-utils = { version = "0.8", optional = true }
