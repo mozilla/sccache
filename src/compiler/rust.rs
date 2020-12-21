@@ -2238,7 +2238,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     let mut dep_names = vec![];
 
     while let Some(line) = lines.next() {
-        if line == "" {
+        if line.is_empty() {
             break;
         }
 
@@ -2278,7 +2278,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     }
 
     for line in lines {
-        if line != "" {
+        if !line.is_empty() {
             bail!("Trailing non-blank lines in rustc -Z ls output")
         }
     }

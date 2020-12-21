@@ -1116,8 +1116,10 @@ where
         let task = result.then(move |result| {
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
-            let mut res = CompileFinished::default();
-            res.color_mode = color_mode;
+            let mut res = CompileFinished {
+                color_mode,
+                ..Default::default()
+            };
             match result {
                 Ok((compiled, out)) => {
                     match compiled {
