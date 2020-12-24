@@ -1,6 +1,35 @@
 name: ci
 on: [push, pull_request]
 jobs:
+  lint:
+    name: ${{ matrix.component }} ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macOS-latest, windows-latest]
+        component: [clippy]
+        include:
+          - component: rustfmt
+            cargo_cmd: fmt -- --check
+            os: ubuntu-latest
+          - component: clippy
+            allow_failure: true
+            cargo_cmd: clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::new-without-default
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v1
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          components: ${{ matrix.component }}
+
+      - name: Check
+        run: cargo ${{ matrix.cargo_cmd }}
+
   build:
     name: ${{ matrix.kind }} ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -17,14 +46,6 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: "1.43.0"
-          components: clippy rustfmt
-
-      - name: check formatting
-        run: cargo fmt -- --check
 
       - name: build and test
         run: cargo test --locked --all-targets
-
-     # TODO
-     # - name: clippy
-     #   run: cargo clippy --locked --all-target
