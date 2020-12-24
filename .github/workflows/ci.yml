@@ -20,14 +20,10 @@ jobs:
           submodules: true
 
       - name: Install rust
-        uses: hecrj/setup-rust-action@v1
+        uses: ./.github/actions/rust-toolchain
         with:
-          rust-version: "1.43.0"
-
-      - name: Install clippy and rustfmt
-        run: |
-          rustup component add clippy
-          rustup component add rustfmt
+          toolchain: "1.43.0"
+          components: clippy rustfmt
 
       - name: check formatting
         run: cargo fmt -- --check
