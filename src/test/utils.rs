@@ -108,10 +108,12 @@ pub fn find_sccache_binary() -> PathBuf {
         .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
         .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
         .next()
-        .expect(&format!(
+        .unwrap_or_else(|| {
+            panic!(
             "Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?",
             dirs
-        ))
+        )
+        })
 }
 
 pub struct TestFixture {
