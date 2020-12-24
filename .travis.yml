@@ -2,20 +2,6 @@ language: rust
 
 matrix:
   include:
-    # OS compat
-    - os: linux
-    - os: linux
-      arch: arm64
-    - os: osx
-
-    # rustc version compat
-    - rust: 1.43.0 # oldest supported version, keep in sync with README.md
-    - rust: 1.43.0
-      env: EXTRA_FEATURES="dist-server openssl/vendored"
-    - rust: beta
-    - rust: nightly
-      env: EXTRA_FEATURES="unstable"
-
     # deployments
     - env: DEPLOY=1 TARGET=x86_64-apple-darwin
       script: cargo build --release --target $TARGET --features=openssl/vendored
@@ -48,14 +34,6 @@ matrix:
         apt:
           packages:
           - musl-tools
-  allow_failures:
-    - rust: nightly
-
-script:
-  - cargo build --verbose --features="${EXTRA_FEATURES}" || exit 1
-  - RUST_BACKTRACE=1 cargo test --all --verbose --no-default-features --features="${EXTRA_FEATURES}" 
-  - RUST_BACKTRACE=1 cargo test --all --verbose --features="${EXTRA_FEATURES}"
-  - case "${EXTRA_FEATURES}" in *dist-server*) RUST_BACKTRACE=1 cargo test --all --verbose --features="dist-tests ${EXTRA_FEATURES}" test_dist_ -- --test-threads 1 ;; esac
 
 before_deploy:
   - "./scripts/prep_deploy.sh"

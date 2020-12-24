@@ -29,14 +29,6 @@ for:
       - master
   environment:
     matrix:
-      - channel: stable
-        target: x86_64-pc-windows-msvc
-      - channel: beta
-        target: x86_64-pc-windows-msvc
-      - channel: nightly
-        target: x86_64-pc-windows-msvc
-      - channel: 1.43.0 # Oldest supported version. Keep in sync with README.md.
-        target: x86_64-pc-windows-msvc
         # Build a release build on master to make sure it builds.
       - channel: stable
         target: x86_64-pc-windows-msvc

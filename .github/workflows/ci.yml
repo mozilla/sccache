@@ -30,14 +30,32 @@ jobs:
       - name: Check
         run: cargo ${{ matrix.cargo_cmd }}
 
-  build:
-    name: ${{ matrix.kind }} ${{ matrix.os }}
+  test:
+    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    timeout-minutes: 30
     strategy:
       matrix:
-        os: [macOS-latest, windows-2019, ubuntu-16.04]
-        kind: ['test_debug']
+        include:
+          - os: ubuntu-16.04
+            rustc: 1.43.0 # Oldest supported version, keep in sync with README.md
+          - os: ubuntu-16.04
+            rustc: 1.43.0
+            extra_desc: dist-server
+            extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
+          - os: ubuntu-16.04
+            rustc: stable
+          - os: ubuntu-16.04
+            rustc: beta
+          - os: ubuntu-16.04
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+          - os: macOS-10.15
+          - os: windows-2019
+    env:
+      RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
         uses: actions/checkout@v1
@@ -45,7 +63,10 @@ jobs:
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
-          toolchain: "1.43.0"
+          toolchain: ${{ matrix.rustc }}
 
-      - name: build and test
-        run: cargo test --locked --all-targets
+      - name: Build tests
+        run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
