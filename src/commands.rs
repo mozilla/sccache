@@ -258,7 +258,7 @@ fn run_server_process() -> Result<ServerStartup> {
         if err.is_elapsed() {
             Ok(ServerStartup::TimedOut)
         } else if err.is_inner() {
-            Err(err.into_inner().unwrap().into())
+            Err(err.into_inner().unwrap())
         } else {
             Err(err.into_timer().unwrap().into())
         }
