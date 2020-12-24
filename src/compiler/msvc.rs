@@ -721,6 +721,7 @@ fn normpath(path: &str) -> String {
     path.to_owned()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn preprocess<T>(
     creator: &T,
     executable: &Path,
