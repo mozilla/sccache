@@ -4,7 +4,6 @@ jobs:
   lint:
     name: ${{ matrix.component }} ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -16,7 +15,6 @@ jobs:
             cargo_cmd: fmt -- --check
             os: ubuntu-latest
           - component: clippy
-            allow_failure: true
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
