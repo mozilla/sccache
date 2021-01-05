@@ -1400,7 +1400,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1434,7 +1434,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1501,7 +1501,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::Ok(_), _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1535,7 +1535,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
@@ -1609,7 +1609,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::CacheReadError, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1691,7 +1691,7 @@ LLVM version: 6.0",
             }))
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1718,7 +1718,7 @@ LLVM version: 6.0",
             .wait()
             .unwrap();
         // Ensure that the object file was created.
-        assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         match cached {
             CompileResult::CacheMiss(MissType::ForcedRecache, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
@@ -1761,7 +1761,7 @@ LLVM version: 6.0",
         .unwrap()
         .0;
         // We should now have a fake object file.
-        assert_eq!(fs::metadata(&obj).is_ok(), true);
+        assert!(fs::metadata(&obj).is_ok());
         // The preprocessor invocation.
         const PREPROCESSOR_STDERR: &[u8] = b"something went wrong";
         next_command(
@@ -1879,7 +1879,7 @@ LLVM version: 6.0",
                 .wait()
                 .unwrap();
             // Ensure that the object file was created.
-            assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
+            assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
             match cached {
                 CompileResult::CacheMiss(MissType::ForcedRecache, DistType::Error, _, f) => {
                     // wait on cache write future so we don't race with it!

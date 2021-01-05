@@ -1021,7 +1021,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert_eq!(profile_generate, true);
+        assert!(profile_generate);
         assert!(preprocessor_args.is_empty());
         assert_eq!(
             dependency_args,

@@ -365,7 +365,7 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// let mut cache = LruCache::new(1);
     ///
     /// cache.insert(1, "a");
-    /// assert_eq!(cache.contains_key(&1), true);
+    /// assert!(cache.contains_key(&1));
     /// ```
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
     where
@@ -748,7 +748,7 @@ mod tests {
     fn test_contains_key() {
         let mut cache = LruCache::new(1);
         cache.insert("1", 10);
-        assert_eq!(cache.contains_key("1"), true);
+        assert!(cache.contains_key("1"));
     }
 
     #[test]
