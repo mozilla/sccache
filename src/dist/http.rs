@@ -1255,12 +1255,9 @@ mod client {
                             res.cert_pem,
                         );
 
-
                         alloc_job_res
                     }
-                    AllocJobHttpResponse::Fail { msg } => {
-                        Ok(AllocJobResult::Fail { msg })
-                    }
+                    AllocJobHttpResponse::Fail { msg } => Ok(AllocJobResult::Fail { msg }),
                 }
             };
             Box::new(futures_03::compat::Compat::new(fut)) as SFutureSend<AllocJobResult>
@@ -1270,9 +1267,12 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
-            Box::new(futures_03::compat::Compat::new(Box::pin(
-                self.pool.spawn_with_handle(async move { bincode_req(req) } ).expect("FIXME proper error handling")
-            )))
+            let pool = self.pool.clone();
+            Box::new(futures_03::compat::Compat::new(Box::pin(async move {
+                pool.spawn_with_handle(Box::pin(async move { bincode_req(req) }))
+                    .expect("FIXME proper error handling")
+                    .await
+            })))
         }
 
         fn do_submit_toolchain(
@@ -1284,16 +1284,18 @@ mod client {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
-
-                    Box::new(futures_03::compat::Compat::new(Box::pin(
-                        self.pool.spawn_with_handle(async move {
+                    let pool = self.pool.clone();
+                    Box::new(futures_03::compat::Compat::new(Box::pin(async move {
+                        pool.spawn_with_handle(async move {
                             let toolchain_file_size = toolchain_file.metadata()?.len();
                             let body =
                                 reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
                             let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
                             bincode_req(req)
-                        }).expect("FIXME proper error handling")
-                    )))
+                        })
+                        .expect("FIXME proper error handling")
+                        .await
+                    })))
                 }
                 Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => f_err(e),
@@ -1310,34 +1312,37 @@ mod client {
             let mut req = self.client.lock().unwrap().post(url);
 
             Box::new(futures_03::compat::Compat::new(Box::pin(
-                self.pool.spawn_with_handle(async move {
-                    let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
-                        .context("failed to serialize run job request")?;
-                    let bincode_length = bincode.len();
+                self.pool
+                    .spawn_with_handle(async move {
+                        let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
+                            .context("failed to serialize run job request")?;
+                        let bincode_length = bincode.len();
 
-                    let mut body = vec![];
-                    body.write_u32::<BigEndian>(bincode_length as u32)
-                        .expect("Infallible write of bincode length to vec failed");
-                    body.write_all(&bincode)
-                        .expect("Infallible write of bincode body to vec failed");
-                    let path_transformer;
-                    {
-                        let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
-                        path_transformer = inputs_packager
-                            .write_inputs(&mut compressor)
-                            .context("Could not write inputs for compilation")?;
-                        compressor.flush().context("failed to flush compressor")?;
-                        trace!(
-                            "Compressed inputs from {} -> {}",
-                            compressor.total_in(),
-                            compressor.total_out()
-                        );
-                        compressor.finish().context("failed to finish compressor")?;
-                    }
+                        let mut body = vec![];
+                        body.write_u32::<BigEndian>(bincode_length as u32)
+                            .expect("Infallible write of bincode length to vec failed");
+                        body.write_all(&bincode)
+                            .expect("Infallible write of bincode body to vec failed");
+                        let path_transformer;
+                        {
+                            let mut compressor =
+                                ZlibWriteEncoder::new(&mut body, Compression::fast());
+                            path_transformer = inputs_packager
+                                .write_inputs(&mut compressor)
+                                .context("Could not write inputs for compilation")?;
+                            compressor.flush().context("failed to flush compressor")?;
+                            trace!(
+                                "Compressed inputs from {} -> {}",
+                                compressor.total_in(),
+                                compressor.total_out()
+                            );
+                            compressor.finish().context("failed to finish compressor")?;
+                        }
 
-                    req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-                    bincode_req(req).map(|res| (res, path_transformer))
-                }).expect("FIXME proper error handling")
+                        req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                        bincode_req(req).map(|res| (res, path_transformer))
+                    })
+                    .expect("FIXME proper error handling"),
             )))
         }
 
@@ -1351,9 +1356,11 @@ mod client {
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
             Box::new(futures_03::compat::Compat::new(Box::pin(
-                self.pool.spawn_with_handle(async move {
-                    tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
-                }).expect("FIXME proper error handling")
+                self.pool
+                    .spawn_with_handle(async move {
+                        tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
+                    })
+                    .expect("FIXME proper error handling"),
             )))
         }
 

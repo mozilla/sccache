@@ -74,7 +74,8 @@ impl CCompilerImpl for GCC {
                 may_dist,
                 self.kind(),
                 rewrite_includes_only,
-            ).await
+            )
+            .await
         };
         fut.await
     }

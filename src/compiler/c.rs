@@ -279,16 +279,15 @@ where
 
         let res = {
             let compiler = compiler.clone();
-            let fut = compiler
-                .preprocess(
-                    creator,
-                    &executable,
-                    &parsed_args,
-                    &cwd,
-                    &env_vars,
-                    may_dist,
-                    rewrite_includes_only,
-                );
+            let fut = compiler.preprocess(
+                creator,
+                &executable,
+                &parsed_args,
+                &cwd,
+                &env_vars,
+                may_dist,
+                rewrite_includes_only,
+            );
             Box::pin(fut).await
         };
         let out_pretty = parsed_args.output_pretty().into_owned();

@@ -33,8 +33,8 @@ use futures::Future;
 use futures_03::channel::oneshot;
 use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt as SpawnExt_03;
 use futures_03::prelude::*;
+use futures_03::task::SpawnExt as SpawnExt_03;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -245,7 +245,7 @@ where
             let storage = storage.clone();
             // Box::new(futures_03::compat::Compat::new(Box::pin(async move {
             let timeout = Duration::new(60, 0);
-            let r = tokio_02::time::timeout(timeout, async move { storage.get(&key).await }).await;
+            let r = tokio_02::time::timeout(timeout, async { storage.get(&key).await }).await;
             // })))
 
             // first error level is timeout
@@ -322,11 +322,11 @@ where
 
         let lookup = lookup?;
 
-
         match lookup {
-            CacheLookupResult::Success(compile_result, output) => Ok::<_,Error>((compile_result, output)),
+            CacheLookupResult::Success(compile_result, output) => {
+                Ok::<_, Error>((compile_result, output))
+            }
             CacheLookupResult::Miss(miss_type) => {
-
                 let (tx, rx) = oneshot::channel();
 
                 let start = Instant::now();
@@ -355,9 +355,9 @@ where
                 }
 
                 let fut = {
+                    let compiler_result = compiler_result.clone();
                     let pool = pool.clone();
                     Box::pin(async move {
-
                         // Cache miss, so compile it.
                         let duration = start.elapsed();
                         debug!(
@@ -365,8 +365,8 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        let entry: Result<CacheWrite> = CacheWrite::from_objects(outputs, &pool)
-                            .await;
+                        let entry: Result<CacheWrite> =
+                            CacheWrite::from_objects(outputs, &pool).await;
                         let mut entry = entry.context("failed to zip up compiler outputs")?;
 
                         let o = out_pretty.clone();
@@ -391,10 +391,11 @@ where
                         };
                         tx.send(write_info);
                         Ok(())
-                    }) as std::pin::Pin<Box<dyn futures_03::Future<Output=Result<()>> + Send>>
+                    })
+                        as std::pin::Pin<Box<dyn futures_03::Future<Output = Result<()>> + Send>>
                 };
 
-                pool.spawn_with_handle(fut);
+                let _ = pool.spawn_with_handle(fut);
 
                 Ok((
                     CompileResult::CacheMiss(miss_type, dist_type, duration, rx),
@@ -629,7 +630,7 @@ pub trait Compilation: Send {
 }
 
 #[cfg(feature = "dist-client")]
-pub trait OutputsRewriter {
+pub trait OutputsRewriter: Send {
     /// Perform any post-compilation handling of outputs, given a Vec of the dist_path and local_path
     fn handle_outputs(
         self: Box<Self>,
@@ -732,7 +733,12 @@ pub enum CompileResult {
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
     /// being stored in the cache.
-    CacheMiss(MissType, DistType, Duration, oneshot::Receiver<CacheWriteInfo>),
+    CacheMiss(
+        MissType,
+        DistType,
+        Duration,
+        oneshot::Receiver<CacheWriteInfo>,
+    ),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
     /// Not in cache, but compilation failed.
@@ -823,7 +829,8 @@ pub async fn write_temp_file(
         file.write_all(&contents)?;
         Ok((dir, src))
     })?
-    .await.context("failed to write temporary file")
+    .await
+    .context("failed to write temporary file")
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
@@ -853,15 +860,14 @@ where
         let mut child = creator.clone().new_command_sync(executable);
         child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
-        run_input_output(child, None).await
-            .map(|output| {
-                if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-                    if stdout.starts_with("rustc ") {
-                        return Some(Ok(stdout));
-                    }
+        run_input_output(child, None).await.map(|output| {
+            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+                if stdout.starts_with("rustc ") {
+                    return Some(Ok(stdout));
                 }
-                Some(Err(ProcessError(output)))
-            })?
+            }
+            Some(Err(ProcessError(output)))
+        })?
     } else {
         None
     };
@@ -873,16 +879,27 @@ where
         Some(Ok(rustc_verbose_version)) => {
             debug!("Found rustc");
 
-            let proxy =
-                RustupProxy::find_proxy_executable::<T>(&executable, "rustup", creator.clone(), &env).await;
+            let proxy = RustupProxy::find_proxy_executable::<T>(
+                &executable,
+                "rustup",
+                creator.clone(),
+                &env,
+            )
+            .await;
 
             let (proxy, resolved_rustc) = match proxy {
                 Ok(Ok(Some(proxy))) => {
                     trace!("Found rustup proxy executable");
                     // take the pathbuf for rustc as resolved by the proxy
-                    match proxy.resolve_proxied_executable(creator.clone(), cwd, &env).await {
+                    match proxy
+                        .resolve_proxied_executable(creator.clone(), cwd, &env)
+                        .await
+                    {
                         Ok((resolved_compiler_executable, _time)) => {
-                            trace!("Resolved path with rustup proxy {}", &resolved_compiler_executable.display());
+                            trace!(
+                                "Resolved path with rustup proxy {}",
+                                &resolved_compiler_executable.display()
+                            );
                             let proxy = Box::new(proxy) as Box<dyn CompilerProxy<T>>;
                             (Some(proxy), resolved_compiler_executable)
                         }
@@ -913,7 +930,8 @@ where
                 &rustc_verbose_version,
                 dist_archive,
                 pool,
-            ).await
+            )
+            .await
             .map(|c| {
                 (
                     Box::new(c) as Box<dyn Compiler<T>>,
@@ -961,8 +979,7 @@ diab
 #endif
 "
     .to_vec();
-    let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test)
-        .await?;
+    let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test).await?;
 
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
@@ -971,9 +988,9 @@ diab
 
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
-    let child = cmd.spawn()?;
-    let output = child
-        .wait_with_output().await
+    let output = cmd
+        .wait_with_output()
+        .await
         .context("failed to read child output")?;
 
     drop(tempdir);
@@ -987,32 +1004,33 @@ diab
         match line {
             "clang" | "clang++" => {
                 debug!("Found {}", line);
-                return
-                    CCompiler::new(
-                        Clang {
-                            clangplusplus: line == "clang++",
-                        },
-                        executable,
-                        &pool,
-                    ).await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                return CCompiler::new(
+                    Clang {
+                        clangplusplus: line == "clang++",
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "diab" => {
                 debug!("Found diab");
-                return
-                    CCompiler::new(Diab, executable, &pool).await
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                return CCompiler::new(Diab, executable, &pool)
+                    .await
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "gcc" | "g++" => {
                 debug!("Found {}", line);
                 return CCompiler::new(
-                        GCC {
-                            gplusplus: line == "g++",
-                        },
-                        executable,
-                        &pool,
-                    ).await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                    GCC {
+                        gplusplus: line == "g++",
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "msvc" | "msvc-clang" => {
                 let is_clang = line == "msvc-clang";
@@ -1023,24 +1041,25 @@ diab
                     is_clang,
                     env,
                     &pool,
-                ).await?;
+                )
+                .await?;
                 trace!("showIncludes prefix: '{}'", prefix);
-                return
-                    CCompiler::new(
-                        MSVC {
-                            includes_prefix: prefix,
-                            is_clang,
-                        },
-                        executable,
-                        &pool,
-                    ).await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                return CCompiler::new(
+                    MSVC {
+                        includes_prefix: prefix,
+                        is_clang,
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "nvcc" => {
                 debug!("Found NVCC");
-                return
-                    CCompiler::new(NVCC, executable, &pool).await
-                        .map(|c| Box::new(c) as Box<dyn Compiler<T>>)
+                return CCompiler::new(NVCC, executable, &pool)
+                    .await
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             _ => (),
         }

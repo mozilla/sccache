@@ -254,7 +254,8 @@ impl DistClientContainer {
                 "enabled, not connected, will retry".to_string(),
             ),
             DistClientState::Some(cfg, client) => {
-                let runtime = tokio_02::runtime::Runtime::new().expect("Creating the runtime succeeds");
+                let runtime =
+                    tokio_02::runtime::Runtime::new().expect("Creating the runtime succeeds");
                 match runtime.block_on(async move { client.do_get_status().compat().await }) {
                     Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
                     Err(_) => DistInfo::NotConnected(
@@ -362,7 +363,8 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                let mut rt = tokio_02::runtime::Runtime::new().expect("Creating a runtime always works");
+                let mut rt =
+                    tokio_02::runtime::Runtime::new().expect("Creating a runtime always works");
                 match rt.block_on(async move { dist_client.do_get_status().compat().await }) {
                     Ok(res) => {
                         info!(
@@ -534,12 +536,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                 trace!("incoming connection");
                 tokio_compat::runtime::current_thread::TaskExecutor::current()
                     .spawn_local(Box::new(
-                        Box::pin(
-                            service.bind(socket)
-                                .map_err(|err| {
-                                    error!("{}", err);
-                                })
-                        )
+                        Box::pin(service.bind(socket).map_err(|err| {
+                            error!("{}", err);
+                        }))
                         .compat(),
                     ))
                     .expect("Spawning a task with compat executor always works");
@@ -907,7 +906,8 @@ where
 
             if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
                 let res = compiler_proxy
-                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice()).await;
+                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice())
+                    .await;
                 res.ok()
             } else {
                 None

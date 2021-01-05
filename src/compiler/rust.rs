@@ -414,7 +414,7 @@ impl Rust {
                 })?
             };
 
-            let (sysroot_and_libs, rlib_dep_reader)=
+            let (sysroot_and_libs, rlib_dep_reader) =
                 futures_03::join!(sysroot_and_libs, rlib_dep_reader);
 
             let (sysroot, libs) = sysroot_and_libs.context("Determining sysroot + libs failed")?;
@@ -523,7 +523,6 @@ where
             .await
             .with_context(|| format!("Failed to execute rustup which rustc"))?;
 
-
         let stdout = String::from_utf8(output.stdout)
             .with_context(|| format!("Failed to parse output of rustup which rustc"))?;
 
@@ -532,7 +531,8 @@ where
             "proxy: rustup which rustc produced: {:?}",
             &proxied_compiler
         );
-        let attr = fs::metadata(proxied_compiler.as_path()).context("Failed to obtain metadata of the resolved, true rustc")?;
+        let attr = fs::metadata(proxied_compiler.as_path())
+            .context("Failed to obtain metadata of the resolved, true rustc")?;
         let res = if attr.is_file() {
             Ok(FileTime::from_last_modification_time(&attr))
         } else {
@@ -613,17 +613,15 @@ impl RustupProxy {
         // verify rustc is proxy
         let mut child = creator.new_command_sync(compiler_executable.to_owned());
         child.env_clear().envs(ref_env(&env1)).args(&["+stable"]);
-        let state = run_input_output(child, None)
-            .await
-            .map(move |output| {
-                if output.status.success() {
-                    trace!("proxy: Found a compiler proxy managed by rustup");
-                    ProxyPath::ToBeDiscovered
-                } else {
-                    trace!("proxy: Found a regular compiler");
-                    ProxyPath::None
-                }
-            });
+        let state = run_input_output(child, None).await.map(move |output| {
+            if output.status.success() {
+                trace!("proxy: Found a compiler proxy managed by rustup");
+                ProxyPath::ToBeDiscovered
+            } else {
+                trace!("proxy: Found a regular compiler");
+                ProxyPath::None
+            }
+        });
 
         let state = match state {
             Ok(ProxyPath::Candidate(_)) => unreachable!("Q.E.D."),

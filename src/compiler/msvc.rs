@@ -21,8 +21,8 @@ use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, SpawnExt};
 use futures::future::Future;
-use futures_03::executor::ThreadPool;
 use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
+use futures_03::executor::ThreadPool;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
@@ -75,14 +75,15 @@ impl CCompilerImpl for MSVC {
     {
         let fut = Box::pin(async move {
             preprocess(
-            creator,
-            executable,
-            parsed_args,
-            cwd,
-            env_vars,
-            may_dist,
-            &self.includes_prefix,
-            ).await
+                creator,
+                executable,
+                parsed_args,
+                cwd,
+                env_vars,
+                may_dist,
+                &self.includes_prefix,
+            )
+            .await
         });
         fut.await
     }
@@ -117,21 +118,21 @@ where
     T: CommandCreatorSync,
 {
     let (tempdir, input) =
-        write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec())
-            .await?;
+        write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec()).await?;
 
     let exe = exe.to_os_string();
     let mut creator = creator.clone();
     let pool = pool.clone();
 
     let header = tempdir.path().join("test.h");
-    let tempdir = pool.spawn_with_handle(async move {
-        let mut file = File::create(&header)?;
-        file.write_all(b"/* empty */\n")?;
-        Ok::<_,std::io::Error>(tempdir)
-    })?
-    .await
-    .context("Failed to write temporary file")?;
+    let tempdir = pool
+        .spawn_with_handle(async move {
+            let mut file = File::create(&header)?;
+            file.write_all(b"/* empty */\n")?;
+            Ok::<_, std::io::Error>(tempdir)
+        })?
+        .await
+        .context("Failed to write temporary file")?;
 
     let mut cmd = creator.new_command_sync(&exe);
     // clang.exe on Windows reports the same set of built-in preprocessor defines as clang-cl,

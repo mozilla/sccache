@@ -15,12 +15,12 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
-use futures_03::{compat::Future01CompatExt, future, pin_mut, stream::FuturesUnordered};
 use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
-use futures_03::TryStreamExt;
 use futures_03::task;
 pub(crate) use futures_03::task::SpawnExt;
+use futures_03::TryStreamExt;
+use futures_03::{compat::Future01CompatExt, future, pin_mut, stream::FuturesUnordered};
 use serde::Serialize;
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
@@ -84,7 +84,8 @@ impl Digest {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
             Digest::reader_sync(reader)
-        })?.await
+        })?
+        .await
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -118,24 +119,22 @@ pub fn hex(bytes: &[u8]) -> String {
     }
 }
 
-
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
 pub async fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
     let iter = files
-    .iter()
-    .map(move |f| {
-        Box::pin(async move {
-            Digest::file(f, &pool).await
-        })
-    });
+        .iter()
+        .map(move |f| Box::pin(async move { Digest::file(f, &pool).await }));
     let hashes: Vec<Result<String>> = futures_03::future::join_all(iter).await;
-    let hashes: Vec<String> = hashes.into_iter().try_fold(Vec::with_capacity(files.len()), |mut acc, item| -> Result<Vec<String>> {
-        acc.push(item?);
-        Ok(acc)
-    })?;
+    let hashes: Vec<String> = hashes.into_iter().try_fold(
+        Vec::with_capacity(files.len()),
+        |mut acc, item| -> Result<Vec<String>> {
+            acc.push(item?);
+            Ok(acc)
+        },
+    )?;
     trace!(
         "Hashed {} files in {}",
         count,
@@ -157,35 +156,39 @@ async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Resu
 where
     T: CommandChild + 'static,
 {
-    use tokio_02::io::{BufReader, AsyncReadExt};
-    use tokio_02::io::{BufWriter, AsyncWriteExt};
+    use tokio_02::io::{AsyncReadExt, BufReader};
+    use tokio_02::io::{AsyncWriteExt, BufWriter};
     use tokio_02::process::Command;
     let mut child = Box::pin(child);
     let stdin = input.and_then(|i| {
-        child
-            .take_stdin()
-            .map(|mut stdin| Box::pin(async move {
-                stdin.write_all(&i).await.context("failed to write stdin")
-            }))
+        child.take_stdin().map(|mut stdin| {
+            Box::pin(async move { stdin.write_all(&i).await.context("failed to write stdin") })
+        })
     });
     let stdout = child
         .take_stdout()
-        .map(|mut io| Box::pin(async move {
-            let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await.context("failed to read stdout")?;
-            Ok(Some(buf))
-        })).unwrap_or_else(|| {
-            Box::pin(async move { Ok(None) })
-        });
+        .map(|mut io| {
+            Box::pin(async move {
+                let mut buf = Vec::new();
+                io.read_to_end(&mut buf)
+                    .await
+                    .context("failed to read stdout")?;
+                Ok(Some(buf))
+            })
+        })
+        .unwrap_or_else(|| Box::pin(async move { Ok(None) }));
     let stderr = child
         .take_stderr()
-        .map(|mut io| Box::pin(async move {
-            let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await.context("failed to read stderr")?;
-            Ok(Some(buf))
-        })).unwrap_or_else(|| {
-            Box::pin(async move { Ok(None) })
-        });
+        .map(|mut io| {
+            Box::pin(async move {
+                let mut buf = Vec::new();
+                io.read_to_end(&mut buf)
+                    .await
+                    .context("failed to read stderr")?;
+                Ok(Some(buf))
+            })
+        })
+        .unwrap_or_else(|| Box::pin(async move { Ok(None) }));
 
     // Finish writing stdin before waiting, because waiting drops stdin.
 
@@ -198,8 +201,8 @@ where
 
     Ok(process::Output {
         status,
-        stdout: stdout.unwrap_or_default().1,
-        stderr: stderr.unwrap_or_default().1,
+        stdout,
+        stderr,
     })
 }
 
@@ -207,10 +210,7 @@ where
 ///
 /// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
-pub async fn run_input_output<C>(
-    mut command: C,
-    input: Option<Vec<u8>>,
-) -> Result<process::Output>
+pub async fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> Result<process::Output>
 where
     C: RunCommand,
 {
@@ -223,10 +223,11 @@ where
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn().await?;
+        .spawn()
+        .await?;
 
-
-    wait_with_input_output(child, input).await
+    wait_with_input_output(child, input)
+        .await
         .and_then(|output| {
             if output.status.success() {
                 Ok(output)

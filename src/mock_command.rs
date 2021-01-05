@@ -52,9 +52,9 @@ use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::result;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
+use std::result;
 use std::sync::{Arc, Mutex};
 use tokio_02::io::{AsyncRead, AsyncWrite};
 use tokio_02::process::{self, ChildStderr, ChildStdin, ChildStdout};
@@ -63,11 +63,11 @@ use tokio_02::process::{self, ChildStderr, ChildStdin, ChildStdout};
 #[async_trait::async_trait]
 pub trait CommandChild {
     /// The type of the process' standard input.
-    type I: AsyncWrite + Sync + Send + 'static;
+    type I: AsyncWrite + Unpin + Sync + Send + 'static;
     /// The type of the process' standard output.
-    type O: AsyncRead + Sync + Send + 'static;
+    type O: AsyncRead + Unpin + Sync + Send + 'static;
     /// The type of the process' standard error.
-    type E: AsyncRead + Sync + Send + 'static;
+    type E: AsyncRead + Unpin + Sync + Send + 'static;
 
     /// Take the stdin object from the process, if available.
     fn take_stdin(&mut self) -> Option<Self::I>;
@@ -399,11 +399,11 @@ impl CommandChild for MockChild {
         self.stderr.take()
     }
 
-    async fn wait(mut self) -> result::Result<ExitStatus,io::Error> {
+    async fn wait(mut self) -> result::Result<ExitStatus, io::Error> {
         Ok(self.wait_result.take().unwrap())
     }
 
-    async fn wait_with_output(self) -> result::Result<Output,io::Error> {
+    async fn wait_with_output(self) -> result::Result<Output, io::Error> {
         let MockChild {
             stdout,
             stderr,
@@ -487,7 +487,7 @@ impl RunCommand for MockCommand {
     fn stderr(&mut self, _cfg: Stdio) -> &mut MockCommand {
         self
     }
-    fn spawn(&mut self) -> SFuture<MockChild> {
+    async fn spawn(&mut self) -> Result<MockChild> {
         match self.child.take().unwrap() {
             ChildOrCall::Child(c) => Box::new(future::result(c)),
             ChildOrCall::Call(f) => Box::new(future::result(f(&self.args))),

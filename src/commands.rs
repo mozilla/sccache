@@ -32,11 +32,11 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use tokio_02::process;
 use strip_ansi_escapes::Writer;
-use tokio_compat::runtime::current_thread::Runtime;
-use tokio_02::io::AsyncReadExt;
 use tokio_02::io::AsyncRead;
+use tokio_02::io::AsyncReadExt;
+use tokio_02::process;
+use tokio_compat::runtime::current_thread::Runtime;
 use tokio_timer::Timeout;
 use which::which_in;
 
@@ -56,9 +56,7 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-async fn read_server_startup_status<R: AsyncReadExt>(
-    mut server: R,
-) -> Result<ServerStartup> {
+async fn read_server_startup_status<R: AsyncReadExt>(server: R) -> Result<ServerStartup> {
     let mut server = Box::pin(server);
     // This is an async equivalent of ServerConnection::read_one_response
     let mut bytes = [0u8; 4];
@@ -66,7 +64,7 @@ async fn read_server_startup_status<R: AsyncReadExt>(
 
     let len = BigEndian::read_u32(&bytes);
     let mut data = vec![0; len as usize];
-    server.read_exact( data.as_mut_slice()).await?;
+    server.read_exact(data.as_mut_slice()).await?;
 
     let s = bincode::deserialize::<ServerStartup>(&data)?;
     Ok(s)
@@ -514,10 +512,11 @@ where
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    let status = runtime.block_on(
-        cmd.spawn()
-            .and_then(|c| c.wait().fcontext("failed to wait for child")),
-    )?;
+    let status = {
+        let mut fut = async move { cmd.spawn().await };
+        futures_03::pin_mut!(fut);
+        runtime.block_on(fut)?
+    };
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
