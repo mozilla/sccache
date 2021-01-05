@@ -39,13 +39,18 @@ impl Client {
             (None, None)
         } else {
             let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let mut rx = tokio_02::runtime::Runtime::new().unwrap().block_on(async move { rx.await });
+            let mut rx = tokio_02::runtime::Runtime::new().unwrap().block_on(async move { rx.next().await });
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    if let Some(Ok(sender)) = rx.next() {
-                        drop(sender.send(token));
-                    }
+                    tokio_02::runtime::Runtime::new().unwrap().block_on(async move {
+                        if let Some(rx) = rx {
+                            if let Ok(sender) = rx.next().await {
+                                drop(sender.send(token));
+                            }
+                        }
+                    });
+
                 })
                 .expect("failed to spawn helper thread");
             (Some(Arc::new(helper)), Some(tx))
@@ -73,7 +78,7 @@ impl Client {
         helper.request_token();
         tx.unbounded_send(mytx).unwrap();
 
-        let acquired = rx.await.context("jobserver helper panicked")?
+        let acquired = myrx.await.context("jobserver helper panicked")?
             .context("failed to acquire jobserver token")?;
         Ok(Acquired { _token: Some(acquired) })
     }

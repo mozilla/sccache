@@ -32,7 +32,7 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process;
+use tokio_02::process;
 use strip_ansi_escapes::Writer;
 use tokio_compat::runtime::current_thread::Runtime;
 use tokio_02::io::AsyncReadExt;
@@ -59,16 +59,17 @@ fn get_port() -> u16 {
 async fn read_server_startup_status<R: AsyncReadExt>(
     mut server: R,
 ) -> Result<ServerStartup> {
+    let mut server = Box::pin(server);
     // This is an async equivalent of ServerConnection::read_one_response
     let mut bytes = [0u8; 4];
-    server.read_exact(&bytes[..]).await?;
+    server.read_exact(&mut bytes[..]).await?;
 
     let len = BigEndian::read_u32(&bytes);
-    let data = vec![0; len as usize];
+    let mut data = vec![0; len as usize];
     server.read_exact( data.as_mut_slice()).await?;
 
-    let s = bincode::deserialize(&data)?;
-    s
+    let s = bincode::deserialize::<ServerStartup>(&data)?;
+    Ok(s)
 }
 
 /// Re-execute the current executable as a background server, and wait
@@ -260,7 +261,7 @@ fn run_server_process() -> Result<ServerStartup> {
     runtime.block_on(timeout)
 }
 
-/// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
+/// Attempt to connect to a sccache server listening on `port`, or start one if no server is running.
 fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
     trace!("connect_or_start_server({})", port);
     match connect_to_server(port) {

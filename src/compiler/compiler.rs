@@ -354,42 +354,45 @@ where
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
 
-                let fut = Box::pin(async move {
+                let fut = {
+                    let pool = pool.clone();
+                    Box::pin(async move {
 
-                    // Cache miss, so compile it.
-                    let duration = start.elapsed();
-                    debug!(
-                        "[{}]: Compiled in {}, storing in cache",
-                        out_pretty,
-                        fmt_duration_as_secs(&duration)
-                    );
-                    let entry: Result<CacheWrite> = CacheWrite::from_objects(outputs, &pool)
-                        .await;
-                    let entry = entry.context("failed to zip up compiler outputs")?;
+                        // Cache miss, so compile it.
+                        let duration = start.elapsed();
+                        debug!(
+                            "[{}]: Compiled in {}, storing in cache",
+                            out_pretty,
+                            fmt_duration_as_secs(&duration)
+                        );
+                        let entry: Result<CacheWrite> = CacheWrite::from_objects(outputs, &pool)
+                            .await;
+                        let entry = entry.context("failed to zip up compiler outputs")?;
 
-                    let o = out_pretty.clone();
+                        let o = out_pretty.clone();
 
-                    entry.put_stdout(&compiler_result.stdout)?;
-                    entry.put_stderr(&compiler_result.stderr)?;
+                        entry.put_stdout(&compiler_result.stdout)?;
+                        entry.put_stderr(&compiler_result.stderr)?;
 
-                    // Try to finish storing the newly-written cache
-                    // entry. We'll get the result back elsewhere.
+                        // Try to finish storing the newly-written cache
+                        // entry. We'll get the result back elsewhere.
 
-                    let key = key.clone();
-                    let storage = storage.clone();
-                    let res = storage.put(&key, entry).await;
-                    match res {
-                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty),
-                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty, e),
-                    }
+                        let key = key.clone();
+                        let storage = storage.clone();
+                        let res = storage.put(&key, entry).await;
+                        match res {
+                            Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty),
+                            Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty, e),
+                        }
 
-                    let write_info = CacheWriteInfo {
-                        object_file_pretty: out_pretty,
-                        duration,
-                    };
-                    tx.send(write_info)?;
-                    Ok(())
-                }) as std::pin::Pin<Box<dyn futures_03::Future<Output=Result<()>> + Send>>;
+                        let write_info = CacheWriteInfo {
+                            object_file_pretty: out_pretty,
+                            duration,
+                        };
+                        tx.send(write_info);
+                        Ok(())
+                    }) as std::pin::Pin<Box<dyn futures_03::Future<Output=Result<()>> + Send>>
+                };
 
                 pool.spawn_with_handle(fut);
 
@@ -426,14 +429,12 @@ where
     let mut path_transformer = dist::PathTransformer::default();
     let (compile_cmd, _dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, true)
-        .compat()
         .await
         .context("Failed to generate compile commands")?;
 
     debug!("[{}]: Compiling locally", out_pretty);
     compile_cmd
         .execute(&creator)
-        .compat()
         .await
         .map(move |o| (cacheable, DistType::NoDist, o))
 }
@@ -809,11 +810,11 @@ pub enum CacheControl {
 ///
 /// Note that when the `TempDir` is dropped it will delete all of its contents
 /// including the path returned.
-pub fn write_temp_file(
+pub async fn write_temp_file(
     pool: &ThreadPool,
     path: &Path,
     contents: Vec<u8>,
-) -> SFuture<(TempDir, PathBuf)> {
+) -> Result<(TempDir, PathBuf)> {
     let path = path.to_owned();
     pool.spawn_fn(move || -> Result<_> {
         let dir = tempfile::Builder::new().prefix("sccache").tempdir()?;
@@ -961,7 +962,6 @@ diab
 "
     .to_vec();
     let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test)
-        .compat()
         .await?;
 
     let mut cmd = creator.clone().new_command_sync(&executable);
@@ -971,9 +971,9 @@ diab
 
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
-    let child = cmd.spawn().compat().await?;
+    let child = cmd.spawn()?;
     let output = child
-        .wait_with_output().compat().await
+        .wait_with_output().await
         .context("failed to read child output")?;
 
     drop(tempdir);

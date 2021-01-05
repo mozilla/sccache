@@ -118,7 +118,6 @@ where
 {
     let (tempdir, input) =
         write_temp_file(pool, "test.c".as_ref(), b"#include \"test.h\"\n".to_vec())
-            .compat()
             .await?;
 
     let exe = exe.to_os_string();

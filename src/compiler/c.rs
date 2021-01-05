@@ -211,7 +211,6 @@ where
 {
     pub async fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> Result<CCompiler<I>> {
         Digest::file(executable.clone(), &pool)
-            .compat()
             .await
             .map(move |digest| CCompiler {
                 executable,

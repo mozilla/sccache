@@ -1281,14 +1281,14 @@ mod client {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
 
-                    self.pool
+                    futures_03::compat::Compat::new(Box::pin(async move {self.pool
                         .spawn_fn(move || {
                             let toolchain_file_size = toolchain_file.metadata()?.len();
                             let body =
                                 reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
                             let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
                             bincode_req(req)
-                        })
+                        })}))
                 }
                 Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => f_err(e),

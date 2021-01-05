@@ -78,7 +78,7 @@ pub trait CommandChild {
     /// Wait for the process to complete and return its exit status.
     async fn wait(self) -> result::Result<ExitStatus, io::Error>;
     /// Wait for the process to complete and return its output.
-    async fn wait_with_output(self) -> result::Result<ExitStatus, io::Error>;
+    async fn wait_with_output(self) -> result::Result<Output, io::Error>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
@@ -167,7 +167,7 @@ impl CommandChild for Child {
 
     async fn wait(self) -> result::Result<ExitStatus, io::Error> {
         let Child { inner, token } = self;
-        inner.status().await.map(|ret| {
+        inner.await.map(|ret| {
             drop(token);
             ret
         })
