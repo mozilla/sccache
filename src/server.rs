@@ -62,7 +62,7 @@ use tokio_02::{
     net::TcpListener,
     time::{self, delay_for, Delay},
 };
-use tokio_compat::runtime::current_thread::Runtime;
+use tokio_02::runtime::Runtime;
 use tokio_serde::Framed;
 use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
 use tower::Service;
@@ -166,7 +166,7 @@ struct DistClientConfig {
 #[cfg(feature = "dist-client")]
 enum DistClientState {
     #[cfg(feature = "dist-client")]
-    Some(Box<DistClientConfig>, Arc<dyn dist::Client>),
+    Some(Box<DistClientConfig>, Arc<dyn dist::Client + Send>),
     #[cfg(feature = "dist-client")]
     FailWithMessage(Box<DistClientConfig>, String),
     #[cfg(feature = "dist-client")]
@@ -267,7 +267,7 @@ impl DistClientContainer {
         }
     }
 
-    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client + Send>>> {
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
@@ -462,7 +462,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         storage: Arc<dyn Storage>,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
-        let listener = runtime.block_on_std(TcpListener::bind(&SocketAddr::V4(addr)))?;
+        let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
 
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
@@ -583,7 +583,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         }));
 
         let server = future::select_all(futures).map(|t| t.0);
-        runtime.block_on_std(server)?;
+        runtime.block_on(server)?;
 
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
@@ -599,7 +599,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
         runtime
-            .block_on_std(async {
+            .block_on(async {
                 time::timeout(SHUTDOWN_TIMEOUT, wait)
                     .await
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))

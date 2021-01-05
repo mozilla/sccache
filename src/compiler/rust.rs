@@ -26,7 +26,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
-use futures::Future;
+use futures_03::Future;
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as SpawnExt_03;
 use log::Level::Trace;
@@ -1457,7 +1457,7 @@ where
             .chain(abs_staticlibs)
             .collect();
 
-        HashResult {
+        Ok(HashResult {
             key: m.finish(),
             compilation: Box::new(RustCompilation {
                 executable,
@@ -1476,7 +1476,7 @@ where
                 rlib_dep_reader,
             }),
             weak_toolchain_key,
-        }
+        })
     }
 
     fn color_mode(&self) -> ColorMode {

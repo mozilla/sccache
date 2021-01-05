@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
+use std::pin::Pin;
 
 use crate::errors::*;
 
@@ -159,7 +160,6 @@ where
     use tokio_02::io::{AsyncReadExt, BufReader};
     use tokio_02::io::{AsyncWriteExt, BufWriter};
     use tokio_02::process::Command;
-    let mut child = Box::pin(child);
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| {
             Box::pin(async move { stdin.write_all(&i).await.context("failed to write stdin") })
@@ -174,9 +174,10 @@ where
                     .await
                     .context("failed to read stdout")?;
                 Ok(Some(buf))
-            })
+            }) as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
-        .unwrap_or_else(|| Box::pin(async move { Ok(None) }));
+        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>> );
+
     let stderr = child
         .take_stderr()
         .map(|mut io| {
@@ -186,23 +187,27 @@ where
                     .await
                     .context("failed to read stderr")?;
                 Ok(Some(buf))
-            })
+            })  as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
-        .unwrap_or_else(|| Box::pin(async move { Ok(None) }));
+        .unwrap_or_else(|| {
+            Box::pin(async move { Ok(None)  })  as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+
+        });
 
     // Finish writing stdin before waiting, because waiting drops stdin.
 
     if let Some(stdin) = stdin {
         stdin.await;
     }
+    let mut child = Box::pin(child);
 
-    let status = child.wait().await.context("failed to wait for child")?;
+    let status = child.await.context("failed to wait for child")?;
     let (stdout, stderr) = futures_03::join!(stdout, stderr);
 
     Ok(process::Output {
         status,
-        stdout,
-        stderr,
+        stdout: stdout?.unwrap_or_default(),
+        stderr: stderr?.unwrap_or_default(),
     })
 }
 

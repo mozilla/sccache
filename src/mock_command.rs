@@ -400,7 +400,7 @@ impl CommandChild for MockChild {
     }
 
     async fn wait(mut self) -> result::Result<ExitStatus, io::Error> {
-        Ok(self.wait_result.take().unwrap())
+        self.wait_result.take().unwrap()
     }
 
     async fn wait_with_output(self) -> result::Result<Output, io::Error> {
@@ -489,8 +489,8 @@ impl RunCommand for MockCommand {
     }
     async fn spawn(&mut self) -> Result<MockChild> {
         match self.child.take().unwrap() {
-            ChildOrCall::Child(c) => Box::new(future::result(c)),
-            ChildOrCall::Call(f) => Box::new(future::result(f(&self.args))),
+            ChildOrCall::Child(c) => c,
+            ChildOrCall::Call(f) => f(&self.args),
         }
     }
 }
@@ -557,7 +557,7 @@ mod test {
     use super::*;
     use crate::jobserver::Client;
     use crate::test::utils::*;
-    use futures::Future;
+    use futures_03::Future;
     use std::ffi::OsStr;
     use std::io;
     use std::process::{ExitStatus, Output};

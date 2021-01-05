@@ -23,7 +23,7 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures::Future;
+use futures_03::Future;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -36,8 +36,8 @@ use strip_ansi_escapes::Writer;
 use tokio_02::io::AsyncRead;
 use tokio_02::io::AsyncReadExt;
 use tokio_02::process;
-use tokio_compat::runtime::current_thread::Runtime;
-use tokio_timer::Timeout;
+use tokio_02::runtime::Runtime;
+use tokio_02::time::Timeout;
 use which::which_in;
 
 use crate::errors::*;
@@ -74,7 +74,7 @@ async fn read_server_startup_status<R: AsyncReadExt>(server: R) -> Result<Server
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::Stream;
+    use futures_03::Stream;
     use std::time::Duration;
 
     trace!("run_server_process");
@@ -96,16 +96,11 @@ fn run_server_process() -> Result<ServerStartup> {
     });
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(startup, timeout).or_else(|err| {
-        if err.is_elapsed() {
-            Ok(ServerStartup::TimedOut)
-        } else if err.is_inner() {
-            Err(err.into_inner().unwrap())
-        } else {
-            Err(err.into_timer().unwrap().into())
-        }
-    });
-    runtime.block_on(timeout)
+    let z = runtime.block_on(async move { tokio_02::time::timeout(timeout, startup).await } );
+    z.and_then(|x| x)
+    .or_else(|err| {
+        Ok(ServerStartup::TimedOut)
+    })
 }
 
 #[cfg(not(windows))]
@@ -144,7 +139,7 @@ fn redirect_error_log() -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::future;
+    use futures_03::future;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -247,16 +242,13 @@ fn run_server_process() -> Result<ServerStartup> {
     let result = read_server_startup_status(server);
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(result, timeout).or_else(|err| {
-        if err.is_elapsed() {
-            Ok(ServerStartup::TimedOut)
-        } else if err.is_inner() {
-            Err(err.into_inner().unwrap().into())
-        } else {
-            Err(err.into_timer().unwrap().into())
-        }
-    });
-    runtime.block_on(timeout)
+    runtime.block_on(
+        tokio_02::time::timeout(timeout, result)
+    )
+    .and_then(|x| x)
+    .or_else(|err| {
+        Ok(ServerStartup::TimedOut)
+    })
 }
 
 /// Attempt to connect to a sccache server listening on `port`, or start one if no server is running.

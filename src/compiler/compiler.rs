@@ -29,12 +29,13 @@ use crate::dist::pkg;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
-use futures::Future;
+use futures_03::Future;
 use futures_03::channel::oneshot;
 use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
 use futures_03::prelude::*;
 use futures_03::task::SpawnExt as SpawnExt_03;
+use tokio_02::time::Timeout;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -49,7 +50,6 @@ use std::str;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use tokio_timer::Timeout;
 
 use crate::errors::*;
 
@@ -190,7 +190,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Result<Option<Arc<dyn dist::Client>>>,
+        dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
         creator: T,
         storage: Arc<dyn Storage>,
         arguments: Vec<OsString>,
@@ -243,13 +243,8 @@ where
         } else {
             // let key = key.to_owned();
             let storage = storage.clone();
-            // Box::new(futures_03::compat::Compat::new(Box::pin(async move {
             let timeout = Duration::new(60, 0);
-            let r = tokio_02::time::timeout(timeout, async { storage.get(&key).await }).await;
-            // })))
-
-            // first error level is timeout
-            r
+            tokio_02::time::timeout(timeout, async { storage.get(&key).await }).await
         };
 
         // Set a maximum time limit for the cache to respond before we forge
@@ -354,10 +349,10 @@ where
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
 
-                let fut = {
+                {
                     let compiler_result = compiler_result.clone();
                     let pool = pool.clone();
-                    Box::pin(async move {
+                    let fut = async move {
                         // Cache miss, so compile it.
                         let duration = start.elapsed();
                         debug!(
@@ -365,9 +360,8 @@ where
                             out_pretty,
                             fmt_duration_as_secs(&duration)
                         );
-                        let entry: Result<CacheWrite> =
-                            CacheWrite::from_objects(outputs, &pool).await;
-                        let mut entry = entry.context("failed to zip up compiler outputs")?;
+                        let mut entry: CacheWrite =
+                            CacheWrite::from_objects(outputs, &pool).await.context("failed to zip up compiler outputs")?;
 
                         let o = out_pretty.clone();
 
@@ -391,11 +385,11 @@ where
                         };
                         tx.send(write_info);
                         Ok(())
-                    })
-                        as std::pin::Pin<Box<dyn futures_03::Future<Output = Result<()>> + Send>>
-                };
+                    };
+                    futures_03::pin_mut!(fut);
+                    let _ = pool.spawn_with_handle(fut);
+                }
 
-                let _ = pool.spawn_with_handle(fut);
 
                 Ok((
                     CompileResult::CacheMiss(miss_type, dist_type, duration, rx),
@@ -442,7 +436,7 @@ where
 
 #[cfg(feature = "dist-client")]
 async fn dist_or_local_compile<T>(
-    dist_client: Result<Option<Arc<dyn dist::Client>>>,
+    dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -827,7 +821,7 @@ pub async fn write_temp_file(
         let src = dir.path().join(path);
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;
-        Ok((dir, src))
+        Ok::<_,anyhow::Error>((dir, src))
     })?
     .await
     .context("failed to write temporary file")
@@ -1106,7 +1100,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
-    use tokio_compat::runtime::current_thread::Runtime;
+    use tokio_02::runtime::Runtime;
 
     #[test]
     fn test_detect_compiler_kind_gcc() {

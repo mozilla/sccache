@@ -16,7 +16,7 @@
 
 use crate::azure::credentials::*;
 use bytes::Buf;
-use futures::{Future, Stream};
+use futures_03::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
 use hyperx::header;
 use md5::{Digest, Md5};
@@ -273,7 +273,7 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio_compat::runtime::current_thread::Runtime;
+    use tokio_02::runtime::Runtime;
 
     #[test]
     fn test_signing() {
