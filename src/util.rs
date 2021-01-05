@@ -15,12 +15,12 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
-use futures::{future, Future};
-use futures_03::{compat::Future01CompatExt, pin_mut, stream::FuturesUnordered};
+use futures_03::{compat::Future01CompatExt, future, pin_mut, stream::FuturesUnordered};
 use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
 use futures_03::TryStreamExt;
 use futures_03::task;
+pub(crate) use futures_03::task::SpawnExt;
 use serde::Serialize;
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
@@ -34,27 +34,11 @@ use std::time::Duration;
 
 use crate::errors::*;
 
-
 #[derive(Debug, thiserror::Error)]
 pub enum UtilError {
     #[error(transparent)]
     Spawn(ProcessError),
 }
-
-
-/// Exists for forward compat to make the transition in the future easier
-#[async_trait::async_trait]
-pub trait SpawnExt: task::SpawnExt {
-    async fn spawn_fn<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T> + std::marker::Send + 'static,
-        T: std::marker::Send + 'static,
-    {
-        self.spawn_with_handle(async move { f() })
-    }
-}
-
-impl<S: task::SpawnExt + ?Sized> SpawnExt for S {}
 
 #[derive(Clone)]
 pub struct Digest {
@@ -96,11 +80,11 @@ impl Digest {
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
     pub async fn reader(path: PathBuf, pool: &ThreadPool) -> Result<String> {
-        pool.spawn_fn(move || -> Result<_> {
+        pool.spawn_with_handle(async move {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
             Digest::reader_sync(reader)
-        }).await
+        })?.await
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -188,18 +172,27 @@ where
         .take_stdout()
         .map(|mut io| Box::pin(async move {
             let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await.context("failed to read stdout")
-        }));
+            io.read_to_end(&mut buf).await.context("failed to read stdout")?;
+            Ok(Some(buf))
+        })).unwrap_or_else(|| {
+            Box::pin(async move { Ok(None) })
+        });
     let stderr = child
         .take_stderr()
         .map(|mut io| Box::pin(async move {
             let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await.context("failed to read stderr")
-        }));
+            io.read_to_end(&mut buf).await.context("failed to read stderr")?;
+            Ok(Some(buf))
+        })).unwrap_or_else(|| {
+            Box::pin(async move { Ok(None) })
+        });
 
     // Finish writing stdin before waiting, because waiting drops stdin.
 
-    stdin.await;
+    if let Some(stdin) = stdin {
+        stdin.await;
+    }
+
     let status = child.wait().await.context("failed to wait for child")?;
     let (stdout, stderr) = futures_03::join!(stdout, stderr);
 

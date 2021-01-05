@@ -409,9 +409,9 @@ impl Rust {
             let rlib_dep_reader = {
                 let executable = executable.clone();
                 let env_vars = env_vars.to_owned();
-                pool.spawn_fn(move || {
+                pool.spawn_with_handle(async move {
                     RlibDepReader::new_with_check(executable, &env_vars)
-                }).compat()
+                })?
             };
 
             let (sysroot_and_libs, rlib_dep_reader)=

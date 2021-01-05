@@ -367,7 +367,7 @@ where
                         );
                         let entry: Result<CacheWrite> = CacheWrite::from_objects(outputs, &pool)
                             .await;
-                        let entry = entry.context("failed to zip up compiler outputs")?;
+                        let mut entry = entry.context("failed to zip up compiler outputs")?;
 
                         let o = out_pretty.clone();
 
@@ -402,7 +402,7 @@ where
                 ))
             }
         }
-        .with_context(move || format!("failed to store `{}` to cache", out_pretty))
+        .with_context(|| format!("failed to store `{}` to cache", out_pretty))
     }
 
     /// A descriptive string about the file that we're going to be producing.
@@ -816,14 +816,14 @@ pub async fn write_temp_file(
     contents: Vec<u8>,
 ) -> Result<(TempDir, PathBuf)> {
     let path = path.to_owned();
-    pool.spawn_fn(move || -> Result<_> {
+    pool.spawn_with_handle(async move {
         let dir = tempfile::Builder::new().prefix("sccache").tempdir()?;
         let src = dir.path().join(path);
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;
         Ok((dir, src))
-    })
-    .fcontext("failed to write temporary file")
+    })?
+    .await.context("failed to write temporary file")
 }
 
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.

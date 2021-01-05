@@ -15,7 +15,7 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
-use crate::util::SpawnExt;
+
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as SpawnExt_03;
 use memcached::client::Client;

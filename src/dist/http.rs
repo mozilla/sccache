@@ -25,6 +25,8 @@ use futures_03::task::SpawnExt;
 mod common {
     #[cfg(feature = "dist-client")]
     use futures::{Future, Stream};
+    #[cfg(feature = "dist-client")]
+    use futures_03::task::SpawnExt;
     use hyperx::header;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
@@ -1089,7 +1091,7 @@ mod client {
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
-    use crate::util::SpawnExt;
+
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
@@ -1268,7 +1270,9 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
-            self.pool.spawn_fn(move || bincode_req(req))
+            Box::new(futures_03::compat::Compat::new(Box::pin(
+                self.pool.spawn_with_handle(async move { bincode_req(req) } ).expect("FIXME proper error handling")
+            )))
         }
 
         fn do_submit_toolchain(
@@ -1281,14 +1285,15 @@ mod client {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
 
-                    futures_03::compat::Compat::new(Box::pin(async move {self.pool
-                        .spawn_fn(move || {
+                    Box::new(futures_03::compat::Compat::new(Box::pin(
+                        self.pool.spawn_with_handle(async move {
                             let toolchain_file_size = toolchain_file.metadata()?.len();
                             let body =
                                 reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
                             let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
                             bincode_req(req)
-                        })}))
+                        }).expect("FIXME proper error handling")
+                    )))
                 }
                 Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => f_err(e),
@@ -1304,34 +1309,36 @@ mod client {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
 
-            Box::new(self.pool.spawn_fn(move || {
-                let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
-                    .context("failed to serialize run job request")?;
-                let bincode_length = bincode.len();
+            Box::new(futures_03::compat::Compat::new(Box::pin(
+                self.pool.spawn_with_handle(async move {
+                    let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
+                        .context("failed to serialize run job request")?;
+                    let bincode_length = bincode.len();
 
-                let mut body = vec![];
-                body.write_u32::<BigEndian>(bincode_length as u32)
-                    .expect("Infallible write of bincode length to vec failed");
-                body.write_all(&bincode)
-                    .expect("Infallible write of bincode body to vec failed");
-                let path_transformer;
-                {
-                    let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
-                    path_transformer = inputs_packager
-                        .write_inputs(&mut compressor)
-                        .context("Could not write inputs for compilation")?;
-                    compressor.flush().context("failed to flush compressor")?;
-                    trace!(
-                        "Compressed inputs from {} -> {}",
-                        compressor.total_in(),
-                        compressor.total_out()
-                    );
-                    compressor.finish().context("failed to finish compressor")?;
-                }
+                    let mut body = vec![];
+                    body.write_u32::<BigEndian>(bincode_length as u32)
+                        .expect("Infallible write of bincode length to vec failed");
+                    body.write_all(&bincode)
+                        .expect("Infallible write of bincode body to vec failed");
+                    let path_transformer;
+                    {
+                        let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
+                        path_transformer = inputs_packager
+                            .write_inputs(&mut compressor)
+                            .context("Could not write inputs for compilation")?;
+                        compressor.flush().context("failed to flush compressor")?;
+                        trace!(
+                            "Compressed inputs from {} -> {}",
+                            compressor.total_in(),
+                            compressor.total_out()
+                        );
+                        compressor.finish().context("failed to finish compressor")?;
+                    }
 
-                req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-                bincode_req(req).map(|res| (res, path_transformer))
-            }))
+                    req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                    bincode_req(req).map(|res| (res, path_transformer))
+                }).expect("FIXME proper error handling")
+            )))
         }
 
         fn put_toolchain(
@@ -1343,9 +1350,11 @@ mod client {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
-            Box::new(self.pool.spawn_fn(move || {
-                tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
-            }))
+            Box::new(futures_03::compat::Compat::new(Box::pin(
+                self.pool.spawn_with_handle(async move {
+                    tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
+                }).expect("FIXME proper error handling")
+            )))
         }
 
         fn rewrite_includes_only(&self) -> bool {
