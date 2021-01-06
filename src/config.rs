@@ -546,6 +546,29 @@ fn config_from_env() -> EnvConfig {
     EnvConfig { cache }
 }
 
+// The directories crate changed the location of `config_dir` on macos in version 3,
+// so we also check the config in `preference_dir` (new in that version), which
+// corresponds to the old location, for compatibility with older setups.
+fn config_file(env_var: &str, leaf: &str) -> PathBuf {
+    if let Some(env_value) = env::var_os(env_var) {
+        return env_value.into();
+    }
+    let dirs =
+        ProjectDirs::from("", ORGANIZATION, APP_NAME).expect("Unable to get config directory");
+    // If the new location exists, use that.
+    let path = dirs.config_dir().join(leaf);
+    if path.exists() {
+        return path;
+    }
+    // If the old location exists, use that.
+    let path = dirs.preference_dir().join(leaf);
+    if path.exists() {
+        return path;
+    }
+    // Otherwise, use the new location.
+    dirs.config_dir().join(leaf)
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub caches: Vec<CacheType>,
@@ -557,13 +580,7 @@ impl Config {
     pub fn load() -> Result<Config> {
         let env_conf = config_from_env();
 
-        let file_conf_path = env::var_os("SCCACHE_CONF")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
-                    .expect("Unable to get config directory");
-                dirs.config_dir().join("config")
-            });
+        let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
@@ -641,13 +658,7 @@ impl CachedConfig {
     }
 
     fn file_config_path() -> PathBuf {
-        env::var_os("SCCACHE_CACHED_CONF")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
-                    .expect("Unable to get config directory");
-                dirs.config_dir().join("cached-config")
-            })
+        config_file("SCCACHE_CACHED_CONF", "cached-config")
     }
     fn load_file_config() -> Result<CachedFileConfig> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
