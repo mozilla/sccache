@@ -1,4 +1,4 @@
-use futures::prelude::*;
+use futures_03::prelude::*;
 use futures_03::channel::oneshot;
 use futures_03::compat::Future01CompatExt;
 use futures_03::task as task_03;

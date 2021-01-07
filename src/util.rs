@@ -199,9 +199,7 @@ where
     if let Some(stdin) = stdin {
         stdin.await;
     }
-    let mut child = Box::pin(child);
-
-    let status = child.await.context("failed to wait for child")?;
+    let status = child.wait().await.context("failed to wait for child")?;
     let (stdout, stderr) = futures_03::join!(stdout, stderr);
 
     Ok(process::Output {

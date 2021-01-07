@@ -386,8 +386,7 @@ where
                         tx.send(write_info);
                         Ok(())
                     };
-                    futures_03::pin_mut!(fut);
-                    let _ = pool.spawn_with_handle(fut);
+                    let _ = pool.spawn_with_handle(Box::pin(fut));
                 }
 
 
@@ -411,7 +410,7 @@ where
 
 #[cfg(not(feature = "dist-client"))]
 async fn dist_or_local_compile<T>(
-    _dist_client: Result<Option<Arc<dyn dist::Client>>>,
+    _dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
