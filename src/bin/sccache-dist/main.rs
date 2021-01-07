@@ -9,7 +9,6 @@ extern crate jsonwebtoken as jwt;
 extern crate libmount;
 #[macro_use]
 extern crate log;
-extern crate lru_disk_cache;
 extern crate nix;
 extern crate openssl;
 extern crate rand;

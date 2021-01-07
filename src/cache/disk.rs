@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::lru_disk_cache::Error as LruError;
+use crate::lru_disk_cache::LruDiskCache;
 use crate::util::SpawnExt;
 use futures_03::executor::ThreadPool;
-use lru_disk_cache::Error as LruError;
-use lru_disk_cache::LruDiskCache;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
