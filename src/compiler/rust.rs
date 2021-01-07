@@ -27,8 +27,10 @@ use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
 use futures_03::Future;
+use futures_03::pin_mut;
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as SpawnExt_03;
+use futures_03::compat::Future01CompatExt;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -550,7 +552,6 @@ where
     }
 }
 
-use futures_03::compat::Future01CompatExt;
 
 impl RustupProxy {
     pub fn new<P>(proxy_executable: P) -> Result<Self>
@@ -1270,19 +1271,22 @@ where
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
-        let source_files = get_source_files(
-            creator,
-            &crate_name,
-            &executable,
-            &filtered_arguments,
-            &cwd,
-            &env_vars,
-            pool,
-        )
-        .await;
-        let source_files_and_hashes = hash_all(&source_files, &source_hashes_pool)
-            .await
-            .map(|source_hashes| (source_files, source_hashes));
+
+        let source_files_and_hashes = async {
+            let source_files = get_source_files(
+                creator,
+                &crate_name,
+                &executable,
+                &filtered_arguments,
+                &cwd,
+                &env_vars,
+                pool,
+            )
+            .await?;
+            let source_hashes = hash_all(&source_files, &source_hashes_pool)
+            .await?;
+            Ok((source_files, source_hashes))
+        };
 
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
@@ -1293,6 +1297,7 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all(&abs_staticlibs, pool);
 
+        pin_mut!(source_files_and_hashes);
         let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
             futures_03::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
 

@@ -351,19 +351,20 @@ where
 
                 {
                     let compiler_result = compiler_result.clone();
-                    let pool = pool.clone();
+                    let pool2 = pool.clone();
+                    let out_pretty2 = out_pretty.clone();
+
                     let fut = async move {
                         // Cache miss, so compile it.
                         let duration = start.elapsed();
                         debug!(
                             "[{}]: Compiled in {}, storing in cache",
-                            out_pretty,
+                            out_pretty2,
                             fmt_duration_as_secs(&duration)
                         );
-                        let mut entry: CacheWrite =
-                            CacheWrite::from_objects(outputs, &pool).await.context("failed to zip up compiler outputs")?;
-
-                        let o = out_pretty.clone();
+                        let mut entry: Result<CacheWrite> =
+                            CacheWrite::from_objects(outputs, &pool2).await;
+                        let mut entry = entry.context("failed to zip up compiler outputs")?;
 
                         entry.put_stdout(&compiler_result.stdout)?;
                         entry.put_stderr(&compiler_result.stderr)?;
@@ -375,16 +376,16 @@ where
                         let storage = storage.clone();
                         let res = storage.put(&key, entry).await;
                         match res {
-                            Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty),
-                            Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty, e),
+                            Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
+                            Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
                         }
 
                         let write_info = CacheWriteInfo {
-                            object_file_pretty: out_pretty,
+                            object_file_pretty: out_pretty2,
                             duration,
                         };
                         tx.send(write_info);
-                        Ok(())
+                        Ok::<_,anyhow::Error>(())
                     };
                     let _ = pool.spawn_with_handle(Box::pin(fut));
                 }
@@ -981,7 +982,8 @@ diab
 
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
-    let output = cmd
+    let child = cmd.spawn().await?;
+    let output = child
         .wait_with_output()
         .await
         .context("failed to read child output")?;
