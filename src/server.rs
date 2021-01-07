@@ -1099,20 +1099,28 @@ where
         };
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let result = hasher.get_cached_or_compile(
-            self.dist_client.get_client(),
-            self.creator.clone(),
-            self.storage.clone(),
-            arguments,
-            cwd,
-            env_vars,
-            cache_control,
-            self.pool.clone(),
-        );
         let me = self.clone();
         let kind = compiler.kind();
+        let dist_client = self.dist_client.get_client();
+        let creator = self.creator.clone();
+        let storage = self.storage.clone();
+        let pool = self.pool.clone();
         let task = async move {
-            let result = result.await;
+            let result = match dist_client {
+                Ok(client) => {
+                    hasher.get_cached_or_compile(
+                        client,
+                        creator,
+                        storage,
+                        arguments,
+                        cwd,
+                        env_vars,
+                        cache_control,
+                        pool,
+                    ).await
+                }
+                Err(e) => Err(e),
+            };
             let mut cache_write = None;
             let mut res = CompileFinished {
                 color_mode,

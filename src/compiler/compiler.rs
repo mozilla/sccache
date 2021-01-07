@@ -190,7 +190,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
+        dist_client: Option<Arc<dyn dist::Client + Send>>,
         creator: T,
         storage: Arc<dyn Storage>,
         arguments: Vec<OsString>,
@@ -202,11 +202,8 @@ where
         let out_pretty = self.output_pretty().into_owned();
         debug!("[{}]: get_cached_or_compile: {:?}", out_pretty, arguments);
         let start = Instant::now();
-        let may_dist = matches!(dist_client, Ok(Some(_)));
-        let rewrite_includes_only = match dist_client {
-            Ok(Some(ref client)) => client.rewrite_includes_only(),
-            _ => false,
-        };
+        let may_dist = dist_client.is_some();
+        let rewrite_includes_only = dist_client.as_ref().map(|client| client.rewrite_includes_only()).unwrap_or_default();
         let result = self
             .generate_hash_key(
                 &creator,
@@ -326,15 +323,15 @@ where
 
                 let start = Instant::now();
 
-                let (cacheable, dist_type, compiler_result) = dist_or_local_compile(
-                    dist_client,
-                    creator,
-                    cwd,
-                    compilation,
-                    weak_toolchain_key,
-                    out_pretty.clone(),
-                )
-                .await?;
+                let (cacheable, dist_type, compiler_result) =
+                        dist_or_local_compile(
+                            dist_client.clone(),
+                            creator,
+                            cwd,
+                            compilation,
+                            weak_toolchain_key,
+                            out_pretty.clone(),
+                        ).await?;
 
                 if !compiler_result.status.success() {
                     debug!(
@@ -436,7 +433,7 @@ where
 
 #[cfg(feature = "dist-client")]
 async fn dist_or_local_compile<T>(
-    dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
+    dist_client: Option<Arc<dyn dist::Client + Send>>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -449,10 +446,7 @@ where
     use futures::future;
     use std::io;
 
-    let rewrite_includes_only = match dist_client {
-        Ok(Some(ref client)) => client.rewrite_includes_only(),
-        _ => false,
-    };
+    let rewrite_includes_only = dist_client.as_ref().map(|client| client.rewrite_includes_only()).unwrap_or_default();
     let mut path_transformer = dist::PathTransformer::default();
     let compile_commands = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
@@ -460,17 +454,14 @@ where
     let (compile_cmd, dist_compile_cmd, cacheable) = compile_commands?;
 
     let dist_client = match dist_client {
-        Ok(Some(dc)) => dc,
-        Ok(None) => {
+        Some(dc) => dc,
+        None => {
             debug!("[{}]: Compiling locally", out_pretty);
 
             return compile_cmd
                 .execute(&creator)
                 .await
                 .map(move |o| (cacheable, DistType::NoDist, o));
-        }
-        Err(e) => {
-            return Err(e);
         }
     };
 
@@ -1340,7 +1331,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    Ok(None),
+                    None,
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1374,7 +1365,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
-                    Ok(None),
+                    None,
                     creator,
                     storage,
                     arguments,
@@ -1441,7 +1432,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    Ok(dist_client.clone()),
+                    dist_client.clone(),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1475,7 +1466,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher2.get_cached_or_compile(
-                    Ok(dist_client.clone()),
+                    dist_client.clone(),
                     creator,
                     storage,
                     arguments,
@@ -1549,7 +1540,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    Ok(None),
+                    None,
                     creator,
                     storage,
                     arguments.clone(),
@@ -1631,7 +1622,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    Ok(None),
+                    None,
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
@@ -1658,7 +1649,7 @@ LLVM version: 6.0",
         fs::remove_file(&obj).unwrap();
         let (cached, res) = hasher2
             .get_cached_or_compile(
-                Ok(None),
+                None,
                 creator,
                 storage,
                 arguments,
@@ -1733,7 +1724,7 @@ LLVM version: 6.0",
         let (cached, res) = runtime
             .block_on(future::lazy(|| {
                 hasher.get_cached_or_compile(
-                    Ok(None),
+                    None,
                     creator,
                     storage,
                     arguments,
@@ -1819,7 +1810,7 @@ LLVM version: 6.0",
             let hasher = hasher.clone();
             let (cached, res) = hasher
                 .get_cached_or_compile(
-                    Ok(Some(dist_client.clone())),
+                    Some(dist_client.clone()),
                     creator.clone(),
                     storage.clone(),
                     arguments.clone(),
