@@ -1495,17 +1495,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru-disk-cache"
-version = "0.4.1"
-dependencies = [
- "filetime",
- "linked-hash-map",
- "log 0.4.8",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
 name = "matches"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2707,9 +2696,9 @@ dependencies = [
  "lazy_static",
  "libc",
  "libmount",
+ "linked-hash-map",
  "local-encoding",
  "log 0.4.8",
- "lru-disk-cache",
  "md-5",
  "memcached-rs",
  "nix 0.19.1",

@@ -1,8 +1,3 @@
-#![deny(rust_2018_idioms)]
-
-#[macro_use]
-extern crate log;
-//extern crate lru_cache;
 pub mod lru_cache;
 
 use std::borrow::Borrow;
@@ -17,8 +12,8 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
-pub use crate::lru_cache::{LruCache, Meter};
 use filetime::{set_file_times, FileTime};
+pub use lru_cache::{LruCache, Meter};
 use walkdir::WalkDir;
 
 struct FileSize;

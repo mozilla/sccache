@@ -47,6 +47,7 @@ jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
 lazy_static = "1.4"
 libc = "^0.2.10"
+linked-hash-map = "0.5"
 local-encoding = "0.2.0"
 log = "0.4"
 rsa = "0.3"
@@ -59,7 +60,6 @@ rsa-export = "0.2"
 oid = "0.1"
 picky = "6"
 picky-asn1-x509 = "0.3"
-lru-disk-cache = { path = "lru-disk-cache", version = "0.4.0" }
 md-5 = { version = "0.9", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.13"
