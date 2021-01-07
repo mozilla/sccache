@@ -205,11 +205,25 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> SFuture<CCompiler<I>> {
+    pub fn new(
+        compiler: I,
+        executable: PathBuf,
+        version: Option<String>,
+        pool: &ThreadPool,
+    ) -> SFuture<CCompiler<I>> {
         Box::new(
             Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
                 executable,
-                executable_digest: digest,
+                executable_digest: {
+                    if let Some(version) = version {
+                        let mut m = Digest::new();
+                        m.update(digest.as_bytes());
+                        m.update(version.as_bytes());
+                        m.finish()
+                    } else {
+                        digest
+                    }
+                },
                 compiler,
             }),
         )
