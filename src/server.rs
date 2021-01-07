@@ -32,7 +32,7 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures::Future as _;
+use futures_03::Future as _;
 use futures_03::executor::ThreadPool;
 use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
 use number_prefix::{binary_prefix, Prefixed, Standalone};
@@ -800,7 +800,7 @@ where
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>>
+    fn bind<T>(self, socket: T) -> impl futures_03::Future<Output = Result<()>>
     where
         T: AsyncRead + AsyncWrite + Unpin + 'static,
     {

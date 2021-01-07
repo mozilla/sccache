@@ -1291,13 +1291,15 @@ where
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
         let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
-        let extern_hashes = hash_all(&abs_externs, pool);
+        let extern_hashes = async { hash_all(&abs_externs, pool).await };
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
-        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
+        let staticlib_hashes = async { hash_all(&abs_staticlibs, pool).await };
 
         pin_mut!(source_files_and_hashes);
+        pin_mut!(staticlib_hashes);
+        pin_mut!(extern_hashes);
         let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
             futures_03::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
 

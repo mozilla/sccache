@@ -13,8 +13,8 @@
 // limitations under the License.
 
 pub use anyhow::{anyhow, bail, Context, Error};
-use futures::future;
-use futures::Future;
+use futures::future as legacy_future;
+use futures::Future as LegacyFuture;
 use std::boxed::Box;
 use std::fmt::Display;
 use std::process;
@@ -65,15 +65,15 @@ impl std::fmt::Display for ProcessError {
 
 pub type Result<T> = anyhow::Result<T>;
 
-pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
-pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
+pub type SFuture<T> = Box<dyn LegacyFuture<Item = T, Error = Error> + Send>;
+pub type SFutureSend<T> = Box<dyn LegacyFuture<Item = T, Error = Error> + Send>;
 pub type SFutureStd<T> = Box<dyn std::future::Future<Output = Result<T>>>;
 
 pub fn f_ok<T>(t: T) -> SFuture<T>
 where
     T: 'static + Send,
 {
-    Box::new(future::ok(t))
+    Box::new(legacy_future::ok(t))
 }
 
 pub fn f_err<T, E>(e: E) -> SFuture<T>
@@ -81,5 +81,5 @@ where
     T: 'static + Send,
     E: Into<Error>,
 {
-    Box::new(future::err(e.into()))
+    Box::new(legacy_future::err(e.into()))
 }

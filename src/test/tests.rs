@@ -19,7 +19,7 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
-use futures::sync::oneshot::{self, Sender};
+use futures_03::channel::oneshot::{self, Sender};
 use futures_03::compat::*;
 use futures_03::executor::ThreadPool;
 use std::fs::File;

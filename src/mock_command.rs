@@ -47,7 +47,7 @@
 
 use crate::errors::*;
 use crate::jobserver::{Acquired, Client};
-use futures::future::{self, Future};
+use futures_03::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;

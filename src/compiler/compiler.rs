@@ -325,7 +325,7 @@ where
 
                 let (cacheable, dist_type, compiler_result) =
                         dist_or_local_compile(
-                            dist_client.clone(),
+                            dist_client,
                             creator,
                             cwd,
                             compilation,
@@ -443,7 +443,7 @@ async fn dist_or_local_compile<T>(
 where
     T: CommandCreatorSync,
 {
-    use futures::future;
+    use futures_03::future::{self, Future};
     use std::io;
 
     let rewrite_includes_only = dist_client.as_ref().map(|client| client.rewrite_includes_only()).unwrap_or_default();
@@ -1085,7 +1085,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
-    use futures::{future, Future};
+    use futures_03::future::{self, Future};
     use futures_03::executor::ThreadPool;
     use std::fs::{self, File};
     use std::io::Write;

@@ -15,8 +15,7 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use directories::UserDirs;
-use futures::future;
-use futures::future::Future;
+use futures_03::future::{self, Future};
 use futures_03::future::TryFutureExt as _;
 use hyper::Client;
 use hyper_rustls;

@@ -127,7 +127,7 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
+    use futures_03::future::{self, Future};
     use futures_03::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::RngCore;

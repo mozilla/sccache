@@ -24,7 +24,7 @@ use futures_03::task::SpawnExt;
 
 mod common {
     #[cfg(feature = "dist-client")]
-    use futures::{Future, Stream};
+    use futures_03::{Future, Stream};
     #[cfg(feature = "dist-client")]
     use futures_03::task::SpawnExt;
     use hyperx::header;
@@ -396,7 +396,6 @@ mod server {
                 subject_alt_name.into_non_critical(),
                 extended_key_usage.into_non_critical(),
             ]);
-
             picky::x509::Cert::from(certificate)
         };
 

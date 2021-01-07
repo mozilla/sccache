@@ -24,6 +24,7 @@ use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
 use futures_03::Future;
+use futures_03::StreamExt;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -89,18 +90,25 @@ fn run_server_process() -> Result<ServerStartup> {
         .env("RUST_BACKTRACE", "1")
         .spawn()?;
 
-    let startup = listener.incoming().into_future().map_err(|e| e.0);
-    let startup = startup.map_err(Error::from).and_then(|(socket, _rest)| {
-        let socket = socket.unwrap(); // incoming() never returns None
-        read_server_startup_status(socket)
-    });
+    let startup = async move {
+        let mut listener = listener.incoming();
+        match listener.next().await.expect("UnixListener::incoming() never returns `None`. qed") {
+            Ok(stream) => {
+                read_server_startup_status(stream).await
+            }
+            Err(e) => {
+                Ok(ServerStartup::Err{ reason: format!("Error {:?} ", e) } )
+            }
+        }
+    };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
     let z = runtime.block_on(async move { tokio_02::time::timeout(timeout, startup).await } );
-    z.and_then(|x| x)
+
+    z
     .or_else(|err| {
-        Ok(ServerStartup::TimedOut)
-    })
+        Ok(Ok(ServerStartup::TimedOut))
+    }).and_then(|flatten| flatten)
 }
 
 #[cfg(not(windows))]
@@ -507,8 +515,8 @@ where
     let status = {
         let mut fut = async move { cmd.spawn().await };
         futures_03::pin_mut!(fut);
-        runtime.block_on(fut)?
-    };
+        runtime.block_on(fut)
+    }?;
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
