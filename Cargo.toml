@@ -118,7 +118,7 @@ tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680d
 assert_cmd = "1"
 cc = "1.0"
 chrono = "0.4"
-itertools = "0.9"
+itertools = "0.10"
 predicates = "1"
 selenium-rs = "0.1"
 
