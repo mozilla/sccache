@@ -110,10 +110,6 @@ version-compare = { version = "0.0.10", optional = true }
 # test only
 openssl = { version = "0.10", optional = true }
 
-[patch.crates-io]
-# Waiting for #151 to make it into a release
-tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680de" }
-
 [dev-dependencies]
 assert_cmd = "1"
 cc = "1.0"

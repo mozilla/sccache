@@ -3229,7 +3229,8 @@ dependencies = [
 [[package]]
 name = "tiny_http"
 version = "0.6.2"
-source = "git+https://github.com/tiny-http/tiny-http.git?rev=619680de#619680dea2c4f1dfb31b552d5e7b472a9f25b8b8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1661fa0a44c95d01604bd05c66732a446c657efb62b5164a7a083a3b552b4951"
 dependencies = [
  "ascii",
  "chrono",

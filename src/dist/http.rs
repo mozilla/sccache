@@ -73,7 +73,9 @@ mod common {
     pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
         req: reqwest::RequestBuilder,
     ) -> Result<T> {
-        let mut res = req.send()?;
+        // Work around tiny_http issue #151 by disabling HTTP pipeline with
+        // `Connection: close`.
+        let mut res = req.set_header(header::Connection::close()).send()?;
         let status = res.status();
         let mut body = vec![];
         res.copy_to(&mut body)
@@ -94,7 +96,10 @@ mod common {
         req: reqwest::r#async::RequestBuilder,
     ) -> SFuture<T> {
         Box::new(
-            req.send()
+            // Work around tiny_http issue #151 by disabling HTTP pipeline with
+            // `Connection: close`.
+            req.set_header(header::Connection::close())
+                .send()
                 .map_err(Into::into)
                 .and_then(|res| {
                     let status = res.status();
