@@ -573,7 +573,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             }
             .await;
             info!("shutting down due to being idle or request");
-            Ok::<anyhow::Error>(())
+            Ok::<_, anyhow::Error>(())
         };
 
         let server = async move {
@@ -797,7 +797,7 @@ where
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl futures_03::Future<Output = Result<()>>
+    async fn bind<T>(self, socket: T) -> Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin + 'static,
     {
@@ -836,7 +836,7 @@ where
             })
             .try_flatten()
             .forward(sink)
-            .map_ok(|_| ())
+            .map_ok(|_| ()).await
     }
 
     /// Get dist status.
