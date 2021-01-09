@@ -22,7 +22,8 @@ pub use self::server::{
 
 mod common {
     #[cfg(feature = "dist-client")]
-    use futures::{Future, Stream};
+    use futures::Future;
+    use futures_03::future::{FutureExt, TryFutureExt};
     use hyperx::header;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
@@ -39,7 +40,7 @@ mod common {
         fn bytes(self, bytes: Vec<u8>) -> Self;
         fn bearer_auth(self, token: String) -> Self;
     }
-    impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
+    impl ReqwestRequestBuilderExt for reqwest::blocking::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
             let bytes =
                 bincode::serialize(bincode).context("Failed to serialize body to bincode")?;
@@ -54,7 +55,7 @@ mod common {
             self.set_header(header::Authorization(header::Bearer { token }))
         }
     }
-    impl ReqwestRequestBuilderExt for reqwest::r#async::RequestBuilder {
+    impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
             let bytes =
                 bincode::serialize(bincode).context("Failed to serialize body to bincode")?;
@@ -71,7 +72,7 @@ mod common {
     }
 
     pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
-        req: reqwest::RequestBuilder,
+        req: reqwest::blocking::RequestBuilder,
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
@@ -93,18 +94,21 @@ mod common {
     }
     #[cfg(feature = "dist-client")]
     pub fn bincode_req_fut<T: serde::de::DeserializeOwned + 'static>(
-        req: reqwest::r#async::RequestBuilder,
+        req: reqwest::RequestBuilder,
     ) -> SFuture<T> {
         Box::new(
             // Work around tiny_http issue #151 by disabling HTTP pipeline with
             // `Connection: close`.
             req.set_header(header::Connection::close())
                 .send()
+                .boxed()
+                .compat()
                 .map_err(Into::into)
                 .and_then(|res| {
                     let status = res.status();
-                    res.into_body()
-                        .concat2()
+                    res.bytes()
+                        .boxed()
+                        .compat()
                         .map(move |b| (status, b))
                         .map_err(Into::into)
                 })
@@ -691,7 +695,7 @@ mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(reqwest::Client::new()),
+                client: Mutex::new(reqwest::blocking::Client::new()),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -727,7 +731,7 @@ mod server {
             }
 
             fn maybe_update_certs(
-                client: &mut reqwest::Client,
+                client: &mut reqwest::blocking::Client,
                 certs: &mut HashMap<ServerId, (Vec<u8>, Vec<u8>)>,
                 server_id: ServerId,
                 cert_digest: Vec<u8>,
@@ -742,7 +746,7 @@ mod server {
                     "Adding new certificate for {} to scheduler",
                     server_id.addr()
                 );
-                let mut client_builder = reqwest::ClientBuilder::new();
+                let mut client_builder = reqwest::blocking::ClientBuilder::new();
                 // Add all the certificates we know about
                 client_builder = client_builder.add_root_certificate(
                     reqwest::Certificate::from_pem(&cert_pem)
@@ -856,7 +860,7 @@ mod server {
     }
 
     struct SchedulerRequester {
-        client: Mutex<reqwest::Client>,
+        client: Mutex<reqwest::blocking::Client>,
     }
 
     impl dist::SchedulerOutgoing for SchedulerRequester {
@@ -938,14 +942,14 @@ mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: reqwest::Client::new(),
+                client: reqwest::blocking::Client::new(),
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = reqwest::Client::new();
+                let client = reqwest::blocking::Client::new();
                 loop {
                     trace!("Performing heartbeat");
                     match bincode_req(
@@ -1031,7 +1035,7 @@ mod server {
     }
 
     struct ServerRequester {
-        client: reqwest::Client,
+        client: reqwest::blocking::Client,
         scheduler_url: reqwest::Url,
         scheduler_auth: String,
     }
@@ -1092,8 +1096,8 @@ mod client {
         server_certs: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
         // TODO: this should really only use the async client, but reqwest async bodies are extremely limited
         // and only support owned bytes, which means the whole toolchain would end up in memory
-        client: Arc<Mutex<reqwest::Client>>,
-        client_async: Arc<Mutex<reqwest::r#async::Client>>,
+        client: Arc<Mutex<reqwest::blocking::Client>>,
+        client_async: Arc<Mutex<reqwest::Client>>,
         pool: ThreadPool,
         tc_cache: Arc<cache::ClientToolchains>,
         rewrite_includes_only: bool,
@@ -1111,12 +1115,12 @@ mod client {
         ) -> Result<Self> {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let connect_timeout = Duration::new(CONNECT_TIMEOUT_SECS, 0);
-            let client = reqwest::ClientBuilder::new()
+            let client = reqwest::blocking::ClientBuilder::new()
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 .build()
                 .context("failed to create a HTTP client")?;
-            let client_async = reqwest::r#async::ClientBuilder::new()
+            let client_async = reqwest::ClientBuilder::new()
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
                 .build()
@@ -1137,14 +1141,14 @@ mod client {
         }
 
         fn update_certs(
-            client: &mut reqwest::Client,
-            client_async: &mut reqwest::r#async::Client,
+            client: &mut reqwest::blocking::Client,
+            client_async: &mut reqwest::Client,
             certs: &mut HashMap<Vec<u8>, Vec<u8>>,
             cert_digest: Vec<u8>,
             cert_pem: Vec<u8>,
         ) -> Result<()> {
-            let mut client_builder = reqwest::ClientBuilder::new();
-            let mut client_async_builder = reqwest::r#async::ClientBuilder::new();
+            let mut client_builder = reqwest::blocking::ClientBuilder::new();
+            let mut client_async_builder = reqwest::ClientBuilder::new();
             // Add all the certificates we know about
             client_builder = client_builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&cert_pem)

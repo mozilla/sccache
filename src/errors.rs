@@ -29,7 +29,7 @@ use std::process;
 
 #[cfg(feature = "hyper")]
 #[derive(Debug)]
-pub struct BadHttpStatusError(pub hyper::StatusCode);
+pub struct BadHttpStatusError(pub ::http_02::StatusCode);
 
 #[derive(Debug)]
 pub struct HttpClientError(pub String);

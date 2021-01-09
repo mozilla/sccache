@@ -40,6 +40,7 @@ futures = "0.1.11"
 futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
 hmac = { version = "0.10", optional = true }
 http = "0.1"
+http_02 = { package = "http", version = "0.2" }
 hyper = { version = "0.12", optional = true }
 hyperx = { version = "0.12", optional = true }
 jobserver = "0.1"
@@ -58,7 +59,7 @@ percent-encoding = { version = "2", optional = true }
 rand = "0.7"
 redis = { version = "0.17", optional = true }
 regex = "1"
-reqwest = { version = "0.9.11", optional = true }
+reqwest = { version = "0.10", optional = true, features = ["blocking", "json"] }
 retry = "1"
 ring = { version = "0.16", optional = true, features = ["std"] }
 sha-1 = { version = "0.9", optional = true }

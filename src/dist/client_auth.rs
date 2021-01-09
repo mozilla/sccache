@@ -286,8 +286,8 @@ mod code_grant_pkce {
             grant_type: GRANT_TYPE_PARAM_VALUE,
             redirect_uri,
         };
-        let client = reqwest::Client::new();
-        let mut res = client.post(token_url).json(&token_request).send()?;
+        let client = reqwest::blocking::Client::new();
+        let res = client.post(token_url).json(&token_request).send()?;
         if !res.status().is_success() {
             bail!(
                 "Sending code to {} failed, HTTP error: {}",

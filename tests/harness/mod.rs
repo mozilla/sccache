@@ -449,7 +449,7 @@ impl DistSystem {
     }
 
     fn scheduler_status(&self) -> SchedulerStatusResult {
-        let res = reqwest::get(dist::http::urls::scheduler_status(
+        let res = reqwest::blocking::get(dist::http::urls::scheduler_status(
             &self.scheduler_url().to_url(),
         ))
         .unwrap();
@@ -635,7 +635,8 @@ fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
     wait_for(
         || {
             //match reqwest::get(url.to_url()) {
-            match net::TcpStream::connect(url.to_url()) {
+            let addrs = url.to_url().socket_addrs(|| None).unwrap();
+            match net::TcpStream::connect(&*addrs) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.to_string()),
             }

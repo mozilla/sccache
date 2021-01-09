@@ -6,12 +6,13 @@ use std::ascii::AsciiExt;
 use std::fmt;
 
 use crate::simples3::credential::*;
-use futures::{Future, Stream};
+use futures::Future;
+use futures_03::future::{FutureExt, TryFutureExt};
 use hmac::{Hmac, Mac, NewMac};
-use hyper::header::HeaderValue;
-use hyper::Method;
+use http_02::header::HeaderValue;
+use http_02::Method;
 use hyperx::header;
-use reqwest::r#async::{Client, Request};
+use reqwest::{Client, Request};
 use sha1::Sha1;
 
 use crate::errors::*;
@@ -103,6 +104,8 @@ impl Bucket {
         Box::new(
             self.client
                 .execute(request)
+                .boxed()
+                .compat()
                 .fwith_context(move || format!("failed GET: {}", url))
                 .and_then(|res| {
                     if res.status().is_success() {
@@ -110,31 +113,30 @@ impl Bucket {
                             .headers()
                             .get_hyperx::<header::ContentLength>()
                             .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
+                        Ok((res.bytes(), content_length))
                     } else {
                         Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), url2);
+                    body.boxed()
+                        .compat()
+                        .fcontext("failed to read HTTP body")
+                        .and_then(move |bytes| {
+                            let bytes: Vec<u8> = bytes.as_ref().to_vec();
+                            if let Some(len) = content_length {
+                                if len != bytes.len() as u64 {
+                                    bail!(format!(
+                                        "Bad HTTP body size read: {}, expected {}",
+                                        bytes.len(),
+                                        len
+                                    ));
+                                } else {
+                                    info!("Read {} bytes from {}", bytes.len(), url2);
+                                }
                             }
-                        }
-                        Ok(bytes)
-                    })
+                            Ok(bytes)
+                        })
                 }),
         )
     }
@@ -189,21 +191,27 @@ impl Bucket {
         );
         *request.body_mut() = Some(content.into());
 
-        Box::new(self.client.execute(request).then(|result| match result {
-            Ok(res) => {
-                if res.status().is_success() {
-                    trace!("PUT succeeded");
-                    Ok(())
-                } else {
-                    trace!("PUT failed with HTTP status: {}", res.status());
-                    Err(BadHttpStatusError(res.status()).into())
-                }
-            }
-            Err(e) => {
-                trace!("PUT failed with error: {:?}", e);
-                Err(e.into())
-            }
-        }))
+        Box::new(
+            self.client
+                .execute(request)
+                .boxed()
+                .compat()
+                .then(|result| match result {
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            trace!("PUT succeeded");
+                            Ok(())
+                        } else {
+                            trace!("PUT failed with HTTP status: {}", res.status());
+                            Err(BadHttpStatusError(res.status()).into())
+                        }
+                    }
+                    Err(e) => {
+                        trace!("PUT failed with error: {:?}", e);
+                        Err(e.into())
+                    }
+                }),
+        )
     }
 
     // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html

@@ -22,12 +22,13 @@ use crate::{
 };
 use futures::{
     future::{self, Shared},
-    Async, Future, Stream,
+    Async, Future,
 };
-use hyper::Method;
+use futures_03::future::{FutureExt, TryFutureExt};
+use http_02::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use reqwest::r#async::{Client, Request};
+use reqwest::{Client, Request};
 use serde::de;
 use url::form_urlencoded;
 
@@ -94,20 +95,24 @@ impl Bucket {
             }
             client
                 .execute(request)
+                .boxed()
+                .compat()
                 .fwith_context(move || format!("failed GET: {}", url))
                 .and_then(|res| {
                     if res.status().is_success() {
-                        Ok(res.into_body())
+                        Ok(res.bytes())
                     } else {
                         Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(|body| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
+                    body.boxed()
+                        .compat()
+                        .map(|body| {
+                            let bytes: Vec<u8> = body.as_ref().to_vec();
+                            bytes
+                        })
+                        .fcontext("failed to read HTTP body")
                 })
         }))
     }
@@ -144,21 +149,25 @@ impl Bucket {
             }
             *request.body_mut() = Some(content.into());
 
-            client.execute(request).then(|result| match result {
-                Ok(res) => {
-                    if res.status().is_success() {
-                        trace!("PUT succeeded");
-                        Ok(())
-                    } else {
-                        trace!("PUT failed with HTTP status: {}", res.status());
-                        Err(BadHttpStatusError(res.status()).into())
+            client
+                .execute(request)
+                .boxed()
+                .compat()
+                .then(|result| match result {
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            trace!("PUT succeeded");
+                            Ok(())
+                        } else {
+                            trace!("PUT failed with HTTP status: {}", res.status());
+                            Err(BadHttpStatusError(res.status()).into())
+                        }
                     }
-                }
-                Err(e) => {
-                    trace!("PUT failed with error: {:?}", e);
-                    Err(e.into())
-                }
-            })
+                    Err(e) => {
+                        trace!("PUT failed with error: {:?}", e);
+                        Err(e.into())
+                    }
+                })
         }))
     }
 }
@@ -392,22 +401,24 @@ impl GCSCredentialProvider {
                     }
                     *request.body_mut() = Some(params.into());
 
-                    client.execute(request).map_err(Into::into)
+                    client.execute(request).boxed().compat().map_err(Into::into)
                 })
                 .and_then(move |res| {
                     if res.status().is_success() {
-                        Ok(res.into_body())
+                        Ok(res.bytes())
                     } else {
                         Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
                     // Concatenate body chunks into a single Vec<u8>
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
+                    body.boxed()
+                        .compat()
+                        .map(|body| {
+                            let bytes: Vec<u8> = body.as_ref().to_vec();
+                            bytes
+                        })
+                        .fcontext("failed to read HTTP body")
                 })
                 .and_then(move |body| {
                     // Convert body to string and parse the token out of the response
@@ -427,20 +438,24 @@ impl GCSCredentialProvider {
             client
                 .get(url)
                 .send()
+                .boxed()
+                .compat()
                 .map_err(Into::into)
                 .and_then(move |res| {
                     if res.status().is_success() {
-                        Ok(res.into_body())
+                        Ok(res.bytes())
                     } else {
                         Err(BadHttpStatusError(res.status()).into())
                     }
                 })
                 .and_then(move |body| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
+                    body.boxed()
+                        .compat()
+                        .map(|body| {
+                            let bytes: Vec<u8> = body.as_ref().to_vec();
+                            bytes
+                        })
+                        .fcontext("failed to read HTTP body")
                 })
                 .and_then(move |body| {
                     let body_str = String::from_utf8(body)?;
