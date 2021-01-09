@@ -39,19 +39,14 @@ impl Client {
             (None, None)
         } else {
             let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let mut rx = tokio_02::runtime::Runtime::new()
-                .unwrap()
-                .block_on(async move { rx.next().await });
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
                     tokio_02::runtime::Runtime::new()
                         .unwrap()
                         .block_on(async move {
-                            if let Some(rx) = rx {
-                                if let Ok(sender) = rx.next().await {
-                                    drop(sender.send(token));
-                                }
+                            if let Some(sender) = rx.next().await {
+                                drop(sender.send(token));
                             }
                         });
                 })
