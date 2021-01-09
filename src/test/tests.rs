@@ -93,7 +93,7 @@ where
         let port = srv.port();
         let creator = srv.command_creator().clone();
         tx.send((port, creator)).unwrap();
-        srv.run(shutdown_rx.compat()).unwrap();
+        srv.run(shutdown_rx).unwrap();
     });
     let (port, creator) = rx.recv().unwrap();
     (port, shutdown_tx, creator, handle)

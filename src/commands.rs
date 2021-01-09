@@ -520,8 +520,8 @@ where
         };
         futures_03::pin_mut!(fut);
         let status = runtime.block_on(fut)?;
-        Ok(status)
-    }?;
+        status
+    };
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {

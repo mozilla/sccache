@@ -34,6 +34,7 @@ use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
 use futures_03::Future as _;
 use futures_03::executor::ThreadPool;
+use futures_03::task::SpawnExt;
 use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
 use number_prefix::{binary_prefix, Prefixed, Standalone};
 use std::cell::RefCell;
@@ -255,8 +256,8 @@ impl DistClientContainer {
             ),
             DistClientState::Some(cfg, client) => {
                 let runtime =
-                    tokio_02::runtime::Runtime::new().expect("Creating the runtime succeeds");
-                match runtime.block_on(async move { client.do_get_status().compat().await }) {
+                    Runtime::new().expect("Creating the runtime succeeds");
+                match runtime.block_on(client.do_get_status() ) {
                     Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
                     Err(_) => DistInfo::NotConnected(
                         cfg.scheduler_url.clone(),
@@ -364,8 +365,8 @@ impl DistClientContainer {
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
                 let mut rt =
-                    tokio_02::runtime::Runtime::new().expect("Creating a runtime always works");
-                match rt.block_on(async move { dist_client.do_get_status().compat().await }) {
+                    Runtime::new().expect("Creating a runtime always works");
+                match rt.block_on(async move { dist_client.do_get_status().await }) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -517,7 +518,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     /// long anyway.
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
-        F: Future,
+        F: futures_03::Future,
     {
         let SccacheServer {
             mut runtime,
@@ -534,14 +535,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             let service = service.clone();
             async move {
                 trace!("incoming connection");
-                tokio_compat::runtime::current_thread::TaskExecutor::current()
-                    .spawn_local(Box::new(
-                        Box::pin(service.bind(socket).map_err(|err| {
+                tokio_02::spawn(async move {
+                        service.bind(socket).await
+                        .map_err(|err| {
                             error!("{}", err);
-                        }))
-                        .compat(),
-                    ))
-                    .expect("Spawning a task with compat executor always works");
+                        })
+                    }).await;
                 Ok(())
             }
         });
@@ -562,12 +561,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             info!("shutting down due to explicit signal");
         });
 
-        let mut futures = vec![
-            Box::pin(server) as Pin<Box<dyn Future<Output = _>>>,
-            Box::pin(shutdown.map(Ok)),
-        ];
-
-        futures.push(Box::pin(async {
+        let mut shutdown_or_inactive = async {
             ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
@@ -579,10 +573,13 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             }
             .await;
             info!("shutting down due to being idle or request");
-            Ok(())
-        }));
+            Ok::<anyhow::Error>(())
+        };
 
-        let server = future::select_all(futures).map(|t| t.0);
+        let server = async move {
+            let (server, _, _) = futures_03::join!(Box::pin(server), Box::pin(shutdown), Box::pin(shutdown_or_inactive));
+            server
+        };
         runtime.block_on(server)?;
 
         info!(
@@ -1256,9 +1253,7 @@ where
             Ok(())
         };
 
-        tokio_compat::runtime::current_thread::TaskExecutor::current()
-            .spawn_local(Box::pin(task).compat())
-            .unwrap();
+        pool.spawn(Box::pin(task)).unwrap();
     }
 }
 

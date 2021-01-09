@@ -1208,8 +1208,9 @@ mod client {
         }
     }
 
+    #[async_trait::async_trait]
     impl dist::Client for Client {
-        fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult> {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_alloc_job(&scheduler_url);
             let mut req = self.client_async.lock().unwrap().post(url);
@@ -1217,150 +1218,142 @@ mod client {
             let client = self.client.clone();
             let client_async = self.client_async.clone();
             let server_certs = self.server_certs.clone();
-            let fut = async move {
-                req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
 
-                let res = bincode_req_fut(req).await?;
-                match res {
-                    AllocJobHttpResponse::Success {
+
+            req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
+
+            let res = bincode_req_fut(req).await?;
+            match res {
+                AllocJobHttpResponse::Success {
+                    job_alloc,
+                    need_toolchain,
+                    cert_digest,
+                } => {
+                    let server_id = job_alloc.server_id;
+                    let alloc_job_res = Ok(AllocJobResult::Success {
                         job_alloc,
                         need_toolchain,
-                        cert_digest,
-                    } => {
-                        let server_id = job_alloc.server_id;
-                        let alloc_job_res = Ok(AllocJobResult::Success {
-                            job_alloc,
-                            need_toolchain,
-                        });
-                        if server_certs.lock().unwrap().contains_key(&cert_digest) {
-                            return alloc_job_res;
-                        }
-                        info!(
-                            "Need to request new certificate for server {}",
-                            server_id.addr()
-                        );
-                        let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
-                        let req = client_async.lock().unwrap().get(url);
-                        let res: ServerCertificateHttpResponse = bincode_req_fut(req)
-                            .await
-                            .context("GET to scheduler server_certificate failed")?;
-
-                        let mut guard = client.lock().unwrap();
-                        Self::update_certs(
-                            &mut *guard,
-                            &mut client_async.lock().unwrap(),
-                            &mut server_certs.lock().unwrap(),
-                            res.cert_digest,
-                            res.cert_pem,
-                        );
-
-                        alloc_job_res
+                    });
+                    if server_certs.lock().unwrap().contains_key(&cert_digest) {
+                        return alloc_job_res;
                     }
-                    AllocJobHttpResponse::Fail { msg } => Ok(AllocJobResult::Fail { msg }),
+                    info!(
+                        "Need to request new certificate for server {}",
+                        server_id.addr()
+                    );
+                    let url = urls::scheduler_server_certificate(&scheduler_url, server_id);
+                    let req = client_async.lock().unwrap().get(url);
+                    let res: ServerCertificateHttpResponse = bincode_req_fut(req)
+                        .await
+                        .context("GET to scheduler server_certificate failed")?;
+
+                    let mut guard = client.lock().unwrap();
+                    Self::update_certs(
+                        &mut *guard,
+                        &mut client_async.lock().unwrap(),
+                        &mut server_certs.lock().unwrap(),
+                        res.cert_digest,
+                        res.cert_pem,
+                    );
+
+                    alloc_job_res
                 }
-            };
-            Box::new(futures_03::compat::Compat::new(fut)) as SFutureSend<AllocJobResult>
+                AllocJobHttpResponse::Fail { msg } => Ok(AllocJobResult::Fail { msg }),
+            }
         }
 
-        fn do_get_status(&self) -> SFuture<SchedulerStatusResult> {
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
             let pool = self.pool.clone();
-            Box::new(futures_03::compat::Compat::new(Box::pin(async move {
-                pool.spawn_with_handle(Box::pin(async move { bincode_req(req) }))
-                    .expect("FIXME proper error handling")
-                    .await
-            })))
+            pool.spawn_with_handle(Box::pin(async move { bincode_req(req) }))
+                .expect("FIXME proper error handling")
+                .await
         }
 
-        fn do_submit_toolchain(
+        async fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
-        ) -> SFuture<SubmitToolchainResult> {
+        ) -> Result<SubmitToolchainResult> {
             match self.tc_cache.get_toolchain(&tc) {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
                     let pool = self.pool.clone();
-                    Box::new(futures_03::compat::Compat::new(Box::pin(async move {
-                        pool.spawn_with_handle(async move {
-                            let toolchain_file_size = toolchain_file.metadata()?.len();
-                            let body =
-                                reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
-                            let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
-                            bincode_req(req)
-                        })
-                        .expect("FIXME proper error handling")
-                        .await
-                    })))
+                    pool.spawn_with_handle(async move {
+                        let toolchain_file_size = toolchain_file.metadata()?.len();
+                        let body =
+                            reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
+                        let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
+                        bincode_req(req)
+                    })?
+                    .await
                 }
-                Ok(None) => f_err(anyhow!("couldn't find toolchain locally")),
-                Err(e) => f_err(e),
+                Ok(None) => Err(anyhow!("couldn't find toolchain locally")),
+                Err(e) => Err(e),
             }
         }
-        fn do_run_job(
+
+        async fn do_run_job(
             &self,
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
             inputs_packager: Box<dyn InputsPackager>,
-        ) -> SFuture<(RunJobResult, PathTransformer)> {
+        ) -> Result<(RunJobResult, PathTransformer)> {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
 
-            Box::new(futures_03::compat::Compat::new(Box::pin(
-                self.pool
-                    .spawn_with_handle(async move {
-                        let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
-                            .context("failed to serialize run job request")?;
-                        let bincode_length = bincode.len();
+            self.pool
+                .spawn_with_handle(async move {
+                    let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
+                        .context("failed to serialize run job request")?;
+                    let bincode_length = bincode.len();
 
-                        let mut body = vec![];
-                        body.write_u32::<BigEndian>(bincode_length as u32)
-                            .expect("Infallible write of bincode length to vec failed");
-                        body.write_all(&bincode)
-                            .expect("Infallible write of bincode body to vec failed");
-                        let path_transformer;
-                        {
-                            let mut compressor =
-                                ZlibWriteEncoder::new(&mut body, Compression::fast());
-                            path_transformer = inputs_packager
-                                .write_inputs(&mut compressor)
-                                .context("Could not write inputs for compilation")?;
-                            compressor.flush().context("failed to flush compressor")?;
-                            trace!(
-                                "Compressed inputs from {} -> {}",
-                                compressor.total_in(),
-                                compressor.total_out()
-                            );
-                            compressor.finish().context("failed to finish compressor")?;
-                        }
+                    let mut body = vec![];
+                    body.write_u32::<BigEndian>(bincode_length as u32)
+                        .expect("Infallible write of bincode length to vec failed");
+                    body.write_all(&bincode)
+                        .expect("Infallible write of bincode body to vec failed");
+                    let path_transformer;
+                    {
+                        let mut compressor =
+                            ZlibWriteEncoder::new(&mut body, Compression::fast());
+                        path_transformer = inputs_packager
+                            .write_inputs(&mut compressor)
+                            .context("Could not write inputs for compilation")?;
+                        compressor.flush().context("failed to flush compressor")?;
+                        trace!(
+                            "Compressed inputs from {} -> {}",
+                            compressor.total_in(),
+                            compressor.total_out()
+                        );
+                        compressor.finish().context("failed to finish compressor")?;
+                    }
 
-                        req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
-                        bincode_req(req).map(|res| (res, path_transformer))
-                    })
-                    .expect("FIXME proper error handling"),
-            )))
+                    req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
+                    bincode_req(req).map(|res| (res, path_transformer))
+                })?
+                .await
         }
 
-        fn put_toolchain(
+        async fn put_toolchain(
             &self,
             compiler_path: &Path,
             weak_key: &str,
             toolchain_packager: Box<dyn ToolchainPackager>,
-        ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)> {
+        ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
-            Box::new(futures_03::compat::Compat::new(Box::pin(
-                self.pool
-                    .spawn_with_handle(async move {
-                        tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
-                    })
-                    .expect("FIXME proper error handling"),
-            )))
+            let pool = self.pool.clone();
+
+            pool.spawn_with_handle(async move {
+                    tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager)
+                })?
+                .await
         }
 
         fn rewrite_includes_only(&self) -> bool {

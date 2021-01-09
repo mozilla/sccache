@@ -166,7 +166,6 @@ impl Storage for S3Cache {
         };
 
         Self::get_object(client, request).await
-        // Box::new(Box::pin(Self::get_object(client, request)).compat())
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
