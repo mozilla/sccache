@@ -26,7 +26,7 @@ use byteorder::{BigEndian, ByteOrder};
 use futures_03::Future;
 use futures_03::StreamExt;
 use log::Level::Trace;
-use std::env;
+use std::{env, process::ExitStatus};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -513,9 +513,14 @@ where
         trace!("running command: {:?}", cmd);
     }
     let status = {
-        let mut fut = async move { cmd.spawn().await };
+        let mut fut = async move {
+            let child = cmd.spawn().await?;
+            let status = child.wait().await?;
+            Ok::<_,anyhow::Error>(status)
+        };
         futures_03::pin_mut!(fut);
-        runtime.block_on(fut)
+        let status = runtime.block_on(fut)?;
+        Ok(status)
     }?;
 
     Ok(status.code().unwrap_or_else(|| {

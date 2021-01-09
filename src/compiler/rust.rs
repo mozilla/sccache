@@ -1297,11 +1297,16 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = async { hash_all(&abs_staticlibs, pool).await };
 
-        pin_mut!(source_files_and_hashes);
-        pin_mut!(staticlib_hashes);
-        pin_mut!(extern_hashes);
-        let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
+        // pin_mut!(source_files_and_hashes);
+        // pin_mut!(staticlib_hashes);
+        // pin_mut!(extern_hashes);
+        let (source_files_and_hashes, extern_hashes, staticlib_hashes) =
             futures_03::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
+
+
+        let (source_files, source_hashes) = source_files_and_hashes?;
+        let extern_hashes = extern_hashes?;
+        let staticlib_hashes = staticlib_hashes?;
 
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
