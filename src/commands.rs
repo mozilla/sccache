@@ -381,7 +381,7 @@ where
 /// Return the signal that caused a process to exit from `status`.
 #[cfg(unix)]
 #[allow(dead_code)]
-fn status_signal(status: process::ExitStatus) -> Option<i32> {
+fn status_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
