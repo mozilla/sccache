@@ -25,6 +25,10 @@ jobs:
         with:
           components: ${{ matrix.component }}
 
+      - name: clippy version
+        run: cargo clippy --version
+        if: ${{ matrix.component == 'clippy' }}
+
       - name: Check
         run: cargo ${{ matrix.cargo_cmd }}
 
