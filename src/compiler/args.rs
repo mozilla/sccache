@@ -994,6 +994,8 @@ mod tests {
         }
     }
 
+    // https://github.com/rust-lang/rust-clippy/issues/6550
+    #[allow(clippy::from_iter_instead_of_collect)]
     #[test]
     fn test_argument_into_iter() {
         // Needs type annotation or ascription
