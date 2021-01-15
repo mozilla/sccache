@@ -1131,9 +1131,9 @@ __VERSION__
                 "tasking_vx" => {
                     debug!("Found Tasking VX");
                     return Box::new(
-                        CCompiler::new(TaskingVX, executable, &pool)
+                        CCompiler::new(TaskingVX, executable, version, &pool)
                             .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
-                    )
+                    );
                 }
                 _ => (),
             }
