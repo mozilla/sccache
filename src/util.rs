@@ -15,10 +15,10 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
+use futures::executor::ThreadPool;
+use futures::future::TryFutureExt;
+use futures::task;
 use futures::{future, Future};
-use futures_03::executor::ThreadPool;
-use futures_03::future::TryFutureExt;
-use futures_03::task;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;

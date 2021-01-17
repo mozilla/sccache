@@ -20,7 +20,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use futures_03::executor::ThreadPool;
+use futures::executor::ThreadPool;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
