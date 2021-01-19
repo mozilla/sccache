@@ -296,14 +296,8 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(
-                    self.scheduler_status(),
-                    SchedulerStatusResult {
-                        num_servers: 0,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
+                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
+                {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
@@ -436,14 +430,8 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(
-                    self.scheduler_status(),
-                    SchedulerStatusResult {
-                        num_servers: 1,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
+                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
+                {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))

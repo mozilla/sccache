@@ -16,7 +16,7 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::simples3::{
     AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
-use directories_next::UserDirs;
+use directories::UserDirs;
 use futures::future;
 use futures::future::Future;
 use std::io;
