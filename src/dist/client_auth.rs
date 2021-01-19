@@ -1,6 +1,5 @@
 use futures_03::prelude::*;
 use futures_03::channel::oneshot;
-use futures_03::compat::Future01CompatExt;
 use futures_03::task as task_03;
 use http::StatusCode;
 use hyper::body::HttpBody;

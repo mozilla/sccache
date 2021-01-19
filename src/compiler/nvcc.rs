@@ -22,7 +22,6 @@ use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use futures_03::future::{self, Future};
-use futures_03::compat::Future01CompatExt;
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;

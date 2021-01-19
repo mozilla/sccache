@@ -135,7 +135,7 @@ pub trait CommandCreator {
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync: Clone + 'static + std::marker::Send + std::marker::Sync {
+pub trait CommandCreatorSync: Clone + 'static + Send + Sync {
     type Cmd: RunCommand;
 
     fn new(client: &Client) -> Self;
@@ -156,13 +156,13 @@ impl CommandChild for Child {
     type E = ChildStderr;
 
     fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.inner.stdin().take()
+        self.inner.stdin.take()
     }
     fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.inner.stdout().take()
+        self.inner.stdout.take()
     }
     fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.inner.stderr().take()
+        self.inner.stderr.take()
     }
 
     async fn wait(self) -> result::Result<ExitStatus, io::Error> {

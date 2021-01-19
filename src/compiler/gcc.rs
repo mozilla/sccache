@@ -18,7 +18,6 @@ use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArgum
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use futures_03::compat::Future01CompatExt;
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;

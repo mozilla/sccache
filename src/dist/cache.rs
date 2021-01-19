@@ -177,11 +177,11 @@ mod client {
             Ok(Some(file))
         }
         // If the toolchain doesn't already exist, create it and insert into the cache
-        pub fn put_toolchain(
+        pub async fn put_toolchain(
             &self,
             compiler_path: &Path,
             weak_key: &str,
-            toolchain_packager: Box<dyn ToolchainPackager>,
+            toolchain_packager: Box<dyn ToolchainPackager + Send + 'static>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             if self.disabled_toolchains.contains(compiler_path) {
                 bail!(

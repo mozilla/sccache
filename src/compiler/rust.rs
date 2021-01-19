@@ -15,7 +15,7 @@
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, HashResult,
+    CompilerKind, CompilerProxy, HashResult, BoxDynCompilerProxy, BoxDynCompiler,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -30,7 +30,6 @@ use futures_03::Future;
 use futures_03::pin_mut;
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt as SpawnExt_03;
-use futures_03::compat::Future01CompatExt;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -319,16 +318,17 @@ where
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
 async fn get_compiler_outputs<T>(
-    creator: &T,
+    creator: T,
     executable: &Path,
     arguments: Vec<OsString>,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
 ) -> Result<Vec<String>>
 where
-    T: CommandCreatorSync,
+    T: Clone + CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(executable);
+    let mut cmd = creator.clone();
+    let mut cmd = cmd.new_command_sync(executable);
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
@@ -496,7 +496,7 @@ where
         }
     }
 
-    fn box_clone(&self) -> Box<dyn Compiler<T>> {
+    fn box_clone(&self) -> BoxDynCompiler<T> {
         Box::new((*self).clone())
     }
 }
@@ -547,7 +547,7 @@ where
         res
     }
 
-    fn box_clone(&self) -> Box<dyn CompilerProxy<T>> {
+    fn box_clone(&self) -> BoxDynCompilerProxy<T> {
         Box::new((*self).clone())
     }
 }
@@ -1285,7 +1285,7 @@ where
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool)
             .await?;
-            Ok((source_files, source_hashes))
+            Ok::<_, Error>((source_files, source_hashes))
         };
 
         // Hash the contents of the externs listed on the commandline.
@@ -1387,8 +1387,8 @@ where
             .flat_map(|(arg, val)| iter::once(arg).chain(val))
             .collect();
 
-        let outputs = get_compiler_outputs(
-            &creator,
+        let mut outputs = get_compiler_outputs(
+            creator.clone(),
             &executable,
             flat_os_string_arguments,
             &cwd,
@@ -1469,7 +1469,7 @@ where
             .chain(abs_staticlibs)
             .collect();
 
-        Ok(HashResult {
+        Ok::<_, Error>(HashResult {
             key: m.finish(),
             compilation: Box::new(RustCompilation {
                 executable,

@@ -935,6 +935,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de27142b013a8e869c14957e6d2edeef89e97c289e69d042ee3a49acd8b51789"
 
 [[package]]
+name = "futures-locks"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50c4e684ddb2d8a4db5ca8a02b35156da129674ba4412b6f528698d58c594954"
+dependencies = [
+ "futures 0.3.5",
+ "tokio 0.2.21",
+]
+
+[[package]]
 name = "futures-macro"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2909,6 +2919,7 @@ dependencies = [
  "flate2",
  "futures 0.1.29",
  "futures 0.3.5",
+ "futures-locks",
  "hmac 0.10.1",
  "http 0.2.1",
  "hyper 0.13.9",

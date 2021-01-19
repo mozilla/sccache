@@ -14,7 +14,7 @@
 
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult,
+    CompilerKind, HashResult, BoxDynCompiler,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -24,7 +24,6 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
 use futures_03::Future;
-use futures_03::compat::Future01CompatExt;
 use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -250,7 +249,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         }
     }
 
-    fn box_clone(&self) -> Box<dyn Compiler<T>> {
+    fn box_clone(&self) -> BoxDynCompiler<T> {
         Box::new((*self).clone())
     }
 }

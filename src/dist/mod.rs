@@ -711,6 +711,8 @@ pub trait BuilderIncoming: Send + Sync {
 
 /////////
 
+pub type ArcDynClient = Arc<dyn Client + Send + Sync + 'static>;
+
 #[async_trait::async_trait]
 pub trait Client: Send {
     // To Scheduler

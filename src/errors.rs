@@ -16,7 +16,6 @@ pub use anyhow::{anyhow, bail, Context, Error};
 use futures::future as legacy_future;
 use futures::Future as LegacyFuture;
 use std::boxed::Box;
-use std::fmt::Display;
 use std::process;
 
 // We use `anyhow` for error handling.

@@ -261,6 +261,8 @@ impl Default for CacheWrite {
     }
 }
 
+pub type ArcDynStorage = Arc<dyn Storage + Send + Sync>;
+
 /// An interface to cache storage.
 #[async_trait]
 pub trait Storage: Send + Sync {

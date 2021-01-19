@@ -466,7 +466,7 @@ impl GCSCredentialProvider {
     pub async fn credentials(&self, client: &Client) -> result::Result<GCSCredential, Error> {
         let client = client.clone();
         let shared = {
-            let shared = (self.cached_credentials.read().unwrap());
+            let shared = self.cached_credentials.read().unwrap();
             let shared = shared.clone();
             shared
         };

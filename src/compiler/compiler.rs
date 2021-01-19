@@ -14,7 +14,7 @@
 
 #![allow(clippy::complexity)]
 
-use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
+use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage, ArcDynStorage, };
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -31,7 +31,6 @@ use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures_03::Future;
 use futures_03::channel::oneshot;
-use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
 use futures_03::prelude::*;
 use futures_03::task::SpawnExt as SpawnExt_03;
@@ -52,6 +51,12 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use crate::errors::*;
+
+
+// only really needed to avoid the hassle of writing it everywhere,
+// since `Compiler<T>: Send` is not enough for rustc
+pub type BoxDynCompiler<T> = Box<dyn Compiler<T> + Send + Sync + 'static>;
+pub type BoxDynCompilerProxy<T> = Box<dyn CompilerProxy<T> + Send + Sync + 'static>;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
 #[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
@@ -132,11 +137,11 @@ where
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
-    fn box_clone(&self) -> Box<dyn Compiler<T>>;
+    fn box_clone(&self) -> BoxDynCompiler<T>;
 }
 
-impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
-    fn clone(&self) -> Box<dyn Compiler<T>> {
+impl<T: CommandCreatorSync> Clone for BoxDynCompiler<T> {
+    fn clone(&self) -> BoxDynCompiler<T> {
         self.box_clone()
     }
 }
@@ -159,7 +164,7 @@ where
     ) -> Result<(PathBuf, FileTime)>;
 
     /// Create a clone of `Self` and puts it in a `Box`
-    fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
+    fn box_clone(&self) -> BoxDynCompilerProxy<T>;
 }
 
 /// An interface to a compiler for hash key generation, the result of
@@ -190,9 +195,9 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Option<Arc<dyn dist::Client + Send>>,
+        dist_client: Option<dist::ArcDynClient>,
         creator: T,
-        storage: Arc<dyn Storage>,
+        storage: ArcDynStorage,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -360,7 +365,7 @@ where
                             out_pretty2,
                             fmt_duration_as_secs(&duration)
                         );
-                        let mut entry: Result<CacheWrite> =
+                        let entry: Result<CacheWrite> =
                             CacheWrite::from_objects(outputs, &pool2).await;
                         let mut entry = entry.context("failed to zip up compiler outputs")?;
 
@@ -409,7 +414,7 @@ where
 
 #[cfg(not(feature = "dist-client"))]
 async fn dist_or_local_compile<T>(
-    _dist_client: Result<Option<Arc<dyn dist::Client + Send>>>,
+    _dist_client: Result<Option<dist::ArcDynClient>>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -434,7 +439,7 @@ where
 
 #[cfg(feature = "dist-client")]
 async fn dist_or_local_compile<T>(
-    dist_client: Option<Arc<dyn dist::Client + Send>>,
+    dist_client: Option<dist::ArcDynClient>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -827,7 +832,7 @@ async fn detect_compiler<T>(
     env: &[(OsString, OsString)],
     pool: &ThreadPool,
     dist_archive: Option<PathBuf>,
-) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
+) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
     T: CommandCreatorSync,
 {
@@ -886,7 +891,7 @@ where
                                 "Resolved path with rustup proxy {}",
                                 &resolved_compiler_executable.display()
                             );
-                            let proxy = Box::new(proxy) as Box<dyn CompilerProxy<T>>;
+                            let proxy = Box::new(proxy) as BoxDynCompilerProxy<T>;
                             (Some(proxy), resolved_compiler_executable)
                         }
                         Err(e) => {
@@ -920,15 +925,15 @@ where
             .await
             .map(|c| {
                 (
-                    Box::new(c) as Box<dyn Compiler<T>>,
-                    proxy as Option<Box<dyn CompilerProxy<T>>>,
+                    Box::new(c) as BoxDynCompiler<T>,
+                    proxy as Option<BoxDynCompilerProxy<T>>,
                 )
             })
         }
         Some(Err(e)) => Err(e).context("Failed to launch subprocess for compiler determination"),
         None => {
             let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
-            cc.map(|c: Box<dyn Compiler<T>>| (c, None))
+            cc.map(|c: BoxDynCompiler<T>| (c, None))
         }
     }
 }
@@ -938,7 +943,7 @@ async fn detect_c_compiler<T>(
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
     pool: ThreadPool,
-) -> Result<Box<dyn Compiler<T>>>
+) -> Result<BoxDynCompiler<T>>
 where
     T: CommandCreatorSync,
 {
@@ -999,13 +1004,13 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
             "diab" => {
                 debug!("Found diab");
                 return CCompiler::new(Diab, executable, &pool)
                     .await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                    .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
             "gcc" | "g++" => {
                 debug!("Found {}", line);
@@ -1017,7 +1022,7 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
             "msvc" | "msvc-clang" => {
                 let is_clang = line == "msvc-clang";
@@ -1040,13 +1045,13 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
             "nvcc" => {
                 debug!("Found NVCC");
                 return CCompiler::new(NVCC, executable, &pool)
                     .await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                    .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
             _ => (),
         }
@@ -1070,7 +1075,7 @@ pub async fn get_compiler_info<T>(
     env: &[(OsString, OsString)],
     pool: &ThreadPool,
     dist_archive: Option<PathBuf>,
-) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
+) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
     T: CommandCreatorSync,
 {
@@ -1082,7 +1087,7 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::Storage;
+    use crate::cache::{ArcDynStorage, Storage};
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
@@ -1856,7 +1861,7 @@ mod test_dist {
     pub struct ErrorPutToolchainClient;
     impl ErrorPutToolchainClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> Arc<dyn dist::Client> {
+        pub fn new() -> dist::ArcDynClient {
             Arc::new(ErrorPutToolchainClient)
         }
     }
@@ -1901,7 +1906,7 @@ mod test_dist {
     }
     impl ErrorAllocJobClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> Arc<dyn dist::Client> {
+        pub fn new() -> dist::ArcDynClient {
             Arc::new(Self {
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
@@ -1952,7 +1957,7 @@ mod test_dist {
     }
     impl ErrorSubmitToolchainClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> Arc<dyn dist::Client> {
+        pub fn new() -> dist::ArcDynClient {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {
@@ -2019,7 +2024,7 @@ mod test_dist {
     }
     impl ErrorRunJobClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> Arc<dyn dist::Client> {
+        pub fn new() -> dist::ArcDynClient {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {
@@ -2031,7 +2036,7 @@ mod test_dist {
 
     #[async_trait::async_trait]
     impl dist::Client for ErrorRunJobClient {
-        fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
+        async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
             f_ok(AllocJobResult::Success {
@@ -2043,10 +2048,10 @@ mod test_dist {
                 need_toolchain: true,
             })
         }
-        fn do_get_status(&self) -> Result<SchedulerStatusResult> {
+        async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
         }
-        fn do_submit_toolchain(
+        async fn do_submit_toolchain(
             &self,
             job_alloc: JobAlloc,
             tc: Toolchain,
@@ -2055,7 +2060,7 @@ mod test_dist {
             assert_eq!(self.tc, tc);
             f_ok(SubmitToolchainResult::Success)
         }
-        fn do_run_job(
+        async fn do_run_job(
             &self,
             job_alloc: JobAlloc,
             command: CompileCommand,
@@ -2064,9 +2069,9 @@ mod test_dist {
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
-            f_err(anyhow!("run job failure"))
+            Err(anyhow!("run job failure"))
         }
-        fn put_toolchain(
+        async fn put_toolchain(
             &self,
             _: &Path,
             _: &str,
@@ -2096,7 +2101,7 @@ mod test_dist {
 
     impl OneshotClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dyn dist::Client> {
+        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> dist::ArcDynClient {
             Arc::new(Self {
                 has_started: Cell::new(false),
                 tc: Toolchain {

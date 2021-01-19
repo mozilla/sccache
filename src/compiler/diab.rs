@@ -288,7 +288,6 @@ where
     })
 }
 
-use futures_03::compat::Future01CompatExt;
 
 pub async fn preprocess<T>(
     creator: &T,
