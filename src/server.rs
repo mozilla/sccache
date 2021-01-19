@@ -891,7 +891,7 @@ where
 
         let me = self.clone();
         let me1 = self.clone();
-
+        let creator = self.creator.clone();
         // lookup if compiler proxy exists for the current compiler path
 
         let path2 = path.clone();
@@ -902,9 +902,11 @@ where
             let compiler_proxies_borrow = self.compiler_proxies.read().await;
 
             if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                let res = compiler_proxy
-                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice())
-                    .await;
+                let f = compiler_proxy
+                .resolve_proxied_executable(creator, cwd.clone(), env.as_slice());
+                let res =
+                    f.await;
+                drop(compiler_proxy);
                 res.ok()
             } else {
                 None
