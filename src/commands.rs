@@ -679,7 +679,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;
-            use futures::executor::ThreadPool;
+            use futures_03::executor::ThreadPool;
 
             trace!("Command::PackageToolchain({})", executable.display());
             let mut runtime = Runtime::new()?;

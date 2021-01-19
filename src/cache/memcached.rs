@@ -16,7 +16,7 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use crate::util::SpawnExt;
-use futures::executor::ThreadPool;
+use futures_03::executor::ThreadPool;
 use memcached::client::Client;
 use memcached::proto::NoReplyOperation;
 use memcached::proto::Operation;

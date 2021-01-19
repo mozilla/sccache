@@ -5,7 +5,7 @@
 use chrono::{offset, DateTime, Duration};
 use directories_next::UserDirs;
 use futures::future::{self, Shared};
-use futures::{Future, Stream};
+use futures::{Async, Future, Stream};
 use hyper::client::HttpConnector;
 use hyper::{Client, Request};
 use hyperx::header::Connection;

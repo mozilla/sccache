@@ -31,10 +31,10 @@ use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use filetime::FileTime;
-use futures::compat::Compat;
-use futures::executor::ThreadPool;
 use futures::sync::mpsc;
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures_03::compat::Compat;
+use futures_03::executor::ThreadPool;
 use number_prefix::NumberPrefix;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1569,7 +1569,7 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> futures::Stream for Body<R> {
+impl<R> futures_03::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
