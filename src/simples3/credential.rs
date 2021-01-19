@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use chrono::{offset, DateTime, Duration};
-use directories::UserDirs;
+use directories_next::UserDirs;
 use futures::future::{self, Shared};
 use futures::{Async, Future, Stream};
 use hyper::client::HttpConnector;
