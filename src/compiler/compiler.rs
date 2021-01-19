@@ -111,8 +111,8 @@ impl CompilerKind {
 
 #[cfg(feature = "dist-client")]
 pub type DistPackagers = (
-    Box<dyn pkg::InputsPackager>,
-    Box<dyn pkg::ToolchainPackager>,
+    pkg::BoxDynInputsPackager,
+    pkg::BoxDynToolchainPackager,
     Box<dyn OutputsRewriter>,
 );
 

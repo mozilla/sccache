@@ -16,7 +16,7 @@ use std::io::Read;
 #[cfg(feature = "dist-client")]
 mod client {
     use crate::config;
-    use crate::dist::pkg::ToolchainPackager;
+    use crate::dist::pkg::{ToolchainPackager, BoxDynToolchainPackager};
     use crate::dist::Toolchain;
     use anyhow::{bail, Context, Error, Result};
     use lru_disk_cache::Error as LruError;
@@ -181,7 +181,7 @@ mod client {
             &self,
             compiler_path: &Path,
             weak_key: &str,
-            toolchain_packager: Box<dyn ToolchainPackager + Send + 'static>,
+            toolchain_packager: BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             if self.disabled_toolchains.contains(compiler_path) {
                 bail!(

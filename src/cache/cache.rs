@@ -293,7 +293,7 @@ pub trait Storage: Send + Sync {
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storage> {
+pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> ArcDynStorage {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

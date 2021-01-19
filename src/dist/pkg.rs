@@ -22,9 +22,13 @@ use crate::errors::*;
 
 pub use self::toolchain_imp::*;
 
+pub type BoxDynToolchainPackager = Box<dyn ToolchainPackager + Send + 'static>;
+
 pub trait ToolchainPackager: Send {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()>;
 }
+
+pub type BoxDynInputsPackager = Box<dyn InputsPackager + Send + 'static>;
 
 pub trait InputsPackager: Send {
     fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer>;

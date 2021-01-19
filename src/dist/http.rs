@@ -1085,7 +1085,7 @@ mod server {
 mod client {
     use super::super::cache;
     use crate::config;
-    use crate::dist::pkg::{InputsPackager, ToolchainPackager};
+    use crate::dist::pkg::{InputsPackager, BoxDynInputsPackager, ToolchainPackager, BoxDynToolchainPackager, };
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
@@ -1301,7 +1301,7 @@ mod client {
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
-            inputs_packager: Box<dyn InputsPackager>,
+            inputs_packager: BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
@@ -1343,7 +1343,7 @@ mod client {
             &self,
             compiler_path: &Path,
             weak_key: &str,
-            toolchain_packager: Box<dyn ToolchainPackager + Send + 'static>,
+            toolchain_packager: BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();

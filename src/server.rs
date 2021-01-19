@@ -945,7 +945,7 @@ where
             // It's a hit only if the mtime and dist archive data matches.
             Some(&Some(ref entry)) => {
                 if entry.mtime == mtime && entry.dist_info == dist_info {
-                    Some(entry.compiler.clone())
+                    Some(entry.compiler.box_clone())
                 } else {
                     None
                 }

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::compiler;
+use pkg::{BoxDynInputsPackager, BoxDynToolchainPackager};
 use rand::RngCore;
 use std::ffi::OsString;
 use std::fmt;
@@ -20,6 +21,7 @@ use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Arc;
 use std::str::FromStr;
 #[cfg(feature = "dist-server")]
 use std::sync::Mutex;
@@ -731,13 +733,13 @@ pub trait Client: Send {
         job_alloc: JobAlloc,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_packager: Box<dyn pkg::InputsPackager>,
+        inputs_packager: BoxDynInputsPackager,
     ) -> Result<(RunJobResult, PathTransformer)>;
     async fn put_toolchain(
         &self,
         compiler_path: &Path,
         weak_key: &str,
-        toolchain_packager: Box<dyn pkg::ToolchainPackager>,
+        toolchain_packager: BoxDynToolchainPackager,
     ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
     fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;

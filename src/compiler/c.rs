@@ -164,7 +164,7 @@ pub enum CCompilerKind {
 
 /// An interface to a specific C compiler.
 #[async_trait::async_trait]
-pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
+pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// Return the kind of compiler.
     fn kind(&self) -> CCompilerKind;
     /// Return true iff this is g++ or clang++.
