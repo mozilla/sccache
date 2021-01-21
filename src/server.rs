@@ -520,7 +520,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     /// long anyway.
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
-        F: futures_03::Future,
+        F: futures_03::Future + Send + 'static,
+        C: Send,
     {
         let SccacheServer {
             mut runtime,
@@ -533,19 +534,22 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let server = listener.incoming().try_for_each(move |socket| {
-            let service: SccacheService<_> = service.clone();
-            async move {
-                trace!("incoming connection");
-                tokio_02::spawn(async move {
-                        service.bind(socket).await
-                        .map_err(|err| {
-                            error!("{}", err);
-                        })
-                    }).await;
-                Ok(())
-            }
-        });
+        let server = async move {
+            listener.incoming().try_for_each(move |socket| {
+                let service: SccacheService<C> = service.clone();
+                async move {
+                    trace!("incoming connection");
+                    let handle = tokio_02::spawn(async move {
+                            service.bind(socket).await
+                            .map_err(|err| {
+                                error!("{}", err);
+                            })
+                        });
+                    handle.await;
+                    Ok(())
+                }
+            })
+        };
 
         // Right now there's a whole bunch of ways to shut down this server for
         // various purposes. These include:
@@ -582,7 +586,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             let (server, _, _) = futures_03::join!(Box::pin(server), Box::pin(shutdown), Box::pin(shutdown_or_inactive));
             server
         };
-        runtime.block_on(server)?;
+        runtime.block_on(Box::pin(server))?;
 
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
@@ -992,9 +996,11 @@ where
                                 resolved_compiler_path
                             );
                             let proxy: Box<dyn CompilerProxy<C> + Send + 'static> = proxy.box_clone();
-                            me.compiler_proxies
+                            async {
+                                me.compiler_proxies
                                 .write().await
-                                .insert(path, (proxy, mtime.clone()));
+                                .insert(path, (proxy, mtime.clone()))
+                            }.await;
                         }
                         // TODO add some safety checks in case a proxy exists, that the initial `path` is not
                         // TODO the same as the resolved compiler binary
