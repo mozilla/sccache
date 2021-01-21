@@ -18,16 +18,13 @@ use crate::{
     errors::*,
     util::HeadersExt,
 };
-use futures_03::{
-    future::{self, Shared},
-    Future, Stream,
-};
+use futures_03::future::Shared;
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
 use serde::de;
 use std::sync;
-use std::{cell::RefCell, fmt, io, pin::Pin, result, sync::Arc, time};
+use std::{fmt, io, pin::Pin, result, sync::Arc, time};
 use url::{
     form_urlencoded,
     percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
@@ -361,10 +358,10 @@ fn encode(header: &Header<'_>, claims: &JwtClaims<'_>, key: &[u8]) -> Result<Str
 
 impl GCSCredentialProvider {
     pub fn new(rw_mode: RWMode, sa_info: ServiceAccountInfo) -> Self {
-        GCSCredentialProvider {
+        Self {
             rw_mode,
             sa_info,
-            cached_credentials: sync::RwLock::new(None),
+            cached_credentials: sync::RwLock::new(Option::<_>::None),
         }
     }
 

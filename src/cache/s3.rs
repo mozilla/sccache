@@ -27,7 +27,6 @@ use rusoto_core::{
 };
 use rusoto_s3::{Bucket, GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3};
 use std::io;
-use std::rc::Rc;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tokio_02::io::AsyncReadExt as _;
@@ -68,7 +67,7 @@ impl S3Cache {
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_provider(profile_provider))?;
         let bucket_name = bucket.to_owned();
-        let bucket = Rc::new(Bucket {
+        let bucket = std::sync::Arc::new(Bucket {
             creation_date: None,
             name: Some(bucket_name.clone()),
         });

@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use tokio_02::process::Command;
+use std::process::Command as StdCommand;
 
 use futures_03::channel::mpsc;
 use futures_03::channel::oneshot;
@@ -58,7 +59,7 @@ impl Client {
     }
 
     /// Configures this jobserver to be inherited by the specified command
-    pub fn configure(&self, cmd: &mut Command) {
+    pub fn configure(&self, cmd: &mut StdCommand) {
         self.inner.configure(cmd)
     }
 

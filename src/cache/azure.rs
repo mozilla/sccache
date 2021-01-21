@@ -16,9 +16,7 @@
 use crate::azure::BlobContainer;
 use crate::azure::*;
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures_03::future::Future;
 use std::io;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

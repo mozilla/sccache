@@ -53,11 +53,12 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
 use std::result;
 use std::sync::{Arc, Mutex};
 use tokio_02::io::{AsyncRead, AsyncWrite};
 use tokio_02::process::{self, ChildStderr, ChildStdin, ChildStdout};
+use std::process::Command as StdCommand;
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 #[async_trait::async_trait]
@@ -183,19 +184,19 @@ impl CommandChild for Child {
 }
 
 pub struct AsyncCommand {
-    inner: Option<tokio_02::process::Command>,
+    inner: Option<StdCommand>,
     jobserver: Client,
 }
 
 impl AsyncCommand {
     pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
         AsyncCommand {
-            inner: Some(tokio_02::process::Command::new(program)),
+            inner: Some(StdCommand::new(program)),
             jobserver,
         }
     }
 
-    fn inner(&mut self) -> &mut tokio_02::process::Command {
+    fn inner(&mut self) -> &mut StdCommand {
         self.inner.as_mut().expect("can't reuse commands")
     }
 }
@@ -272,6 +273,7 @@ impl RunCommand for AsyncCommand {
         self.jobserver.configure(&mut inner);
 
         let token = self.jobserver.acquire().await?;
+        let mut inner = tokio_02::process::Command::from(inner);
         let child = inner
             .spawn()
             .with_context(|| format!("failed to spawn {:?}", inner))?;

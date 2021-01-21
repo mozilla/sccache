@@ -449,7 +449,6 @@ async fn dist_or_local_compile<T>(
 where
     T: CommandCreatorSync,
 {
-    use futures_03::future::{self, Future};
     use std::io;
 
     let rewrite_includes_only = dist_client.as_ref().map(|client| client.rewrite_includes_only()).unwrap_or_default();
@@ -881,10 +880,14 @@ where
             let (proxy, resolved_rustc) = match proxy {
                 Ok(Ok(Some(proxy))) => {
                     trace!("Found rustup proxy executable");
+                    let proxy2 = proxy.clone();
+                    let creator2 = creator.clone();
                     // take the pathbuf for rustc as resolved by the proxy
-                    match proxy
-                        .resolve_proxied_executable(creator.clone(), cwd, &env)
-                        .await
+                    match async move {
+                        proxy2
+                            .resolve_proxied_executable(creator2, cwd, &env)
+                            .await
+                        }.await
                     {
                         Ok((resolved_compiler_executable, _time)) => {
                             trace!(

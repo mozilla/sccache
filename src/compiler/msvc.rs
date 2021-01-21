@@ -20,8 +20,6 @@ use crate::compiler::{
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, SpawnExt};
-use futures_03::future::Future;
-use futures_03::compat::{Compat, Compat01As03, Future01CompatExt};
 use futures_03::executor::ThreadPool;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
