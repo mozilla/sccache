@@ -40,7 +40,7 @@ fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
 fn signature(to_sign: &str, secret: &str) -> String {
     let decoded_secret = base64::decode_config(secret.as_bytes(), base64::STANDARD).unwrap();
     let sig = hmac(to_sign.as_bytes(), &decoded_secret);
-    base64::encode_config::<Vec<u8>>(&sig, base64::STANDARD)
+    base64::encode_config(&sig, base64::STANDARD)
 }
 
 fn md5(data: &[u8]) -> String {
