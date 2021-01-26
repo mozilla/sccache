@@ -20,7 +20,7 @@ use std::time::Duration;
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
-    gets: RefCell<Vec<SFuture<Cache>>>,
+    gets: RefCell<Vec<Box<dyn Future<Output=Result<Cache>> + Send + Sync + 'static>>>,
 }
 
 impl MockStorage {
@@ -32,13 +32,14 @@ impl MockStorage {
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
-    pub fn next_get(&self, res: SFuture<Cache>) {
+    pub fn next_get(&self, res: Box<dyn Future<Output=Result<Cache>> + Send + Sync + 'static>) {
         self.gets.borrow_mut().push(res)
     }
 }
 
+#[async_trait::async_trait]
 impl Storage for MockStorage {
-    fn get(&self, _key: &str) -> SFuture<Cache> {
+    async fn get(&self, _key: &str) -> Result<Cache> {
         let mut g = self.gets.borrow_mut();
         assert!(
             g.len() > 0,
@@ -46,16 +47,20 @@ impl Storage for MockStorage {
         );
         g.remove(0)
     }
-    fn put(&self, _key: &str, _entry: CacheWrite) -> SFuture<Duration> {
-        f_ok(Duration::from_secs(0))
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        async { Ok(Duration::from_secs(0)) }
     }
     fn location(&self) -> String {
         "Mock Storage".to_string()
     }
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        async {
+            Ok(None)
+        }
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        async {
+            Ok(None)
+        }
     }
 }

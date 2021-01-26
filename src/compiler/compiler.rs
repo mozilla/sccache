@@ -147,7 +147,7 @@ impl<T: CommandCreatorSync> Clone for BoxDynCompiler<T> {
 }
 
 #[async_trait]
-pub trait CompilerProxy<T>: Send + 'static
+pub trait CompilerProxy<T>: Send + Sync + 'static
 where
     T: CommandCreatorSync + Sized,
 {

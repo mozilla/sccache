@@ -34,14 +34,14 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures_03::Future as _;
+use futures_03::{Future as _, pin_mut};
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt;
 use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
 use futures_03::future::FutureExt;
 use futures_locks::RwLock;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
-use std::collections::HashMap;
+use std::{borrow::BorrowMut, collections::HashMap};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
@@ -455,6 +455,7 @@ pub struct SccacheServer<C: CommandCreatorSync> {
     wait: WaitUntilZero,
 }
 
+
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
@@ -538,19 +539,19 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let server =
             async move {
                 incoming.try_for_each(move |socket| {
-                let service: SccacheService<C> = service.clone();
-                let spawnme = async move {
-                    let res = service.bind(socket).await;
-                    res.map_err(|err| {
-                        error!("Failed to bind socket: {}", err);
-                    })
-                };
-                let _handle = tokio_02::task::spawn(Box::pin(spawnme));
-                async {
-                    Ok::<(),std::io::Error>(())
-                }
-            }).await
-        };
+                    let service: SccacheService<C> = service.clone();
+                    let spawnme = Box::pin(async move {
+                        let res = service.bind(socket).await;
+                        res.map_err(|err| {
+                            error!("Failed to bind socket: {}", err);
+                        })
+                    });
+                    let _handle = tokio_02::spawn(spawnme);
+                    async move {
+                        Ok::<(),std::io::Error>(())
+                    }
+                }).await
+            };
 
         // Right now there's a whole bunch of ways to shut down this server for
         // various purposes. These include:
@@ -775,7 +776,19 @@ where
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
         Poll::Ready(Ok(()))
     }
-}
+ }
+
+use futures_03::future::Either;
+ 
+type SingleResponseStream = Pin<Box<dyn Stream<Item=std::result::Result<
+        Frame<
+            Response,
+            Response,
+        >,
+        Error>
+    > + Send + Sync + 'static>>;
+
+use futures_03::TryStreamExt;
 
 impl<C> SccacheService<C>
 where
@@ -804,7 +817,7 @@ where
 
     async fn bind<T>(self, socket: T) -> Result<()>
     where
-        T: AsyncRead + AsyncWrite + Unpin + 'static,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
         if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
@@ -820,28 +833,40 @@ where
             inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
         }
         .split();
-        let sink = sink.sink_err_into::<Error>();
+        let mut sink = sink.sink_err_into::<Error>();
 
         let mut me = Arc::new(self);
-        stream
+        let fut = async move {
+            stream
             .err_into::<Error>()
             .and_then(move |input| me.call(input))
-            .and_then(|message| async move {
-                let f: Pin<Box<dyn Stream<Item = _>>> = match message {
+            .and_then(move |message| async move {
+                match message {
                     Message::WithoutBody(message) => {
-                        Box::pin(stream::once(async { Ok(Frame::Message { message }) }))
+                        let mut stream =
+                            stream::once(async move {
+                                Ok::<_, Error>(Frame::Message { message })
+                            });
+                        // let mut stream = Box::pin(stream) as SingleResponseStream;
+                        // Ok(stream)
+                        Ok(Either::Left(stream))
                     }
-                    Message::WithBody(message, body) => Box::pin(
-                        stream::once(async { Ok(Frame::Message { message }) })
-                            .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
-                            .chain(stream::once(async { Ok(Frame::Body { chunk: None }) })),
-                    ),
-                };
-                Ok(f.err_into::<Error>())
+                    Message::WithBody(message, body) => {
+                        let mut stream = stream::once(async move { Ok::<_, Error>(Frame::Message { message }) })
+                                .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
+                                .chain(stream::once(async move { Ok::<_, Error>(Frame::Body { chunk: None }) }));
+                        // let mut stream = Box::pin(stream) as SingleResponseStream;
+                        // Ok(stream)
+                        Ok(Either::Right(stream))
+                    }
+                }
             })
             .try_flatten()
-            .forward(sink)
-            .map_ok(|_| ()).await
+            .forward(sink).await
+        };
+        pin_mut!(fut);
+        let _r = fut.await;
+        Ok(())
     }
 
     /// Get dist status.
