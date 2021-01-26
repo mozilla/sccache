@@ -488,7 +488,7 @@ where
             let (inputs_packager, toolchain_packager, outputs_rewriter) = compilation.into_dist_packagers(path_transformer)?;
 
             debug!("[{}]: Identifying dist toolchain for {:?}", compile_out_pretty, local_executable);
-            let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(&local_executable, &weak_toolchain_key, toolchain_packager).await?;
+            let (dist_toolchain, maybe_dist_compile_executable) = dist_client.put_toolchain(local_executable, weak_toolchain_key, toolchain_packager).await?;
             let mut tc_archive = None;
             if let Some((dist_compile_executable, archive_path)) = maybe_dist_compile_executable {
                 dist_compile_cmd.executable = dist_compile_executable;
@@ -1890,8 +1890,8 @@ mod test_dist {
         }
         async fn put_toolchain(
             &self,
-            _: &Path,
-            _: &str,
+            _: PathBuf,
+            _: String,
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Err(anyhow!("put toolchain failure"))
@@ -1940,8 +1940,8 @@ mod test_dist {
         }
         async fn put_toolchain(
             &self,
-            _: &Path,
-            _: &str,
+            _: PathBuf,
+            _: String,
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
@@ -2007,8 +2007,8 @@ mod test_dist {
         }
         async fn put_toolchain(
             &self,
-            _: &Path,
-            _: &str,
+            _: PathBuf,
+            _: String,
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
@@ -2115,6 +2115,7 @@ mod test_dist {
         }
     }
 
+    #[async_trait::async_trait]
     impl dist::Client for OneshotClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
@@ -2170,8 +2171,8 @@ mod test_dist {
         }
         async fn put_toolchain(
             &self,
-            _: &Path,
-            _: &str,
+            _: PathBuf,
+            _: String,
             _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((

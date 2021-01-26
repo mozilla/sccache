@@ -737,8 +737,8 @@ pub trait Client: Send {
     ) -> Result<(RunJobResult, PathTransformer)>;
     async fn put_toolchain(
         &self,
-        compiler_path: &Path,
-        weak_key: &str,
+        compiler_path: PathBuf,
+        weak_key: String,
         toolchain_packager: BoxDynToolchainPackager,
     ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;

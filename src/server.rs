@@ -534,21 +534,22 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let server = async move {
-            listener.incoming().try_for_each(move |socket| {
+        let incoming = listener.incoming();
+        let server =
+            async move {
+                incoming.try_for_each(move |socket| {
                 let service: SccacheService<C> = service.clone();
-                async move {
-                    trace!("incoming connection");
-                    let handle = tokio_02::spawn(async move {
-                            service.bind(socket).await
-                            .map_err(|err| {
-                                error!("{}", err);
-                            })
-                        });
-                    handle.await;
-                    Ok(())
+                let spawnme = async move {
+                    let res = service.bind(socket).await;
+                    res.map_err(|err| {
+                        error!("Failed to bind socket: {}", err);
+                    })
+                };
+                let _handle = tokio_02::task::spawn(Box::pin(spawnme));
+                async {
+                    Ok::<(),std::io::Error>(())
                 }
-            })
+            }).await
         };
 
         // Right now there's a whole bunch of ways to shut down this server for
@@ -648,7 +649,7 @@ impl<C> CompilerCacheEntry<C>
 }
 /// Service implementation for sccache
 #[derive(Clone)]
-struct SccacheService<C> {
+struct SccacheService<C> where C: Send {
     /// Server statistics.
     stats: Arc<RwLock<ServerStats>>,
 
@@ -852,14 +853,15 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.read().await.clone();
         let cache_location = self.storage.location();
-        futures_03::try_join!(async move { self.storage.current_size().await } , async move { self.storage.max_size().await },).map(
-            move |(cache_size, max_cache_size)| ServerInfo {
-                stats,
-                cache_location,
-                cache_size,
-                max_cache_size,
-            },
-        )
+        futures_03::try_join!(async { self.storage.current_size().await } , async { self.storage.max_size().await },)
+            .map(
+                move |(cache_size, max_cache_size)| ServerInfo {
+                    stats,
+                    cache_location,
+                    cache_size,
+                    max_cache_size,
+                },
+            )
     }
 
     /// Zero stats about the cache.

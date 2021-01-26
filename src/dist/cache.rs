@@ -179,25 +179,25 @@ mod client {
         // If the toolchain doesn't already exist, create it and insert into the cache
         pub async fn put_toolchain(
             &self,
-            compiler_path: &Path,
-            weak_key: &str,
+            compiler_path: PathBuf,
+            weak_key: String,
             toolchain_packager: BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            if self.disabled_toolchains.contains(compiler_path) {
+            if self.disabled_toolchains.contains(&compiler_path) {
                 bail!(
                     "Toolchain distribution for {} is disabled",
                     compiler_path.display()
                 )
             }
-            if let Some(tc_and_paths) = self.get_custom_toolchain(compiler_path) {
-                debug!("Using custom toolchain for {:?}", compiler_path);
+            if let Some(tc_and_paths) = self.get_custom_toolchain(&compiler_path) {
+                debug!("Using custom toolchain for {:?}", &compiler_path);
                 let (tc, compiler_path, archive) = tc_and_paths?;
                 return Ok((tc, Some((compiler_path, archive))));
             }
             // Only permit one toolchain creation at a time. Not an issue if there are multiple attempts
             // to create the same toolchain, just a waste of time
             let mut cache = self.cache.lock().unwrap();
-            if let Some(archive_id) = self.weak_to_strong(weak_key) {
+            if let Some(archive_id) = self.weak_to_strong(&weak_key) {
                 debug!("Using cached toolchain {} -> {}", weak_key, archive_id);
                 return Ok((Toolchain { archive_id }, None));
             }
@@ -322,8 +322,8 @@ mod client {
 
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
-                    "/my/compiler".as_ref(),
-                    "weak_key",
+                    "/my/compiler".to_path_buf(),
+                    "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
@@ -368,7 +368,7 @@ mod client {
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
                     "/my/compiler".as_ref(),
-                    "weak_key",
+                    "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
@@ -376,7 +376,7 @@ mod client {
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
                     "/my/compiler2".as_ref(),
-                    "weak_key2",
+                    "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
@@ -384,7 +384,7 @@ mod client {
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
                     "/my/compiler3".as_ref(),
-                    "weak_key2",
+                    "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
                 )
                 .unwrap();
@@ -410,7 +410,7 @@ mod client {
             assert!(client_toolchains
                 .put_toolchain(
                     "/my/compiler".as_ref(),
-                    "weak_key",
+                    "weak_key".to_owned(),
                     PanicToolchainPackager::new()
                 )
                 .is_err());

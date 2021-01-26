@@ -1341,8 +1341,8 @@ mod client {
 
         async fn put_toolchain(
             &self,
-            compiler_path: &Path,
-            weak_key: &str,
+            compiler_path: PathBuf,
+            weak_key: String,
             toolchain_packager: BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
@@ -1351,7 +1351,7 @@ mod client {
             let pool = self.pool.clone();
 
             pool.spawn_with_handle(async move {
-                    tc_cache.put_toolchain(&compiler_path, &weak_key, toolchain_packager).await
+                    tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager).await
                 })?
                 .await
         }
