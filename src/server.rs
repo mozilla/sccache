@@ -808,7 +808,8 @@ where
         }
     }
 
-    async fn bind<T>(self, socket: T) -> Result<()>
+    // Cannot use `async fn` here, the bounds would be not sufficient
+    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
