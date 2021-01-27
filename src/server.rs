@@ -257,7 +257,7 @@ impl DistClientContainer {
                 "enabled, not connected, will retry".to_string(),
             ),
             DistClientState::Some(cfg, client) => {
-                let runtime =
+                let mut runtime =
                     Runtime::new().expect("Creating the runtime succeeds");
                 match runtime.block_on(client.do_get_status() ) {
                     Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
@@ -368,7 +368,7 @@ impl DistClientContainer {
                 use crate::dist::Client;
                 let mut rt =
                     Runtime::new().expect("Creating a runtime always works");
-                match rt.block_on(async move { dist_client.do_get_status().await }) {
+                match rt.block_on(async { dist_client.do_get_status().await }) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -829,7 +829,7 @@ where
         .split();
         let sink = sink.sink_err_into::<Error>();
 
-        let mut me = Arc::new(self);
+        let me = Arc::new(self);
         async move {
             stream
             .err_into::<Error>()
@@ -1786,12 +1786,16 @@ impl Drop for ActiveInfo {
 impl std::future::Future for WaitUntilZero {
     type Output = io::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
-        if self.info.active.load(Ordering::SeqCst) == 0 {
-            std::task::Poll::Ready(Ok(()))
-        } else {
-            self.info.waker = Some(cx.waker().clone());
-            std::task::Poll::Pending
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
+        loop {
+            if self.info.active.load(Ordering::SeqCst) == 0 {
+                return std::task::Poll::Ready(Ok(()))
+            }
+            else if let Some(info) = Arc::get_mut(&mut self.info) {
+                info.waker = Some(cx.waker().clone());
+                // Could stall, figure out a way to be better! Use future_util::Mutex"
+                return std::task::Poll::Pending
+            }
         }
     }
 }

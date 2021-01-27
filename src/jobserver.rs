@@ -39,7 +39,7 @@ impl Client {
         let (helper, tx) = if inherited {
             (None, None)
         } else {
-            let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
+            let (mut tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {

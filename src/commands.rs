@@ -82,7 +82,7 @@ fn run_server_process() -> Result<ServerStartup> {
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
     let mut runtime = Runtime::new()?;
-    let listener = tokio_02::net::UnixListener::bind(&socket_path)?;
+    let mut listener = tokio_02::net::UnixListener::bind(&socket_path)?;
     let exe_path = env::current_exe()?;
     let _child = process::Command::new(exe_path)
         .env("SCCACHE_START_SERVER", "1")
