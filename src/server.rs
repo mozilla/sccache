@@ -1298,7 +1298,7 @@ where
             Ok::<_, Error>(())
         };
 
-        pool.spawn(Box::pin(async move { task.await; } )).unwrap();
+        self.pool.spawn(Box::pin(async move { task.await; } )).unwrap();
     }
 }
 
@@ -1776,8 +1776,11 @@ impl Clone for ActiveInfo {
 impl Drop for ActiveInfo {
     fn drop(&mut self) {
         if self.info.active.fetch_sub(1_usize, Ordering::SeqCst) == 0 {
-            if let Some(waker) = self.info.waker.take() {
-                waker.wake();
+            // TODO use a mutex here for info I guess
+            if let Some(info) = Arc::get_mut(&mut self.info) {
+                if let Some(waker) = info.waker.take() {
+                    waker.wake();
+                }
             }
         }
     }

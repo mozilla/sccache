@@ -45,7 +45,7 @@ impl Client {
                 .into_helper_thread(move |token| {
                     tokio_02::runtime::Runtime::new()
                         .unwrap()
-                        .block_on(async move {
+                        .block_on(async {
                             if let Some(sender) = rx.next().await {
                                 drop(sender.send(token));
                             }
