@@ -540,12 +540,14 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             async move {
                 incoming.try_for_each(move |socket| {
                     let service: SccacheService<C> = service.clone();
-                    let spawnme = Box::pin(async move {
+
+                    let spawnme = async move {
                         let res = service.bind(socket).await;
                         res.map_err(|err| {
                             error!("Failed to bind socket: {}", err);
+                            err
                         })
-                    });
+                    };
                     let _handle = tokio_02::spawn(spawnme);
                     async move {
                         Ok::<(),std::io::Error>(())
@@ -779,15 +781,6 @@ where
  }
 
 use futures_03::future::Either;
- 
-type SingleResponseStream = Pin<Box<dyn Stream<Item=std::result::Result<
-        Frame<
-            Response,
-            Response,
-        >,
-        Error>
-    > + Send + Sync + 'static>>;
-
 use futures_03::TryStreamExt;
 
 impl<C> SccacheService<C>
@@ -833,40 +826,52 @@ where
             inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
         }
         .split();
-        let mut sink = sink.sink_err_into::<Error>();
+        let sink = sink.sink_err_into::<Error>();
 
         let mut me = Arc::new(self);
-        let fut = async move {
+        async move {
             stream
             .err_into::<Error>()
-            .and_then(move |input| me.call(input))
+            .and_then(move |input| {
+            // keep this clone, otherwise
+            //
+            // ```
+            //     error[E0308]: mismatched types
+            //     --> src/server.rs:554:35
+            //      |
+            //  554 |                     let _handle = tokio_02::spawn(spawnme);
+            //      |                                   ^^^^^^^^^^^^^^^ one type is more general than the other
+            //      |
+            //      = note: expected struct `Pin<Box<dyn futures::Future<Output = std::result::Result<server::Message<protocol::Response, server::Body<protocol::Response>>, anyhow::Error>> + std::marker::Send>>`
+            //                 found struct `Pin<Box<dyn futures::Future<Output = std::result::Result<server::Message<protocol::Response, server::Body<protocol::Response>>, anyhow::Error>> + std::marker::Send>>`
+            // ```
+            // will pop up, instead of a proper error message
+                let mut me = me.clone();
+                async move  {
+                    me.call(input).await
+                }
+            })
             .and_then(move |message| async move {
-                match message {
+                let fut = match message {
                     Message::WithoutBody(message) => {
-                        let mut stream =
+                        let stream =
                             stream::once(async move {
                                 Ok::<_, Error>(Frame::Message { message })
                             });
-                        // let mut stream = Box::pin(stream) as SingleResponseStream;
-                        // Ok(stream)
-                        Ok(Either::Left(stream))
+                        Either::Left(stream)
                     }
                     Message::WithBody(message, body) => {
-                        let mut stream = stream::once(async move { Ok::<_, Error>(Frame::Message { message }) })
+                        let stream = stream::once(async move { Ok::<_, Error>(Frame::Message { message }) })
                                 .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
                                 .chain(stream::once(async move { Ok::<_, Error>(Frame::Body { chunk: None }) }));
-                        // let mut stream = Box::pin(stream) as SingleResponseStream;
-                        // Ok(stream)
-                        Ok(Either::Right(stream))
+                        Either::Right(stream)
                     }
-                }
+                };
+                Ok(Box::pin(fut))
             })
             .try_flatten()
-            .forward(sink).await
-        };
-        pin_mut!(fut);
-        let _r = fut.await;
-        Ok(())
+            .forward(sink).await.map(|_| ())
+        }
     }
 
     /// Get dist status.
