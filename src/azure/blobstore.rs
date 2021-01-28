@@ -75,7 +75,8 @@ impl BlobContainer {
     pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
-        let date = chrono::offset::Utc::now().to_rfc2822();
+        let dt = chrono::Utc::now();
+        let date = format!("{}", dt.format("%a, %d %b %Y %T GMT"));
 
         let canonical_headers = format!("x-ms-date:{}\nx-ms-version:{}\n", date, BLOB_API_VERSION);
 
@@ -149,7 +150,8 @@ impl BlobContainer {
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
-        let date = chrono::offset::Utc::now().to_rfc2822();
+        let dt = chrono::Utc::now();
+        let date = format!("{}", dt.format("%a, %d %b %Y %T GMT"));
         let content_type = "application/octet-stream";
         let content_md5 = md5(&content);
 
