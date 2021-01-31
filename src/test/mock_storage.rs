@@ -47,9 +47,9 @@ impl Storage for MockStorage {
         );
         let val = g.remove(0);
 
-        pin_mut!(val);
+        let val = core::pin::Pin::new(val);
         async move {
-        val.await
+            val.await
         }.await
 
     }

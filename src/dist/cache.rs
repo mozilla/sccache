@@ -320,10 +320,10 @@ mod client {
 
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
-                    "/my/compiler".to_path_buf(),
+                    "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
-                )
+                ).wait()
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
@@ -365,26 +365,26 @@ mod client {
 
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
-                    "/my/compiler".as_ref(),
+                    "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
-                )
+                ).wait()
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
-                    "/my/compiler2".as_ref(),
+                    "/my/compiler2".into(),
                     "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
-                )
+                ).wait()
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler2/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
                 .put_toolchain(
-                    "/my/compiler3".as_ref(),
+                    "/my/compiler3".into(),
                     "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
-                )
+                ).wait()
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
@@ -407,10 +407,10 @@ mod client {
 
             assert!(client_toolchains
                 .put_toolchain(
-                    "/my/compiler".as_ref(),
+                    "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new()
-                )
+                ).wait()
                 .is_err());
         }
 

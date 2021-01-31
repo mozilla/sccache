@@ -227,6 +227,22 @@ impl TestFixture {
 }
 
 
+/// An add on trait, to allow calling `.wait()` for `futures_03::Future`
+/// as it was possible for `futures` at `0.1`.
+///
+/// Intended for test only!
+pub(crate) trait Waiter<R> {
+    fn wait(self) -> R;
+}
+
+impl<T,O> Waiter<O> for T where T: futures_03::Future<Output=O> {
+    fn wait(self) -> O
+    {
+        let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+        rt.block_on(self)
+    }
+}
+
 /// Helper to avoid issues with mock implementations.
 pub(crate) fn fut_wrap<V>(val: V) -> impl futures_03::Future<Output=V> {
     async move {
