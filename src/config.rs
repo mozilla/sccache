@@ -941,9 +941,9 @@ key_prefix = "prefix"
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
-                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
-                    use_ssl: true,
+                    endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
                     key_prefix: "prefix".to_owned(),
+                    .. Default::default()
                 }),
             },
             dist: DistConfig {

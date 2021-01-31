@@ -295,8 +295,9 @@ impl DistSystem {
         wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
+                let mut runtime = tokio_02::runtime::Runtime::new().unwrap();
+                let status = runtime.block_on (async { self.scheduler_status().await });
+                if matches!(status, SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
                 {
                     Ok(())
                 } else {
@@ -429,8 +430,9 @@ impl DistSystem {
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
+                let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+                let status = rt.block_on(async { self.scheduler_status().await });
+                if matches!(status, SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
                 {
                     Ok(())
                 } else {
@@ -450,10 +452,11 @@ impl DistSystem {
 
     async fn scheduler_status(&self) -> SchedulerStatusResult {
         let res = reqwest::get(dist::http::urls::scheduler_status(
-            &self.scheduler_url().to_url(),
-        )).await.expect("Test code itself is perfect. qed");
+            &{self.scheduler_url().to_url()},
+        )).await.unwrap();
         assert!(res.status().is_success());
-        bincode::deserialize_from(res).unwrap()
+        let mut bytes = res.bytes().await.unwrap();
+        bincode::deserialize_from(&mut bytes).unwrap()
     }
 
     fn container_ip(&self, name: &str) -> IpAddr {

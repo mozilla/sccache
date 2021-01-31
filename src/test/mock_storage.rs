@@ -14,7 +14,7 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures_03::future::{self, Future};
+use futures_03::{future::{self, Future}, pin_mut};
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -45,22 +45,24 @@ impl Storage for MockStorage {
             g.len() > 0,
             "MockStorage get called, but no get results available"
         );
-        g.remove(0)
+        let val = g.remove(0);
+
+        pin_mut!(val);
+        async move {
+        val.await
+        }.await
+
     }
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
-        async { Ok(Duration::from_secs(0)) }
+        Ok(Duration::from_secs(0))
     }
     fn location(&self) -> String {
         "Mock Storage".to_string()
     }
     async fn current_size(&self) -> Result<Option<u64>> {
-        async {
-            Ok(None)
-        }
+       Ok(None)
     }
     async fn max_size(&self) -> Result<Option<u64>> {
-        async {
-            Ok(None)
-        }
+        Ok(None)
     }
 }
