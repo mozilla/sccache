@@ -634,10 +634,12 @@ fn check_output(output: &Output) {
 #[cfg(feature = "dist-server")]
 fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
     // TODO: after upgrading to reqwest >= 0.9, use 'danger_accept_invalid_certs' and stick with that rather than tcp
+    let url = url.to_url();
     wait_for(
         || {
-            //match reqwest::get(url.to_url()) {
-            match net::TcpStream::connect(url.to_url()) {
+
+            let mut client = reqwest::blocking::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+            match client.get(url.clone()).send() {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.to_string()),
             }
