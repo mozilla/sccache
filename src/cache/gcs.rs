@@ -597,15 +597,17 @@ impl Storage for GCSCache {
 fn test_gcs_credential_provider() {
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
     let addr = ([127, 0, 0, 1], 23535).into();
-    let make_service = || {
-        hyper::service::service_fn(|_| {
+    let make_service = make_service_fn(|| {
+        hyper::service::service_fn(|_request| {
             let token = serde_json::json!({
                 "accessToken": "secr3t",
                 "expireTime": EXPIRE_TIME,
             });
-            hyper::Response::new(hyper::Body::from(token.to_string()))
+            async move {
+                hyper::Response::new(hyper::Body::from(token.to_string()))
+            }
         })
-    };
+    });
 
     let server = hyper::Server::bind(&addr).serve(make_service);
 
