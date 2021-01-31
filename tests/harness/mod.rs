@@ -456,7 +456,7 @@ impl DistSystem {
         )).await.unwrap();
         assert!(res.status().is_success());
         let mut bytes = res.bytes().await.unwrap();
-        bincode::deserialize_from(&mut bytes).unwrap()
+        bincode::deserialize_from(bytes.reader()).unwrap()
     }
 
     fn container_ip(&self, name: &str) -> IpAddr {
