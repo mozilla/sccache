@@ -163,7 +163,7 @@ fn run_server_process() -> Result<ServerStartup> {
     // Create a mini event loop and register our named pipe server
     let mut runtime = Runtime::new()?;
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
-    let server = runtime.block_on(future::lazy(|| {
+    let server = runtime.block_on(future::lazy(|_val| {
         NamedPipe::new(
             &pipe_name,
             #[allow(deprecated)]

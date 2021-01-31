@@ -1333,7 +1333,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
                     None,
                     creator.clone(),
@@ -1343,7 +1343,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool.clone(),
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1367,7 +1367,7 @@ LLVM version: 6.0",
         );
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher2.get_cached_or_compile(
                     None,
                     creator,
@@ -1377,7 +1377,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool,
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1434,7 +1434,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
                     dist_client.clone(),
                     creator.clone(),
@@ -1444,7 +1444,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool.clone(),
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1468,7 +1468,7 @@ LLVM version: 6.0",
         );
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher2.get_cached_or_compile(
                     dist_client.clone(),
                     creator,
@@ -1478,7 +1478,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool,
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1542,7 +1542,7 @@ LLVM version: 6.0",
         // The cache will return an error.
         storage.next_get(f_err(anyhow!("Some Error")));
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
                     None,
                     creator,
@@ -1552,7 +1552,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool,
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1624,7 +1624,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
                     None,
                     creator.clone(),
@@ -1634,7 +1634,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool.clone(),
-                )
+                ).await
             }))
             .unwrap();
         // Ensure that the object file was created.
@@ -1726,7 +1726,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let (cached, res) = runtime
-            .block_on(future::lazy(|| {
+            .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
                     None,
                     creator,
@@ -1736,7 +1736,7 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool,
-                )
+                ).await
             }))
             .unwrap();
         assert_eq!(cached, CompileResult::Error);
