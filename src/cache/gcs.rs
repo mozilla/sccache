@@ -598,7 +598,7 @@ fn test_gcs_credential_provider() {
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
     let addr = ([127, 0, 0, 1], 23535).into();
     let make_service = || {
-        hyper::service::service_fn_ok(|_| {
+        hyper::service::service_fn(|_| {
             let token = serde_json::json!({
                 "accessToken": "secr3t",
                 "expireTime": EXPIRE_TIME,

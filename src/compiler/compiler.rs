@@ -422,7 +422,6 @@ where
     let mut path_transformer = dist::PathTransformer::default();
     let (compile_cmd, _dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, true)
-        .await
         .context("Failed to generate compile commands")?;
 
     debug!("[{}]: Compiling locally", out_pretty);
