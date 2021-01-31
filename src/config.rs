@@ -942,8 +942,9 @@ key_prefix = "prefix"
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
                     endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
-                    key_prefix: "prefix".to_owned(),
-                    .. Default::default()
+                    key_prefix: Some("prefix".to_owned()),
+                    region: None,
+                    public: false,
                 }),
             },
             dist: DistConfig {
