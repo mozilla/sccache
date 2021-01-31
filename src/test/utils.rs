@@ -226,6 +226,14 @@ impl TestFixture {
     }
 }
 
+
+/// Helper to avoid issues with mock implementations.
+pub(crate) fn fut_wrap<V>(val: V) -> impl futures_03::Future<Output=V> {
+    async move {
+        val
+    }
+}
+
 #[test]
 fn test_map_contains_ok() {
     let mut m = HashMap::new();

@@ -280,9 +280,8 @@ mod client {
     #[cfg(test)]
     mod test {
         use crate::config;
-        use crate::test::utils::create_file;
+        use crate::test::utils::*;
         use std::io::Write;
-
         use super::ClientToolchains;
 
         struct PanicToolchainPackager;

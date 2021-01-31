@@ -1970,17 +1970,17 @@ mod test_dist {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
-            Ok(AllocJobResult::Success {
+            fut_wrap(Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })
+            })).await
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            unreachable!()
+            fut_wrap(unreachable!()).await
         }
         async fn do_submit_toolchain(
             &self,
@@ -1989,7 +1989,7 @@ mod test_dist {
         ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            bail!("submit toolchain failure")
+            fut_wrap(Err(anyhow!("submit toolchain failure"))).await
         }
         async fn do_run_job(
             &self,
@@ -1998,7 +1998,7 @@ mod test_dist {
             _: Vec<String>,
             _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
-            unreachable!()
+            fut_wrap(unreachable!()).await
         }
         async fn put_toolchain(
             &self,
@@ -2006,7 +2006,7 @@ mod test_dist {
             _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            Ok((self.tc.clone(), None))
+            fut_wrap(Ok((self.tc.clone(), None))).await
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -2037,14 +2037,14 @@ mod test_dist {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
-            f_ok(AllocJobResult::Success {
+            fut_wrap(Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })
+            })).await
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
@@ -2056,7 +2056,7 @@ mod test_dist {
         ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            f_ok(SubmitToolchainResult::Success)
+            fut_wrap(Ok(SubmitToolchainResult::Success)).await
         }
         async fn do_run_job(
             &self,
@@ -2067,7 +2067,7 @@ mod test_dist {
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
-            Err(anyhow!("run job failure"))
+            fut_wrap(Err(anyhow!("run job failure"))).await
         }
         async fn put_toolchain(
             &self,
@@ -2075,13 +2075,13 @@ mod test_dist {
             _: &str,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            f_ok((
+            fut_wrap(Ok((
                 self.tc.clone(),
                 Some((
                     "/overridden/compiler".to_owned(),
                     PathBuf::from("somearchiveid"),
                 )),
-            ))
+            ))).await
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -2116,17 +2116,17 @@ mod test_dist {
             assert!(!self.has_started.replace(true));
             assert_eq!(self.tc, tc);
 
-            Ok(AllocJobResult::Success {
+            fut_wrap(Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })
+            })).await
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            unreachable!()
+            fut_wrap(unreachable!()).await
         }
         async fn do_submit_toolchain(
             &self,
@@ -2136,7 +2136,7 @@ mod test_dist {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
 
-            Ok(SubmitToolchainResult::Success)
+            fut_wrap(Ok(SubmitToolchainResult::Success)).await
         }
         async fn do_run_job(
             &self,
@@ -2162,7 +2162,7 @@ mod test_dist {
                 output: self.output.clone(),
                 outputs,
             });
-            Ok((result, path_transformer))
+            fut_wrap(Ok((result, path_transformer))).await
         }
         async fn put_toolchain(
             &self,
@@ -2170,13 +2170,14 @@ mod test_dist {
             _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            Ok((
+
+            fut_wrap(Ok((
                 self.tc.clone(),
                 Some((
                     "/overridden/compiler".to_owned(),
                     PathBuf::from("somearchiveid"),
                 )),
-            ))
+            ))).await
         }
         fn rewrite_includes_only(&self) -> bool {
             false
