@@ -456,7 +456,7 @@ where
         CompilerKind::Rust
     }
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
+    fn get_toolchain_packager(&self) -> pkg::BoxDynToolchainPackager {
         Box::new(RustToolchainPackager {
             sysroot: self.sysroot.clone(),
         })

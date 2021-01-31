@@ -125,7 +125,7 @@ where
     fn kind(&self) -> CompilerKind;
     /// Retrieve a packager
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager>;
+    fn get_toolchain_packager(&self) -> pkg::BoxDynToolchainPackager;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -1291,7 +1291,7 @@ LLVM version: 6.0",
         let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
+        let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1397,7 +1397,7 @@ LLVM version: 6.0",
         let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
+        let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1540,7 +1540,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
-        storage.next_get(f_err(anyhow!("Some Error")));
+        storage.next_get(Box::new(async move { Err(anyhow!("Some Error"))}));
         let (cached, res) = runtime
             .block_on(future::lazy(|_val| {
                 hasher.get_cached_or_compile(
@@ -1578,7 +1578,7 @@ LLVM version: 6.0",
         let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
+        let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1686,7 +1686,7 @@ LLVM version: 6.0",
         let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
+        let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
         let obj = f.tempdir.path().join("foo.o");
@@ -1762,7 +1762,7 @@ LLVM version: 6.0",
             test_dist::ErrorRunJobClient::new(),
         ];
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
+        let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1879,7 +1879,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<dyn pkg::InputsPackager>,
+            _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1887,7 +1887,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: Box<dyn pkg::ToolchainPackager>,
+            _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Err(anyhow!("put toolchain failure"))
         }
@@ -1929,7 +1929,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<dyn pkg::InputsPackager>,
+            _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1937,7 +1937,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: Box<dyn pkg::ToolchainPackager>,
+            _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
         }
@@ -1996,7 +1996,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: Box<dyn pkg::InputsPackager>,
+            _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -2004,7 +2004,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: Box<dyn pkg::ToolchainPackager>,
+            _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
         }
@@ -2063,7 +2063,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             _: Vec<String>,
-            _: Box<dyn pkg::InputsPackager>,
+            _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
@@ -2073,7 +2073,7 @@ mod test_dist {
             &self,
             _: &Path,
             _: &str,
-            _: Box<dyn pkg::ToolchainPackager>,
+            _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             f_ok((
                 self.tc.clone(),
@@ -2143,7 +2143,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
-            inputs_packager: Box<dyn pkg::InputsPackager>,
+            inputs_packager: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
@@ -2168,7 +2168,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: Box<dyn pkg::ToolchainPackager>,
+            _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((
                 self.tc.clone(),

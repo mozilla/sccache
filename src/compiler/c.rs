@@ -223,7 +223,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         CompilerKind::C(self.compiler.kind())
     }
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager> {
+    fn get_toolchain_packager(&self) -> pkg::BoxDynToolchainPackager {
         Box::new(CToolchainPackager {
             executable: self.executable.clone(),
             kind: self.compiler.kind(),
