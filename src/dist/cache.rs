@@ -1,7 +1,6 @@
 use crate::dist::Toolchain;
 
 use anyhow::{anyhow, Result};
-use futures_03::task::SpawnExt;
 use lru_disk_cache::Result as LruResult;
 use lru_disk_cache::{LruDiskCache, ReadSeek};
 use std::fs;
@@ -16,7 +15,7 @@ use std::io::Read;
 #[cfg(feature = "dist-client")]
 mod client {
     use crate::config;
-    use crate::dist::pkg::{ToolchainPackager, BoxDynToolchainPackager};
+    use crate::dist::pkg::BoxDynToolchainPackager;
     use crate::dist::Toolchain;
     use anyhow::{bail, Context, Error, Result};
     use lru_disk_cache::Error as LruError;

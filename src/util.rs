@@ -16,13 +16,8 @@ use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use futures_03::executor::ThreadPool;
-use futures_03::future::TryFutureExt;
-use futures_03::task;
 pub(crate) use futures_03::task::SpawnExt;
-use futures_03::TryStreamExt;
-use futures_03::{compat::Future01CompatExt, future, pin_mut, stream::FuturesUnordered};
 use serde::Serialize;
-use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
@@ -157,9 +152,7 @@ async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Resu
 where
     T: CommandChild + 'static,
 {
-    use tokio_02::io::{AsyncReadExt, BufReader};
-    use tokio_02::io::{AsyncWriteExt, BufWriter};
-    use tokio_02::process::Command;
+    use tokio_02::io::{AsyncReadExt,AsyncWriteExt};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| {
             Box::pin(async move { stdin.write_all(&i).await.context("failed to write stdin") })
@@ -197,7 +190,7 @@ where
     // Finish writing stdin before waiting, because waiting drops stdin.
 
     if let Some(stdin) = stdin {
-        stdin.await;
+        let _ = stdin.await;
     }
     let status = child.wait().await.context("failed to wait for child")?;
     let (stdout, stderr) = futures_03::join!(stdout, stderr);
@@ -382,9 +375,7 @@ pub use self::http_extension::{HeadersExt, RequestExt};
 // TODO delete all of it
 #[cfg(feature = "hyperx")]
 mod http_extension {
-    use std::convert::TryFrom;
-
-    use reqwest::header::{HeaderMap, HeaderValue, InvalidHeaderName, InvalidHeaderValue};
+    use reqwest::header::{HeaderMap, HeaderValue};
     use std::fmt;
 
     pub trait HeadersExt {
@@ -427,7 +418,7 @@ mod http_extension {
     }
 
     impl RequestExt for http::request::Builder {
-        fn set_header<H>(mut self, header: H) -> Self
+        fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,
         {
@@ -440,7 +431,7 @@ mod http_extension {
     }
 
     impl RequestExt for http::response::Builder {
-        fn set_header<H>(mut self, header: H) -> Self
+        fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,
         {

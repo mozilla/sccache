@@ -20,13 +20,9 @@ pub use self::server::{
     ClientAuthCheck, ClientVisibleMsg, Scheduler, ServerAuthCheck, HEARTBEAT_TIMEOUT,
 };
 
-use futures_03::task::SpawnExt;
-
 mod common {
     #[cfg(feature = "dist-client")]
-    use futures_03::{Future, Stream};
     #[cfg(feature = "dist-client")]
-    use futures_03::task::SpawnExt;
     use hyperx::header;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
@@ -1085,7 +1081,7 @@ mod server {
 mod client {
     use super::super::cache;
     use crate::config;
-    use crate::dist::pkg::{InputsPackager, BoxDynInputsPackager, ToolchainPackager, BoxDynToolchainPackager, };
+    use crate::dist::pkg::{BoxDynInputsPackager, BoxDynToolchainPackager, };
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
@@ -1094,7 +1090,6 @@ mod client {
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
-    use futures_03::Future;
     use futures_03::executor::ThreadPool;
     use futures_03::task::SpawnExt as SpawnExt_03;
     use std::collections::HashMap;
@@ -1254,7 +1249,7 @@ mod client {
                         &mut server_certs.lock().unwrap(),
                         res.cert_digest,
                         res.cert_pem,
-                    );
+                    ).context("Failed to update certificate").unwrap_or_else(|e| { warn!("Failed to update certificate: {:?}", e) });
 
                     alloc_job_res
                 }

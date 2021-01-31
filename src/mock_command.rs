@@ -47,7 +47,6 @@
 
 use crate::errors::*;
 use crate::jobserver::{Acquired, Client};
-use futures_03::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -57,7 +56,7 @@ use std::process::{ExitStatus, Output, Stdio};
 use std::result;
 use std::sync::{Arc, Mutex};
 use tokio_02::io::{AsyncRead, AsyncWrite};
-use tokio_02::process::{self, ChildStderr, ChildStdin, ChildStdout};
+use tokio_02::process::{ChildStderr, ChildStdin, ChildStdout};
 use std::process::Command as StdCommand;
 
 /// A trait that provides a subset of the methods of `std::process::Child`.

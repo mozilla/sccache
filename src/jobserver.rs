@@ -1,11 +1,9 @@
 use std::io;
 use std::sync::Arc;
-use tokio_02::process::Command;
 use std::process::Command as StdCommand;
 
 use futures_03::channel::mpsc;
 use futures_03::channel::oneshot;
-use futures_03::future;
 use futures_03::prelude::*;
 
 use crate::errors::*;
@@ -39,7 +37,7 @@ impl Client {
         let (helper, tx) = if inherited {
             (None, None)
         } else {
-            let (mut tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
+            let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {

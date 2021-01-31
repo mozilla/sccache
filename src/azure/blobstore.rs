@@ -16,12 +16,11 @@
 
 use crate::azure::credentials::*;
 use bytes::Buf;
-use futures_03::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
 use hyperx::header;
 use md5::{Digest, Md5};
 use reqwest::Url;
-use reqwest::{header::HeaderValue, Client, Method, Request, Response};
+use reqwest::{header::HeaderValue, Client, Method, Request};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;

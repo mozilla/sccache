@@ -19,7 +19,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use std::str::FromStr;

@@ -113,13 +113,13 @@ impl Bucket {
         let res = client
             .execute(request)
             .await
-            .map_err(|e| Error::from(format!("failed GET: {}", url)))?;
+            .map_err(|_e| Error::from(format!("failed GET: {}", url)))?;
         let status = res.status();
         if status.is_success() {
             let bytes = res
                 .bytes()
                 .await
-                .map_err(|e| Error::from("failed to read HTTP body"))?;
+                .map_err(|_e| Error::from("failed to read HTTP body"))?;
             Ok(bytes.iter().copied().collect())
         } else {
             Err(BadHttpStatusError(status).into())
@@ -425,7 +425,7 @@ impl GCSCredentialProvider {
             let token_msg = res
                 .json::<TokenMsg>()
                 .await
-                .map_err(|e| "failed to read HTTP body")?;
+                .map_err(|_e| "failed to read HTTP body")?;
             Ok(token_msg)
         } else {
             Err(Error::from(BadHttpStatusError(res_status)))
@@ -453,7 +453,7 @@ impl GCSCredentialProvider {
                 expiration_time: resp
                     .expire_time
                     .parse()
-                    .map_err(|e| "Failed to parse GCS expiration time")?,
+                    .map_err(|_e| "Failed to parse GCS expiration time")?,
             })
         } else {
             Err(Error::from(BadHttpStatusError(res.status())))
@@ -575,9 +575,9 @@ impl Storage for GCSCache {
         let response = bucket
             .put(&key, data, &self.credential_provider)
             .await
-            .context("failed to put cache entry in GCS")?;
+            .context("failed to put cache entry in GCS");
 
-        Ok(start.elapsed())
+        response.map(move |_| start.elapsed())
     }
 
     fn location(&self) -> String {

@@ -448,11 +448,10 @@ impl DistSystem {
         HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap())
     }
 
-    fn scheduler_status(&self) -> SchedulerStatusResult {
+    async fn scheduler_status(&self) -> SchedulerStatusResult {
         let res = reqwest::get(dist::http::urls::scheduler_status(
             &self.scheduler_url().to_url(),
-        ))
-        .unwrap();
+        )).await.expect("Test code itself is perfect. qed");
         assert!(res.status().is_success());
         bincode::deserialize_from(res).unwrap()
     }

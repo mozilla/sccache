@@ -26,10 +26,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
-use futures_03::Future;
-use futures_03::pin_mut;
 use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt as SpawnExt_03;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -227,7 +224,8 @@ where
         .envs(ref_env(env_vars))
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
-    let dep_info = run_input_output(cmd, None).await?;
+    // Output of command is in file under dep_file, so we ignore stdout&stderr
+    let _stdouterr = run_input_output(cmd, None).await?;
     // Parse the dep-info file, then hash the contents of those files.
     let pool = pool.clone();
     let cwd = cwd.to_owned();

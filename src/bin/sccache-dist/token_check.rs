@@ -147,7 +147,7 @@ impl MozillaCheck {
         let header = hyperx::header::Authorization(hyperx::header::Bearer {
             token: token.to_owned(),
         });
-        let mut res = self
+        let res = self
             .client
             .get(url.clone())
             .set_header(header)
@@ -329,7 +329,7 @@ impl ClientAuthCheck for ValidJWTCheck {
 
 impl ValidJWTCheck {
     pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let mut res =
+        let res =
             reqwest::blocking::get(jwks_url).context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())

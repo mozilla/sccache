@@ -23,7 +23,6 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures_03::Future;
 use futures_03::StreamExt;
 use log::Level::Trace;
 use std::{env, process::ExitStatus};
@@ -34,11 +33,9 @@ use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use strip_ansi_escapes::Writer;
-use tokio_02::io::AsyncRead;
 use tokio_02::io::AsyncReadExt;
 use tokio_02::process;
 use tokio_02::runtime::Runtime;
-use tokio_02::time::Timeout;
 use which::which_in;
 
 use crate::errors::*;
@@ -75,7 +72,6 @@ async fn read_server_startup_status<R: AsyncReadExt>(server: R) -> Result<Server
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures_03::Stream;
     use std::time::Duration;
 
     trace!("run_server_process");
@@ -106,7 +102,7 @@ fn run_server_process() -> Result<ServerStartup> {
     let z = runtime.block_on(async move { tokio_02::time::timeout(timeout, startup).await } );
 
     z
-    .or_else(|err| {
+    .or_else(|_err| {
         Ok(Ok(ServerStartup::TimedOut))
     }).and_then(|flatten| flatten)
 }
@@ -513,7 +509,7 @@ where
         trace!("running command: {:?}", cmd);
     }
     let status = {
-        let mut fut = async move {
+        let fut = async move {
             let child = cmd.spawn().await?;
             let status = child.wait().await?;
             Ok::<_,anyhow::Error>(status)

@@ -16,7 +16,7 @@
 #![allow(deprecated)]
 #![allow(clippy::complexity)]
 
-use crate::cache::{storage_from_config, Storage, ArcDynStorage};
+use crate::cache::{storage_from_config, ArcDynStorage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, MissType,
@@ -34,14 +34,13 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures_03::{Future as _, pin_mut};
 use futures_03::executor::ThreadPool;
 use futures_03::task::SpawnExt;
-use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
+use futures_03::{channel::mpsc, future, prelude::*, stream};
 use futures_03::future::FutureExt;
 use futures_locks::RwLock;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
-use std::{borrow::BorrowMut, collections::HashMap};
+use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
@@ -571,7 +570,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             info!("shutting down due to explicit signal");
         });
 
-        let mut shutdown_or_inactive = async {
+        let shutdown_or_inactive = async {
             ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
@@ -749,7 +748,7 @@ where
                 }
                 Request::ZeroStats => {
                     debug!("handle_client: zero_stats");
-                    me.zero_stats();
+                    me.zero_stats().await;
                     me
                         .get_info()
                         .await
@@ -1266,7 +1265,7 @@ where
                 }
             };
             let send = Box::pin(
-                tx.send(Ok(Response::CompileFinished(res))).map_err(|e| anyhow!("send on finish failed") )
+                tx.send(Ok(Response::CompileFinished(res))).map_err(|e| anyhow!("send on finish failed").context(e) )
             );
 
             let me = me.clone();
@@ -1298,7 +1297,7 @@ where
             Ok::<_, Error>(())
         };
 
-        self.pool.spawn(Box::pin(async move { task.await; } )).unwrap();
+        self.pool.spawn(Box::pin(async move { task.await.unwrap_or_else(|e| { warn!("Failed to execut task: {:?}", e) }); } )).expect("Spawning on the worker pool never fails. qed");
     }
 }
 

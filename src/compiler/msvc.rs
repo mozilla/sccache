@@ -102,7 +102,6 @@ impl CCompilerImpl for MSVC {
 fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
     Encoding::OEM.to_string(bytes)
 }
-use futures_03::task::SpawnExt as SpawnExt_03;
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
 pub async fn detect_showincludes_prefix<T>(
