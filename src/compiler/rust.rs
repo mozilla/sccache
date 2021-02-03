@@ -1367,7 +1367,7 @@ where
                 env_vars.sort();
                 for &(ref var, ref val) in env_vars.iter() {
                     // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-                    if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
+                    if var.eq("CARGO") || (var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS") {
                         var.hash(&mut HashToDigest { digest: &mut m });
                         m.update(b"=");
                         val.hash(&mut HashToDigest { digest: &mut m });
