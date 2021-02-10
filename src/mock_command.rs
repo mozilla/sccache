@@ -135,7 +135,7 @@ pub trait CommandCreator {
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync: Clone + 'static + Send + Sync {
+pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
     type Cmd: RunCommand;
 
     fn new(client: &Client) -> Self;

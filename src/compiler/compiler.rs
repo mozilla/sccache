@@ -1333,7 +1333,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher.get_cached_or_compile(
                     None,
                     creator.clone(),
@@ -1344,7 +1344,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1367,7 +1367,7 @@ LLVM version: 6.0",
         );
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher2.get_cached_or_compile(
                     None,
                     creator,
@@ -1378,7 +1378,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1434,7 +1434,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher.get_cached_or_compile(
                     dist_client.clone(),
                     creator.clone(),
@@ -1445,7 +1445,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1468,7 +1468,7 @@ LLVM version: 6.0",
         );
         // There should be no actual compiler invocation.
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher2.get_cached_or_compile(
                     dist_client.clone(),
                     creator,
@@ -1479,7 +1479,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1540,9 +1540,9 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
-        storage.next_get(Box::new(async move { Err(anyhow!("Some Error"))}));
+        storage.next_get(Box::pin(async move { Err(anyhow!("Some Error"))}));
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher.get_cached_or_compile(
                     None,
                     creator,
@@ -1553,7 +1553,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1624,7 +1624,7 @@ LLVM version: 6.0",
         };
         let hasher2 = hasher.clone();
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher.get_cached_or_compile(
                     None,
                     creator.clone(),
@@ -1635,7 +1635,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool.clone(),
                 ).await
-            }))
+            })
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
@@ -1726,7 +1726,7 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         let (cached, res) = runtime
-            .block_on(future::lazy(|_val| {
+            .block_on(async {
                 hasher.get_cached_or_compile(
                     None,
                     creator,
@@ -1737,7 +1737,7 @@ LLVM version: 6.0",
                     CacheControl::Default,
                     pool,
                 ).await
-            }))
+            })
             .unwrap();
         assert_eq!(cached, CompileResult::Error);
         assert_eq!(exit_status(1), res.status);
@@ -1844,13 +1844,13 @@ LLVM version: 6.0",
 #[cfg(test)]
 #[cfg(feature = "dist-client")]
 mod test_dist {
-    use crate::dist::pkg;
+    use crate::{dist::pkg, test::utils::fut_wrap};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
         SubmitToolchainResult, Toolchain,
     };
-    use std::cell::Cell;
+    use std::{cell::Cell, cmp::Ordering, sync::atomic::AtomicBool};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
@@ -1950,14 +1950,14 @@ mod test_dist {
     }
 
     pub struct ErrorSubmitToolchainClient {
-        has_started: Cell<bool>,
+        has_started: AtomicBool,
         tc: Toolchain,
     }
     impl ErrorSubmitToolchainClient {
         #[allow(clippy::new_ret_no_self)]
         pub fn new() -> dist::ArcDynClient {
             Arc::new(Self {
-                has_started: Cell::new(false),
+                has_started: AtomicBool::default(),
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
                 },
@@ -1968,7 +1968,7 @@ mod test_dist {
     #[async_trait::async_trait]
     impl dist::Client for ErrorSubmitToolchainClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self.has_started.replace(true));
+            assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
             fut_wrap(Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
@@ -2017,14 +2017,14 @@ mod test_dist {
     }
 
     pub struct ErrorRunJobClient {
-        has_started: Cell<bool>,
+        has_started: AtomicBool,
         tc: Toolchain,
     }
     impl ErrorRunJobClient {
         #[allow(clippy::new_ret_no_self)]
         pub fn new() -> dist::ArcDynClient {
             Arc::new(Self {
-                has_started: Cell::new(false),
+                has_started: AtomicBool::default(),
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
                 },
@@ -2035,7 +2035,7 @@ mod test_dist {
     #[async_trait::async_trait]
     impl dist::Client for ErrorRunJobClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self.has_started.replace(true));
+            assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
             fut_wrap(Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
@@ -2071,8 +2071,8 @@ mod test_dist {
         }
         async fn put_toolchain(
             &self,
-            _: &Path,
-            _: &str,
+            _: PathBuf,
+            _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             fut_wrap(Ok((
@@ -2092,7 +2092,7 @@ mod test_dist {
     }
 
     pub struct OneshotClient {
-        has_started: Cell<bool>,
+        has_started: AtomicBool,
         tc: Toolchain,
         output: ProcessOutput,
     }
@@ -2101,7 +2101,7 @@ mod test_dist {
         #[allow(clippy::new_ret_no_self)]
         pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> dist::ArcDynClient {
             Arc::new(Self {
-                has_started: Cell::new(false),
+                has_started: AtomicBool::default(),
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
                 },
@@ -2113,7 +2113,7 @@ mod test_dist {
     #[async_trait::async_trait]
     impl dist::Client for OneshotClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
-            assert!(!self.has_started.replace(true));
+            assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
 
             fut_wrap(Ok(AllocJobResult::Success {

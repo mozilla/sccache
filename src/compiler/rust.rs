@@ -2715,7 +2715,7 @@ mod test {
             Ok(MockChild::new(exit_status(0), "foo\nbar\nbaz", "")),
         );
         let outputs = get_compiler_outputs(
-            &creator,
+            creator,
             "rustc".as_ref(),
             ovec!("a", "b"),
             "cwd".as_ref(),
@@ -2731,7 +2731,7 @@ mod test {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "error")));
         assert!(get_compiler_outputs(
-            &creator,
+            creator,
             "rustc".as_ref(),
             ovec!("a", "b"),
             "cwd".as_ref(),

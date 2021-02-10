@@ -14,44 +14,42 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures_03::{future::{self, Future}, pin_mut};
-use std::cell::RefCell;
+use futures_03::{channel::mpsc::{self, UnboundedReceiver, UnboundedSender}, future::{self, Future}, pin_mut};
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use core::pin::Pin;
+
+pub(crate) trait StorageNextVal<T>: Future<Output=Result<T>> + Send + Sync + 'static {}
+
+impl<Z,T> StorageNextVal<T> for Z where Z: Future<Output=Result<T>> + Send + Sync + 'static {}
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
-    gets: RefCell<Vec<Box<dyn Future<Output=Result<Cache>> + Send + Sync + 'static>>>,
+    rx: Arc<Mutex<UnboundedReceiver<Pin<Box<dyn StorageNextVal<Cache>>>>>>,
+    tx: UnboundedSender<Pin<Box<dyn StorageNextVal<Cache>>>>,
 }
 
 impl MockStorage {
     /// Create a new `MockStorage`.
-    pub fn new() -> MockStorage {
-        MockStorage {
-            gets: RefCell::new(vec![]),
+    pub(crate) fn new() -> MockStorage {
+        let (tx, rx) = mpsc::unbounded::<Pin<Box<dyn StorageNextVal<Cache>>>>();
+        Self {
+            tx,
+            rx: Arc::new(Mutex::new(rx)),
         }
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
-    pub fn next_get(&self, res: Box<dyn Future<Output=Result<Cache>> + Send + Sync + 'static>) {
-        self.gets.borrow_mut().push(res)
+    pub(crate) fn next_get(&self, res: Pin<Box<dyn StorageNextVal<Cache>>>) {
+        self.tx.unbounded_send(res).unwrap();
     }
 }
 
 #[async_trait::async_trait]
 impl Storage for MockStorage {
     async fn get(&self, _key: &str) -> Result<Cache> {
-        let mut g = self.gets.borrow_mut();
-        assert!(
-            g.len() > 0,
-            "MockStorage get called, but no get results available"
-        );
-        let val = g.remove(0);
-
-        let val = core::pin::Pin::new(val);
-        async move {
-            val.await
-        }.await
-
+        let mut fut = self.rx.lock().unwrap().try_next().ok().flatten().expect("MockStorage get called, but no get results available");
+        fut.await
     }
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
         Ok(Duration::from_secs(0))

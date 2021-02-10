@@ -22,6 +22,7 @@ use nix::{
     },
     unistd::{ForkResult, Pid},
 };
+use bytes::buf::ext::BufExt;
 use predicates::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
@@ -455,7 +456,7 @@ impl DistSystem {
             &{self.scheduler_url().to_url()},
         )).await.unwrap();
         assert!(res.status().is_success());
-        let mut bytes = res.bytes().await.unwrap();
+        let bytes = res.bytes().await.unwrap();
         bincode::deserialize_from(bytes.reader()).unwrap()
     }
 
@@ -633,12 +634,10 @@ fn check_output(output: &Output) {
 
 #[cfg(feature = "dist-server")]
 fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
-    // TODO: after upgrading to reqwest >= 0.9, use 'danger_accept_invalid_certs' and stick with that rather than tcp
     let url = url.to_url();
     wait_for(
         || {
-
-            let mut client = reqwest::blocking::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
+            let client = reqwest::blocking::Client::builder().danger_accept_invalid_certs(true).build().unwrap();
             match client.get(url.clone()).send() {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.to_string()),

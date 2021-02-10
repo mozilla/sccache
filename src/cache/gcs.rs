@@ -23,7 +23,7 @@ use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
 use serde::de;
-use std::sync;
+use std::{convert::Infallible, sync};
 use std::{fmt, io, pin::Pin, result, sync::Arc, time};
 use url::{
     form_urlencoded,
@@ -593,20 +593,21 @@ impl Storage for GCSCache {
     }
 }
 
+use futures_03::TryFutureExt;
+
 #[test]
 fn test_gcs_credential_provider() {
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
     let addr = ([127, 0, 0, 1], 23535).into();
-    let make_service = make_service_fn(|| {
-        hyper::service::service_fn(|_request| {
+    let make_service =
+    hyper::service::make_service_fn(|_socket| async move {
+        Ok::<_, Infallible>(hyper::service::service_fn(|_request| async move{
             let token = serde_json::json!({
                 "accessToken": "secr3t",
                 "expireTime": EXPIRE_TIME,
             });
-            async move {
-                hyper::Response::new(hyper::Body::from(token.to_string()))
-            }
-        })
+            Ok::<_, Infallible>(hyper::Response::new(hyper::Body::from(token.to_string())))
+        }))
     });
 
     let server = hyper::Server::bind(&addr).serve(make_service);
@@ -620,16 +621,19 @@ fn test_gcs_credential_provider() {
     let cred_fut = credential_provider
         .credentials(&client)
         .map(move |credential| {
-            assert_eq!(credential.token, "secr3t");
-            assert_eq!(
-                credential.expiration_time.timestamp(),
-                EXPIRE_TIME
-                    .parse::<chrono::DateTime<chrono::offset::Utc>>()
-                    .unwrap()
-                    .timestamp(),
-            );
-        })
-        .map_err(move |err| panic!(err.to_string()));
+            if let Err(err) = credential.map(|credential| {
+                assert_eq!(credential.token, "secr3t");
+                assert_eq!(
+                    credential.expiration_time.timestamp(),
+                    EXPIRE_TIME
+                        .parse::<chrono::DateTime<chrono::offset::Utc>>()
+                        .unwrap()
+                        .timestamp(),
+                );
+            }) {
+                panic!(err.to_string());
+            }
+        });
 
     server.with_graceful_shutdown(cred_fut);
 }
