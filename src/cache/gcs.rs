@@ -610,6 +610,10 @@ fn test_gcs_credential_provider() {
         }))
     });
 
+
+    let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+
+    let fut = async move {
     let server = hyper::Server::bind(&addr).serve(make_service);
 
     let credential_provider = GCSCredentialProvider::new(
@@ -634,6 +638,8 @@ fn test_gcs_credential_provider() {
                 panic!(err.to_string());
             }
         });
+        server.with_graceful_shutdown(cred_fut).await;
+    };
 
-    server.with_graceful_shutdown(cred_fut);
+    rt.block_on(fut);
 }
