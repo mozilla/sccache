@@ -203,6 +203,7 @@ pub struct S3CacheConfig {
     pub key_prefix: Option<String>,
     #[serde(default)]
     pub region: Option<String>,
+    #[serde(default)]
     pub public: bool,
 }
 
@@ -913,8 +914,8 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 [cache.s3]
 bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
-use_ssl = true
 key_prefix = "prefix"
+public = true
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -944,7 +945,7 @@ key_prefix = "prefix"
                     endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
                     key_prefix: Some("prefix".to_owned()),
                     region: None,
-                    public: false,
+                    public: true,
                 }),
             },
             dist: DistConfig {
