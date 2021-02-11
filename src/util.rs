@@ -70,9 +70,29 @@ impl Digest {
 
         Box::new(pool.spawn_fn(move || -> Result<_> {
             let start = time::Instant::now();
+
+            lazy_static! {
+                static ref CACHE: FileHashCache = FileHashCache::default();
+            }
+
+            // See if we already have a hash cached for `path`, and if so,
+            // return it immediately.
+            let current_time_stamp = match CACHE.get_hash_if_up_to_date(&path)? {
+                Ok(hash) => return Ok((hash, start.elapsed())),
+                Err(current_time_stamp) => current_time_stamp,
+            };
+
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
             let hash = Digest::reader_sync(reader)?;
+
+            // Store the file hash with the given timestamp. Note that we have
+            // not kept the cache locked while hashing, so multiple threads might
+            // concurrently hash the same file and then store the hash multiple
+            // times. That is OK since we assume that the same file with the
+            // same timestamp always has the same hash.
+            CACHE.store_hash(path, current_time_stamp, hash.clone());
+
             Ok((hash, start.elapsed()))
         }))
     }
