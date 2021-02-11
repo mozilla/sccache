@@ -1051,7 +1051,7 @@ diab
                     .await
                     .map(|c| Box::new(c) as BoxDynCompiler<T>);
             }
-            _ => (),
+            _ => continue,
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1560,7 +1560,7 @@ LLVM version: 6.0",
         match cached {
             CompileResult::CacheMiss(MissType::CacheReadError, DistType::NoDist, _, f) => {
                 // wait on cache write future so we don't race with it!
-                f.wait().unwrap();
+                let _ = f.wait();
             }
             _ => assert!(false, "Unexpected compile result: {:?}", cached),
         }
