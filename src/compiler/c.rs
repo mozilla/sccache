@@ -212,7 +212,7 @@ where
         pool: &ThreadPool,
     ) -> SFuture<CCompiler<I>> {
         Box::new(
-            Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
+            Digest::file(executable.clone(), &pool).map(move |(digest, _)| CCompiler {
                 executable,
                 executable_digest: {
                     if let Some(version) = version {

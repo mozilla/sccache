@@ -59,11 +59,20 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn file<T>(path: T, pool: &ThreadPool) -> SFuture<String>
+    /// The `Duration` in the result is the time it took to compute the hash.
+    pub fn file<T>(path: T, pool: &ThreadPool) -> SFuture<(String, Duration)>
     where
         T: AsRef<Path>,
     {
-        Self::reader(path.as_ref().to_owned(), pool)
+        let path = path.as_ref().to_owned();
+
+        Box::new(pool.spawn_fn(move || -> Result<_> {
+            let start = time::Instant::now();
+            let reader = File::open(&path)
+                .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
+            let hash = Digest::reader_sync(reader)?;
+            Ok((hash, start.elapsed()))
+        }))
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
@@ -80,16 +89,6 @@ impl Digest {
             m.update(&buffer[..count]);
         }
         Ok(m.finish())
-    }
-
-    /// Calculate the BLAKE3 digest of the contents of `path`, running
-    /// the actual hash computation on a background thread in `pool`.
-    pub fn reader(path: PathBuf, pool: &ThreadPool) -> SFuture<String> {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
-            let reader = File::open(&path)
-                .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
-            Digest::reader_sync(reader)
-        }))
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -126,7 +125,6 @@ pub fn hex(bytes: &[u8]) -> String {
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
 pub fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> SFuture<Vec<String>> {
-    let start = time::Instant::now();
     let count = files.len();
     let pool = pool.clone();
     Box::new(
@@ -137,12 +135,15 @@ pub fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> SFuture<Vec<String>> {
                 .collect::<Vec<_>>(),
         )
         .map(move |hashes| {
+            let duration = hashes.iter().map(|&(_, d)| d).sum();
+
             trace!(
                 "Hashed {} files in {}",
                 count,
-                fmt_duration_as_secs(&start.elapsed())
+                fmt_duration_as_secs(&duration)
             );
-            hashes
+
+            hashes.into_iter().map(|(h, _)| h).collect::<Vec<String>>()
         }),
     )
 }
