@@ -20,12 +20,14 @@ use futures_03::executor::ThreadPool;
 use futures_03::future::TryFutureExt;
 use futures_03::task;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time;
 use std::time::Duration;
 
@@ -103,6 +105,103 @@ impl Digest {
 impl Default for Digest {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(unix)]
+mod file_time_stamp {
+    use std::path::Path;
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub struct FileTimeStamp {
+        dev: u64,
+        ino: u64,
+        size: u64,
+        mtime: i64,
+        mtime_nsec: i64,
+    }
+
+    impl FileTimeStamp {
+        pub fn from_path(path: &Path) -> std::io::Result<FileTimeStamp> {
+            use std::os::unix::fs::MetadataExt;
+
+            let metadata = std::fs::metadata(path)?;
+
+            Ok(FileTimeStamp {
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                size: metadata.size(),
+                mtime: metadata.mtime(),
+                mtime_nsec: metadata.mtime_nsec(),
+            })
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod file_time_stamp {
+    use filetime::FileTime;
+    use std::path::Path;
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    pub struct FileTimeStamp(FileTime);
+
+    impl FileTimeStamp {
+        pub fn from_path(path: &Path) -> std::io::Result<FileTimeStamp> {
+            let metadata = std::fs::metadata(path)?;
+            Ok(FileTimeStamp(FileTime::from_last_modification_time(
+                &metadata,
+            )))
+        }
+    }
+}
+
+type FileTimeStamp = file_time_stamp::FileTimeStamp;
+
+#[derive(Clone)]
+struct CachedFileHash {
+    timestamp: FileTimeStamp,
+    hash: Arc<String>,
+}
+
+#[derive(Default)]
+struct FileHashCache {
+    hashes: Arc<Mutex<HashMap<PathBuf, CachedFileHash>>>,
+}
+
+impl FileHashCache {
+    /// Returns the cached file hash if it has the same FileTimeStamp as the
+    /// given `path` currently has. If there is no entry for the path or the
+    /// entry is outdated, returns the current FileTimeStamp as `Err()`.
+    fn get_hash_if_up_to_date(
+        &self,
+        path: &Path,
+    ) -> Result<std::result::Result<String, FileTimeStamp>> {
+        // Retrieve the existing cache entry and immediately release the lock
+        // again.
+        let entry = self.hashes.lock().unwrap().get(path).cloned();
+
+        let current_time_stamp = FileTimeStamp::from_path(path)?;
+
+        if let Some(CachedFileHash { timestamp, hash }) = entry {
+            if timestamp == current_time_stamp {
+                return Ok(Ok((*hash).clone()));
+            }
+        }
+
+        Ok(Err(current_time_stamp))
+    }
+
+    /// Stores the `hash` with the `timestamp` for `path`, possibly overwriting
+    /// an existing (outdated) entry for `path`.
+    fn store_hash(&self, path: PathBuf, timestamp: FileTimeStamp, hash: String) {
+        self.hashes.lock().unwrap().insert(
+            path,
+            CachedFileHash {
+                timestamp,
+                hash: Arc::new(hash),
+            },
+        );
     }
 }
 
