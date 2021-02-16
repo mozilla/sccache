@@ -222,7 +222,7 @@ where
         cannot_cache!("multiple input files");
     }
     let input = match input_arg {
-        Some(i) => i.to_owned(),
+        Some(i) => i,
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
