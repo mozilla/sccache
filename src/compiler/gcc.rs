@@ -236,7 +236,7 @@ where
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
-    let mut seen_arch = false;
+    let mut seen_arch = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -312,11 +312,15 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
-            Some(Arch(_)) => {
-                if seen_arch {
+            Some(Arch(arch)) => {
+                let can_cache = match seen_arch {
+                    Some(s) => &s == arch, // Same arch passed twice -> cache possible
+                    _ => true,             // No arch seen before -> cache possible
+                };
+                if !can_cache {
                     cannot_cache!("multiple -arch")
                 }
-                seen_arch = true;
+                seen_arch = Some(arch.clone());
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
@@ -1236,6 +1240,14 @@ mod test {
     fn test_parse_arguments_multiple_arch() {
         match parse_arguments_(
             stringvec!["-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+
+        match parse_arguments_(
+            stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
             false,
         ) {
             CompilerArguments::Ok(_) => {}
