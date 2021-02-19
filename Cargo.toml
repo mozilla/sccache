@@ -122,6 +122,7 @@ tiny_http = { git = "https://github.com/tiny-http/tiny-http.git", rev = "619680d
 
 [dev-dependencies]
 assert_cmd = "1"
+assert_matches = "1"
 cc = "1.0"
 chrono = "0.4"
 itertools = "0.10"

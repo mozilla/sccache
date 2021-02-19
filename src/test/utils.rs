@@ -250,6 +250,13 @@ pub(crate) fn fut_wrap<V>(val: V) -> impl futures_03::Future<Output=V> {
     }
 }
 
+/// Helper to avoid issues with mock implementations.
+pub(crate) fn fut_unreachable<V>(txt: &'static str) -> impl futures_03::Future<Output=V> {
+    async move {
+        unreachable!(txt)
+    }
+}
+
 #[test]
 fn test_map_contains_ok() {
     let mut m = HashMap::new();

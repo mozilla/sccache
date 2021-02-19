@@ -1097,6 +1097,7 @@ mod test {
     use std::time::Duration;
     use std::u64;
     use tokio_02::runtime::Runtime;
+    use assert_matches::assert_matches;
 
     #[test]
     fn test_detect_compiler_kind_gcc() {
@@ -1824,16 +1825,16 @@ LLVM version: 6.0",
                     pool.clone(),
                 )
                 .wait()
-                .unwrap();
+                .expect("Does not error if storage put fails. qed");
             // Ensure that the object file was created.
             assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());
-            match cached {
+
+            assert_matches!(cached,
                 CompileResult::CacheMiss(MissType::ForcedRecache, DistType::Error, _, f) => {
                     // wait on cache write future so we don't race with it!
-                    f.wait().unwrap();
+                    let _ = f.wait();
                 }
-                _ => assert!(false, "Unexpected compile result: {:?}", cached),
-            }
+            );
             assert_eq!(exit_status(0), res.status);
             assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
             assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -1844,7 +1845,7 @@ LLVM version: 6.0",
 #[cfg(test)]
 #[cfg(feature = "dist-client")]
 mod test_dist {
-    use crate::{dist::pkg, test::utils::fut_wrap};
+    use crate::{dist::pkg, test::utils::{fut_wrap, fut_unreachable}};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
@@ -1889,7 +1890,7 @@ mod test_dist {
             _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            Err(anyhow!("put toolchain failure"))
+            Err(anyhow!("MOCK: put toolchain failure"))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -1916,7 +1917,7 @@ mod test_dist {
     impl dist::Client for ErrorAllocJobClient {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert_eq!(self.tc, tc);
-            Err(anyhow!("alloc job failure"))
+            Err(anyhow!("MOCK: alloc job failure"))
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
@@ -1980,7 +1981,7 @@ mod test_dist {
             })).await
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            fut_wrap(unreachable!()).await
+            fut_unreachable::<_>("fn do_get_status is not used for this test. qed").await
         }
         async fn do_submit_toolchain(
             &self,
@@ -1989,7 +1990,7 @@ mod test_dist {
         ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            fut_wrap(Err(anyhow!("submit toolchain failure"))).await
+            fut_wrap(Err(anyhow!("MOCK: submit toolchain failure"))).await
         }
         async fn do_run_job(
             &self,
@@ -1998,7 +1999,7 @@ mod test_dist {
             _: Vec<String>,
             _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
-            fut_wrap(unreachable!()).await
+            fut_unreachable::<_>("fn do_run_job is not used for this test. qed").await
         }
         async fn put_toolchain(
             &self,
@@ -2067,7 +2068,7 @@ mod test_dist {
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
-            fut_wrap(Err(anyhow!("run job failure"))).await
+            fut_wrap(Err(anyhow!("MOCK: run job failure"))).await
         }
         async fn put_toolchain(
             &self,
@@ -2126,7 +2127,7 @@ mod test_dist {
             })).await
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            fut_wrap(unreachable!()).await
+            fut_unreachable::<_>("fn do_get_status is not used for this test. qed").await
         }
         async fn do_submit_toolchain(
             &self,
