@@ -63,22 +63,3 @@ impl std::fmt::Display for ProcessError {
 }
 
 pub type Result<T> = anyhow::Result<T>;
-
-pub type SFuture<T> = Box<dyn LegacyFuture<Item = T, Error = Error> + Send>;
-pub type SFutureSend<T> = Box<dyn LegacyFuture<Item = T, Error = Error> + Send>;
-pub type SFutureStd<T> = Box<dyn std::future::Future<Output = Result<T>>>;
-
-pub fn f_ok<T>(t: T) -> SFuture<T>
-where
-    T: 'static + Send,
-{
-    Box::new(legacy_future::ok(t))
-}
-
-pub fn f_err<T, E>(e: E) -> SFuture<T>
-where
-    T: 'static + Send,
-    E: Into<Error>,
-{
-    Box::new(legacy_future::err(e.into()))
-}
