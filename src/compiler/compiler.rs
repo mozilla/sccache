@@ -29,7 +29,7 @@ use crate::dist::pkg;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
-use futures_03::channel::oneshot;
+use futures_03::{Future, channel::oneshot};
 use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -44,6 +44,7 @@ use std::process::{self, Stdio};
 use std::str;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+use core::pin::Pin;
 
 use crate::errors::*;
 
@@ -220,6 +221,7 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
+
         let (key, compilation, weak_toolchain_key) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
@@ -234,9 +236,11 @@ where
             }) => (key, compilation, weak_toolchain_key),
         };
         trace!("[{}]: Hash key: {}", out_pretty, key);
+
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
         let cache_status = if cache_control == CacheControl::ForceRecache {
+            // outer result is timeout, inner result is operation result
             Ok(Ok(Cache::Recache))
         } else {
             // let key = key.to_owned();
@@ -320,7 +324,6 @@ where
                 Ok::<_, Error>((compile_result, output))
             }
             CacheLookupResult::Miss(miss_type) => {
-                let (tx, rx) = oneshot::channel();
 
                 let start = Instant::now();
 
@@ -347,7 +350,7 @@ where
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
 
-                {
+                let future = {
                     let compiler_result = compiler_result.clone();
                     let pool2 = pool.clone();
                     let out_pretty2 = out_pretty.clone();
@@ -382,15 +385,14 @@ where
                             object_file_pretty: out_pretty2,
                             duration,
                         };
-                        tx.send(write_info).expect("error, when sending information regarding object to cache."); //TODO: check if error message reflect actual intent
-                        Ok::<_,anyhow::Error>(())
+                        Ok::<_,anyhow::Error>(write_info)
                     };
-                    let _ = pool.spawn_with_handle(Box::pin(fut));
-                }
+                    fut
+                };
 
 
                 Ok((
-                    CompileResult::CacheMiss(miss_type, dist_type, duration, rx),
+                    CompileResult::CacheMiss(miss_type, dist_type, duration, Box::pin(future)),
                     compiler_result,
                 ))
             }
@@ -701,6 +703,10 @@ pub enum MissType {
     CacheReadError,
 }
 
+/// Bounding future trait for cache miss responses.
+pub trait CacheWriteFuture: Future<Output=Result<CacheWriteInfo>> + Send + 'static {}
+impl<T> CacheWriteFuture for T where T: Future<Output=Result<CacheWriteInfo>> + Send + 'static {}
+
 /// Information about a successful cache write.
 #[derive(Debug)]
 pub struct CacheWriteInfo {
@@ -722,7 +728,7 @@ pub enum CompileResult {
         MissType,
         DistType,
         Duration,
-        oneshot::Receiver<CacheWriteInfo>,
+        Pin<Box<dyn CacheWriteFuture>>,
     ),
     /// Not in cache, but the compilation result was determined to be not cacheable.
     NotCacheable,
