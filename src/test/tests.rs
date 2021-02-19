@@ -172,7 +172,7 @@ fn test_server_unsupported_compiler() {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler, so pretend to be an unsupported
         // compiler.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "💥")));
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
@@ -200,7 +200,7 @@ fn test_server_unsupported_compiler() {
     );
     match res {
         Ok(_) => panic!("do_compile should have failed!"),
-        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
+        Err(e) => assert_eq!("Compiler not supported: \"💥\"", e.to_string()),
     }
     // Make sure we ran the mock processes.
     assert_eq!(0, server_creator.lock().unwrap().children.len());

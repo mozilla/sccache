@@ -1053,16 +1053,15 @@ diab
             }
             _ => continue,
         }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        debug!("nothing useful in detection output {:?}", stdout);
-        debug!("compiler status: {}", output.status);
-        debug!("compiler stderr:\n{}", stderr);
-
-        bail!(stderr.into_owned())
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    debug!("nothing useful in detection output {:?}", stdout);
     debug!("compiler status: {}", output.status);
-    bail!("Zero lines in stdout output of compiler")
+    debug!("compiler stderr:\n{}", stderr);
+
+    bail!(stderr.into_owned())
+    // bail!("Zero lines in stdout output of compiler") // TODO pick one
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
