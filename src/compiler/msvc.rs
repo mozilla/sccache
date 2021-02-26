@@ -395,8 +395,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
-    msvc_take_arg!("favor:", OsString, Separated, PassThroughWithSuffix),
-    msvc_take_arg!("fp:", OsString, Separated, PassThroughWithSuffix),
+    msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
