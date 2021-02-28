@@ -48,7 +48,13 @@ impl CCompilerImpl for Nvcc {
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
+        gcc::parse_arguments(
+            arguments,
+            cwd,
+            (&gcc::ARGS[..], &ARGS[..]),
+            false,
+            self.kind(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

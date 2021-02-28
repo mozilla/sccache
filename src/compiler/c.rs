@@ -96,6 +96,8 @@ pub struct ParsedArguments {
     pub profile_generate: bool,
     /// The color mode.
     pub color_mode: ColorMode,
+    /// arguments are incompatible with rewrite_includes_only
+    pub suppress_rewrite_includes_only: bool,
 }
 
 impl ParsedArguments {
