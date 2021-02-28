@@ -47,7 +47,13 @@ impl CCompilerImpl for NVCC {
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
+        gcc::parse_arguments(
+            arguments,
+            cwd,
+            (&gcc::ARGS[..], &ARGS[..]),
+            false,
+            self.kind(),
+        )
     }
 
     fn preprocess<T>(

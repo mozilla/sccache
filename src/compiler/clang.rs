@@ -54,6 +54,7 @@ impl CCompilerImpl for Clang {
             cwd,
             (&gcc::ARGS[..], &ARGS[..]),
             self.clangplusplus,
+            self.kind(),
         )
     }
 

@@ -586,8 +586,8 @@ pub fn parse_arguments(
             use crate::compiler::gcc::ArgData::*;
             let mut args = match arg.get_data() {
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
-                | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
-                | Some(TooHard(_)) => cannot_cache!(arg
+                | Some(PedanticFlag) | Some(Standard(_)) | Some(Language(_)) | Some(Output(_))
+                | Some(TooHardFlag) | Some(XClang(_)) | Some(TooHard(_)) => cannot_cache!(arg
                     .flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)),
                 None => match arg {
@@ -679,6 +679,7 @@ pub fn parse_arguments(
         profile_generate,
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
+        suppress_rewrite_includes_only: false,
     })
 }
 
@@ -1320,6 +1321,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -1363,6 +1365,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.

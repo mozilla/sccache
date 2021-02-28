@@ -281,6 +281,7 @@ where
         profile_generate: false,
         // FIXME: Implement me.
         color_mode: ColorMode::Auto,
+        suppress_rewrite_includes_only: false,
     })
 }
 
@@ -680,6 +681,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
