@@ -122,7 +122,7 @@ features = [
 [features]
 default = ["all"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
-azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
+azure = ["chrono", "hyper", "hyperx", "reqwest", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "untrusted", "url"]
