@@ -348,7 +348,7 @@ impl GCSCredentialProvider {
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         };
 
-        Ok(encode(
+        encode(
             &Header {
                 typ: "JWT",
                 alg: "RS256",
@@ -362,7 +362,6 @@ impl GCSCredentialProvider {
             },
             &sa_key.private_key,
         )
-        .unwrap())
     }
 
     fn request_new_token(
