@@ -112,18 +112,17 @@ fn run_server_process() -> Result<ServerStartup> {
 }
 
 #[cfg(not(windows))]
-fn redirect_stderr(f: File) -> Result<()> {
+fn redirect_stderr(f: File) {
     use libc::dup2;
     use std::os::unix::io::IntoRawFd;
     // Ignore errors here.
     unsafe {
         dup2(f.into_raw_fd(), 2);
     }
-    Ok(())
 }
 
 #[cfg(windows)]
-fn redirect_stderr(f: File) -> Result<()> {
+fn redirect_stderr(f: File) {
     use std::os::windows::io::IntoRawHandle;
     use winapi::um::processenv::SetStdHandle;
     use winapi::um::winbase::STD_ERROR_HANDLE;
@@ -131,7 +130,6 @@ fn redirect_stderr(f: File) -> Result<()> {
     unsafe {
         SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle());
     }
-    Ok(())
 }
 
 /// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
@@ -141,7 +139,8 @@ fn redirect_error_log() -> Result<()> {
         _ => return Ok(()),
     };
     let f = OpenOptions::new().create(true).append(true).open(name)?;
-    redirect_stderr(f)
+    redirect_stderr(f);
+    Ok(())
 }
 
 /// Re-execute the current executable as a background server.
