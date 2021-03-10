@@ -108,7 +108,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 ```
 
-To generate PDB files for debugging with MSVC, only the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160) works with sccache; the PDB files generated with the `/Zi` and `/ZI` options cannot be cached. Note that CMake sets `/Zi` by default, so if you use CMake, you will need something like this in your CMakeLists.txt:
+To generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 
 ```
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
