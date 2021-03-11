@@ -603,6 +603,12 @@ pub fn parse_arguments(
                     profile_generate = true;
                     &mut common_args
                 }
+
+                Some(ClangProfileUse(path)) => {
+                    extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
+                    &mut common_args
+                }
+
                 Some(ExtraHashFile(path)) => {
                     extra_hash_files.push(cwd.join(path));
                     &mut common_args
@@ -1061,6 +1067,7 @@ mod test {
             "-Xclang",
             "host_dictionary.obj",
             "-clang:-fprofile-generate",
+            "-clang:-fprofile-use=xyz.profdata",
             "dictionary.c"
         ];
         let ParsedArguments {
@@ -1068,6 +1075,7 @@ mod test {
             preprocessor_args,
             common_args,
             profile_generate,
+            extra_hash_files,
             ..
         } = match parse_arguments(args) {
             CompilerArguments::Ok(args) => args,
@@ -1090,7 +1098,17 @@ mod test {
                 "host_dictionary.obj"
             )
         );
-        assert_eq!(common_args, ovec!("-clang:-fprofile-generate"));
+        assert_eq!(
+            common_args,
+            ovec!(
+                "-clang:-fprofile-generate",
+                "-clang:-fprofile-use=xyz.profdata"
+            )
+        );
+        assert_eq!(
+            extra_hash_files,
+            ovec!(std::env::current_dir().unwrap().join("xyz.profdata"))
+        );
     }
 
     #[test]

@@ -122,6 +122,7 @@ ArgData! { pub
     Language(OsString),
     SplitDwarf,
     ProfileGenerate,
+    ClangProfileUse(PathBuf),
     TestCoverage,
     Coverage,
     ExtraHashFile(PathBuf),
@@ -168,6 +169,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-c", DoCompilation),
     take_arg!("-fdiagnostics-color", OsString, Concatenated('='), DiagnosticsColor),
     flag!("-fno-diagnostics-color", NoDiagnosticsColorFlag),
+    flag!("-fno-profile-generate", TooHardFlag),
+    flag!("-fno-profile-use", TooHardFlag),
     flag!("-fno-working-directory", PreprocessorArgumentFlag),
     flag!("-fplugin=libcc1plugin", TooHardFlag),
     flag!("-fprofile-arcs", ProfileGenerate),
@@ -278,6 +281,9 @@ where
                     OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
             Some(ProfileGenerate) => profile_generate = true,
+            Some(ClangProfileUse(path)) => {
+                extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
+            }
             Some(TestCoverage) => outputs_gcno = true,
             Some(Coverage) => {
                 outputs_gcno = true;
@@ -337,6 +343,7 @@ where
         let args = match arg.get_data() {
             Some(SplitDwarf)
             | Some(ProfileGenerate)
+            | Some(ClangProfileUse(_))
             | Some(TestCoverage)
             | Some(Coverage)
             | Some(DiagnosticsColor(_))
@@ -380,6 +387,7 @@ where
         let args = match arg.get_data() {
             Some(SplitDwarf)
             | Some(ProfileGenerate)
+            | Some(ClangProfileUse(_))
             | Some(TestCoverage)
             | Some(Coverage)
             | Some(DoCompilation)
