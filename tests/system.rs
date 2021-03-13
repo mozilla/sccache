@@ -414,6 +414,9 @@ fn find_compilers() -> Vec<Compiler> {
 #[test]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command() {
+    // first, clear variables that override config temporary cache directory
+    env::remove_var("SCCACHE_CACHE_SIZE");
+    env::remove_var("SCCACHE_DIR");
     let _ = env_logger::try_init();
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_system_test")
