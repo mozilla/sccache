@@ -247,14 +247,22 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match self.compiler.parse_arguments(arguments, cwd) {
-            CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(CCompilerHasher {
-                parsed_args: args,
-                executable: self.executable.clone(),
-                executable_digest: self.executable_digest.clone(),
-                compiler: self.compiler.clone(),
-            })),
+            CompilerArguments::Ok(mut args) => {
+                for (k, v) in env_vars.iter() {
+                    if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
+                        args.extra_hash_files.extend(std::env::split_paths(&v))
+                    }
+                }
+                CompilerArguments::Ok(Box::new(CCompilerHasher {
+                    parsed_args: args,
+                    executable: self.executable.clone(),
+                    executable_digest: self.executable_digest.clone(),
+                    compiler: self.compiler.clone(),
+                }))
+            }
             CompilerArguments::CannotCache(why, extra_info) => {
                 CompilerArguments::CannotCache(why, extra_info)
             }

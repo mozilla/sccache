@@ -471,6 +471,7 @@ where
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        _env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
