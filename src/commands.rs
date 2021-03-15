@@ -78,15 +78,16 @@ fn run_server_process() -> Result<ServerStartup> {
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
     let mut runtime = Runtime::new()?;
-    let mut listener = tokio_02::net::UnixListener::bind(&socket_path)?;
     let exe_path = env::current_exe()?;
-    let _child = process::Command::new(exe_path)
+    let _child = runtime.enter(|| process::Command::new(exe_path)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
-        .spawn()?;
+        .spawn()
+    )?;
 
     let startup = async move {
+        let mut listener = tokio_02::net::UnixListener::bind(&socket_path)?;
         let mut listener = listener.incoming();
         match listener.next().await.expect("UnixListener::incoming() never returns `None`. qed") {
             Ok(stream) => {
