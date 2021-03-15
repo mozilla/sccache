@@ -549,7 +549,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                     };
                     let _handle = tokio_02::spawn(spawnme);
                     async move {
-                        Ok::<(),std::io::Error>(())
+                        Ok::<(), std::io::Error>(())
                     }
                 }).await
             };
@@ -582,14 +582,15 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             }
             .await;
             info!("shutting down due to being idle or request");
-            Ok::<_, anyhow::Error>(())
         };
 
-        let server = async move {
-            let (server, _, _) = futures_03::join!(Box::pin(server), Box::pin(shutdown), Box::pin(shutdown_or_inactive));
-            server
-        };
-        runtime.block_on(Box::pin(server))?;
+        runtime.block_on(async {
+            futures_03::select! {
+                server = server.fuse() => server,
+                _res = shutdown.fuse() => Ok(()),
+                _res = shutdown_or_inactive.fuse() => Ok(()),
+            }
+        })?;
 
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
