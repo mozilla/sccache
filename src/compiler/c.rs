@@ -489,20 +489,35 @@ impl pkg::InputsPackager for CInputsPackager {
         let mut builder = tar::Builder::new(wtr);
 
         {
-            let input_path = pkg::simplify_path(&input_path)?;
+            let (input_path, dirs) = pkg::simplify_path(&input_path)?;
+            for dir in dirs {
+                let dist_dir = path_transformer
+                    .as_dist(&dir)
+                    .with_context(|| format!("unable to transform input dir {}", dir.display()))?;
+                let mut dir_header = pkg::make_tar_header(&dir, &dist_dir, true)?;
+                dir_header.set_cksum();
+                builder.append(&dir_header, "".as_bytes())?;
+            }
             let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
                 format!("unable to transform input path {}", input_path.display())
             })?;
 
-            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path, false)?;
             file_header.set_size(preprocessed_input.len() as u64); // The metadata is from non-preprocessed
             file_header.set_cksum();
             builder.append(&file_header, preprocessed_input.as_slice())?;
         }
 
         for input_path in extra_hash_files {
-            let input_path = pkg::simplify_path(&input_path)?;
-
+            let (input_path, dirs) = pkg::simplify_path(&input_path)?;
+            for dir in dirs {
+                let dist_dir = path_transformer
+                    .as_dist(&dir)
+                    .with_context(|| format!("unable to transform input dir {}", dir.display()))?;
+                let mut dir_header = pkg::make_tar_header(&dir, &dist_dir, true)?;
+                dir_header.set_cksum();
+                builder.append(&dir_header, "".as_bytes())?;
+            }
             if !super::CAN_DIST_DYLIBS
                 && input_path
                     .extension()
@@ -522,7 +537,7 @@ impl pkg::InputsPackager for CInputsPackager {
             let mut output = vec![];
             io::copy(&mut file, &mut output)?;
 
-            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(&input_path, &dist_input_path, false)?;
             file_header.set_size(output.len() as u64);
             file_header.set_cksum();
             builder.append(&file_header, &*output)?;
