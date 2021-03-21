@@ -1821,7 +1821,8 @@ impl pkg::InputsPackager for RustInputsPackager {
 
         let mut tar_inputs = vec![];
         for input_path in inputs.into_iter() {
-            let input_path = pkg::simplify_path(&input_path)?;
+            let (input_path, dirs) = pkg::simplify_path(&input_path)?;
+            assert!(dirs.is_empty());
             if let Some(ext) = input_path.extension() {
                 if !super::CAN_DIST_DYLIBS && ext == DLL_EXTENSION {
                     bail!(
@@ -1859,7 +1860,8 @@ impl pkg::InputsPackager for RustInputsPackager {
         // crate, otherwise we need to send everything.
         let mut tar_crate_libs = vec![];
         for crate_link_path in crate_link_paths.into_iter() {
-            let crate_link_path = pkg::simplify_path(&crate_link_path)?;
+            let (crate_link_path, dirs) = pkg::simplify_path(&crate_link_path)?;
+            assert!(dirs.is_empty());
             let dir_entries = match fs::read_dir(crate_link_path) {
                 Ok(iter) => iter,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -1942,7 +1944,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         let mut builder = tar::Builder::new(wtr);
 
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
-            let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
+            let mut file_header = pkg::make_tar_header(input_path, dist_input_path, false)?;
             let file = fs::File::open(input_path)?;
             if can_trim_rlibs && can_trim_this(input_path) {
                 let mut archive = ar::Archive::new(file);
