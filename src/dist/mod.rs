@@ -50,7 +50,9 @@ pub mod pkg;
 #[cfg(not(feature = "dist-client"))]
 mod pkg {
     pub trait ToolchainPackager {}
+    pub type BoxDynToolchainPackager = Box<dyn ToolchainPackager>;
     pub trait InputsPackager {}
+    pub type BoxDynInputsPackager = Box<dyn InputsPackager>;
 }
 
 #[cfg(target_os = "windows")]

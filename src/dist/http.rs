@@ -21,8 +21,7 @@ pub use self::server::{
 };
 
 mod common {
-    #[cfg(feature = "dist-client")]
-    #[cfg(feature = "dist-client")]
+    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
     use hyperx::header;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;

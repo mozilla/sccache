@@ -437,7 +437,7 @@ impl Rust {
         #[cfg(not(feature = "dist-client"))]
         {
             let (sysroot, libs) = sysroot_and_libs.await?;
-            hash_all(&libs, &pool).map(move |digests| Rust {
+            hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
                 sysroot,

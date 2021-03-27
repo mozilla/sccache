@@ -409,7 +409,7 @@ where
 
 #[cfg(not(feature = "dist-client"))]
 async fn dist_or_local_compile<T>(
-    _dist_client: Result<Option<dist::ArcDynClient>>,
+    _dist_client: Option<dist::ArcDynClient>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
