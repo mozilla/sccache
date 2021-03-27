@@ -116,9 +116,9 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     get_stats(|info| {
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
     });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
@@ -133,10 +133,10 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     get_stats(|info| {
         assert_eq!(2, info.stats.compile_requests);
         assert_eq!(2, info.stats.requests_executed);
-        assert_eq!(2, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(&2, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
     });
 }
 
@@ -257,9 +257,9 @@ int main(int argc, char** argv) {
         .assert()
         .success();
     get_stats(|info| {
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
     });
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
@@ -270,10 +270,10 @@ int main(int argc, char** argv) {
         .assert()
         .success();
     get_stats(|info| {
-        assert_eq!(2, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(&2, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
     });
     // Now write out a slightly different source file that will preprocess to the same thing,
     // modulo line numbers. This should not be a cache hit because line numbers are important
@@ -301,10 +301,10 @@ int main(int argc, char** argv) {
         .assert()
         .success();
     get_stats(|info| {
-        assert_eq!(3, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(&3, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
     });
 
     // Now doing the same again with `UNDEFINED` defined
@@ -319,10 +319,10 @@ int main(int argc, char** argv) {
         .assert()
         .success();
     get_stats(|info| {
-        assert_eq!(4, info.stats.cache_hits.all());
-        assert_eq!(0, info.stats.cache_misses.all());
-        assert_eq!(&4, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(None, info.stats.cache_misses.get("C/C++"));
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(3, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&3, info.stats.cache_misses.get("C/C++").unwrap());
     });
 }
 

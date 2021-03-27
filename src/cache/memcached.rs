@@ -16,8 +16,6 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 
-use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt as SpawnExt_03;
 use memcached::client::Client;
 use memcached::proto::NoReplyOperation;
 use memcached::proto::Operation;
@@ -34,11 +32,11 @@ thread_local! {
 #[derive(Clone)]
 pub struct MemcachedCache {
     url: String,
-    pool: ThreadPool,
+    pool: tokio_02::runtime::Handle,
 }
 
 impl MemcachedCache {
-    pub fn new(url: &str, pool: &ThreadPool) -> Result<MemcachedCache> {
+    pub fn new(url: &str, pool: &tokio_02::runtime::Handle) -> Result<MemcachedCache> {
         Ok(MemcachedCache {
             url: url.to_owned(),
             pool: pool.clone(),
@@ -73,26 +71,28 @@ impl Storage for MemcachedCache {
     async fn get(&self, key: &str) -> Result<Cache> {
         let key = key.to_owned();
         let me = self.clone();
-        let fut = async move {
+
+        self.pool.spawn_blocking(move || {
             me.exec(|c| c.get(&key.as_bytes()))
-                .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
-                .unwrap_or(Ok(Cache::Miss))
-        };
-        let handle = self.pool.spawn_with_handle(fut)?;
-        handle.await
+            .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
+            .unwrap_or(Ok(Cache::Miss))
+        })
+        .await
+        .map_err(anyhow::Error::from)?
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let key = key.to_owned();
         let me = self.clone();
-        let fut = async move {
+
+        self.pool.spawn_blocking(move || {
             let start = Instant::now();
             let d = entry.finish()?;
             me.exec(|c| c.set_noreply(&key.as_bytes(), &d, 0, 0))?;
             Ok(start.elapsed())
-        };
-        let handle = self.pool.spawn_with_handle(fut)?;
-        handle.await
+        })
+        .await
+        .map_err(anyhow::Error::from)?
     }
 
     fn location(&self) -> String {

@@ -21,7 +21,6 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use futures_03::executor::ThreadPool;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -226,6 +225,14 @@ impl TestFixture {
     }
 }
 
+pub fn single_threaded_runtime() -> tokio_02::runtime::Runtime {
+    tokio_02::runtime::Builder::new()
+        .enable_all()
+        .basic_scheduler()
+        .core_threads(1)
+        .build()
+        .unwrap()
+}
 
 /// An add on trait, to allow calling `.wait()` for `futures_03::Future`
 /// as it was possible for `futures` at `0.1`.
@@ -289,17 +296,4 @@ fn test_map_contains_wrong_value() {
     m.insert("a", 1);
     m.insert("b", 3);
     assert_map_contains!(m, ("a", 1), ("b", 2));
-}
-
-pub trait ThreadPoolExt {
-    fn sized(size: usize) -> Self;
-}
-
-impl ThreadPoolExt for ThreadPool {
-    fn sized(size: usize) -> Self {
-        ThreadPool::builder()
-            .pool_size(size)
-            .create()
-            .expect("Failed to start thread pool")
-    }
 }

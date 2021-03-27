@@ -30,7 +30,6 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
 use futures_03::{Future, channel::oneshot};
-use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -179,7 +178,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio_02::runtime::Handle,
         rewrite_includes_only: bool,
     ) -> Result<HashResult>;
 
@@ -198,7 +197,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         cache_control: CacheControl,
-        pool: ThreadPool,
+        pool: tokio_02::runtime::Handle,
     ) -> Result<(CompileResult, process::Output)> {
 
         let out_pretty = self.output_pretty().into_owned();
@@ -243,17 +242,9 @@ where
             // outer result is timeout, inner result is operation result
             Ok(Ok(Cache::Recache))
         } else {
-            use futures_03::future;
-            const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
-
             let fetch = storage.get(&key);
-            let timeout = futures_timer::Delay::new(FETCH_TIMEOUT);
-            // FIXME: Prefer using Tokio timer if we switch to Tokio-based
-            // threadpool for task execution
-            match future::select(fetch, timeout).await {
-                future::Either::Left((cache, _timer)) => Ok(cache),
-                future::Either::Right(((), _)) => Err(anyhow!("Timeout {:?}", FETCH_TIMEOUT)),
-            }
+
+            tokio_02::time::timeout(Duration::from_secs(60), fetch).await
         };
 
         // Set a maximum time limit for the cache to respond before we forge
@@ -851,19 +842,19 @@ pub enum CacheControl {
 /// Note that when the `TempDir` is dropped it will delete all of its contents
 /// including the path returned.
 pub async fn write_temp_file(
-    pool: &ThreadPool,
+    pool: &tokio_02::runtime::Handle,
     path: &Path,
     contents: Vec<u8>,
 ) -> Result<(TempDir, PathBuf)> {
     let path = path.to_owned();
-    pool.spawn_with_handle(async move {
+    pool.spawn_blocking(move || {
         let dir = tempfile::Builder::new().prefix("sccache").tempdir()?;
         let src = dir.path().join(path);
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;
         Ok::<_,anyhow::Error>((dir, src))
-    })?
-    .await
+    })
+    .await?
     .context("failed to write temporary file")
 }
 
@@ -873,7 +864,7 @@ async fn detect_compiler<T>(
     executable: &Path,
     cwd: &Path,
     env: &[(OsString, OsString)],
-    pool: &ThreadPool,
+    pool: &tokio_02::runtime::Handle,
     dist_archive: Option<PathBuf>,
 ) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
@@ -989,7 +980,7 @@ async fn detect_c_compiler<T>(
     creator: T,
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
-    pool: ThreadPool,
+    pool: tokio_02::runtime::Handle,
 ) -> Result<BoxDynCompiler<T>>
 where
     T: CommandCreatorSync,
@@ -1119,7 +1110,7 @@ pub async fn get_compiler_info<T>(
     executable: &Path,
     cwd: &Path,
     env: &[(OsString, OsString)],
-    pool: &ThreadPool,
+    pool: &tokio_02::runtime::Handle,
     dist_archive: Option<PathBuf>,
 ) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
@@ -1138,7 +1129,6 @@ mod test {
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use futures_03::future::{self, Future};
-    use futures_03::executor::ThreadPool;
     use std::fs::{self, File};
     use std::io::Write;
     use std::sync::Arc;
@@ -1151,7 +1141,8 @@ mod test {
     fn test_detect_compiler_kind_gcc() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\nbar\ngcc", "")),
@@ -1167,7 +1158,8 @@ mod test {
     fn test_detect_compiler_kind_clang() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "clang\nfoo", "")),
@@ -1183,7 +1175,8 @@ mod test {
     fn test_detect_compiler_kind_msvc() {
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         let f = TestFixture::new();
         let srcfile = f.touch("test.h").unwrap();
         let mut s = srcfile.to_str().unwrap();
@@ -1213,7 +1206,8 @@ mod test {
     fn test_detect_compiler_kind_nvcc() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "nvcc\nfoo", "")),
@@ -1233,7 +1227,8 @@ mod test {
         fs::create_dir(f.tempdir.path().join("bin")).unwrap();
         let rustc = f.mk_bin("rustc").unwrap();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         // rustc --vV
         next_command(
             &creator,
@@ -1266,7 +1261,8 @@ LLVM version: 6.0",
     fn test_detect_compiler_kind_diab() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "foo\ndiab\nbar", "")),
@@ -1282,7 +1278,8 @@ LLVM version: 6.0",
     fn test_detect_compiler_kind_unknown() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "something", "")),
@@ -1303,7 +1300,8 @@ LLVM version: 6.0",
     fn test_detect_compiler_kind_process_fail() {
         let f = TestFixture::new();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         assert!(detect_compiler(
             creator,
@@ -1320,7 +1318,8 @@ LLVM version: 6.0",
     #[test]
     fn test_get_compiler_info() {
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
@@ -1337,8 +1336,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
@@ -1443,8 +1442,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
@@ -1545,8 +1544,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
@@ -1624,8 +1623,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.
@@ -1732,8 +1731,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
         let mut runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage: ArcDynStorage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
@@ -1803,7 +1802,8 @@ LLVM version: 6.0",
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let f = TestFixture::new();
-        let pool = ThreadPool::sized(1);
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
         let dist_clients = vec![
             test_dist::ErrorPutToolchainClient::new(),
             test_dist::ErrorAllocJobClient::new(),

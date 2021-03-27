@@ -13,8 +13,6 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt as X;
 use lru_disk_cache::Error as LruError;
 use lru_disk_cache::LruDiskCache;
 use std::ffi::OsStr;
@@ -30,12 +28,12 @@ pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
     lru: Arc<Mutex<LruDiskCache>>,
     /// Thread pool to execute disk I/O
-    pool: ThreadPool,
+    pool: tokio_02::runtime::Handle,
 }
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &ThreadPool) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &tokio_02::runtime::Handle) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
             lru: Arc::new(Mutex::new(
@@ -58,7 +56,8 @@ impl Storage for DiskCache {
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
-        let fut = async move {
+
+        self.pool.spawn_blocking(move || {
             let mut lru = lru.lock().unwrap();
             let io = match lru.get(&path) {
                 Ok(f) => f,
@@ -74,9 +73,9 @@ impl Storage for DiskCache {
             };
             let hit = CacheRead::from(io)?;
             Ok(Cache::Hit(hit))
-        };
-        let handle = self.pool.spawn_with_handle(fut)?;
-        handle.await
+        })
+        .await
+        .map_err(anyhow::Error::from)?
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
@@ -85,14 +84,15 @@ impl Storage for DiskCache {
         trace!("DiskCache::finish_put({})", key);
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        let fut = async move {
+
+        self.pool.spawn_blocking(move || {
             let start = Instant::now();
             let v = entry.finish()?;
             lru.lock().unwrap().insert_bytes(key, &v)?;
             Ok(start.elapsed())
-        };
-        let handle = self.pool.spawn_with_handle(fut)?;
-        handle.await
+        })
+        .await
+        .map_err(anyhow::Error::from)?
     }
 
     fn location(&self) -> String {

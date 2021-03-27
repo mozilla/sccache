@@ -20,7 +20,6 @@ use crate::compiler::{
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, SpawnExt};
-use futures_03::executor::ThreadPool;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
@@ -109,7 +108,7 @@ pub async fn detect_showincludes_prefix<T>(
     exe: &OsStr,
     is_clang: bool,
     env: Vec<(OsString, OsString)>,
-    pool: &ThreadPool,
+    pool: &tokio_02::runtime::Handle,
 ) -> Result<String>
 where
     T: CommandCreatorSync,
@@ -123,12 +122,12 @@ where
 
     let header = tempdir.path().join("test.h");
     let tempdir = pool
-        .spawn_with_handle(async move {
+        .spawn_blocking(move || {
             let mut file = File::create(&header)?;
             file.write_all(b"/* empty */\n")?;
             Ok::<_, std::io::Error>(tempdir)
-        })?
-        .await
+        })
+        .await?
         .context("Failed to write temporary file")?;
 
     let mut cmd = creator.new_command_sync(&exe);
@@ -866,7 +865,6 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
     use futures_03::Future;
-    use futures_03::executor::ThreadPool;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)
@@ -876,7 +874,8 @@ mod test {
     fn test_detect_showincludes_prefix() {
         let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
         let f = TestFixture::new();
         let srcfile = f.touch("test.h").unwrap();
         let mut s = srcfile.to_str().unwrap();

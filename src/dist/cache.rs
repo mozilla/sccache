@@ -176,7 +176,7 @@ mod client {
             Ok(Some(file))
         }
         // If the toolchain doesn't already exist, create it and insert into the cache
-        pub async fn put_toolchain(
+        pub fn put_toolchain(
             &self,
             compiler_path: PathBuf,
             weak_key: String,
@@ -323,7 +323,7 @@ mod client {
                     "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
-                ).wait()
+                )
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
@@ -368,7 +368,7 @@ mod client {
                     "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new(),
-                ).wait()
+                )
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
@@ -376,7 +376,7 @@ mod client {
                     "/my/compiler2".into(),
                     "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
-                ).wait()
+                )
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler2/in_archive".to_string(), ct1.clone()));
             let (_tc, newpath) = client_toolchains
@@ -384,7 +384,7 @@ mod client {
                     "/my/compiler3".into(),
                     "weak_key2".to_owned(),
                     PanicToolchainPackager::new(),
-                ).wait()
+                )
                 .unwrap();
             assert!(newpath.unwrap() == ("/my/compiler/in_archive".to_string(), ct1));
         }
@@ -410,7 +410,7 @@ mod client {
                     "/my/compiler".into(),
                     "weak_key".to_owned(),
                     PanicToolchainPackager::new()
-                ).wait()
+                )
                 .is_err());
         }
 

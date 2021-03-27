@@ -26,7 +26,6 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
 use filetime::FileTime;
-use futures_03::executor::ThreadPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 use lru_disk_cache::{LruCache, Meter};
@@ -203,7 +202,7 @@ async fn get_source_files<T>(
     arguments: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    pool: &ThreadPool,
+    pool: &tokio_02::runtime::Handle,
 ) -> Result<Vec<PathBuf>>
 where
     T: CommandCreatorSync,
@@ -231,11 +230,11 @@ where
     let cwd = cwd.to_owned();
     let name2 = crate_name.to_owned();
     let parsed = pool
-        .spawn_with_handle(async move {
+        .spawn_blocking(move || {
             parse_dep_file(&dep_file, &cwd)
                 .with_context(|| format!("Failed to parse dep info for {}", name2))
-        })?
-        .await;
+        })
+        .await?;
 
     parsed.map(move |files| {
         trace!(
@@ -353,7 +352,7 @@ impl Rust {
         env_vars: &[(OsString, OsString)],
         rustc_verbose_version: &str,
         dist_archive: Option<PathBuf>,
-        pool: ThreadPool,
+        pool: tokio_02::runtime::Handle,
     ) -> Result<Rust>
     where
         T: CommandCreatorSync,
@@ -409,9 +408,9 @@ impl Rust {
             let rlib_dep_reader = {
                 let executable = executable.clone();
                 let env_vars = env_vars.to_owned();
-                pool.spawn_with_handle(async move {
+                pool.spawn_blocking(move || {
                     RlibDepReader::new_with_check(executable, &env_vars)
-                })?
+                })
             };
 
             let (sysroot_and_libs, rlib_dep_reader) =
@@ -419,7 +418,7 @@ impl Rust {
 
             let (sysroot, libs) = sysroot_and_libs.context("Determining sysroot + libs failed")?;
 
-            let rlib_dep_reader = match rlib_dep_reader {
+            let rlib_dep_reader = match rlib_dep_reader.unwrap_or_else(|e| Err(anyhow::Error::from(e))) {
                 Ok(r) => Some(Arc::new(r)),
                 Err(e) => {
                     warn!("Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}", e);
@@ -1215,7 +1214,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         _may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio_02::runtime::Handle,
         _rewrite_includes_only: bool,
     ) -> Result<HashResult> {
         let RustHasher {
@@ -2958,7 +2957,8 @@ c:/foo/bar.rs:
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
         let res = hasher
             .generate_hash_key(
                 &creator,
@@ -3048,7 +3048,9 @@ c:/foo/bar.rs:
         });
 
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher

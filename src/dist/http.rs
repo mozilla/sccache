@@ -1090,8 +1090,6 @@ mod client {
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
-    use futures_03::executor::ThreadPool;
-    use futures_03::task::SpawnExt as SpawnExt_03;
     use std::collections::HashMap;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -1117,14 +1115,14 @@ mod client {
         // and only support owned bytes, which means the whole toolchain would end up in memory
         client: Arc<Mutex<reqwest::blocking::Client>>,
         client_async: Arc<Mutex<reqwest::Client>>,
-        pool: ThreadPool,
+        pool: tokio_02::runtime::Handle,
         tc_cache: Arc<cache::ClientToolchains>,
         rewrite_includes_only: bool,
     }
 
     impl Client {
         pub fn new(
-            pool: &ThreadPool,
+            pool: &tokio_02::runtime::Handle,
             scheduler_url: reqwest::Url,
             cache_dir: &Path,
             cache_size: u64,
@@ -1262,9 +1260,9 @@ mod client {
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
             let pool = self.pool.clone();
-            pool.spawn_with_handle(Box::pin(async move { bincode_req(req) }))
-                .expect("FIXME proper error handling")
+            pool.spawn_blocking(|| bincode_req(req))
                 .await
+                .expect("FIXME proper error handling")
         }
 
         async fn do_submit_toolchain(
@@ -1277,14 +1275,14 @@ mod client {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
                     let pool = self.pool.clone();
-                    pool.spawn_with_handle(async move {
+                    pool.spawn_blocking(move || {
                         let toolchain_file_size = toolchain_file.metadata()?.len();
                         let body =
                             reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
                         let req = req.bearer_auth(job_alloc.auth.clone()).body(body);
                         bincode_req(req)
-                    })?
-                    .await
+                    })
+                    .await?
                 }
                 Ok(None) => Err(anyhow!("couldn't find toolchain locally")),
                 Err(e) => Err(e),
@@ -1302,7 +1300,7 @@ mod client {
             let mut req = self.client.lock().unwrap().post(url);
 
             self.pool
-                .spawn_with_handle(async move {
+                .spawn_blocking(move || {
                     let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
                         .context("failed to serialize run job request")?;
                     let bincode_length = bincode.len();
@@ -1330,8 +1328,8 @@ mod client {
 
                     req = req.bearer_auth(job_alloc.auth.clone()).bytes(body);
                     bincode_req(req).map(|res| (res, path_transformer))
-                })?
-                .await
+                })
+                .await?
         }
 
         async fn put_toolchain(
@@ -1345,10 +1343,9 @@ mod client {
             let tc_cache = self.tc_cache.clone();
             let pool = self.pool.clone();
 
-            pool.spawn_with_handle(async move {
-                    tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager).await
-                })?
-                .await
+            pool.spawn_blocking(move || {
+                tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager)
+            }).await?
         }
 
         fn rewrite_includes_only(&self) -> bool {

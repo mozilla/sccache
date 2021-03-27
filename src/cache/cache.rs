@@ -25,8 +25,6 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 
-use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt as SpawnExt_03;
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -152,11 +150,11 @@ impl CacheRead {
         bytes
     }
 
-    pub async fn extract_objects<T>(mut self, objects: T, pool: &ThreadPool) -> Result<()>
+    pub async fn extract_objects<T>(mut self, objects: T, pool: &tokio_02::runtime::Handle) -> Result<()>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        pool.spawn_with_handle(async move {
+        pool.spawn_blocking(move || {
             for (key, path) in objects {
                 let dir = match path.parent() {
                     Some(d) => d,
@@ -173,8 +171,8 @@ impl CacheRead {
                 }
             }
             Ok(())
-        })?
-        .await
+        })
+        .await?
     }
 }
 
@@ -192,11 +190,11 @@ impl CacheWrite {
     }
 
     /// Create a new cache entry populated with the contents of `objects`.
-    pub async fn from_objects<T>(objects: T, pool: &ThreadPool) -> Result<CacheWrite>
+    pub async fn from_objects<T>(objects: T, pool: &tokio_02::runtime::Handle) -> Result<CacheWrite>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        let handle = pool.spawn_with_handle(async move {
+        pool.spawn_blocking(move || {
             let mut entry = CacheWrite::new();
             for (key, path) in objects {
                 let mut f = fs::File::open(&path)?;
@@ -206,8 +204,8 @@ impl CacheWrite {
                     .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
             }
             Ok(entry)
-        })?;
-        handle.await
+        })
+        .await?
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
@@ -293,7 +291,7 @@ pub trait Storage: Send {
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> ArcDynStorage {
+pub fn storage_from_config(config: &Config, pool: &tokio_02::runtime::Handle) -> ArcDynStorage {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

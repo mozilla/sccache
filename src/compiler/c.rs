@@ -23,7 +23,6 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
-use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -207,8 +206,8 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub async fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> Result<CCompiler<I>> {
-        Digest::file(executable.clone(), &pool)
+    pub async fn new(compiler: I, executable: PathBuf, pool: &tokio_02::runtime::Handle) -> Result<CCompiler<I>> {
+        Digest::file(executable.clone(), pool)
             .await
             .map(move |digest| CCompiler {
                 executable,
@@ -265,7 +264,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio_02::runtime::Handle,
         rewrite_includes_only: bool,
     ) -> Result<HashResult> {
         let CCompilerHasher {

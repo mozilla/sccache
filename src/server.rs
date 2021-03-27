@@ -34,8 +34,6 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures_03::executor::ThreadPool;
-use futures_03::task::SpawnExt;
 use futures_03::{channel::mpsc, future, prelude::*, stream};
 use futures_03::future::FutureExt;
 use futures_locks::RwLock;
@@ -154,7 +152,7 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: ThreadPool,
+    pool: tokio_02::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
@@ -179,7 +177,7 @@ enum DistClientState {
 #[cfg(not(feature = "dist-client"))]
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
-    fn new(config: &Config, _: &ThreadPool) -> Self {
+    fn new(config: &Config, _: &tokio_02::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
@@ -203,7 +201,7 @@ impl DistClientContainer {
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
-    fn new(config: &Config, pool: &ThreadPool) -> Self {
+    fn new(config: &Config, pool: &tokio_02::runtime::Handle) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -406,15 +404,16 @@ impl DistClientContainer {
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
-    let runtime = Runtime::new()?;
-    let pool = ThreadPool::builder()
-        .pool_size(std::cmp::max(20, 2 * num_cpus::get()))
-        .create()?;
+    let runtime = tokio_02::runtime::Builder::new()
+        .enable_all()
+        .threaded_scheduler()
+        .core_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .build()?;
+    let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
-    let storage = storage_from_config(config, &pool);
+    let storage = storage_from_config(config, runtime.handle());
     let res = SccacheServer::<ProcessCommandCreator>::new(
         port,
-        pool,
         runtime,
         client,
         dist_client,
@@ -458,7 +457,6 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
-        pool: ThreadPool,
         mut runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
@@ -471,7 +469,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
-        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
+        let rt_handle = runtime.handle().clone();
+        let service = SccacheService::new(dist_client, storage, &client, rt_handle, tx, info);
 
         Ok(SccacheServer {
             runtime,
@@ -497,8 +496,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns a reference to a thread pool to run work on
     #[allow(dead_code)]
-    pub fn pool(&self) -> &ThreadPool {
-        &self.service.pool
+    pub fn pool(&self) -> &tokio_02::runtime::Handle {
+        &self.service.rt
     }
 
     /// Returns a reference to the command creator this server will use
@@ -672,8 +671,9 @@ struct SccacheService<C> where C: Send {
     /// the compiler proxy, in order to track updates of the proxy itself
     compiler_proxies: Arc<RwLock<CompilerProxyMap<C>>>,
 
-    /// Thread pool to execute work in
-    pool: ThreadPool,
+    /// Task pool for blocking (used mostly for disk I/O-bound tasks) and
+    // non-blocking tasks
+    rt: tokio_02::runtime::Handle,
 
     /// An object for creating commands.
     ///
@@ -791,7 +791,7 @@ where
         dist_client: DistClientContainer,
         storage: ArcDynStorage,
         client: &Client,
-        pool: ThreadPool,
+        rt: tokio_02::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
@@ -801,7 +801,7 @@ where
             storage,
             compilers: Arc::new(RwLock::new(HashMap::new())),
             compiler_proxies: Arc::new(RwLock::new(HashMap::new())),
-            pool,
+            rt,
             creator: C::new(client),
             tx,
             info,
@@ -1011,7 +1011,7 @@ where
                         &path1,
                         &cwd,
                         env.as_slice(),
-                        &me.pool,
+                        &me.rt,
                         dist_info.clone().map(|(p, _)| p),
                     )
                     .await;
@@ -1142,7 +1142,7 @@ where
         let dist_client = self.dist_client.get_client();
         let creator = self.creator.clone();
         let storage = self.storage.clone();
-        let pool = self.pool.clone();
+        let pool = self.rt.clone();
         let task = async move {
             let result = match dist_client {
                 Ok(client) => {
@@ -1298,7 +1298,7 @@ where
             Ok::<_, Error>(())
         };
 
-        self.pool.spawn(Box::pin(async move { task.await.unwrap_or_else(|e| { warn!("Failed to execut task: {:?}", e) }); } )).expect("Spawning on the worker pool never fails. qed");
+        self.rt.spawn(Box::pin(async move { task.await.unwrap_or_else(|e| { warn!("Failed to execute task: {:?}", e) }); } ));
     }
 }
 

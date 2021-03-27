@@ -21,7 +21,6 @@ use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
 use futures_03::channel::oneshot::{self, Sender};
 use futures_03::compat::*;
-use futures_03::executor::ThreadPool;
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -76,13 +75,12 @@ where
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let pool = ThreadPool::sized(1);
-        let dist_client = DistClientContainer::new_disabled();
-        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
-
         let runtime = Runtime::new().unwrap();
+        let dist_client = DistClientContainer::new_disabled();
+        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, runtime.handle()));
+
         let client = unsafe { Client::new() };
-        let srv = SccacheServer::new(0, pool, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {
