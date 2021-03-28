@@ -32,9 +32,9 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
+use std::process;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
-use tokio::process;
 use tokio::runtime::Runtime;
 use which::which_in;
 
@@ -79,12 +79,11 @@ fn run_server_process() -> Result<ServerStartup> {
     let socket_path = tempdir.path().join("sock");
     let mut runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
-    let _child = runtime.enter(|| process::Command::new(exe_path)
+    let _child = process::Command::new(exe_path)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
-        .spawn()
-    )?;
+        .spawn()?;
 
     let startup = async move {
         let mut listener = tokio::net::UnixListener::bind(&socket_path)?;
