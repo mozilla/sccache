@@ -21,10 +21,10 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use futures::future::{self, Future};
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -209,7 +209,6 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

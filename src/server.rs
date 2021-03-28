@@ -42,6 +42,7 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
+use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
@@ -519,7 +520,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     /// long anyway.
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
-        F: futures::Future + Send + 'static,
+        F: Future + Send + 'static,
         C: Send,
     {
         let SccacheServer {

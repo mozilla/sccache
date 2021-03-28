@@ -1,5 +1,4 @@
 use futures::channel::oneshot;
-use futures::task as task_03;
 use http::StatusCode;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::Service;
@@ -9,11 +8,13 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::pin::Pin;
 use std::result;
 use std::sync::mpsc;
+use std::task;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -37,7 +38,7 @@ trait ServeFn:
         Box<
             dyn 'static
                 + Send
-                + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                + Future<Output = result::Result<Response<Body>, hyper::Error>>,
         >,
     > + Send
     + 'static
@@ -54,7 +55,7 @@ impl<T> ServeFn for T where
             Box<
                 dyn 'static
                     + Send
-                    + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                    + Future<Output = result::Result<Response<Body>, hyper::Error>>,
             >,
         >
 {
@@ -276,15 +277,15 @@ mod code_grant_pkce {
             Box<
                 dyn 'static
                     + Send
-                    + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
+                    + Future<Output = result::Result<Self::Response, Self::Error>>,
             >,
         >;
 
         fn poll_ready(
             &mut self,
-            _cx: &mut task_03::Context<'_>,
-        ) -> task_03::Poll<result::Result<(), Self::Error>> {
-            task_03::Poll::Ready(Ok(()))
+            _cx: &mut task::Context<'_>,
+        ) -> task::Poll<result::Result<(), Self::Error>> {
+            task::Poll::Ready(Ok(()))
         }
 
         fn call(&mut self, req: Request<Body>) -> Self::Future {
@@ -498,15 +499,15 @@ mod implicit {
             Box<
                 dyn 'static
                     + Send
-                    + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
+                    + Future<Output = result::Result<Self::Response, Self::Error>>,
             >,
         >;
 
         fn poll_ready(
             &mut self,
-            _cx: &mut task_03::Context<'_>,
-        ) -> task_03::Poll<result::Result<(), Self::Error>> {
-            task_03::Poll::Ready(Ok(()))
+            _cx: &mut task::Context<'_>,
+        ) -> task::Poll<result::Result<(), Self::Error>> {
+            task::Poll::Ready(Ok(()))
         }
 
         fn call(&mut self, req: Request<Body>) -> Self::Future {
@@ -554,7 +555,7 @@ trait Servix:
             Box<
                 dyn 'static
                     + Send
-                    + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                    + Future<Output = result::Result<Response<Body>, hyper::Error>>,
             >,
         >,
     >
@@ -572,7 +573,7 @@ impl<T> Servix for T where
                 Box<
                     dyn 'static
                         + Send
-                        + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                        + Future<Output = result::Result<Response<Body>, hyper::Error>>,
                 >,
             >,
         >
@@ -587,7 +588,7 @@ trait MkSr<S>:
         Response = S,
         Error = hyper::Error,
         Future = Pin<
-            Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
+            Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
         >,
     >
 where
@@ -608,7 +609,7 @@ where
                 Box<
                     dyn 'static
                         + Send
-                        + futures::Future<Output = result::Result<S, hyper::Error>>,
+                        + Future<Output = result::Result<S, hyper::Error>>,
                 >,
             >,
         >,
@@ -622,7 +623,7 @@ trait SpawnerFn<S>:
     + for<'t> FnOnce(
         &'t AddrStream,
     ) -> Pin<
-        Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
+        Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
     >
 where
     S: Servix,
@@ -638,7 +639,7 @@ where
         + for<'t> FnOnce(
             &'t AddrStream,
         ) -> Pin<
-            Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
+            Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
         >,
 {
 }
@@ -669,15 +670,15 @@ impl<'t, S: Servix, C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<
         Box<
             dyn 'static
                 + Send
-                + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
+                + Future<Output = result::Result<Self::Response, Self::Error>>,
         >,
     >;
 
     fn poll_ready(
         &mut self,
-        _cx: &mut task_03::Context<'_>,
-    ) -> task_03::Poll<result::Result<(), Self::Error>> {
-        task_03::Poll::Ready(Ok(()))
+        _cx: &mut task::Context<'_>,
+    ) -> task::Poll<result::Result<(), Self::Error>> {
+        task::Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, target: &'t AddrStream) -> Self::Future {
@@ -738,7 +739,7 @@ pub fn get_token_oauth2_code_grant_pkce(
         let f = Box::pin(async move { Ok(CodeGrant) });
         f as Pin<
             Box<
-                dyn futures::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
+                dyn Future<Output = std::result::Result<CodeGrant, hyper::Error>>
                     + std::marker::Send
                     + 'static,
             >,
@@ -807,7 +808,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
         let f = Box::pin(async move { Ok(Implicit) });
         f as Pin<
             Box<
-                dyn futures::Future<Output = std::result::Result<Implicit, hyper::Error>>
+                dyn Future<Output = std::result::Result<Implicit, hyper::Error>>
                     + std::marker::Send
                     + 'static,
             >,

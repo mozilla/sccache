@@ -18,6 +18,7 @@ use std::convert::TryFrom;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -238,29 +239,16 @@ pub fn single_threaded_runtime() -> tokio::runtime::Runtime {
 /// as it was possible for `futures` at `0.1`.
 ///
 /// Intended for test only!
+#[cfg(test)]
 pub(crate) trait Waiter<R> {
     fn wait(self) -> R;
 }
 
-impl<T,O> Waiter<O> for T where T: futures::Future<Output=O> {
-    fn wait(self) -> O
-    {
+#[cfg(test)]
+impl<T, O> Waiter<O> for T where T: Future<Output=O> {
+    fn wait(self) -> O {
         let mut rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(self)
-    }
-}
-
-/// Helper to avoid issues with mock implementations.
-pub(crate) fn fut_wrap<V>(val: V) -> impl futures::Future<Output=V> {
-    async move {
-        val
-    }
-}
-
-/// Helper to avoid issues with mock implementations.
-pub(crate) fn fut_unreachable<V>(txt: &'static str) -> impl futures::Future<Output=V> {
-    async move {
-        unreachable!(txt)
     }
 }
 

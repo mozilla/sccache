@@ -27,9 +27,8 @@ use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
-use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
+use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
-use futures::{Future, channel::oneshot};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -37,6 +36,7 @@ use std::fmt;
 #[cfg(feature = "dist-client")]
 use std::fs;
 use std::fs::File;
+use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
@@ -1128,7 +1128,6 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
-    use futures::future::{self, Future};
     use std::fs::{self, File};
     use std::io::Write;
     use std::sync::Arc;
@@ -1893,7 +1892,7 @@ LLVM version: 6.0",
 #[cfg(test)]
 #[cfg(feature = "dist-client")]
 mod test_dist {
-    use crate::{dist::pkg, test::utils::{fut_wrap, fut_unreachable}};
+    use crate::dist::pkg;
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, JobComplete, JobId, OutputData,
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
@@ -2019,17 +2018,17 @@ mod test_dist {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
-            fut_wrap(Ok(AllocJobResult::Success {
+            Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })).await
+            })
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            fut_unreachable::<_>("fn do_get_status is not used for this test. qed").await
+            unreachable!("fn do_get_status is not used for this test. qed")
         }
         async fn do_submit_toolchain(
             &self,
@@ -2038,7 +2037,7 @@ mod test_dist {
         ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            fut_wrap(Err(anyhow!("MOCK: submit toolchain failure"))).await
+            Err(anyhow!("MOCK: submit toolchain failure"))
         }
         async fn do_run_job(
             &self,
@@ -2047,7 +2046,7 @@ mod test_dist {
             _: Vec<String>,
             _: pkg::BoxDynInputsPackager,
         ) -> Result<(RunJobResult, PathTransformer)> {
-            fut_unreachable::<_>("fn do_run_job is not used for this test. qed").await
+            unreachable!("fn do_run_job is not used for this test. qed")
         }
         async fn put_toolchain(
             &self,
@@ -2055,7 +2054,7 @@ mod test_dist {
             _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            fut_wrap(Ok((self.tc.clone(), None))).await
+            Ok((self.tc.clone(), None))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -2086,14 +2085,14 @@ mod test_dist {
         async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult> {
             assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
-            fut_wrap(Ok(AllocJobResult::Success {
+            Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })).await
+            })
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
             unreachable!()
@@ -2105,7 +2104,7 @@ mod test_dist {
         ) -> Result<SubmitToolchainResult> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
-            fut_wrap(Ok(SubmitToolchainResult::Success)).await
+            Ok(SubmitToolchainResult::Success)
         }
         async fn do_run_job(
             &self,
@@ -2116,7 +2115,7 @@ mod test_dist {
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
-            fut_wrap(Err(anyhow!("MOCK: run job failure"))).await
+            Err(anyhow!("MOCK: run job failure"))
         }
         async fn put_toolchain(
             &self,
@@ -2124,13 +2123,13 @@ mod test_dist {
             _: String,
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
-            fut_wrap(Ok((
+            Ok((
                 self.tc.clone(),
                 Some((
                     "/overridden/compiler".to_owned(),
                     PathBuf::from("somearchiveid"),
                 )),
-            ))).await
+            ))
         }
         fn rewrite_includes_only(&self) -> bool {
             false
@@ -2165,17 +2164,17 @@ mod test_dist {
             assert!(!self.has_started.swap(true, std::sync::atomic::Ordering::AcqRel));
             assert_eq!(self.tc, tc);
 
-            fut_wrap(Ok(AllocJobResult::Success {
+            Ok(AllocJobResult::Success {
                 job_alloc: JobAlloc {
                     auth: "abcd".to_owned(),
                     job_id: JobId(0),
                     server_id: ServerId::new(([0, 0, 0, 0], 1).into()),
                 },
                 need_toolchain: true,
-            })).await
+            })
         }
         async fn do_get_status(&self) -> Result<SchedulerStatusResult> {
-            fut_unreachable::<_>("fn do_get_status is not used for this test. qed").await
+            unreachable!("fn do_get_status is not used for this test. qed")
         }
         async fn do_submit_toolchain(
             &self,
@@ -2185,7 +2184,7 @@ mod test_dist {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(self.tc, tc);
 
-            fut_wrap(Ok(SubmitToolchainResult::Success)).await
+            Ok(SubmitToolchainResult::Success)
         }
         async fn do_run_job(
             &self,
@@ -2211,7 +2210,7 @@ mod test_dist {
                 output: self.output.clone(),
                 outputs,
             });
-            fut_wrap(Ok((result, path_transformer))).await
+            Ok((result, path_transformer))
         }
         async fn put_toolchain(
             &self,
@@ -2220,13 +2219,13 @@ mod test_dist {
             _: pkg::BoxDynToolchainPackager,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
 
-            fut_wrap(Ok((
+            Ok((
                 self.tc.clone(),
                 Some((
                     "/overridden/compiler".to_owned(),
                     PathBuf::from("somearchiveid"),
                 )),
-            ))).await
+            ))
         }
         fn rewrite_includes_only(&self) -> bool {
             false

@@ -15,10 +15,10 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
-pub(crate) use futures::task::SpawnExt;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::future::Future;
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -166,9 +166,9 @@ where
                     .await
                     .context("failed to read stdout")?;
                 Ok(Some(buf))
-            }) as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
-        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>> );
+        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>> );
 
     let stderr = child
         .take_stderr()
@@ -179,10 +179,10 @@ where
                     .await
                     .context("failed to read stderr")?;
                 Ok(Some(buf))
-            })  as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            })  as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
         .unwrap_or_else(|| {
-            Box::pin(async move { Ok(None)  })  as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            Box::pin(async move { Ok(None) }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
 
         });
 

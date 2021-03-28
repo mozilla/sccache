@@ -558,7 +558,6 @@ mod test {
     use super::*;
     use crate::jobserver::Client;
     use crate::test::utils::*;
-    use futures::Future;
     use std::ffi::OsStr;
     use std::io;
     use std::process::{ExitStatus, Output};

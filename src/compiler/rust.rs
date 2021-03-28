@@ -24,7 +24,7 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
-use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
+use crate::util::{ref_env, HashToDigest, OsStrExt};
 use filetime::FileTime;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]

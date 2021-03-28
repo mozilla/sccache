@@ -14,7 +14,8 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures::{channel::mpsc::{self, UnboundedReceiver, UnboundedSender}, future::{self, Future}, pin_mut};
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use std::future::Future;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use core::pin::Pin;

@@ -19,7 +19,7 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, SpawnExt};
+use crate::util::run_input_output;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
@@ -864,7 +864,6 @@ mod test {
     use crate::env;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)

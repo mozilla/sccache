@@ -730,7 +730,6 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
 
     fn parse_arguments_(
         arguments: Vec<String>,

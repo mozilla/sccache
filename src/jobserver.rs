@@ -4,7 +4,7 @@ use std::process::Command as StdCommand;
 
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::prelude::*;
+use futures::StreamExt;
 
 use crate::errors::*;
 

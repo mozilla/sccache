@@ -24,7 +24,7 @@ use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
 use serde::de;
 use std::{convert::Infallible, sync};
-use std::{fmt, io, pin::Pin, result, sync::Arc, time};
+use std::{fmt, future::Future, io, pin::Pin, result, sync::Arc, time};
 use url::{
     form_urlencoded,
     percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
@@ -191,7 +191,7 @@ pub struct GCSCredentialProvider {
                     Box<
                         dyn 'static
                             + Send
-                            + futures::Future<Output = result::Result<GCSCredential, Error>>,
+                            + Future<Output = result::Result<GCSCredential, Error>>,
                     >,
                 >,
             >,
@@ -493,7 +493,7 @@ impl GCSCredentialProvider {
                             Box<
                                 dyn 'static
                                     + Send
-                                    + futures::Future<
+                                    + Future<
                                         Output = result::Result<GCSCredential, Error>,
                                     >,
                             >,
@@ -505,7 +505,7 @@ impl GCSCredentialProvider {
                             Box<
                                 dyn 'static
                                     + Send
-                                    + futures::Future<
+                                    + Future<
                                         Output = result::Result<GCSCredential, Error>,
                                     >,
                             >,
@@ -592,8 +592,6 @@ impl Storage for GCSCache {
         Ok(None)
     }
 }
-
-use futures::TryFutureExt;
 
 #[test]
 fn test_gcs_credential_provider() {
