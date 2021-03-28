@@ -26,7 +26,7 @@ use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S
 use std::io;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
-use tokio_02::io::AsyncReadExt as _;
+use tokio::io::AsyncReadExt as _;
 
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {

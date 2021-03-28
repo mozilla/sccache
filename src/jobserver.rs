@@ -2,9 +2,9 @@ use std::io;
 use std::sync::Arc;
 use std::process::Command as StdCommand;
 
-use futures_03::channel::mpsc;
-use futures_03::channel::oneshot;
-use futures_03::prelude::*;
+use futures::channel::mpsc;
+use futures::channel::oneshot;
+use futures::prelude::*;
 
 use crate::errors::*;
 
@@ -41,7 +41,7 @@ impl Client {
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    tokio_02::runtime::Runtime::new()
+                    tokio::runtime::Runtime::new()
                         .unwrap()
                         .block_on(async {
                             if let Some(sender) = rx.next().await {

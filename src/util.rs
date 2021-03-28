@@ -15,7 +15,7 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
-pub(crate) use futures_03::task::SpawnExt;
+pub(crate) use futures::task::SpawnExt;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -49,7 +49,7 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub async fn file<T>(path: T, pool: &tokio_02::runtime::Handle) -> Result<String>
+    pub async fn file<T>(path: T, pool: &tokio::runtime::Handle) -> Result<String>
     where
         T: AsRef<Path>,
     {
@@ -74,7 +74,7 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub async fn reader(path: PathBuf, pool: &tokio_02::runtime::Handle) -> Result<String> {
+    pub async fn reader(path: PathBuf, pool: &tokio::runtime::Handle) -> Result<String> {
         pool.spawn_blocking(move || {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
@@ -116,13 +116,13 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
-pub async fn hash_all(files: &[PathBuf], pool: &tokio_02::runtime::Handle) -> Result<Vec<String>> {
+pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
     let iter = files
         .iter()
         .map(move |f| Box::pin(async move { Digest::file(f, &pool).await }));
-    let hashes: Vec<Result<String>> = futures_03::future::join_all(iter).await;
+    let hashes: Vec<Result<String>> = futures::future::join_all(iter).await;
     let hashes: Vec<String> = hashes.into_iter().try_fold(
         Vec::with_capacity(files.len()),
         |mut acc, item| -> Result<Vec<String>> {
@@ -151,7 +151,7 @@ async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Resu
 where
     T: CommandChild + 'static,
 {
-    use tokio_02::io::{AsyncReadExt,AsyncWriteExt};
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| {
             Box::pin(async move { stdin.write_all(&i).await.context("failed to write stdin") })
@@ -166,9 +166,9 @@ where
                     .await
                     .context("failed to read stdout")?;
                 Ok(Some(buf))
-            }) as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            }) as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
-        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>> );
+        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>> );
 
     let stderr = child
         .take_stderr()
@@ -179,10 +179,10 @@ where
                     .await
                     .context("failed to read stderr")?;
                 Ok(Some(buf))
-            })  as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            })  as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
         })
         .unwrap_or_else(|| {
-            Box::pin(async move { Ok(None)  })  as Pin<Box<dyn futures_03::Future<Output=Result<Option<Vec<u8>>>> + Send>>
+            Box::pin(async move { Ok(None)  })  as Pin<Box<dyn futures::Future<Output=Result<Option<Vec<u8>>>> + Send>>
 
         });
 
@@ -192,7 +192,7 @@ where
         let _ = stdin.await;
     }
     let status = child.wait().await.context("failed to wait for child")?;
-    let (stdout, stderr) = futures_03::join!(stdout, stderr);
+    let (stdout, stderr) = futures::join!(stdout, stderr);
 
     Ok(process::Output {
         status,

@@ -21,7 +21,7 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use futures_03::future::{self, Future};
+use futures::future::{self, Future};
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;
@@ -133,7 +133,7 @@ impl CCompilerImpl for NVCC {
             let first =
                 Box::pin(async move { run_input_output(dep_before_preprocessor(), None).await });
             let second = Box::pin(async move { run_input_output(cmd, None).await });
-            let (_f, s) = futures_03::try_join!(first, second)?;
+            let (_f, s) = futures::try_join!(first, second)?;
             Ok(s)
         } else {
             let fut = Box::pin(async move { run_input_output(cmd, None).await });
@@ -209,7 +209,7 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures_03::Future;
+    use futures::Future;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

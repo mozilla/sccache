@@ -34,8 +34,8 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures_03::{channel::mpsc, future, prelude::*, stream};
-use futures_03::future::FutureExt;
+use futures::{channel::mpsc, future, prelude::*, stream};
+use futures::future::FutureExt;
 use futures_locks::RwLock;
 use number_prefix::{binary_prefix, Prefixed, Standalone};
 use std::collections::HashMap;
@@ -57,12 +57,12 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use std::time::Instant;
 use std::u64;
-use tokio_02::{
+use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
     time::{self, delay_for, Delay},
 };
-use tokio_02::runtime::Runtime;
+use tokio::runtime::Runtime;
 use tokio_serde::Framed;
 use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
 use tower::Service;
@@ -152,7 +152,7 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: tokio_02::runtime::Handle,
+    pool: tokio::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
@@ -177,7 +177,7 @@ enum DistClientState {
 #[cfg(not(feature = "dist-client"))]
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
-    fn new(config: &Config, _: &tokio_02::runtime::Handle) -> Self {
+    fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
@@ -201,7 +201,7 @@ impl DistClientContainer {
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
-    fn new(config: &Config, pool: &tokio_02::runtime::Handle) -> Self {
+    fn new(config: &Config, pool: &tokio::runtime::Handle) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -404,7 +404,7 @@ impl DistClientContainer {
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
-    let runtime = tokio_02::runtime::Builder::new()
+    let runtime = tokio::runtime::Builder::new()
         .enable_all()
         .threaded_scheduler()
         .core_threads(std::cmp::max(20, 2 * num_cpus::get()))
@@ -496,7 +496,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns a reference to a thread pool to run work on
     #[allow(dead_code)]
-    pub fn pool(&self) -> &tokio_02::runtime::Handle {
+    pub fn pool(&self) -> &tokio::runtime::Handle {
         &self.service.rt
     }
 
@@ -519,7 +519,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     /// long anyway.
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
-        F: futures_03::Future + Send + 'static,
+        F: futures::Future + Send + 'static,
         C: Send,
     {
         let SccacheServer {
@@ -546,7 +546,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
                             err
                         })
                     };
-                    let _handle = tokio_02::spawn(spawnme);
+                    let _handle = tokio::spawn(spawnme);
                     async move {
                         Ok::<(), std::io::Error>(())
                     }
@@ -584,7 +584,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         };
 
         runtime.block_on(async {
-            futures_03::select! {
+            futures::select! {
                 server = server.fuse() => server,
                 _res = shutdown.fuse() => Ok(()),
                 _res = shutdown_or_inactive.fuse() => Ok(()),
@@ -673,7 +673,7 @@ struct SccacheService<C> where C: Send {
 
     /// Task pool for blocking (used mostly for disk I/O-bound tasks) and
     // non-blocking tasks
-    rt: tokio_02::runtime::Handle,
+    rt: tokio::runtime::Handle,
 
     /// An object for creating commands.
     ///
@@ -780,8 +780,8 @@ where
     }
  }
 
-use futures_03::future::Either;
-use futures_03::TryStreamExt;
+use futures::future::Either;
+use futures::TryStreamExt;
 
 impl<C> SccacheService<C>
 where
@@ -791,7 +791,7 @@ where
         dist_client: DistClientContainer,
         storage: ArcDynStorage,
         client: &Client,
-        rt: tokio_02::runtime::Handle,
+        rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
@@ -840,7 +840,7 @@ where
             //     error[E0308]: mismatched types
             //     --> src/server.rs:554:35
             //      |
-            //  554 |                     let _handle = tokio_02::spawn(spawnme);
+            //  554 |                     let _handle = tokio::spawn(spawnme);
             //      |                                   ^^^^^^^^^^^^^^^ one type is more general than the other
             //      |
             //      = note: expected struct `Pin<Box<dyn futures::Future<Output = std::result::Result<server::Message<protocol::Response, server::Body<protocol::Response>>, anyhow::Error>> + std::marker::Send>>`
@@ -884,7 +884,7 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.read().await.clone();
         let cache_location = self.storage.location();
-        futures_03::try_join!(async { self.storage.current_size().await } , async { self.storage.max_size().await },)
+        futures::try_join!(async { self.storage.current_size().await } , async { self.storage.max_size().await },)
             .map(
                 move |(cache_size, max_cache_size)| ServerInfo {
                     stats,
@@ -1293,7 +1293,7 @@ where
                 Ok::<_, Error>(())
             };
 
-            futures_03::try_join!(send, cache_write)?;
+            futures::try_join!(send, cache_write)?;
 
             Ok::<_, Error>(())
         };
@@ -1588,7 +1588,7 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> futures_03::Stream for Body<R> {
+impl<R> futures::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -1655,8 +1655,8 @@ where
 ///   below.
 struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
     inner: Framed<
-        futures_03::stream::ErrInto<
-            futures_03::sink::SinkErrInto<
+        futures::stream::ErrInto<
+            futures::sink::SinkErrInto<
                 tokio_util::codec::Framed<I, LengthDelimitedCodec>,
                 Bytes,
                 Error,

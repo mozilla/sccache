@@ -108,7 +108,7 @@ pub async fn detect_showincludes_prefix<T>(
     exe: &OsStr,
     is_clang: bool,
     env: Vec<(OsString, OsString)>,
-    pool: &tokio_02::runtime::Handle,
+    pool: &tokio::runtime::Handle,
 ) -> Result<String>
 where
     T: CommandCreatorSync,
@@ -864,7 +864,7 @@ mod test {
     use crate::env;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures_03::Future;
+    use futures::Future;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)

@@ -272,7 +272,7 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio_02::runtime::Runtime;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn test_signing() {

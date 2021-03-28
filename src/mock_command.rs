@@ -55,8 +55,8 @@ use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
 use std::result;
 use std::sync::{Arc, Mutex};
-use tokio_02::io::{AsyncRead, AsyncWrite};
-use tokio_02::process::{ChildStderr, ChildStdin, ChildStdout};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use std::process::Command as StdCommand;
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
@@ -144,7 +144,7 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 }
 
 pub struct Child {
-    inner: tokio_02::process::Child,
+    inner: tokio::process::Child,
     token: Acquired,
 }
 
@@ -272,7 +272,7 @@ impl RunCommand for AsyncCommand {
         self.jobserver.configure(&mut inner);
 
         let token = self.jobserver.acquire().await?;
-        let mut inner = tokio_02::process::Command::from(inner);
+        let mut inner = tokio::process::Command::from(inner);
         let child = inner
             .spawn()
             .with_context(|| format!("failed to spawn {:?}", inner))?;
@@ -558,7 +558,7 @@ mod test {
     use super::*;
     use crate::jobserver::Client;
     use crate::test::utils::*;
-    use futures_03::Future;
+    use futures::Future;
     use std::ffi::OsStr;
     use std::io;
     use std::process::{ExitStatus, Output};

@@ -18,7 +18,7 @@ use crate::{
     errors::*,
     util::HeadersExt,
 };
-use futures_03::future::Shared;
+use futures::future::Shared;
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
@@ -30,7 +30,7 @@ use url::{
     percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
 };
 // use ::ReqwestRequestBuilderExt;
-use futures_03::FutureExt;
+use futures::FutureExt;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
@@ -191,7 +191,7 @@ pub struct GCSCredentialProvider {
                     Box<
                         dyn 'static
                             + Send
-                            + futures_03::Future<Output = result::Result<GCSCredential, Error>>,
+                            + futures::Future<Output = result::Result<GCSCredential, Error>>,
                     >,
                 >,
             >,
@@ -493,7 +493,7 @@ impl GCSCredentialProvider {
                             Box<
                                 dyn 'static
                                     + Send
-                                    + futures_03::Future<
+                                    + futures::Future<
                                         Output = result::Result<GCSCredential, Error>,
                                     >,
                             >,
@@ -505,7 +505,7 @@ impl GCSCredentialProvider {
                             Box<
                                 dyn 'static
                                     + Send
-                                    + futures_03::Future<
+                                    + futures::Future<
                                         Output = result::Result<GCSCredential, Error>,
                                     >,
                             >,
@@ -593,7 +593,7 @@ impl Storage for GCSCache {
     }
 }
 
-use futures_03::TryFutureExt;
+use futures::TryFutureExt;
 
 #[test]
 fn test_gcs_credential_provider() {
@@ -611,7 +611,7 @@ fn test_gcs_credential_provider() {
     });
 
 
-    let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
 
     let fut = async move {
     let server = hyper::Server::bind(&addr).serve(make_service);

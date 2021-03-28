@@ -225,8 +225,8 @@ impl TestFixture {
     }
 }
 
-pub fn single_threaded_runtime() -> tokio_02::runtime::Runtime {
-    tokio_02::runtime::Builder::new()
+pub fn single_threaded_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new()
         .enable_all()
         .basic_scheduler()
         .core_threads(1)
@@ -234,7 +234,7 @@ pub fn single_threaded_runtime() -> tokio_02::runtime::Runtime {
         .unwrap()
 }
 
-/// An add on trait, to allow calling `.wait()` for `futures_03::Future`
+/// An add on trait, to allow calling `.wait()` for `futures::Future`
 /// as it was possible for `futures` at `0.1`.
 ///
 /// Intended for test only!
@@ -242,23 +242,23 @@ pub(crate) trait Waiter<R> {
     fn wait(self) -> R;
 }
 
-impl<T,O> Waiter<O> for T where T: futures_03::Future<Output=O> {
+impl<T,O> Waiter<O> for T where T: futures::Future<Output=O> {
     fn wait(self) -> O
     {
-        let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(self)
     }
 }
 
 /// Helper to avoid issues with mock implementations.
-pub(crate) fn fut_wrap<V>(val: V) -> impl futures_03::Future<Output=V> {
+pub(crate) fn fut_wrap<V>(val: V) -> impl futures::Future<Output=V> {
     async move {
         val
     }
 }
 
 /// Helper to avoid issues with mock implementations.
-pub(crate) fn fut_unreachable<V>(txt: &'static str) -> impl futures_03::Future<Output=V> {
+pub(crate) fn fut_unreachable<V>(txt: &'static str) -> impl futures::Future<Output=V> {
     async move {
         unreachable!(txt)
     }

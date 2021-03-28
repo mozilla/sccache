@@ -296,7 +296,7 @@ impl DistSystem {
         wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let mut runtime = tokio_02::runtime::Runtime::new().unwrap();
+                let mut runtime = tokio::runtime::Runtime::new().unwrap();
                 let status = runtime.block_on (async { self.scheduler_status().await });
                 if matches!(status, SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
                 {
@@ -431,7 +431,7 @@ impl DistSystem {
         wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
         wait_for(
             || {
-                let mut rt = tokio_02::runtime::Runtime::new().unwrap();
+                let mut rt = tokio::runtime::Runtime::new().unwrap();
                 let status = rt.block_on(async { self.scheduler_status().await });
                 if matches!(status, SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
                 {

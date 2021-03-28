@@ -29,7 +29,7 @@ use crate::dist::pkg;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output, SpawnExt};
 use filetime::FileTime;
-use futures_03::{Future, channel::oneshot};
+use futures::{Future, channel::oneshot};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -178,7 +178,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &tokio_02::runtime::Handle,
+        pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
     ) -> Result<HashResult>;
 
@@ -197,7 +197,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         cache_control: CacheControl,
-        pool: tokio_02::runtime::Handle,
+        pool: tokio::runtime::Handle,
     ) -> Result<(CompileResult, process::Output)> {
 
         let out_pretty = self.output_pretty().into_owned();
@@ -244,7 +244,7 @@ where
         } else {
             let fetch = storage.get(&key);
 
-            tokio_02::time::timeout(Duration::from_secs(60), fetch).await
+            tokio::time::timeout(Duration::from_secs(60), fetch).await
         };
 
         // Set a maximum time limit for the cache to respond before we forge
@@ -842,7 +842,7 @@ pub enum CacheControl {
 /// Note that when the `TempDir` is dropped it will delete all of its contents
 /// including the path returned.
 pub async fn write_temp_file(
-    pool: &tokio_02::runtime::Handle,
+    pool: &tokio::runtime::Handle,
     path: &Path,
     contents: Vec<u8>,
 ) -> Result<(TempDir, PathBuf)> {
@@ -864,7 +864,7 @@ async fn detect_compiler<T>(
     executable: &Path,
     cwd: &Path,
     env: &[(OsString, OsString)],
-    pool: &tokio_02::runtime::Handle,
+    pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
 ) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
@@ -980,7 +980,7 @@ async fn detect_c_compiler<T>(
     creator: T,
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
-    pool: tokio_02::runtime::Handle,
+    pool: tokio::runtime::Handle,
 ) -> Result<BoxDynCompiler<T>>
 where
     T: CommandCreatorSync,
@@ -1110,7 +1110,7 @@ pub async fn get_compiler_info<T>(
     executable: &Path,
     cwd: &Path,
     env: &[(OsString, OsString)],
-    pool: &tokio_02::runtime::Handle,
+    pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
 ) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
 where
@@ -1128,13 +1128,13 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
-    use futures_03::future::{self, Future};
+    use futures::future::{self, Future};
     use std::fs::{self, File};
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
-    use tokio_02::runtime::Runtime;
+    use tokio::runtime::Runtime;
     use assert_matches::assert_matches;
 
     #[test]

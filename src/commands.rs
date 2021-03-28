@@ -23,7 +23,7 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures_03::StreamExt;
+use futures::StreamExt;
 use log::Level::Trace;
 use std::{env, process::ExitStatus};
 use std::ffi::{OsStr, OsString};
@@ -33,9 +33,9 @@ use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use strip_ansi_escapes::Writer;
-use tokio_02::io::AsyncReadExt;
-use tokio_02::process;
-use tokio_02::runtime::Runtime;
+use tokio::io::AsyncReadExt;
+use tokio::process;
+use tokio::runtime::Runtime;
 use which::which_in;
 
 use crate::errors::*;
@@ -87,7 +87,7 @@ fn run_server_process() -> Result<ServerStartup> {
     )?;
 
     let startup = async move {
-        let mut listener = tokio_02::net::UnixListener::bind(&socket_path)?;
+        let mut listener = tokio::net::UnixListener::bind(&socket_path)?;
         let mut listener = listener.incoming();
         match listener.next().await.expect("UnixListener::incoming() never returns `None`. qed") {
             Ok(stream) => {
@@ -100,7 +100,7 @@ fn run_server_process() -> Result<ServerStartup> {
     };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let z = runtime.block_on(async move { tokio_02::time::timeout(timeout, startup).await } );
+    let z = runtime.block_on(async move { tokio::time::timeout(timeout, startup).await } );
 
     z
     .or_else(|_err| {
@@ -144,7 +144,7 @@ fn redirect_error_log() -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures_03::future;
+    use futures::future;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -248,7 +248,7 @@ fn run_server_process() -> Result<ServerStartup> {
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
     runtime.block_on(
-        tokio_02::time::timeout(timeout, result)
+        tokio::time::timeout(timeout, result)
     )
     .and_then(|x| x)
     .or_else(|err| {
@@ -515,7 +515,7 @@ where
             let status = child.wait().await?;
             Ok::<_,anyhow::Error>(status)
         };
-        futures_03::pin_mut!(fut);
+        futures::pin_mut!(fut);
         let status = runtime.block_on(fut)?;
         status
     };
@@ -677,7 +677,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             use crate::compiler;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let mut runtime = tokio_02::runtime::Runtime::new()?;
+            let mut runtime = tokio::runtime::Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();

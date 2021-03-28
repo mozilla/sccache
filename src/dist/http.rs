@@ -1114,14 +1114,14 @@ mod client {
         // and only support owned bytes, which means the whole toolchain would end up in memory
         client: Arc<Mutex<reqwest::blocking::Client>>,
         client_async: Arc<Mutex<reqwest::Client>>,
-        pool: tokio_02::runtime::Handle,
+        pool: tokio::runtime::Handle,
         tc_cache: Arc<cache::ClientToolchains>,
         rewrite_includes_only: bool,
     }
 
     impl Client {
         pub fn new(
-            pool: &tokio_02::runtime::Handle,
+            pool: &tokio::runtime::Handle,
             scheduler_url: reqwest::Url,
             cache_dir: &Path,
             cache_size: u64,

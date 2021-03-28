@@ -19,8 +19,7 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
-use futures_03::channel::oneshot::{self, Sender};
-use futures_03::compat::*;
+use futures::channel::oneshot::{self, Sender};
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -32,7 +31,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::u64;
-use tokio_02::runtime::Runtime;
+use tokio::runtime::Runtime;
 
 /// Options for running the server in tests.
 #[derive(Default)]

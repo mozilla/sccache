@@ -13,8 +13,6 @@
 // limitations under the License.
 
 pub use anyhow::{anyhow, bail, Context, Error};
-use futures::future as legacy_future;
-use futures::Future as LegacyFuture;
 use std::boxed::Box;
 use std::process;
 

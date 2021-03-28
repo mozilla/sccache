@@ -28,12 +28,12 @@ pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
     lru: Arc<Mutex<LruDiskCache>>,
     /// Thread pool to execute disk I/O
-    pool: tokio_02::runtime::Handle,
+    pool: tokio::runtime::Handle,
 }
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &tokio_02::runtime::Handle) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &tokio::runtime::Handle) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
             lru: Arc::new(Mutex::new(

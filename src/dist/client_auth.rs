@@ -1,5 +1,5 @@
-use futures_03::channel::oneshot;
-use futures_03::task as task_03;
+use futures::channel::oneshot;
+use futures::task as task_03;
 use http::StatusCode;
 use hyper::server::conn::AddrIncoming;
 use hyper::service::Service;
@@ -15,7 +15,7 @@ use std::pin::Pin;
 use std::result;
 use std::sync::mpsc;
 use std::time::Duration;
-use tokio_02::runtime::Runtime;
+use tokio::runtime::Runtime;
 use url::Url;
 use uuid::Uuid;
 
@@ -37,7 +37,7 @@ trait ServeFn:
         Box<
             dyn 'static
                 + Send
-                + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
         >,
     > + Send
     + 'static
@@ -54,7 +54,7 @@ impl<T> ServeFn for T where
             Box<
                 dyn 'static
                     + Send
-                    + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                    + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
             >,
         >
 {
@@ -122,7 +122,7 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures_03::channel::oneshot;
+    use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::RngCore;
     use sha2::{Digest, Sha256};
@@ -276,7 +276,7 @@ mod code_grant_pkce {
             Box<
                 dyn 'static
                     + Send
-                    + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+                    + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
             >,
         >;
 
@@ -345,7 +345,7 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures_03::channel::oneshot;
+    use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use std::collections::HashMap;
     use std::sync::mpsc;
@@ -498,7 +498,7 @@ mod implicit {
             Box<
                 dyn 'static
                     + Send
-                    + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+                    + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
             >,
         >;
 
@@ -554,7 +554,7 @@ trait Servix:
             Box<
                 dyn 'static
                     + Send
-                    + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                    + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
             >,
         >,
     >
@@ -572,7 +572,7 @@ impl<T> Servix for T where
                 Box<
                     dyn 'static
                         + Send
-                        + futures_03::Future<Output = result::Result<Response<Body>, hyper::Error>>,
+                        + futures::Future<Output = result::Result<Response<Body>, hyper::Error>>,
                 >,
             >,
         >
@@ -587,7 +587,7 @@ trait MkSr<S>:
         Response = S,
         Error = hyper::Error,
         Future = Pin<
-            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+            Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
         >,
     >
 where
@@ -608,7 +608,7 @@ where
                 Box<
                     dyn 'static
                         + Send
-                        + futures_03::Future<Output = result::Result<S, hyper::Error>>,
+                        + futures::Future<Output = result::Result<S, hyper::Error>>,
                 >,
             >,
         >,
@@ -622,7 +622,7 @@ trait SpawnerFn<S>:
     + for<'t> FnOnce(
         &'t AddrStream,
     ) -> Pin<
-        Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+        Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
     >
 where
     S: Servix,
@@ -638,7 +638,7 @@ where
         + for<'t> FnOnce(
             &'t AddrStream,
         ) -> Pin<
-            Box<dyn 'static + Send + futures_03::Future<Output = result::Result<S, hyper::Error>>>,
+            Box<dyn 'static + Send + futures::Future<Output = result::Result<S, hyper::Error>>>,
         >,
 {
 }
@@ -669,7 +669,7 @@ impl<'t, S: Servix, C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<
         Box<
             dyn 'static
                 + Send
-                + futures_03::Future<Output = result::Result<Self::Response, Self::Error>>,
+                + futures::Future<Output = result::Result<Self::Response, Self::Error>>,
         >,
     >;
 
@@ -738,7 +738,7 @@ pub fn get_token_oauth2_code_grant_pkce(
         let f = Box::pin(async move { Ok(CodeGrant) });
         f as Pin<
             Box<
-                dyn futures_03::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
+                dyn futures::Future<Output = std::result::Result<CodeGrant, hyper::Error>>
                     + std::marker::Send
                     + 'static,
             >,
@@ -807,7 +807,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
         let f = Box::pin(async move { Ok(Implicit) });
         f as Pin<
             Box<
-                dyn futures_03::Future<Output = std::result::Result<Implicit, hyper::Error>>
+                dyn futures::Future<Output = std::result::Result<Implicit, hyper::Error>>
                     + std::marker::Send
                     + 'static,
             >,

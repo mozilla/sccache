@@ -202,7 +202,7 @@ async fn get_source_files<T>(
     arguments: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    pool: &tokio_02::runtime::Handle,
+    pool: &tokio::runtime::Handle,
 ) -> Result<Vec<PathBuf>>
 where
     T: CommandCreatorSync,
@@ -352,7 +352,7 @@ impl Rust {
         env_vars: &[(OsString, OsString)],
         rustc_verbose_version: &str,
         dist_archive: Option<PathBuf>,
-        pool: tokio_02::runtime::Handle,
+        pool: tokio::runtime::Handle,
     ) -> Result<Rust>
     where
         T: CommandCreatorSync,
@@ -414,7 +414,7 @@ impl Rust {
             };
 
             let (sysroot_and_libs, rlib_dep_reader) =
-                futures_03::join!(sysroot_and_libs, rlib_dep_reader);
+                futures::join!(sysroot_and_libs, rlib_dep_reader);
 
             let (sysroot, libs) = sysroot_and_libs.context("Determining sysroot + libs failed")?;
 
@@ -1214,7 +1214,7 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         _may_dist: bool,
-        pool: &tokio_02::runtime::Handle,
+        pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
     ) -> Result<HashResult> {
         let RustHasher {
@@ -1298,7 +1298,7 @@ where
         // pin_mut!(staticlib_hashes);
         // pin_mut!(extern_hashes);
         let (source_files_and_hashes, extern_hashes, staticlib_hashes) =
-            futures_03::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
+            futures::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
 
 
         let (source_files, source_hashes) = source_files_and_hashes?;

@@ -32,11 +32,11 @@ thread_local! {
 #[derive(Clone)]
 pub struct MemcachedCache {
     url: String,
-    pool: tokio_02::runtime::Handle,
+    pool: tokio::runtime::Handle,
 }
 
 impl MemcachedCache {
-    pub fn new(url: &str, pool: &tokio_02::runtime::Handle) -> Result<MemcachedCache> {
+    pub fn new(url: &str, pool: &tokio::runtime::Handle) -> Result<MemcachedCache> {
         Ok(MemcachedCache {
             url: url.to_owned(),
             pool: pool.clone(),

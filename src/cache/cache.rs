@@ -150,7 +150,7 @@ impl CacheRead {
         bytes
     }
 
-    pub async fn extract_objects<T>(mut self, objects: T, pool: &tokio_02::runtime::Handle) -> Result<()>
+    pub async fn extract_objects<T>(mut self, objects: T, pool: &tokio::runtime::Handle) -> Result<()>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
@@ -190,7 +190,7 @@ impl CacheWrite {
     }
 
     /// Create a new cache entry populated with the contents of `objects`.
-    pub async fn from_objects<T>(objects: T, pool: &tokio_02::runtime::Handle) -> Result<CacheWrite>
+    pub async fn from_objects<T>(objects: T, pool: &tokio::runtime::Handle) -> Result<CacheWrite>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
@@ -291,7 +291,7 @@ pub trait Storage: Send {
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &tokio_02::runtime::Handle) -> ArcDynStorage {
+pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> ArcDynStorage {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {
