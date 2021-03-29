@@ -274,22 +274,18 @@ where
             compiler,
         } = *self;
 
-        let res = {
-            let compiler = compiler.clone();
-            let fut = compiler.preprocess(
-                creator,
-                &executable,
-                &parsed_args,
-                &cwd,
-                &env_vars,
-                may_dist,
-                rewrite_includes_only,
-            );
-            Box::pin(fut).await
-        };
+        let result = compiler.preprocess(
+            creator,
+            &executable,
+            &parsed_args,
+            &cwd,
+            &env_vars,
+            may_dist,
+            rewrite_includes_only,
+        ).await;
         let out_pretty = parsed_args.output_pretty().into_owned();
 
-        let result = res.map_err(|e| {
+        let result = result.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });

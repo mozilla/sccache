@@ -14,26 +14,22 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use std::future::Future;
+use futures::channel::mpsc;
+use futures_locks::Mutex;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
-use core::pin::Pin;
+use std::sync::Arc;
 
-pub(crate) trait StorageNextVal<T>: Future<Output=Result<T>> + Send + Sync + 'static {}
-
-impl<Z,T> StorageNextVal<T> for Z where Z: Future<Output=Result<T>> + Send + Sync + 'static {}
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
-    rx: Arc<Mutex<UnboundedReceiver<Pin<Box<dyn StorageNextVal<Cache>>>>>>,
-    tx: UnboundedSender<Pin<Box<dyn StorageNextVal<Cache>>>>,
+    rx: Arc<Mutex<mpsc::UnboundedReceiver<Result<Cache>>>>,
+    tx: mpsc::UnboundedSender<Result<Cache>>,
 }
 
 impl MockStorage {
     /// Create a new `MockStorage`.
     pub(crate) fn new() -> MockStorage {
-        let (tx, rx) = mpsc::unbounded::<Pin<Box<dyn StorageNextVal<Cache>>>>();
+        let (tx, rx) = mpsc::unbounded();
         Self {
             tx,
             rx: Arc::new(Mutex::new(rx)),
@@ -41,7 +37,7 @@ impl MockStorage {
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
-    pub(crate) fn next_get(&self, res: Pin<Box<dyn StorageNextVal<Cache>>>) {
+    pub(crate) fn next_get(&self, res: Result<Cache>) {
         self.tx.unbounded_send(res).unwrap();
     }
 }
@@ -49,8 +45,9 @@ impl MockStorage {
 #[async_trait::async_trait]
 impl Storage for MockStorage {
     async fn get(&self, _key: &str) -> Result<Cache> {
-        let mut fut = self.rx.lock().unwrap().try_next().ok().flatten().expect("MockStorage get called, but no get results available");
-        fut.await
+        let next = self.rx.lock().await.try_next().unwrap();
+
+        next.expect("MockStorage get called but no get results available")
     }
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
         Ok(Duration::from_secs(0))

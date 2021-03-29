@@ -23,7 +23,7 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use log::Level::Trace;
 use std::{env, process::ExitStatus};
 use std::ffi::{OsStr, OsString};
@@ -54,8 +54,7 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-async fn read_server_startup_status<R: AsyncReadExt>(server: R) -> Result<ServerStartup> {
-    let mut server = Box::pin(server);
+async fn read_server_startup_status<R: AsyncReadExt + Unpin>(mut server: R) -> Result<ServerStartup> {
     // This is an async equivalent of ServerConnection::read_one_response
     let mut bytes = [0u8; 4];
     server.read_exact(&mut bytes[..]).await?;
@@ -87,24 +86,19 @@ fn run_server_process() -> Result<ServerStartup> {
 
     let startup = async move {
         let mut listener = tokio::net::UnixListener::bind(&socket_path)?;
-        let mut listener = listener.incoming();
-        match listener.next().await.expect("UnixListener::incoming() never returns `None`. qed") {
-            Ok(stream) => {
-                read_server_startup_status(stream).await
-            }
-            Err(e) => {
-                Ok(ServerStartup::Err{ reason: format!("Error {:?} ", e) } )
-            }
-        }
+        let socket = listener.incoming().next().await;
+        let socket = socket.unwrap(); // incoming() never returns None
+
+        read_server_startup_status(socket?).await
     };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let z = runtime.block_on(async move { tokio::time::timeout(timeout, startup).await } );
-
-    z
-    .or_else(|_err| {
-        Ok(Ok(ServerStartup::TimedOut))
-    }).and_then(|flatten| flatten)
+    runtime.block_on(async move {
+        match tokio::time::timeout(timeout, startup).await {
+            Ok(result) => result,
+            Err(_elapsed) => Ok(ServerStartup::TimedOut),
+        }
+    })
 }
 
 #[cfg(not(windows))]
@@ -508,16 +502,11 @@ where
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    let status = {
-        let fut = async move {
-            let child = cmd.spawn().await?;
-            let status = child.wait().await?;
-            Ok::<_,anyhow::Error>(status)
-        };
-        futures::pin_mut!(fut);
-        let status = runtime.block_on(fut)?;
-        status
-    };
+
+    let status = runtime.block_on(async move {
+        let child = cmd.spawn().await?;
+        child.wait().await.with_context(|| "failed to wait for a child")
+    })?;
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {

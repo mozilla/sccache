@@ -18,14 +18,12 @@ use byteorder::{BigEndian, ByteOrder};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::future::Future;
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
-use std::pin::Pin;
 
 use crate::errors::*;
 
@@ -121,15 +119,8 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
     let count = files.len();
     let iter = files
         .iter()
-        .map(move |f| Box::pin(async move { Digest::file(f, &pool).await }));
-    let hashes: Vec<Result<String>> = futures::future::join_all(iter).await;
-    let hashes: Vec<String> = hashes.into_iter().try_fold(
-        Vec::with_capacity(files.len()),
-        |mut acc, item| -> Result<Vec<String>> {
-            acc.push(item?);
-            Ok(acc)
-        },
-    )?;
+        .map(move |f| Digest::file(f, &pool));
+    let hashes = futures::future::try_join_all(iter).await?;
     trace!(
         "Hashed {} files in {}",
         count,
@@ -151,53 +142,55 @@ async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Resu
 where
     T: CommandChild + 'static,
 {
-    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let stdin = input.and_then(|i| {
         child.take_stdin().map(|mut stdin| {
-            Box::pin(async move { stdin.write_all(&i).await.context("failed to write stdin") })
+            async move { stdin.write_all(&i).await.context("failed to write stdin") }
         })
     });
-    let stdout = child
-        .take_stdout()
-        .map(|mut io| {
-            Box::pin(async move {
+    let stdout = child.take_stdout();
+    let stdout = async move {
+        match stdout {
+            Some(mut stdout) => {
                 let mut buf = Vec::new();
-                io.read_to_end(&mut buf)
+                stdout.read_to_end(&mut buf)
                     .await
                     .context("failed to read stdout")?;
-                Ok(Some(buf))
-            }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
-        })
-        .unwrap_or_else(|| Box::pin(async move { Ok(None) }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>> );
+                Result::Ok(Some(buf))
+            }
+            None => Ok(None)
+        }
+    };
 
-    let stderr = child
-        .take_stderr()
-        .map(|mut io| {
-            Box::pin(async move {
+    let stderr = child.take_stderr();
+    let stderr = async move {
+        match stderr {
+            Some(mut stderr) => {
                 let mut buf = Vec::new();
-                io.read_to_end(&mut buf)
+                stderr.read_to_end(&mut buf)
                     .await
                     .context("failed to read stderr")?;
-                Ok(Some(buf))
-            })  as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
-        })
-        .unwrap_or_else(|| {
-            Box::pin(async move { Ok(None) }) as Pin<Box<dyn Future<Output=Result<Option<Vec<u8>>>> + Send>>
-
-        });
+                Result::Ok(Some(buf))
+            }
+            None => Ok(None)
+        }
+    };
 
     // Finish writing stdin before waiting, because waiting drops stdin.
+    let status = async move {
+        if let Some(stdin) = stdin {
+            let _ = stdin.await;
+        }
 
-    if let Some(stdin) = stdin {
-        let _ = stdin.await;
-    }
-    let status = child.wait().await.context("failed to wait for child")?;
-    let (stdout, stderr) = futures::join!(stdout, stderr);
+        child.wait().await.context("failed to wait for child")
+    };
+
+    let (status, stdout, stderr) = futures::future::try_join3(status, stdout, stderr).await?;
 
     Ok(process::Output {
         status,
-        stdout: stdout?.unwrap_or_default(),
-        stderr: stderr?.unwrap_or_default(),
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
     })
 }
 
@@ -227,7 +220,7 @@ where
             if output.status.success() {
                 Ok(output)
             } else {
-                Err(ProcessError(output))?
+                Err(ProcessError(output).into())
             }
         })
 }

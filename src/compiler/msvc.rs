@@ -70,19 +70,16 @@ impl CCompilerImpl for MSVC {
     where
         T: CommandCreatorSync,
     {
-        let fut = Box::pin(async move {
-            preprocess(
-                creator,
-                executable,
-                parsed_args,
-                cwd,
-                env_vars,
-                may_dist,
-                &self.includes_prefix,
-            )
-            .await
-        });
-        fut.await
+        preprocess(
+            creator,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            may_dist,
+            &self.includes_prefix,
+        )
+        .await
     }
 
     fn generate_compile_commands(

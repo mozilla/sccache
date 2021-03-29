@@ -372,8 +372,8 @@ impl Rust {
             .arg("--print=sysroot")
             .env_clear()
             .envs(ref_env(env_vars));
-        let output = run_input_output(cmd, None).await?;
         let sysroot_and_libs = async move {
+            let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
             let sysroot = PathBuf::from(outstr.trim_end());
@@ -400,25 +400,24 @@ impl Rust {
                 libs.push(path);
             };
             libs.sort();
-            Ok::<_, anyhow::Error>((sysroot, libs))
+            Result::Ok((sysroot, libs))
         };
 
         #[cfg(feature = "dist-client")]
         {
+            use futures::TryFutureExt;
             let rlib_dep_reader = {
                 let executable = executable.clone();
                 let env_vars = env_vars.to_owned();
                 pool.spawn_blocking(move || {
                     RlibDepReader::new_with_check(executable, &env_vars)
-                })
+                }).map_err(anyhow::Error::from)
             };
 
-            let (sysroot_and_libs, rlib_dep_reader) =
-                futures::join!(sysroot_and_libs, rlib_dep_reader);
+            let ((sysroot, libs), rlib_dep_reader) =
+                futures::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
 
-            let (sysroot, libs) = sysroot_and_libs.context("Determining sysroot + libs failed")?;
-
-            let rlib_dep_reader = match rlib_dep_reader.unwrap_or_else(|e| Err(anyhow::Error::from(e))) {
+            let rlib_dep_reader = match rlib_dep_reader {
                 Ok(r) => Some(Arc::new(r)),
                 Err(e) => {
                     warn!("Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}", e);

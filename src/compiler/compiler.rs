@@ -322,18 +322,18 @@ where
                 Ok::<_, Error>((compile_result, output))
             }
             CacheLookupResult::Miss(miss_type) => {
-
+                // Cache miss, so compile it.
                 let start = Instant::now();
 
                 let (cacheable, dist_type, compiler_result) =
-                        dist_or_local_compile(
-                            dist_client,
-                            creator,
-                            cwd,
-                            compilation,
-                            weak_toolchain_key,
-                            out_pretty.clone(),
-                        ).await?;
+                    dist_or_local_compile(
+                        dist_client,
+                        creator,
+                        cwd,
+                        compilation,
+                        weak_toolchain_key,
+                        out_pretty.clone(),
+                    ).await?;
 
                 if !compiler_result.status.success() {
                     debug!(
@@ -353,8 +353,7 @@ where
                     let pool2 = pool.clone();
                     let out_pretty2 = out_pretty.clone();
 
-                    let fut = async move {
-                        // Cache miss, so compile it.
+                    async move {
                         let duration = start.elapsed();
                         debug!(
                             "[{}]: Compiled in {}, storing in cache",
@@ -379,13 +378,11 @@ where
                             Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
                         }
 
-                        let write_info = CacheWriteInfo {
+                        Ok(CacheWriteInfo {
                             object_file_pretty: out_pretty2,
                             duration,
-                        };
-                        Ok::<_,anyhow::Error>(write_info)
-                    };
-                    fut
+                        })
+                    }
                 };
 
 
@@ -918,12 +915,7 @@ where
                     let proxy2 = proxy.clone();
                     let creator2 = creator.clone();
                     // take the pathbuf for rustc as resolved by the proxy
-                    match async move {
-                        proxy2
-                            .resolve_proxied_executable(creator2, cwd, &env)
-                            .await
-                        }.await
-                    {
+                    match proxy2.resolve_proxied_executable(creator2, cwd, &env).await {
                         Ok((resolved_compiler_executable, _time)) => {
                             trace!(
                                 "Resolved path with rustup proxy {}",
@@ -1587,9 +1579,9 @@ LLVM version: 6.0",
             o => panic!("Bad result from parse_arguments: {:?}", o),
         };
         // The cache will return an error.
-        storage.next_get(Box::pin(async move { Err(anyhow!("Some Error"))}));
+        storage.next_get(Err(anyhow!("Some Error")));
         let (cached, res) = runtime
-            .block_on(async {
+            .block_on(
                 hasher.get_cached_or_compile(
                     None,
                     creator,
@@ -1599,8 +1591,8 @@ LLVM version: 6.0",
                     vec![],
                     CacheControl::Default,
                     pool,
-                ).await
-            })
+                )
+            )
             .unwrap();
         // Ensure that the object file was created.
         assert!(1 <= fs::metadata(&obj).map(|m| m.len()).unwrap());

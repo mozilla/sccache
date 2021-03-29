@@ -535,24 +535,16 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
         let incoming = listener.incoming();
-        let server =
-            async move {
-                incoming.try_for_each(move |socket| {
-                    let service: SccacheService<C> = service.clone();
+        let server = incoming.try_for_each(move |socket| {
+            let conn = service.clone().bind(socket).map_err(|res| {
+                error!("Failed to bind socket: {}", res);
+            });
 
-                    let spawnme = async move {
-                        let res = service.bind(socket).await;
-                        res.map_err(|err| {
-                            error!("Failed to bind socket: {}", err);
-                            err
-                        })
-                    };
-                    let _handle = tokio::spawn(spawnme);
-                    async move {
-                        Ok::<(), std::io::Error>(())
-                    }
-                }).await
-            };
+            // We're not interested if the task panicked; immediately process
+            // another connection
+            let _ = tokio::spawn(conn);
+            async { Ok(()) }
+        });
 
         // Right now there's a whole bunch of ways to shut down this server for
         // various purposes. These include:
@@ -831,49 +823,29 @@ where
         let sink = sink.sink_err_into::<Error>();
 
         let me = Arc::new(self);
-        async move {
-            stream
-            .err_into::<Error>()
-            .and_then(move |input| {
-            // keep this clone, otherwise
-            //
-            // ```
-            //     error[E0308]: mismatched types
-            //     --> src/server.rs:554:35
-            //      |
-            //  554 |                     let _handle = tokio::spawn(spawnme);
-            //      |                                   ^^^^^^^^^^^^^^^ one type is more general than the other
-            //      |
-            //      = note: expected struct `Pin<Box<dyn futures::Future<Output = std::result::Result<server::Message<protocol::Response, server::Body<protocol::Response>>, anyhow::Error>> + std::marker::Send>>`
-            //                 found struct `Pin<Box<dyn futures::Future<Output = std::result::Result<server::Message<protocol::Response, server::Body<protocol::Response>>, anyhow::Error>> + std::marker::Send>>`
-            // ```
-            // will pop up, instead of a proper error message
-                let mut me = me.clone();
-                async move  {
-                    me.call(input).await
+        stream
+        .err_into::<Error>()
+        .and_then(move |input| me.clone().call(input))
+        .and_then(move |message| async move {
+            let fut = match message {
+                Message::WithoutBody(message) => {
+                    let stream =
+                        stream::once(async move {
+                            Ok(Frame::Message { message })
+                        });
+                    Either::Left(stream)
                 }
-            })
-            .and_then(move |message| async move {
-                let fut = match message {
-                    Message::WithoutBody(message) => {
-                        let stream =
-                            stream::once(async move {
-                                Ok::<_, Error>(Frame::Message { message })
-                            });
-                        Either::Left(stream)
-                    }
-                    Message::WithBody(message, body) => {
-                        let stream = stream::once(async move { Ok::<_, Error>(Frame::Message { message }) })
-                                .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
-                                .chain(stream::once(async move { Ok::<_, Error>(Frame::Body { chunk: None }) }));
-                        Either::Right(stream)
-                    }
-                };
-                Ok(Box::pin(fut))
-            })
-            .try_flatten()
-            .forward(sink).await.map(|_| ())
-        }
+                Message::WithBody(message, body) => {
+                    let stream = stream::once(async move { Ok(Frame::Message { message }) })
+                            .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
+                            .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
+                    Either::Right(stream)
+                }
+            };
+            Ok(Box::pin(fut))
+        })
+        .try_flatten()
+        .forward(sink)
     }
 
     /// Get dist status.
@@ -885,9 +857,8 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.read().await.clone();
         let cache_location = self.storage.location();
-        futures::try_join!(async { self.storage.current_size().await } , async { self.storage.max_size().await },)
-            .map(
-                move |(cache_size, max_cache_size)| ServerInfo {
+        futures::try_join!(self.storage.current_size(), self.storage.max_size())
+            .map(move |(cache_size, max_cache_size)| ServerInfo {
                     stats,
                     cache_location,
                     cache_size,
@@ -1266,9 +1237,8 @@ where
                     }
                 }
             };
-            let send = Box::pin(
-                tx.send(Ok(Response::CompileFinished(res))).map_err(|e| anyhow!("send on finish failed").context(e) )
-            );
+            let send = tx.send(Ok(Response::CompileFinished(res)))
+            .map_err(|e| anyhow!("send on finish failed").context(e));
 
             let me = me.clone();
             let cache_write = async move {
@@ -1291,15 +1261,15 @@ where
                         }
                     }
                 }
-                Ok::<_, Error>(())
+                Ok(())
             };
 
-            futures::try_join!(send, cache_write)?;
+            futures::future::try_join(send, cache_write).await?;
 
             Ok::<_, Error>(())
         };
 
-        self.rt.spawn(Box::pin(async move { task.await.unwrap_or_else(|e| { warn!("Failed to execute task: {:?}", e) }); } ));
+        self.rt.spawn(async move { task.await.unwrap_or_else(|e| { warn!("Failed to execute task: {:?}", e) }); } );
     }
 }
 

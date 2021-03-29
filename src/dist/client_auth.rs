@@ -274,11 +274,7 @@ mod code_grant_pkce {
         type Response = Response<Body>;
         type Error = hyper::Error;
         type Future = std::pin::Pin<
-            Box<
-                dyn 'static
-                    + Send
-                    + Future<Output = result::Result<Self::Response, Self::Error>>,
-            >,
+            Box<dyn Future<Output = result::Result<Self::Response, Self::Error>> + Send>
         >;
 
         fn poll_ready(
@@ -289,13 +285,12 @@ mod code_grant_pkce {
         }
 
         fn call(&mut self, req: Request<Body>) -> Self::Future {
-            let uri = req.uri().clone();
-            let fut = async move {
+            Box::pin(async move {
+                let uri = req.uri().clone();
                 serve(req)
                     .await
                     .or_else(|e| super::error_code_response(uri, e))
-            };
-            Box::pin(fut)
+            })
         }
     }
 
@@ -496,11 +491,7 @@ mod implicit {
         type Response = Response<Body>;
         type Error = hyper::Error;
         type Future = std::pin::Pin<
-            Box<
-                dyn 'static
-                    + Send
-                    + Future<Output = result::Result<Self::Response, Self::Error>>,
-            >,
+            Box<dyn Future<Output = result::Result<Self::Response, Self::Error>> + Send>
         >;
 
         fn poll_ready(
@@ -511,13 +502,12 @@ mod implicit {
         }
 
         fn call(&mut self, req: Request<Body>) -> Self::Future {
-            let uri = req.uri().clone();
-            let fut = async move {
+            Box::pin(async move {
+                let uri = req.uri().clone();
                 serve(req)
                     .await
                     .or_else(|e| super::error_code_response(uri, e))
-            };
-            Box::pin(fut)
+            })
         }
     }
 }
@@ -779,18 +769,16 @@ pub fn get_token_oauth2_code_grant_pkce(
 
     let mut runtime = Runtime::new()?;
     // if the wait of the shutdown terminated unexpectedly, we assume it triggered and continue shutdown
-    let _ = 
-    runtime
-        .block_on(server.with_graceful_shutdown(async move {
+    let _ = runtime.block_on(server.with_graceful_shutdown(async {
             let _ = shutdown_signal.await;
-        } ))
+    }))
     .map_err(|e| {
-            warn!(
-                "Something went wrong while waiting for auth server shutdown: {}",
-                e
-            );
+        warn!(
+            "Something went wrong while waiting for auth server shutdown: {}",
             e
-        });
+        );
+        e
+    });
 
     info!("Server finished, using code to request token");
     let code = code_rx
@@ -836,19 +824,16 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
         shutdown_tx: Some(shutdown_tx),
     };
     *implicit::STATE.lock().unwrap() = Some(state);
-    let shutdown_signal = shutdown_rx;
 
     let mut runtime = Runtime::new()?;
     runtime.block_on(server.with_graceful_shutdown(async move {
-        let _ = shutdown_signal;
-    }))
-    // .map_err(|e| {
-    //     warn!(
-    //         "Something went wrong while waiting for auth server shutdown: {}",
-    //         e
-    //     )
-    // })
-    ?;
+        if let Err(e) = shutdown_rx.await {
+            warn!(
+                "Something went wrong while waiting for auth server shutdown: {}",
+                e
+            )
+        }
+    }))?;
 
     info!("Server finished, returning token");
     Ok(token_rx

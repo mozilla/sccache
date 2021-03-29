@@ -593,15 +593,15 @@ impl Storage for GCSCache {
     }
 }
 
-#[test]
-fn test_gcs_credential_provider() {
+#[tokio::test]
+async fn test_gcs_credential_provider() {
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
     let addr = ([127, 0, 0, 1], 23535).into();
     let make_service =
-    hyper::service::make_service_fn(|_socket| async move {
-        Ok::<_, Infallible>(hyper::service::service_fn(|_request| async move{
+    hyper::service::make_service_fn(|_socket| async {
+        Ok::<_, Infallible>(hyper::service::service_fn(|_request| async {
             let token = serde_json::json!({
-                "accessToken": "secr3t",
+                "accessToken": "1234567890",
                 "expireTime": EXPIRE_TIME,
             });
             Ok::<_, Infallible>(hyper::Response::new(hyper::Body::from(token.to_string())))
@@ -609,9 +609,6 @@ fn test_gcs_credential_provider() {
     });
 
 
-    let mut rt = tokio::runtime::Runtime::new().unwrap();
-
-    let fut = async move {
     let server = hyper::Server::bind(&addr).serve(make_service);
 
     let credential_provider = GCSCredentialProvider::new(
@@ -619,25 +616,21 @@ fn test_gcs_credential_provider() {
         ServiceAccountInfo::URL(format!("http://{}/", addr)),
     );
 
+    use futures::TryFutureExt;
     let client = Client::new();
     let cred_fut = credential_provider
         .credentials(&client)
-        .map(move |credential| {
-            if let Err(err) = credential.map(|credential| {
-                assert_eq!(credential.token, "secr3t");
-                assert_eq!(
-                    credential.expiration_time.timestamp(),
-                    EXPIRE_TIME
-                        .parse::<chrono::DateTime<chrono::offset::Utc>>()
-                        .unwrap()
-                        .timestamp(),
-                );
-            }) {
-                panic!(err.to_string());
-            }
-        });
-        server.with_graceful_shutdown(cred_fut).await;
-    };
+        .map_ok(move |credential| {
+            assert_eq!(credential.token, "1234567890");
+            assert_eq!(
+                credential.expiration_time.timestamp(),
+                EXPIRE_TIME
+                    .parse::<chrono::DateTime<chrono::offset::Utc>>()
+                    .unwrap()
+                    .timestamp(),
+            );
+        })
+        .map_err(move |err| panic!(err.to_string()));
 
-    rt.block_on(fut);
+    let _ = server.with_graceful_shutdown(cred_fut.map(drop)).await;
 }
