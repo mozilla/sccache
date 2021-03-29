@@ -86,7 +86,7 @@ mod toolchain_imp {
             let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
                 assert!(obj_path.is_absolute());
-                let tar_path = tarify_path(&obj_path)?;
+                let (tar_path, dirs) = tarify_path(&obj_path)?;
                 // If file already in the set, assume we've analysed all deps
                 if self.file_set.contains_key(&tar_path) {
                     continue;
@@ -96,6 +96,9 @@ mod toolchain_imp {
                 })?;
                 remaining.extend(ldd_libraries);
                 self.file_set.insert(tar_path, obj_path);
+                for (dir_tar_path, dir) in dirs {
+                    self.dir_set.insert(dir_tar_path, dir);
+                }
             }
             Ok(())
         }
@@ -116,8 +119,11 @@ mod toolchain_imp {
             {
                 return Ok(());
             }
-            let tar_path = tarify_path(&dir_path)?;
+            let (tar_path, dirs) = tarify_path(&dir_path)?;
             self.dir_set.insert(tar_path, dir_path);
+            for (dir_tar_path, dir) in dirs {
+                self.dir_set.insert(dir_tar_path, dir);
+            }
             Ok(())
         }
 
@@ -129,8 +135,11 @@ mod toolchain_imp {
                     file_path.to_string_lossy()
                 ))
             }
-            let tar_path = tarify_path(&file_path)?;
+            let (tar_path, dirs) = tarify_path(&file_path)?;
             self.file_set.insert(tar_path, file_path);
+            for (dir_tar_path, dir) in dirs {
+                self.dir_set.insert(dir_tar_path, dir);
+            }
             Ok(())
         }
 
@@ -400,12 +409,21 @@ pub fn make_tar_header(src: &Path, dest: &str, is_dir: bool) -> io::Result<tar::
 
 /// Simplify the path and strip the leading slash
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn tarify_path(path: &Path) -> Result<PathBuf> {
+fn tarify_path(path: &Path) -> Result<(PathBuf, Vec<(PathBuf, PathBuf)>)> {
     let (final_path, dirs) = simplify_path(path)?;
-    assert!(dirs.is_empty());
-    let mut components = final_path.components();
-    assert_eq!(components.next(), Some(Component::RootDir));
-    Ok(components.as_path().to_owned())
+    // reportedly dirs is non-empty on openSUSE for "as"
+    let rm_root = |pathbuf: &PathBuf| {
+        let mut components = pathbuf.components();
+        assert_eq!(components.next(), Some(Component::RootDir));
+        components.as_path().to_owned()
+    };
+    Ok((
+        rm_root(&final_path),
+        dirs.iter()
+            .map(rm_root)
+            .zip(dirs.iter().cloned())
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// Simplify a path to one without any relative components, erroring if it looks
