@@ -13,51 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{fmt, io, sync::Arc, time};
 use crate::{
     cache::{Cache, CacheRead, CacheWrite, Storage},
     errors::*,
     util::HeadersExt,
 };
-use futures::future::Shared;
 use hyper::Method;
 use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use reqwest::{Client, Request};
 use serde::de;
-use std::{convert::Infallible, sync};
-use std::{fmt, future::Future, io, pin::Pin, result, sync::Arc, time};
 use url::{
     form_urlencoded,
     percent_encoding::{percent_encode, PATH_SEGMENT_ENCODE_SET, QUERY_ENCODE_SET},
 };
-// use ::ReqwestRequestBuilderExt;
-use futures::FutureExt;
 
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
-    #[error("Http error: {0}")]
-    Http(#[from] crate::errors::BadHttpStatusError),
-
-    #[error("Error: {0}")]
-    Arbitrary(String),
-}
-
-impl From<String> for Error {
-    fn from(s: String) -> Self {
-        Self::Arbitrary(s.to_string())
-    }
-}
-
-impl From<&str> for Error {
-    fn from(s: &str) -> Self {
-        Self::Arbitrary(s.to_owned())
-    }
-}
-
-impl From<reqwest::Error> for Error {
-    fn from(s: reqwest::Error) -> Self {
-        Self::Arbitrary(s.to_string())
-    }
-}
 
 /// GCS bucket
 struct Bucket {
@@ -110,19 +80,13 @@ impl Bucket {
                 .headers_mut()
                 .set(Authorization(Bearer { token: creds.token }));
         }
-        let res = client
-            .execute(request)
-            .await
-            .map_err(|_e| Error::from(format!("failed GET: {}", url)))?;
-        let status = res.status();
-        if status.is_success() {
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|_e| Error::from("failed to read HTTP body"))?;
-            Ok(bytes.iter().copied().collect())
+        let res = client.execute(request).await
+            .with_context(|| format!("failed GET: {}", url))?;
+        if res.status().is_success() {
+            let bytes = res.bytes().await.context("failed to read HTTP body")?;
+            Ok(bytes.into_iter().collect())
         } else {
-            Err(BadHttpStatusError(status).into())
+            Err(BadHttpStatusError(res.status()).into())
         }
     }
 
@@ -184,24 +148,11 @@ impl Bucket {
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
     sa_info: ServiceAccountInfo,
-    cached_credentials: sync::RwLock<
-        Option<
-            Shared<
-                Pin<
-                    Box<
-                        dyn 'static
-                            + Send
-                            + Future<Output = result::Result<GCSCredential, Error>>,
-                    >,
-                >,
-            >,
-        >,
-    >,
+    cached_credentials: futures_locks::Mutex<Option<GCSCredential>>,
 }
 
 /// ServiceAccountInfo either contains a URL to fetch the oauth token
 /// or the service account key
-#[derive(Clone)]
 pub enum ServiceAccountInfo {
     URL(String),
     AccountKey(ServiceAccountKey),
@@ -251,7 +202,7 @@ where
 ///
 /// Note: by default, serde ignores extra fields when deserializing. This allows us to keep this
 /// structure minimal and not list all the fields present in a service account credential file.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 pub struct ServiceAccountKey {
     #[serde(deserialize_with = "deserialize_gcp_key")]
     private_key: Vec<u8>,
@@ -358,24 +309,24 @@ fn encode(header: &Header<'_>, claims: &JwtClaims<'_>, key: &[u8]) -> Result<Str
 
 impl GCSCredentialProvider {
     pub fn new(rw_mode: RWMode, sa_info: ServiceAccountInfo) -> Self {
-        Self {
+        GCSCredentialProvider {
             rw_mode,
             sa_info,
-            cached_credentials: sync::RwLock::new(Option::<_>::None),
+            cached_credentials: futures_locks::Mutex::new(None),
         }
     }
 
     fn auth_request_jwt(
-        rw_mode: RWMode,
+        &self,
         sa_key: &ServiceAccountKey,
         expire_at: &chrono::DateTime<chrono::offset::Utc>,
-    ) -> result::Result<String, Error> {
-        let scope = match rw_mode {
+    ) -> Result<String> {
+        let scope = match self.rw_mode {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         };
 
-        Ok(encode(
+        encode(
             &Header {
                 typ: "JWT",
                 alg: "RS256",
@@ -389,22 +340,17 @@ impl GCSCredentialProvider {
             },
             &sa_key.private_key,
         )
-        .unwrap())
     }
 
     async fn request_new_token(
-        rw_mode: RWMode,
-        sa_key: ServiceAccountKey,
-        client: Client,
-    ) -> result::Result<GCSCredential, Error> {
+        &self,
+        sa_key: &ServiceAccountKey,
+        client: &Client,
+    ) -> Result<GCSCredential> {
         let expires_at = chrono::offset::Utc::now() + chrono::Duration::minutes(59);
-
-        let auth_jwt = Self::auth_request_jwt(rw_mode, &sa_key, &expires_at)?;
-
-        let url = &sa_key.token_uri;
-
+        let auth_jwt = self.auth_request_jwt(sa_key, &expires_at)?;
+        let url = sa_key.token_uri.clone();
         // Request credentials
-
         let params = form_urlencoded::Serializer::new(String::new())
             .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
             .append_pair("assertion", &auth_jwt)
@@ -418,17 +364,13 @@ impl GCSCredentialProvider {
         }
         *request.body_mut() = Some(params.into());
 
-        let res = client.execute(request).await.map_err(|x| x.to_string())?;
+        let res = client.execute(request).await?;
 
-        let res_status = res.status();
-        let token_msg = if res_status.is_success() {
-            let token_msg = res
-                .json::<TokenMsg>()
-                .await
-                .map_err(|_e| "failed to read HTTP body")?;
-            Ok(token_msg)
+        let token_msg = if res.status().is_success() {
+            let token_msg = res.json::<TokenMsg>().await?;
+            Result::Ok(token_msg)
         } else {
-            Err(Error::from(BadHttpStatusError(res_status)))
+            Err(BadHttpStatusError(res.status()).into())
         }?;
 
         Ok(GCSCredential {
@@ -438,90 +380,47 @@ impl GCSCredentialProvider {
     }
 
     async fn request_new_token_from_tcauth(
-        url: String,
-        client: Client,
-    ) -> result::Result<GCSCredential, Error> {
-        let res = client.get(&url).send().await?;
+        &self,
+        url: &str,
+        client: &Client,
+    ) -> Result<GCSCredential> {
+        let res = client.get(url).send().await?;
 
         if res.status().is_success() {
-            let resp = res
-                .json::<AuthResponse>()
-                .await
-                .map_err(|_e| "failed to read HTTP body")?;
+            let resp = res.json::<AuthResponse>().await?;
             Ok(GCSCredential {
                 token: resp.access_token,
-                expiration_time: resp
-                    .expire_time
-                    .parse()
-                    .map_err(|_e| "Failed to parse GCS expiration time")?,
+                expiration_time: resp.expire_time.parse()?,
             })
         } else {
-            Err(Error::from(BadHttpStatusError(res.status())))
+            Err(BadHttpStatusError(res.status()).into())
         }
     }
 
-    pub async fn credentials(&self, client: &Client) -> result::Result<GCSCredential, Error> {
-        let client = client.clone();
-        let shared = {
-            let shared = self.cached_credentials.read().unwrap();
-            let shared = shared.clone();
-            shared
-        };
-        // let sa_info = self.sa_info.clone();
-        let rw_mode = self.rw_mode;
-        let needs_refresh = if let Some(shared) = shared {
-            // query the result of the last shared response or wait for the current ongoing
-            let ret = shared.await;
-            let maybe_creds = ret
-                .ok()
-                .filter(|creds| creds.expiration_time < chrono::offset::Utc::now());
-            maybe_creds
-        } else {
-            None
-        };
+    pub async fn credentials(&self, client: &Client) -> Result<GCSCredential> {
+        // NOTE: Only this function is responsible for managing credentials and
+        // its cache; make sure we hold the lock across the yield points
+        let mut cache = self.cached_credentials.lock().await;
 
-        // TODO make this better, and avoid serialized writes
-        // TODO by using `futures_util::lock()` instead of `std::sync` primitives.
-
-        let creds = if let Some(still_good) = needs_refresh {
-            still_good
-        } else {
-            let credentials = match &self.sa_info {
-                ServiceAccountInfo::AccountKey(sa_key) => {
-                    Box::pin(Self::request_new_token(rw_mode, sa_key.clone(), client))
-                        as Pin<
-                            Box<
-                                dyn 'static
-                                    + Send
-                                    + Future<
-                                        Output = result::Result<GCSCredential, Error>,
-                                    >,
-                            >,
-                        >
-                }
-                ServiceAccountInfo::URL(url) => {
-                    Box::pin(Self::request_new_token_from_tcauth(url.to_owned(), client))
-                        as Pin<
-                            Box<
-                                dyn 'static
-                                    + Send
-                                    + Future<
-                                        Output = result::Result<GCSCredential, Error>,
-                                    >,
-                            >,
-                        >
-                }
-            };
-            let credentials = credentials.shared();
-            {
-                let mut write = self.cached_credentials.write().unwrap();
-                *write = Some(credentials.clone());
+        match *cache {
+            Some(ref creds) if creds.expiration_time >= chrono::offset::Utc::now() => {
+                Ok(creds.clone())
             }
-            let creds = credentials.await?;
-            creds
-        };
+            _ => {
+                let new_creds = match self.sa_info {
+                    ServiceAccountInfo::AccountKey(ref sa_key) => {
+                        self.request_new_token(sa_key, client).await
+                    }
+                    ServiceAccountInfo::URL(ref url) => {
+                        self.request_new_token_from_tcauth(url, client).await
+                    }
+                }?;
 
-        Ok(creds)
+                *cache = Some(new_creds.clone());
+
+                Ok(new_creds)
+            }
+        }
     }
 }
 
@@ -553,14 +452,16 @@ impl GCSCache {
 #[async_trait]
 impl Storage for GCSCache {
     async fn get(&self, key: &str) -> Result<Cache> {
-        self.bucket
-            .get(&key, &self.credential_provider)
-            .await
-            .and_then(|data| Ok(Cache::Hit(CacheRead::from(io::Cursor::new(data))?)))
-            .or_else(|e| {
+        match self.bucket.get(&key, &self.credential_provider).await {
+            Ok(data) => {
+                let hit = CacheRead::from(io::Cursor::new(data))?;
+                Ok(Cache::Hit(hit))
+            }
+            Err(e) => {
                 warn!("Got GCS error: {:?}", e);
                 Ok(Cache::Miss)
-            })
+            }
+        }
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<time::Duration> {
@@ -572,12 +473,12 @@ impl Storage for GCSCache {
         let data = entry.finish()?;
 
         let bucket = self.bucket.clone();
-        let response = bucket
+        let _ = bucket
             .put(&key, data, &self.credential_provider)
             .await
-            .context("failed to put cache entry in GCS");
+            .context("failed to put cache entry in GCS")?;
 
-        response.map(move |_| start.elapsed())
+        Ok(start.elapsed())
     }
 
     fn location(&self) -> String {
@@ -595,6 +496,9 @@ impl Storage for GCSCache {
 
 #[tokio::test]
 async fn test_gcs_credential_provider() {
+    use futures::{FutureExt, TryFutureExt};
+    use std::convert::Infallible;
+
     const EXPIRE_TIME: &str = "3000-01-01T00:00:00.0Z";
     let addr = ([127, 0, 0, 1], 23535).into();
     let make_service =
@@ -616,7 +520,6 @@ async fn test_gcs_credential_provider() {
         ServiceAccountInfo::URL(format!("http://{}/", addr)),
     );
 
-    use futures::TryFutureExt;
     let client = Client::new();
     let cred_fut = credential_provider
         .credentials(&client)
