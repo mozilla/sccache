@@ -1,20 +1,16 @@
 use futures::channel::oneshot;
 use http::StatusCode;
 use hyper::server::conn::AddrIncoming;
-use hyper::service::Service;
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, Response, Server};
 use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
-use std::future::Future;
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::pin::Pin;
 use std::result;
 use std::sync::mpsc;
-use std::task;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -29,37 +25,6 @@ pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
 // If token is valid for under this amount of time, print a warning
 const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
-
-trait ServeFn:
-    Copy
-    + FnOnce(
-        Request<Body>,
-    ) -> Pin<
-        Box<
-            dyn 'static
-                + Send
-                + Future<Output = result::Result<Response<Body>, hyper::Error>>,
-        >,
-    > + Send
-    + 'static
-{
-}
-
-impl<T> ServeFn for T where
-    T: Copy
-        + Send
-        + 'static
-        + FnOnce(
-            Request<Body>,
-        ) -> Pin<
-            Box<
-                dyn 'static
-                    + Send
-                    + Future<Output = result::Result<Response<Body>, hyper::Error>>,
-            >,
-        >
-{
-}
 
 fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
     // Url::parse operates on absolute URLs, so ensure there's a prefix
@@ -236,7 +201,7 @@ mod code_grant_pkce {
     </html>
     "##;
 
-    pub async fn serve(req: Request<Body>) -> Result<Response<Body>> {
+    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -266,33 +231,6 @@ mod code_grant_pkce {
         Ok(response)
     }
     use super::*;
-
-    #[derive(Copy, Clone, Debug)]
-    pub struct CodeGrant;
-
-    impl hyper::service::Service<Request<Body>> for CodeGrant {
-        type Response = Response<Body>;
-        type Error = hyper::Error;
-        type Future = std::pin::Pin<
-            Box<dyn Future<Output = result::Result<Self::Response, Self::Error>> + Send>
-        >;
-
-        fn poll_ready(
-            &mut self,
-            _cx: &mut task::Context<'_>,
-        ) -> task::Poll<result::Result<(), Self::Error>> {
-            task::Poll::Ready(Ok(()))
-        }
-
-        fn call(&mut self, req: Request<Body>) -> Self::Future {
-            Box::pin(async move {
-                let uri = req.uri().clone();
-                serve(req)
-                    .await
-                    .or_else(|e| super::error_code_response(uri, e))
-            })
-        }
-    }
 
     pub fn code_to_token(
         token_url: &str,
@@ -441,7 +379,7 @@ mod implicit {
     </html>
     "##;
 
-    pub async fn serve(req: Request<Body>) -> Result<Response<Body>> {
+    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -482,34 +420,26 @@ mod implicit {
 
         Ok(response)
     }
+}
 
-    use super::*;
-    #[derive(Copy, Clone, Debug)]
-    pub struct Implicit;
+// Typing out a hyper service is a major pain, so let's focus on our simple
+// `fn(Request<Body>) -> Response<Body>` handler functions; to reduce repetition
+// we create a relevant service using hyper's own helper factory functions.
+macro_rules! make_service {
+    ($serve_fn: expr) => {{
+        use core::convert::Infallible;
+        use hyper::{Body, Request};
+        use hyper::server::conn::AddrStream;
+        use hyper::service::{make_service_fn, service_fn};
 
-    impl hyper::service::Service<Request<Body>> for Implicit {
-        type Response = Response<Body>;
-        type Error = hyper::Error;
-        type Future = std::pin::Pin<
-            Box<dyn Future<Output = result::Result<Self::Response, Self::Error>> + Send>
-        >;
-
-        fn poll_ready(
-            &mut self,
-            _cx: &mut task::Context<'_>,
-        ) -> task::Poll<result::Result<(), Self::Error>> {
-            task::Poll::Ready(Ok(()))
-        }
-
-        fn call(&mut self, req: Request<Body>) -> Self::Future {
-            Box::pin(async move {
+        make_service_fn(|_socket: &AddrStream| async {
+            Ok::<_, Infallible>(service_fn(|req: Request<Body>| async move {
                 let uri = req.uri().clone();
-                serve(req)
-                    .await
-                    .or_else(|e| super::error_code_response(uri, e))
-            })
-        }
-    }
+                $serve_fn(req)
+                    .or_else(|e| error_code_response(uri, e))
+            }))
+        })
+    }}
 }
 
 fn error_code_response<E>(uri: hyper::Uri, e: E) -> result::Result<Response<Body>, hyper::Error>
@@ -531,155 +461,8 @@ where
     Ok::<Response<Body>, hyper::Error>(res)
 }
 
-use hyper::server::conn::AddrStream;
-
-trait Servix:
-    'static
-    + Send
-    + Copy
-    + hyper::service::Service<
-        Request<Body>,
-        Response = Response<Body>,
-        Error = hyper::Error,
-        Future = Pin<
-            Box<
-                dyn 'static
-                    + Send
-                    + Future<Output = result::Result<Response<Body>, hyper::Error>>,
-            >,
-        >,
-    >
-{
-}
-impl<T> Servix for T where
-    T: 'static
-        + Send
-        + Copy
-        + hyper::service::Service<
-            Request<Body>,
-            Response = Response<Body>,
-            Error = hyper::Error,
-            Future = Pin<
-                Box<
-                    dyn 'static
-                        + Send
-                        + Future<Output = result::Result<Response<Body>, hyper::Error>>,
-                >,
-            >,
-        >
-{
-}
-
-trait MkSr<S>:
-    'static
-    + Send
-    + for<'t> hyper::service::Service<
-        &'t AddrStream,
-        Response = S,
-        Error = hyper::Error,
-        Future = Pin<
-            Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
-        >,
-    >
-where
-    S: Servix,
-{
-}
-
-impl<S, T> MkSr<S> for T
-where
-    S: Servix,
-    T: 'static
-        + Send
-        + for<'t> hyper::service::Service<
-            &'t AddrStream,
-            Response = S,
-            Error = hyper::Error,
-            Future = Pin<
-                Box<
-                    dyn 'static
-                        + Send
-                        + Future<Output = result::Result<S, hyper::Error>>,
-                >,
-            >,
-        >,
-{
-}
-
-trait SpawnerFn<S>:
-    'static
-    + Send
-    + Copy
-    + for<'t> FnOnce(
-        &'t AddrStream,
-    ) -> Pin<
-        Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
-    >
-where
-    S: Servix,
-{
-}
-
-impl<T, S> SpawnerFn<S> for T
-where
-    S: Servix,
-    T: 'static
-        + Send
-        + Copy
-        + for<'t> FnOnce(
-            &'t AddrStream,
-        ) -> Pin<
-            Box<dyn 'static + Send + Future<Output = result::Result<S, hyper::Error>>>,
-        >,
-{
-}
-
-/// A service to spawn other services
-///
-/// Needed to reduce the shit generic surface of Fn
-#[derive(Clone)]
-struct ServiceSpawner<S, C> {
-    spawn: C,
-    _phantom: std::marker::PhantomData<S>,
-}
-
-impl<S: Servix, C: SpawnerFn<S>> ServiceSpawner<S, C> {
-    /// use a service generator function
-    pub fn new(spawn: C) -> Self {
-        Self {
-            spawn,
-            _phantom: Default::default(),
-        }
-    }
-}
-
-impl<'t, S: Servix, C: SpawnerFn<S>> Service<&'t AddrStream> for ServiceSpawner<S, C> {
-    type Response = S;
-    type Error = hyper::Error;
-    type Future = Pin<
-        Box<
-            dyn 'static
-                + Send
-                + Future<Output = result::Result<Self::Response, Self::Error>>,
-        >,
-    >;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut task::Context<'_>,
-    ) -> task::Poll<result::Result<(), Self::Error>> {
-        task::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, target: &'t AddrStream) -> Self::Future {
-        let fut = (self.spawn)(target);
-        fut
-    }
-}
-
-fn try_serve<S: Servix, C: SpawnerFn<S>>(
-    spawner: ServiceSpawner<S, C>,
-) -> Result<Server<AddrIncoming, ServiceSpawner<S, C>>> {
+/// Try to bind a TCP stream to any of the available port out of [`VALID_PORTS`].
+fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
     // Try all the valid ports
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port)
@@ -701,7 +484,7 @@ fn try_serve<S: Servix, C: SpawnerFn<S>>(
         }
 
         match Server::try_bind(&addr) {
-            Ok(s) => return Ok(s.serve(spawner)),
+            Ok(s) => return Ok(s),
             Err(ref err)
                 if err
                     .source()
@@ -723,21 +506,7 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    use code_grant_pkce::CodeGrant;
-
-    let spawner = ServiceSpawner::<CodeGrant, _>::new(move |_stream: &AddrStream| {
-        let f = Box::pin(async move { Ok(CodeGrant) });
-        f as Pin<
-            Box<
-                dyn Future<Output = std::result::Result<CodeGrant, hyper::Error>>
-                    + std::marker::Send
-                    + 'static,
-            >,
-        >
-    });
-
-    let server = try_serve(spawner)?;
-
+    let server = try_bind()?.serve(make_service!(code_grant_pkce::serve));
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -790,20 +559,8 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    use implicit::Implicit;
+    let server = try_bind()?.serve(make_service!(implicit::serve));
 
-    let spawner = ServiceSpawner::<Implicit, _>::new(move |_stream: &AddrStream| {
-        let f = Box::pin(async move { Ok(Implicit) });
-        f as Pin<
-            Box<
-                dyn Future<Output = std::result::Result<Implicit, hyper::Error>>
-                    + std::marker::Send
-                    + 'static,
-            >,
-        >
-    });
-
-    let server = try_serve(spawner)?;
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
