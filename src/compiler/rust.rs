@@ -398,7 +398,7 @@ impl Rust {
                 libs.push(path);
             };
             libs.sort();
-            Ok((sysroot, libs))
+            Result::Ok((sysroot, libs))
         };
 
         #[cfg(feature = "dist-client")]
