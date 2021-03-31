@@ -236,32 +236,41 @@ impl DistClientContainer {
         }
     }
 
-    pub fn get_status(&self) -> DistInfo {
+    pub fn get_status(&self) -> impl Future<Output = DistInfo> {
+        // This function can't be wholly async because we can't hold mutex guard
+        // across the yield point - instead, either return an immediately ready
+        // future or perform async query with the client cloned beforehand.
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
-        match state {
-            DistClientState::Disabled => DistInfo::Disabled("disabled".to_string()),
-            DistClientState::FailWithMessage(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, auth not configured".to_string(),
+        let (client, scheduler_url) = match state {
+            DistClientState::Disabled => return Either::Left(future::ready(
+                DistInfo::Disabled("disabled".to_string()))
             ),
-            DistClientState::RetryCreateAt(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, not connected, will retry".to_string(),
-            ),
-            DistClientState::Some(cfg, client) => {
-                let mut runtime =
-                    Runtime::new().expect("Creating the runtime succeeds");
-                match runtime.block_on(client.do_get_status() ) {
-                    Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
-                    Err(_) => DistInfo::NotConnected(
-                        cfg.scheduler_url.clone(),
-                        "could not communicate with scheduler".to_string(),
-                    ),
-                }
+            DistClientState::FailWithMessage(cfg, _) => return Either::Left(future::ready(
+                DistInfo::NotConnected(
+                    cfg.scheduler_url.clone(),
+                    "enabled, auth not configured".to_string(),
+                )
+            )),
+            DistClientState::RetryCreateAt(cfg, _) => return Either::Left(future::ready(
+                DistInfo::NotConnected(
+                    cfg.scheduler_url.clone(),
+                    "enabled, not connected, will retry".to_string(),
+                )
+            )),
+            DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
+        };
+
+        Either::Right(Box::pin(async move {
+            match client.do_get_status().await {
+                Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
+                Err(_) => DistInfo::NotConnected(
+                    scheduler_url.clone(),
+                    "could not communicate with scheduler".to_string(),
+                )
             }
-        }
+        }))
     }
 
     fn get_client(&self) -> Result<Option<dist::ArcDynClient>> {
@@ -359,10 +368,7 @@ impl DistClientContainer {
                 );
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
-                use crate::dist::Client;
-                let mut rt =
-                    Runtime::new().expect("Creating a runtime always works");
-                match rt.block_on(async { dist_client.do_get_status().await }) {
+                match config.pool.block_on(dist::Client::do_get_status(&dist_client)) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -844,7 +850,7 @@ where
 
     /// Get dist status.
     async fn get_dist_status(&self) -> Result<DistInfo> {
-        Ok(self.dist_client.get_status())
+        Ok(self.dist_client.get_status().await)
     }
 
     /// Get info and stats about the cache.
