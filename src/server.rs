@@ -20,7 +20,6 @@ use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, MissType,
-    BoxDynCompiler,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -896,7 +895,7 @@ where
         path: PathBuf,
         cwd: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> Result<BoxDynCompiler<C>> {
+    ) -> Result<Box<dyn Compiler<C>>> {
         trace!("compiler_info");
 
         let me = self.clone();
@@ -1034,7 +1033,7 @@ where
     /// If so, run `start_compile_task` to execute it.
     async fn check_compiler(
         &self,
-        compiler: Result<BoxDynCompiler<C>>,
+        compiler: Result<Box<dyn Compiler<C>>>,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1090,7 +1089,7 @@ where
     /// the result in the cache.
     fn start_compile_task(
         &self,
-        compiler: BoxDynCompiler<C>,
+        compiler: Box<dyn Compiler<C>>,
         hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,

@@ -51,7 +51,6 @@ use crate::errors::*;
 
 // only really needed to avoid the hassle of writing it everywhere,
 // since `Compiler<T>: Send` is not enough for rustc
-pub type BoxDynCompiler<T> = Box<dyn Compiler<T>>;
 pub type BoxDynCompilerProxy<T> = Box<dyn CompilerProxy<T> + Send + Sync + 'static>;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
@@ -133,11 +132,11 @@ where
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
-    fn box_clone(&self) -> BoxDynCompiler<T>;
+    fn box_clone(&self) -> Box<dyn Compiler<T>>;
 }
 
-impl<T: CommandCreatorSync> Clone for BoxDynCompiler<T> {
-    fn clone(&self) -> BoxDynCompiler<T> {
+impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
+    fn clone(&self) -> Box<dyn Compiler<T>> {
         self.box_clone()
     }
 }
@@ -822,7 +821,7 @@ async fn detect_compiler<T>(
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
-) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<BoxDynCompilerProxy<T>>)>
 where
     T: CommandCreatorSync,
 {
@@ -905,7 +904,7 @@ where
             .await
             .map(|c| {
                 (
-                    Box::new(c) as BoxDynCompiler<T>,
+                    Box::new(c) as Box<dyn Compiler<T>>,
                     proxy as Option<BoxDynCompilerProxy<T>>,
                 )
             })
@@ -923,7 +922,7 @@ async fn detect_c_compiler<T>(
     executable: PathBuf,
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
-) -> Result<BoxDynCompiler<T>>
+) -> Result<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
 {
@@ -984,13 +983,13 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as BoxDynCompiler<T>);
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "diab" => {
                 debug!("Found diab");
                 return CCompiler::new(Diab, executable, &pool)
                     .await
-                    .map(|c| Box::new(c) as BoxDynCompiler<T>);
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "gcc" | "g++" => {
                 debug!("Found {}", line);
@@ -1002,7 +1001,7 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as BoxDynCompiler<T>);
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "msvc" | "msvc-clang" => {
                 let is_clang = line == "msvc-clang";
@@ -1025,13 +1024,13 @@ diab
                     &pool,
                 )
                 .await
-                .map(|c| Box::new(c) as BoxDynCompiler<T>);
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "nvcc" => {
                 debug!("Found NVCC");
                 return CCompiler::new(NVCC, executable, &pool)
                     .await
-                    .map(|c| Box::new(c) as BoxDynCompiler<T>);
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             _ => continue,
         }
@@ -1053,7 +1052,7 @@ pub async fn get_compiler_info<T>(
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
-) -> Result<(BoxDynCompiler<T>, Option<BoxDynCompilerProxy<T>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<BoxDynCompilerProxy<T>>)>
 where
     T: CommandCreatorSync,
 {
