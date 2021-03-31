@@ -257,8 +257,6 @@ impl Default for CacheWrite {
     }
 }
 
-pub type ArcDynStorage = Arc<dyn Storage + Send + Sync>;
-
 /// An interface to cache storage.
 #[async_trait]
 pub trait Storage: Send {
@@ -289,7 +287,7 @@ pub trait Storage: Send {
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> ArcDynStorage {
+pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage + Send + Sync> {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

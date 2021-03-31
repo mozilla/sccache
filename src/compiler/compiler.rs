@@ -14,7 +14,7 @@
 
 #![allow(clippy::complexity)]
 
-use crate::cache::{Cache, CacheWrite, DecompressionFailure, ArcDynStorage, };
+use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -41,6 +41,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use core::pin::Pin;
@@ -192,7 +193,7 @@ where
         self: Box<Self>,
         dist_client: Option<dist::ArcDynClient>,
         creator: T,
-        storage: ArcDynStorage,
+        storage: Arc<dyn Storage + Send + Sync>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1064,7 +1065,6 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::{ArcDynStorage, Storage};
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
@@ -1277,7 +1277,7 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: ArcDynStorage = Arc::new(storage);
+        let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1383,7 +1383,7 @@ LLVM version: 6.0",
         let mut runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: ArcDynStorage = Arc::new(storage);
+        let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1564,7 +1564,7 @@ LLVM version: 6.0",
         let mut runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: ArcDynStorage = Arc::new(storage);
+        let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(
@@ -1672,7 +1672,7 @@ LLVM version: 6.0",
         let mut runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: ArcDynStorage = Arc::new(storage);
+        let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
         let obj = f.tempdir.path().join("foo.o");
@@ -1749,7 +1749,7 @@ LLVM version: 6.0",
             test_dist::ErrorRunJobClient::new(),
         ];
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
-        let storage: ArcDynStorage = Arc::new(storage);
+        let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
         let c = get_compiler_info(

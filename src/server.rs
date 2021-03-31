@@ -16,7 +16,7 @@
 #![allow(deprecated)]
 #![allow(clippy::complexity)]
 
-use crate::cache::{storage_from_config, ArcDynStorage};
+use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, MissType,
@@ -464,7 +464,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         mut runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
-        storage: ArcDynStorage,
+        storage: Arc<dyn Storage + Send + Sync>,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
@@ -494,7 +494,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Set the storage this server will use.
     #[allow(dead_code)]
-    pub fn set_storage(&mut self, storage: ArcDynStorage) {
+    pub fn set_storage(&mut self, storage: Arc<dyn Storage + Send + Sync>) {
         self.service.storage = storage;
     }
 
@@ -654,7 +654,7 @@ struct SccacheService<C> where C: Send {
     dist_client: Arc<DistClientContainer>,
 
     /// Cache storage.
-    storage: ArcDynStorage,
+    storage: Arc<dyn Storage + Send + Sync>,
 
     /// A cache of known compiler info.
     compilers: Arc<RwLock<CompilerMap<C>>>,
@@ -784,7 +784,7 @@ where
 {
     pub fn new(
         dist_client: DistClientContainer,
-        storage: ArcDynStorage,
+        storage: Arc<dyn Storage + Send + Sync>,
         client: &Client,
         rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
