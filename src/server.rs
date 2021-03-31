@@ -21,7 +21,6 @@ use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, MissType,
     BoxDynCompiler,
-    BoxDynCompilerProxy,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -978,8 +977,7 @@ where
 
                 // the compiler path might be compiler proxy, so it is important to use
                 // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
-                let info: Result<(BoxDynCompiler<C>, Option<BoxDynCompilerProxy<C>>)> =
-                    get_compiler_info::<C>(
+                let info = get_compiler_info::<C>(
                         me.creator.clone(),
                         &path1,
                         &cwd,
@@ -989,45 +987,45 @@ where
                     )
                     .await;
 
-                match info {
-                    Ok((ref c, ref proxy)) => {
-                        // register the proxy for this compiler, so it will be used directly from now on
-                        // and the true/resolved compiler will create table hits in the hash map
-                        // based on the resolved path
-                        if let Some(proxy) = proxy {
-                            trace!(
-                                "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                                &path,
-                                &cwd,
-                                resolved_compiler_path
-                            );
-                            let proxy: Box<dyn CompilerProxy<C> + Send + 'static> =
-                                proxy.box_clone();
-                            me.compiler_proxies
-                                .write().await
-                                .insert(path, (proxy, mtime.clone()));
-                        }
-                        // TODO add some safety checks in case a proxy exists, that the initial `path` is not
-                        // TODO the same as the resolved compiler binary
-
-                        // cache
-                        let map_info = CompilerCacheEntry::new(c.box_clone(), mtime, dist_info);
-                        trace!(
-                            "Inserting POSSIBLY PROXIED cache map info for {:?}",
-                            &resolved_compiler_path
-                        );
-                        me.compilers
-                            .write().await
-                            .insert(resolved_compiler_path, Some(map_info));
-                    }
-                    Err(_) => {
+                let (c, proxy) = match info {
+                    Ok((ref c, ref proxy)) => (c.clone(), proxy.as_ref().map(|p| p.box_clone())),
+                    Err(err) => {
                         trace!("Inserting PLAIN cache map info for {:?}", &path);
                         me.compilers.write().await.insert(path, None);
+
+                        return Err(err);
                     }
+                };
+
+                // register the proxy for this compiler, so it will be used directly from now on
+                // and the true/resolved compiler will create table hits in the hash map
+                // based on the resolved path
+                if let Some(proxy) = proxy {
+                    trace!(
+                        "Inserting new path proxy {:?} @ {:?} -> {:?}",
+                        &path,
+                        &cwd,
+                        resolved_compiler_path
+                    );
+                    me.compiler_proxies
+                        .write().await
+                        .insert(path, (proxy, mtime));
                 }
+                // TODO add some safety checks in case a proxy exists, that the initial `path` is not
+                // TODO the same as the resolved compiler binary
+
+                // cache
+                let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
+                trace!(
+                    "Inserting POSSIBLY PROXIED cache map info for {:?}",
+                    &resolved_compiler_path
+                );
+                me.compilers
+                    .write().await
+                    .insert(resolved_compiler_path, Some(map_info));
+
                 // drop the proxy information, response is compiler only
-                let r: Result<BoxDynCompiler<C>> = info.map(|info| info.0);
-                r
+                Ok(c)
             }
         }
     }
