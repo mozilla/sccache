@@ -173,7 +173,6 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments>;
-
     /// Run the C preprocessor with the specified set of arguments.
     #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
@@ -188,7 +187,6 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
-
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
     fn generate_compile_commands(
@@ -206,14 +204,18 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub async fn new(compiler: I, executable: PathBuf, pool: &tokio::runtime::Handle) -> Result<CCompiler<I>> {
-        Digest::file(executable.clone(), pool)
-            .await
-            .map(move |digest| CCompiler {
-                executable,
-                executable_digest: digest,
-                compiler,
-            })
+    pub async fn new(
+        compiler: I,
+        executable: PathBuf,
+        pool: &tokio::runtime::Handle
+    ) -> Result<CCompiler<I>> {
+        let digest = Digest::file(executable.clone(), pool).await?;
+
+        Ok(CCompiler {
+            executable,
+            executable_digest: digest,
+            compiler,
+        })
     }
 }
 
@@ -284,7 +286,6 @@ where
             rewrite_includes_only,
         ).await;
         let out_pretty = parsed_args.output_pretty().into_owned();
-
         let result = result.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
@@ -352,7 +353,8 @@ where
         // A compiler binary may be a symlink to another and so has the same digest, but that means
         // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
         // executable path to try and prevent this
-        let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+        let weak_toolchain_key =
+            format!("{}-{}", executable.to_string_lossy(), executable_digest);
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {

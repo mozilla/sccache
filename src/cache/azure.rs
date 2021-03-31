@@ -68,13 +68,13 @@ impl Storage for AzureBlobCache {
         let start = Instant::now();
         let data = entry.finish()?;
 
-        let response = self
+        let _ = self
             .container
             .put(key, data, &self.credentials)
             .await
-            .map_err(|e| e.context("Failed to put cache entry in Azure"))
-            .map(move |_| start.elapsed())?;
-        Ok(response)
+            .context("Failed to put cache entry in Azure")?;
+
+        Ok(start.elapsed())
     }
 
     fn location(&self) -> String {

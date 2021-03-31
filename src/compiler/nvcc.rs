@@ -132,6 +132,9 @@ impl CCompilerImpl for NVCC {
         if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
+            // TODO: If we need to chain these to emulate a frontend, shouldn't
+            // we explicitly wait on the first one before starting the second one?
+            // (rather than via which drives these concurrently)
             let (_f, s) = futures::future::try_join(first, second).await?;
             Ok(s)
         } else {

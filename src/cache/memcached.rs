@@ -22,7 +22,6 @@ use memcached::proto::Operation;
 use memcached::proto::ProtoType::Binary;
 use std::cell::RefCell;
 use std::io::Cursor;
-
 use std::time::{Duration, Instant};
 
 thread_local! {
@@ -77,8 +76,7 @@ impl Storage for MemcachedCache {
             .map(|(d, _)| CacheRead::from(Cursor::new(d)).map(Cache::Hit))
             .unwrap_or(Ok(Cache::Miss))
         })
-        .await
-        .map_err(anyhow::Error::from)?
+        .await?
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
@@ -91,8 +89,7 @@ impl Storage for MemcachedCache {
             me.exec(|c| c.set_noreply(&key.as_bytes(), &d, 0, 0))?;
             Ok(start.elapsed())
         })
-        .await
-        .map_err(anyhow::Error::from)?
+        .await?
     }
 
     fn location(&self) -> String {

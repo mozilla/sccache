@@ -19,7 +19,6 @@ use futures_locks::Mutex;
 use std::time::Duration;
 use std::sync::Arc;
 
-
 /// A mock `Storage` implementation.
 pub struct MockStorage {
     rx: Arc<Mutex<mpsc::UnboundedReceiver<Result<Cache>>>>,

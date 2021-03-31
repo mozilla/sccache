@@ -52,12 +52,10 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::process::{ExitStatus, Output, Stdio};
-use std::result;
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
-use std::process::Command as StdCommand;
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
 #[async_trait::async_trait]
@@ -76,9 +74,9 @@ pub trait CommandChild {
     /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
     /// Wait for the process to complete and return its exit status.
-    async fn wait(self) -> result::Result<ExitStatus, io::Error>;
+    async fn wait(self) -> io::Result<ExitStatus>;
     /// Wait for the process to complete and return its output.
-    async fn wait_with_output(self) -> result::Result<Output, io::Error>;
+    async fn wait_with_output(self) -> io::Result<Output>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
@@ -165,7 +163,7 @@ impl CommandChild for Child {
         self.inner.stderr.take()
     }
 
-    async fn wait(self) -> result::Result<ExitStatus, io::Error> {
+    async fn wait(self) -> io::Result<ExitStatus> {
         let Child { inner, token } = self;
         inner.await.map(|ret| {
             drop(token);
@@ -173,7 +171,7 @@ impl CommandChild for Child {
         })
     }
 
-    async fn wait_with_output(self) -> result::Result<Output, io::Error> {
+    async fn wait_with_output(self) -> io::Result<Output> {
         let Child { inner, token } = self;
         inner.wait_with_output().await.map(|ret| {
             drop(token);
@@ -183,19 +181,19 @@ impl CommandChild for Child {
 }
 
 pub struct AsyncCommand {
-    inner: Option<StdCommand>,
+    inner: Option<Command>,
     jobserver: Client,
 }
 
 impl AsyncCommand {
     pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
         AsyncCommand {
-            inner: Some(StdCommand::new(program)),
+            inner: Some(Command::new(program)),
             jobserver,
         }
     }
 
-    fn inner(&mut self) -> &mut StdCommand {
+    fn inner(&mut self) -> &mut Command {
         self.inner.as_mut().expect("can't reuse commands")
     }
 }
@@ -400,11 +398,11 @@ impl CommandChild for MockChild {
         self.stderr.take()
     }
 
-    async fn wait(mut self) -> result::Result<ExitStatus, io::Error> {
+    async fn wait(mut self) -> io::Result<ExitStatus> {
         self.wait_result.take().unwrap()
     }
 
-    async fn wait_with_output(self) -> result::Result<Output, io::Error> {
+    async fn wait_with_output(self) -> io::Result<Output> {
         let MockChild {
             stdout,
             stderr,

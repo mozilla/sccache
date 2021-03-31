@@ -71,15 +71,12 @@ use tower::Service;
 use crate::errors::*;
 
 /// If the server is idle for this many seconds, shut down.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_IDLE_TIMEOUT: u64 = 600;
 
 /// If the dist client couldn't be created, retry creation at this number
 /// of seconds from now (or later)
 #[cfg(feature = "dist-client")]
 const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// On shutdown, wait this duration for all connections to close.
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,12 +92,11 @@ pub enum ServerStartup {
 }
 
 /// Get the time the server should idle for before shutting down.
-fn get_idle_timeout() -> Duration {
+fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
     env::var("SCCACHE_IDLE_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .map(|timeout| Duration::from_secs(timeout))
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
 }
 
@@ -454,7 +450,6 @@ pub struct SccacheServer<C: CommandCreatorSync> {
     wait: WaitUntilZero,
 }
 
-
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
@@ -478,7 +473,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             listener,
             rx,
             service,
-            timeout: get_idle_timeout(),
+            timeout: Duration::from_secs(get_idle_timeout()),
             wait,
         })
     }
@@ -534,8 +529,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let incoming = listener.incoming();
-        let server = incoming.try_for_each(move |socket| {
+        let server = listener.incoming().try_for_each(move |socket| {
+            trace!("incoming connection");
             let conn = service.clone().bind(socket).map_err(|res| {
                 error!("Failed to bind socket: {}", res);
             });
@@ -562,7 +557,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             info!("shutting down due to explicit signal");
         });
 
-        let shutdown_or_inactive = async {
+        let shutdown_idle = async {
             ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
@@ -580,10 +575,11 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             futures::select! {
                 server = server.fuse() => server,
                 _res = shutdown.fuse() => Ok(()),
-                _res = shutdown_or_inactive.fuse() => Ok(()),
+                _res = shutdown_idle.fuse() => Ok(()),
             }
         })?;
 
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
              for all client requests to complete",
@@ -600,11 +596,9 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         runtime
             .block_on(async {
                 time::timeout(SHUTDOWN_TIMEOUT, wait)
-                    .await
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                    .unwrap_or_else(|e| Err(io::Error::new(io::ErrorKind::Other, e)))
-            })
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .await
+                .unwrap_or_else(|e| Err(io::Error::new(io::ErrorKind::Other, e)))
+            })?;
 
         info!("ok, fully shutting down now");
 
@@ -907,31 +901,30 @@ where
         let path1 = path.clone();
         let env = env.to_vec();
 
-        let res: Option<(PathBuf, FileTime)> = {
+        let resolved_with_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.read().await;
 
             if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                let f = compiler_proxy
-                .resolve_proxied_executable(creator, cwd.clone(), env.as_slice());
-                let res =
-                    f.await;
-                drop(compiler_proxy);
-                res.ok()
+                compiler_proxy.resolve_proxied_executable(
+                    creator,
+                    cwd.clone(),
+                    env.as_slice(),
+                ).await
+                .ok()
             } else {
                 None
             }
         };
 
         // use the supplied compiler path as fallback, lookup its modification time too
-
-        let (resolved_compiler_path, mtime) = match res {
+        let (resolved_compiler_path, mtime) = match resolved_with_proxy {
             Some(x) => x, // TODO resolve the path right away
-            None => {
+            _ => {
                 // fallback to using the path directly
                 metadata(&path2)
                     .map(|attr| FileTime::from_last_modification_time(&attr))
                     .ok()
-                    .map(move |filetime| (path2.clone(), filetime))
+                    .map(move |filetime| (path2, filetime))
                     .expect("Must contain sane data, otherwise mtime is not avail")
             }
         };
@@ -1000,12 +993,11 @@ where
                                 &cwd,
                                 resolved_compiler_path
                             );
-                            let proxy: Box<dyn CompilerProxy<C> + Send + 'static> = proxy.box_clone();
-                            async {
-                                me.compiler_proxies
+                            let proxy: Box<dyn CompilerProxy<C> + Send + 'static> =
+                                proxy.box_clone();
+                            me.compiler_proxies
                                 .write().await
-                                .insert(path, (proxy, mtime.clone()))
-                            }.await;
+                                .insert(path, (proxy, mtime.clone()));
                         }
                         // TODO add some safety checks in case a proxy exists, that the initial `path` is not
                         // TODO the same as the resolved compiler binary
@@ -1115,6 +1107,7 @@ where
         let creator = self.creator.clone();
         let storage = self.storage.clone();
         let pool = self.rt.clone();
+
         let task = async move {
             let result = match dist_client {
                 Ok(client) => {

@@ -47,8 +47,6 @@ impl RedisCache {
 impl Storage for RedisCache {
     /// Open a connection and query for a key.
     async fn get(&self, key: &str) -> Result<Cache> {
-        // TODO keep one connection alive instead of creating a new one for each and every
-        // TODO get request.
         let mut c = self.connect().await?;
         let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
         if d.is_empty() {

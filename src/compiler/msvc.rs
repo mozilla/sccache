@@ -156,7 +156,6 @@ where
         stdout: stdout_bytes,
         ..
     } = output;
-
     let stdout = from_local_codepage(&stdout_bytes)
         .context("Failed to convert compiler stdout while detecting showIncludes prefix")?;
     for line in stdout.lines() {

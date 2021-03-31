@@ -15,7 +15,6 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use bytes::Buf;
 use hmac::{Hmac, Mac, NewMac};
 use hyperx::header;
 use md5::{Digest, Md5};
@@ -107,18 +106,13 @@ impl BlobContainer {
             .client
             .execute(request)
             .await
-            .map_err(|_e| anyhow::anyhow!("failed GET: {}", &uri))?;
+            .with_context(|| format!("failed GET: {}", &uri))?;
 
-        let res_status = res.status();
-        let (bytes, content_length) = if res_status.is_success() {
-            // TOOD use `res.content_length()`
-            let content_length = res
-                .headers()
-                .get_hyperx::<header::ContentLength>()
-                .map(|header::ContentLength(len)| len);
+        let (bytes, content_length) = if res.status().is_success() {
+            let content_length = res.content_length();
             (res.bytes().await?, content_length)
         } else {
-            return Err(BadHttpStatusError(res_status).into());
+            return Err(BadHttpStatusError(res.status()).into());
         };
 
         if let Some(len) = content_length {
@@ -132,7 +126,7 @@ impl BlobContainer {
                 info!("Read {} bytes from {}", bytes.len(), &uri);
             }
         }
-        Ok(bytes.bytes().to_vec())
+        Ok(bytes.into_iter().collect())
     }
 
     pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {

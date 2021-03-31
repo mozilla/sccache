@@ -91,10 +91,8 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 
 /// Data stored in the compiler cache.
 pub struct CacheRead {
-    zip: ZipArchive<Box<dyn ReadSeek>>,
+    zip: ZipArchive<Box<dyn ReadSeek + Send>>,
 }
-
-unsafe impl Send for CacheRead {}
 
 /// Represents a failure to decompress stored object data.
 #[derive(Debug)]
@@ -112,9 +110,9 @@ impl CacheRead {
     /// Create a cache entry from `reader`.
     pub fn from<R>(reader: R) -> Result<CacheRead>
     where
-        R: ReadSeek + 'static,
+        R: ReadSeek + Send + 'static,
     {
-        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
+        let z = ZipArchive::new(Box::new(reader) as _)
             .context("Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
@@ -389,22 +387,19 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 }
             }
             CacheType::S3(ref c) => {
-                let region = c.region.as_deref();
-                let endpoint = c.endpoint.as_deref();
-                let key_prefix = c.key_prefix.as_deref();
                 debug!(
                     "Trying S3Cache({}, {}, {}, Anonymous {})",
                     c.bucket,
-                    region.unwrap_or("default region"),
-                    endpoint.unwrap_or("default endpoint"),
+                    c.region.as_deref().unwrap_or("default region"),
+                    c.endpoint.as_deref().unwrap_or("default endpoint"),
                     c.public,
                 );
                 #[cfg(feature = "s3")]
                 match S3Cache::new(
                     &c.bucket,
-                    region,
-                    endpoint,
-                    key_prefix.unwrap_or(""),
+                    c.region.as_deref(),
+                    c.endpoint.as_deref(),
+                    c.key_prefix.as_deref().unwrap_or(""),
                     c.public,
                 ) {
                     Ok(s) => {

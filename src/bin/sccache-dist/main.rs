@@ -11,7 +11,7 @@ extern crate serde_derive;
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use jsonwebtoken as jwt;
-use rand::RngCore;
+use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
@@ -272,8 +272,7 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng = rand::rngs::OsRng;
-            rng.fill_bytes(&mut bytes);
+            OsRng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
             Ok(0)
@@ -440,7 +439,6 @@ struct JobDetail {
 
 // To avoid deadlicking, make sure to do all locking at once (i.e. no further locking in a downward scope),
 // in alphabetical order
-#[derive(Default)]
 pub struct Scheduler {
     job_count: AtomicUsize,
 
@@ -464,7 +462,11 @@ struct ServerDetails {
 
 impl Scheduler {
     pub fn new() -> Self {
-        Scheduler::default()
+        Scheduler {
+            job_count: AtomicUsize::new(0),
+            jobs: Mutex::new(BTreeMap::new()),
+            servers: Mutex::new(HashMap::new()),
+        }
     }
 
     fn prune_servers(

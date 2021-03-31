@@ -30,21 +30,20 @@ impl Jwk {
 
         // JWK is big-endian, openssl bignum from_slice is big-endian
         let n = base64::decode_config(&self.n, base64::URL_SAFE)
-            .context("Failed to base64 decode n".to_owned())?;
+            .context("Failed to base64 decode n")?;
         let e = base64::decode_config(&self.e, base64::URL_SAFE)
-            .context("Failed to base64 decode e".to_owned())?;
+            .context("Failed to base64 decode e")?;
 
-        let n = rsa::BigUint::from_bytes_be(&n);
-        let e = rsa::BigUint::from_bytes_be(&e);
-        let pk = rsa::RSAPublicKey::new(n, e)?;
+        let n_bn = rsa::BigUint::from_bytes_be(&n);
+        let e_bn = rsa::BigUint::from_bytes_be(&e);
+        let pubkey = rsa::RSAPublicKey::new(n_bn, e_bn)?;
 
-        let pk = rsa_export::RsaKey::new(pk);
-        let pkcs1_der: Vec<u8> = pk
+        let pubkey = rsa_export::RsaKey::new(pubkey);
+        let der: Vec<u8> = pubkey
             .as_pkcs1()
             .map_err(|e| anyhow::anyhow!("{}", e))
-            .context("Failed to create rsa pub key from (n, e)".to_owned())?;
-
-        Ok(pkcs1_der)
+            .context("Failed to convert public key to der pkcs1")?;
+        Ok(der)
     }
 }
 
@@ -152,19 +151,18 @@ impl MozillaCheck {
             .get(url.clone())
             .set_header(header)
             .send()
-            .context("Failed to make request to mozilla userinfo".to_owned())?;
+            .context("Failed to make request to mozilla userinfo")?;
         let status = res.status();
         let res_text = res
             .text()
-            .context("Failed to interpret response from mozilla userinfo as string".to_owned())?;
-        if status.is_success() {
+            .context("Failed to interpret response from mozilla userinfo as string")?;
+        if !status.is_success() {
             bail!("JWT forwarded to {} returned {}: {}", url, status, res_text)
         }
 
         // The API didn't return a HTTP error code, let's check the response
-        let () = check_mozilla_profile(&user, &self.required_groups, &res_text).context(
-            format!("Validation of the user profile failed for {}", user),
-        )?;
+        let () = check_mozilla_profile(&user, &self.required_groups, &res_text)
+            .with_context(|| format!("Validation of the user profile failed for {}", user))?;
 
         // Validation success, cache the token
         debug!("Validation for user {} succeeded, caching", user);
@@ -292,7 +290,7 @@ impl ProxyTokenCheck {
             .get(&self.url)
             .set_header(header)
             .send()
-            .context("Failed to make request to proxying url".to_owned())?;
+            .context("Failed to make request to proxying url")?;
         if !res.status().is_success() {
             bail!("Token forwarded to {} returned {}", self.url, res.status());
         }
@@ -353,18 +351,18 @@ impl ValidJWTCheck {
         trace!("Validating JWT in scheduler");
         // Prepare validation
         let kid = header.kid.context("No kid found")?;
-        let pkcs1 = self
-            .kid_to_pkcs1
-            .get(&kid)
-            .context("kid not found in jwks")?;
+        let pkcs1 = jwt::DecodingKey::from_rsa_der(
+            self.kid_to_pkcs1
+                .get(&kid)
+                .context("kid not found in jwks")?,
+        );
         let mut validation = jwt::Validation::new(header.alg);
-        validation.set_audience(self.audience.as_bytes());
+        validation.set_audience(&[&self.audience]);
         validation.iss = Some(self.issuer.clone());
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let key = &jwt::DecodingKey::from_secret(pkcs1);
-        let _tokendata = jwt::decode::<Claims>(token, &key, &validation)
+        let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
     }

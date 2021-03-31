@@ -247,7 +247,7 @@ pub(crate) trait Waiter<R> {
 #[cfg(test)]
 impl<T, O> Waiter<O> for T where T: Future<Output=O> {
     fn wait(self) -> O {
-        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        let mut rt = single_threaded_runtime();
         rt.block_on(self)
     }
 }

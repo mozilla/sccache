@@ -264,7 +264,7 @@ mod server {
     use crate::jwt;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use rand::RngCore;
+    use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
     use std::collections::HashMap;
     use std::io::Read;
@@ -634,14 +634,14 @@ mod server {
     impl dist::JobAuthorizer for JWTJobAuthorizer {
         fn generate_token(&self, job_id: JobId) -> Result<String> {
             let claims = JobJwt { job_id };
-            let encoding_key = &jwt::EncodingKey::from_secret(&self.server_key);
-            jwt::encode(&JWT_HEADER, &claims, encoding_key)
+            let key = jwt::EncodingKey::from_secret(&self.server_key);
+            jwt::encode(&JWT_HEADER, &claims, &key)
                 .map_err(|e| anyhow!("Failed to create JWT for job: {}", e))
         }
         fn verify_token(&self, job_id: JobId, token: &str) -> Result<()> {
             let valid_claims = JobJwt { job_id };
-            let decoding_key = &jwt::DecodingKey::from_secret(&self.server_key);
-            jwt::decode(&token, decoding_key, &JWT_VALIDATION)
+            let key = jwt::DecodingKey::from_secret(&self.server_key);
+            jwt::decode(&token, &key, &JWT_VALIDATION)
                 .map_err(|e| anyhow!("JWT decode failed: {}", e))
                 .and_then(|res| {
                     fn identical_t<T>(_: &T, _: &T) {}
@@ -829,9 +829,8 @@ mod server {
                         trace!("Req {}: heartbeat_server: {:?}", req_id, heartbeat_server);
 
                         let HeartbeatServerHttpRequest { num_cpus, jwt_key, server_nonce, cert_digest, cert_pem } = heartbeat_server;
-                        let mut guard = requester.client.lock().unwrap();
                         try_or_500_log!(req_id, maybe_update_certs(
-                            &mut *guard,
+                            &mut requester.client.lock().unwrap(),
                             &mut server_certificates.lock().unwrap(),
                             server_id, cert_digest, cert_pem
                         ));
@@ -921,9 +920,8 @@ mod server {
                 create_https_cert_and_privkey(public_addr)
                     .context("failed to create HTTPS certificate for server")?;
             let mut jwt_key = vec![0; JWT_KEY_LENGTH];
-            let mut rng = rand::rngs::OsRng;
-            rng.fill_bytes(&mut jwt_key);
-            let server_nonce = ServerNonce::from_rng(&mut rng);
+            OsRng.fill_bytes(&mut jwt_key);
+            let server_nonce = ServerNonce::new();
 
             Ok(Self {
                 public_addr,
@@ -1206,16 +1204,13 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_alloc_job(&scheduler_url);
             let mut req = self.client_async.lock().unwrap().post(url);
+            req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
 
             let client = self.client.clone();
             let client_async = self.client_async.clone();
             let server_certs = self.server_certs.clone();
 
-
-            req = req.bearer_auth(self.auth_token.clone()).bincode(&tc)?;
-
-            let res = bincode_req_fut(req).await?;
-            match res {
+            match bincode_req_fut(req).await? {
                 AllocJobHttpResponse::Success {
                     job_alloc,
                     need_toolchain,
@@ -1239,9 +1234,8 @@ mod client {
                         .await
                         .context("GET to scheduler server_certificate failed")?;
 
-                    let mut guard = client.lock().unwrap();
                     Self::update_certs(
-                        &mut *guard,
+                        &mut client.lock().unwrap(),
                         &mut client_async.lock().unwrap(),
                         &mut server_certs.lock().unwrap(),
                         res.cert_digest,
@@ -1258,10 +1252,8 @@ mod client {
             let scheduler_url = self.scheduler_url.clone();
             let url = urls::scheduler_status(&scheduler_url);
             let req = self.client.lock().unwrap().get(url);
-            let pool = self.pool.clone();
-            pool.spawn_blocking(|| bincode_req(req))
-                .await
-                .expect("FIXME proper error handling")
+
+            self.pool.spawn_blocking(move || bincode_req(req)).await?
         }
 
         async fn do_submit_toolchain(
@@ -1273,8 +1265,7 @@ mod client {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
-                    let pool = self.pool.clone();
-                    pool.spawn_blocking(move || {
+                    self.pool.spawn_blocking(move || {
                         let toolchain_file_size = toolchain_file.metadata()?.len();
                         let body =
                             reqwest::blocking::Body::sized(toolchain_file, toolchain_file_size);
@@ -1298,8 +1289,7 @@ mod client {
             let url = urls::server_run_job(job_alloc.server_id, job_alloc.job_id);
             let mut req = self.client.lock().unwrap().post(url);
 
-            self.pool
-                .spawn_blocking(move || {
+            self.pool.spawn_blocking(move || {
                     let bincode = bincode::serialize(&RunJobHttpRequest { command, outputs })
                         .context("failed to serialize run job request")?;
                     let bincode_length = bincode.len();
@@ -1311,8 +1301,7 @@ mod client {
                         .expect("Infallible write of bincode body to vec failed");
                     let path_transformer;
                     {
-                        let mut compressor =
-                            ZlibWriteEncoder::new(&mut body, Compression::fast());
+                        let mut compressor = ZlibWriteEncoder::new(&mut body, Compression::fast());
                         path_transformer = inputs_packager
                             .write_inputs(&mut compressor)
                             .context("Could not write inputs for compilation")?;
@@ -1340,9 +1329,8 @@ mod client {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();
             let tc_cache = self.tc_cache.clone();
-            let pool = self.pool.clone();
 
-            pool.spawn_blocking(move || {
+            self.pool.spawn_blocking(move || {
                 tc_cache.put_toolchain(compiler_path, weak_key, toolchain_packager)
             }).await?
         }

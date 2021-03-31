@@ -416,7 +416,7 @@ impl OverlayBuilder {
                 .join()
                 .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
         })
-        .map_err(|_e| anyhow!("Failed to join thread"))?
+        .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile

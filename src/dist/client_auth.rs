@@ -6,10 +6,8 @@ use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::fmt;
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::result;
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -90,7 +88,7 @@ mod code_grant_pkce {
     };
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
-    use rand::RngCore;
+    use rand::{rngs::OsRng, RngCore};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::sync::mpsc;
@@ -146,8 +144,7 @@ mod code_grant_pkce {
 
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
-        let mut rng = rand::rngs::OsRng;
-        rng.fill_bytes(&mut code_verifier_bytes);
+        OsRng.fill_bytes(&mut code_verifier_bytes);
         let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
         let mut hasher = Sha256::new();
         hasher.update(&code_verifier);
@@ -230,7 +227,6 @@ mod code_grant_pkce {
 
         Ok(response)
     }
-    use super::*;
 
     pub fn code_to_token(
         token_url: &str,
@@ -442,9 +438,9 @@ macro_rules! make_service {
     }}
 }
 
-fn error_code_response<E>(uri: hyper::Uri, e: E) -> result::Result<Response<Body>, hyper::Error>
+fn error_code_response<E>(uri: hyper::Uri, e: E) -> hyper::Result<Response<Body>>
 where
-    E: fmt::Debug,
+    E: std::fmt::Debug,
 {
     let body = format!("{:?}", e);
     eprintln!(
@@ -479,7 +475,8 @@ fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
             // Doesn't seem to be open
             Err(ref e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
             Err(e) => {
-                return Err(e).context(format!("Failed to check {} is available for binding", addr))
+                return Err(e)
+                    .with_context(|| format!("Failed to check {} is available for binding", addr))
             }
         }
 
@@ -494,7 +491,7 @@ fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
             {
                 continue
             }
-            Err(e) => return Err(e).context(format!("Failed to bind to {}", addr)),
+            Err(e) => return Err(e).with_context(|| format!("Failed to bind to {}", addr)),
         }
     }
     bail!("Could not bind to any valid port: ({:?})", VALID_PORTS)
@@ -534,20 +531,16 @@ pub fn get_token_oauth2_code_grant_pkce(
         shutdown_tx: Some(shutdown_tx),
     };
     *code_grant_pkce::STATE.lock().unwrap() = Some(state);
-    let shutdown_signal = shutdown_rx;
 
     let mut runtime = Runtime::new()?;
-    // if the wait of the shutdown terminated unexpectedly, we assume it triggered and continue shutdown
-    let _ = runtime.block_on(server.with_graceful_shutdown(async {
-            let _ = shutdown_signal.await;
-    }))
-    .map_err(|e| {
-        warn!(
-            "Something went wrong while waiting for auth server shutdown: {}",
-            e
-        );
-        e
-    });
+    runtime.block_on(server.with_graceful_shutdown(async move {
+        if let Err(e) = shutdown_rx.await {
+            warn!(
+                "Something went wrong while waiting for auth server shutdown: {}",
+                e
+            )
+        }
+    }))?;
 
     info!("Server finished, using code to request token");
     let code = code_rx

@@ -224,9 +224,8 @@ where
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     // Output of command is in file under dep_file, so we ignore stdout&stderr
-    let _stdouterr = run_input_output(cmd, None).await?;
+    let _dep_info = run_input_output(cmd, None).await?;
     // Parse the dep-info file, then hash the contents of those files.
-    let pool = pool.clone();
     let cwd = cwd.to_owned();
     let name2 = crate_name.to_owned();
     let parsed = pool
@@ -315,7 +314,7 @@ where
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
 async fn get_compiler_outputs<T>(
-    creator: T,
+    creator: &T,
     executable: &Path,
     arguments: Vec<OsString>,
     cwd: &Path,
@@ -324,8 +323,7 @@ async fn get_compiler_outputs<T>(
 where
     T: Clone + CommandCreatorSync,
 {
-    let mut cmd = creator.clone();
-    let mut cmd = cmd.new_command_sync(executable);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
@@ -362,8 +360,8 @@ impl Rust {
             .lines()
             .find(|l| l.starts_with("host: "))
             .map(|l| &l[6..])
-            .ok_or_else(|| anyhow!("rustc verbose version didn't have a line for `host:`"))?
-            .to_owned();
+            .context("rustc verbose version didn't have a line for `host:`")?
+            .to_string();
 
         // it's fine to use the `executable` directly no matter if proxied or not
         let mut cmd = creator.new_command_sync(&executable);
@@ -400,7 +398,7 @@ impl Rust {
                 libs.push(path);
             };
             libs.sort();
-            Result::Ok((sysroot, libs))
+            Ok((sysroot, libs))
         };
 
         #[cfg(feature = "dist-client")]
@@ -529,6 +527,7 @@ where
             "proxy: rustup which rustc produced: {:?}",
             &proxied_compiler
         );
+        // TODO: Delegate FS access to a thread pool if possible
         let attr = fs::metadata(proxied_compiler.as_path())
             .context("Failed to obtain metadata of the resolved, true rustc")?;
         let res = if attr.is_file() {
@@ -547,7 +546,6 @@ where
         Box::new((*self).clone())
     }
 }
-
 
 impl RustupProxy {
     pub fn new<P>(proxy_executable: P) -> Result<Self>
@@ -572,14 +570,6 @@ impl RustupProxy {
     where
         T: CommandCreatorSync,
     {
-        let compiler_executable1 = compiler_executable.to_owned();
-        let compiler_executable2 = compiler_executable.to_owned();
-        let proxy_name1 = proxy_name.to_owned();
-        let proxy_name2 = proxy_name.to_owned();
-
-        let env1 = env.to_owned();
-        let env2 = env.to_owned();
-
         enum ProxyPath {
             Candidate(PathBuf),
             ToBeDiscovered,
@@ -609,7 +599,7 @@ impl RustupProxy {
 
         // verify rustc is proxy
         let mut child = creator.new_command_sync(compiler_executable.to_owned());
-        child.env_clear().envs(ref_env(&env1)).args(&["+stable"]);
+        child.env_clear().envs(ref_env(&env)).args(&["+stable"]);
         let state = run_input_output(child, None).await.map(move |output| {
             if output.status.success() {
                 trace!("proxy: Found a compiler proxy managed by rustup");
@@ -625,25 +615,17 @@ impl RustupProxy {
             Ok(ProxyPath::ToBeDiscovered) => {
                 // simple check: is there a rustup in the same parent dir as rustc?
                 // that would be the prefered one
-                Ok(
-                    match compiler_executable1
-                        .parent()
-                        .map(|parent| parent.to_owned())
-                    {
-                        Some(mut parent) => {
-                            parent.push(proxy_name1);
-                            let proxy_candidate = parent;
-                            if proxy_candidate.exists() {
-                                trace!(
-                                    "proxy: Found a compiler proxy at {}",
-                                    proxy_candidate.display()
-                                );
-                                ProxyPath::Candidate(proxy_candidate)
-                            } else {
-                                ProxyPath::ToBeDiscovered
-                            }
+                Ok(match compiler_executable.parent().map(Path::to_owned) {
+                    Some(parent) => {
+                        let proxy_candidate = parent.join(proxy_name);
+                        if proxy_candidate.exists() {
+                            trace!("proxy: Found a compiler proxy at {}", proxy_candidate.display());
+                            ProxyPath::Candidate(proxy_candidate)
+                        } else {
+                            ProxyPath::ToBeDiscovered
                         }
-                        None => ProxyPath::ToBeDiscovered,
+                    },
+                    None => ProxyPath::ToBeDiscovered,
                     },
                 )
             }
@@ -652,18 +634,18 @@ impl RustupProxy {
         let state = match state {
             Ok(ProxyPath::ToBeDiscovered) => {
                 // still no rustup found, use which crate to find one
-                match which::which(&proxy_name2) {
+                match which::which(&proxy_name) {
                     Ok(proxy_candidate) => {
                         warn!(
                             "proxy: rustup found, but not where it was expected (next to rustc {})",
-                            compiler_executable2.display()
+                            compiler_executable.display()
                         );
                         Ok(ProxyPath::Candidate(proxy_candidate))
-                    }
+                    },
                     Err(e) => {
                         trace!("proxy: rustup is not present: {}", e);
                         Ok(ProxyPath::ToBeDiscovered)
-                    }
+                    },
                 }
             }
             x => x,
@@ -678,10 +660,10 @@ impl RustupProxy {
             Ok(ProxyPath::Candidate(proxy_executable)) => {
                 // verify the candidate is a rustup
                 let mut child = creator.new_command_sync(proxy_executable.to_owned());
-                child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
-                let output = run_input_output(child, None).await?;
+                child.env_clear().envs(ref_env(&env)).args(&["--version"]);
+                let rustup_candidate_check = run_input_output(child, None).await?;
 
-                let stdout = String::from_utf8(output.stdout)
+                let stdout = String::from_utf8(rustup_candidate_check.stdout)
                     .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;
                 Ok(if stdout.trim().starts_with("rustup ") {
                     trace!("PROXY rustup --version produced: {}", &stdout);
@@ -1239,8 +1221,7 @@ where
                 },
         } = *self;
         trace!("[{}]: generate_hash_key", crate_name);
-        // TODO: this doesn't produce correct arguments if they
-        // TODO: should be concatenated - should use iter_os_strings
+        // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = arguments
             .iter()
             .map(|arg| {
@@ -1267,7 +1248,6 @@ where
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
-
         let source_files_and_hashes = async {
             let source_files = get_source_files(
                 creator,
@@ -1281,29 +1261,20 @@ where
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool)
             .await?;
-            Ok::<_, Error>((source_files, source_hashes))
+            Ok((source_files, source_hashes))
         };
 
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
         let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
-        let extern_hashes = async { hash_all(&abs_externs, pool).await };
+        let extern_hashes = hash_all(&abs_externs, pool);
         // Hash the contents of the staticlibs listed on the commandline.
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
-        let staticlib_hashes = async { hash_all(&abs_staticlibs, pool).await };
+        let staticlib_hashes = hash_all(&abs_staticlibs, pool);
 
-        // pin_mut!(source_files_and_hashes);
-        // pin_mut!(staticlib_hashes);
-        // pin_mut!(extern_hashes);
-        let (source_files_and_hashes, extern_hashes, staticlib_hashes) =
-            futures::join!(source_files_and_hashes, extern_hashes, staticlib_hashes);
-
-
-        let (source_files, source_hashes) = source_files_and_hashes?;
-        let extern_hashes = extern_hashes?;
-        let staticlib_hashes = staticlib_hashes?;
-
+        let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
+            futures::try_join!(source_files_and_hashes, extern_hashes, staticlib_hashes)?;
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
         // Hash inputs:
@@ -1328,7 +1299,9 @@ where
                 // These contain paths which aren't relevant to the output, and the compiler inputs
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
-                .filter(|&&(ref arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
+                .filter(|&&(ref arg, _)| {
+                    !(arg == "--extern" || arg == "-L" || arg == "--out-dir")
+                })
                 // A few argument types were not passed in a deterministic order
                 // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
                 // out, sort them, and append them to the rest of the arguments.
@@ -1384,7 +1357,7 @@ where
             .collect();
 
         let mut outputs = get_compiler_outputs(
-            creator.clone(),
+            creator,
             &executable,
             flat_os_string_arguments,
             &cwd,
@@ -1465,7 +1438,7 @@ where
             .chain(abs_staticlibs)
             .collect();
 
-        Ok::<_, Error>(HashResult {
+        Ok(HashResult {
             key: m.finish(),
             compilation: Box::new(RustCompilation {
                 executable,
@@ -2713,7 +2686,7 @@ mod test {
             Ok(MockChild::new(exit_status(0), "foo\nbar\nbaz", "")),
         );
         let outputs = get_compiler_outputs(
-            creator,
+            &creator,
             "rustc".as_ref(),
             ovec!("a", "b"),
             "cwd".as_ref(),
@@ -2729,7 +2702,7 @@ mod test {
         let creator = new_creator();
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "error")));
         assert!(get_compiler_outputs(
-            creator,
+            &creator,
             "rustc".as_ref(),
             ovec!("a", "b"),
             "cwd".as_ref(),

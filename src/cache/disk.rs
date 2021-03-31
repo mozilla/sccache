@@ -74,8 +74,7 @@ impl Storage for DiskCache {
             let hit = CacheRead::from(io)?;
             Ok(Cache::Hit(hit))
         })
-        .await
-        .map_err(anyhow::Error::from)?
+        .await?
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
@@ -91,8 +90,7 @@ impl Storage for DiskCache {
             lru.lock().unwrap().insert_bytes(key, &v)?;
             Ok(start.elapsed())
         })
-        .await
-        .map_err(anyhow::Error::from)?
+        .await?
     }
 
     fn location(&self) -> String {

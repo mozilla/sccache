@@ -1,6 +1,6 @@
 use std::io;
+use std::process::Command;
 use std::sync::Arc;
-use std::process::Command as StdCommand;
 
 use futures::channel::mpsc;
 use futures::channel::oneshot;
@@ -41,9 +41,11 @@ impl Client {
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    tokio::runtime::Runtime::new()
-                        .unwrap()
-                        .block_on(async {
+                    let mut rt = tokio::runtime::Builder::new()
+                        .basic_scheduler()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async {
                             if let Some(sender) = rx.next().await {
                                 drop(sender.send(token));
                             }
@@ -57,7 +59,7 @@ impl Client {
     }
 
     /// Configures this jobserver to be inherited by the specified command
-    pub fn configure(&self, cmd: &mut StdCommand) {
+    pub fn configure(&self, cmd: &mut Command) {
         self.inner.configure(cmd)
     }
 
@@ -79,8 +81,7 @@ impl Client {
             .await
             .context("jobserver helper panicked")?
             .context("failed to acquire jobserver token")?;
-        Ok(Acquired {
-            _token: Some(acquired),
-        })
+
+        Ok(Acquired { _token: Some(acquired) })
     }
 }

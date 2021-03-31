@@ -368,9 +368,9 @@ impl GCSCredentialProvider {
 
         let token_msg = if res.status().is_success() {
             let token_msg = res.json::<TokenMsg>().await?;
-            Result::Ok(token_msg)
+            Ok(token_msg)
         } else {
-            Err(BadHttpStatusError(res.status()).into())
+            Err(BadHttpStatusError(res.status()))
         }?;
 
         Ok(GCSCredential {

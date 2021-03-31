@@ -27,11 +27,6 @@ use std::time::Duration;
 
 use crate::errors::*;
 
-#[derive(Debug, thiserror::Error)]
-pub enum UtilError {
-    #[error(transparent)]
-    Spawn(ProcessError),
-}
 
 #[derive(Clone)]
 pub struct Digest {
@@ -364,7 +359,6 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
 #[cfg(feature = "hyperx")]
 pub use self::http_extension::{HeadersExt, RequestExt};
 
-// TODO delete all of it
 #[cfg(feature = "hyperx")]
 mod http_extension {
     use reqwest::header::{HeaderMap, HeaderValue};

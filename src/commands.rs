@@ -23,7 +23,7 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use log::Level::Trace;
 use std::{env, process::ExitStatus};
 use std::ffi::{OsStr, OsString};
@@ -54,7 +54,9 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-async fn read_server_startup_status<R: AsyncReadExt + Unpin>(mut server: R) -> Result<ServerStartup> {
+async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+    mut server: R
+) -> Result<ServerStartup> {
     // This is an async equivalent of ServerConnection::read_one_response
     let mut bytes = [0u8; 4];
     server.read_exact(&mut bytes[..]).await?;
@@ -63,8 +65,7 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(mut server: R) -> R
     let mut data = vec![0; len as usize];
     server.read_exact(data.as_mut_slice()).await?;
 
-    let s = bincode::deserialize::<ServerStartup>(&data)?;
-    Ok(s)
+    Ok(bincode::deserialize(&data)?)
 }
 
 /// Re-execute the current executable as a background server, and wait
@@ -665,7 +666,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             use crate::compiler;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let mut runtime = tokio::runtime::Runtime::new()?;
+            let mut runtime = Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();
@@ -674,12 +675,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let pool = runtime.handle().clone();
             runtime.block_on(async move {
-                let compiler =
-                    compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None)
-                        .await;
-                let packager = compiler.map(|c| c.0.get_toolchain_packager());
-                let res = packager.and_then(|p| p.write_pkg(out_file));
-                res
+                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None)
+                    .await
+                    .map(|compiler| compiler.0.get_toolchain_packager())
+                    .and_then(|packager| packager.write_pkg(out_file))
             })?
         }
         #[cfg(not(feature = "dist-client"))]
