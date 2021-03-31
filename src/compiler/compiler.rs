@@ -190,7 +190,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn get_cached_or_compile(
         self: Box<Self>,
-        dist_client: Option<dist::ArcDynClient>,
+        dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
         storage: Arc<dyn Storage + Send + Sync>,
         arguments: Vec<OsString>,
@@ -397,7 +397,7 @@ where
 
 #[cfg(not(feature = "dist-client"))]
 async fn dist_or_local_compile<T>(
-    _dist_client: Option<dist::ArcDynClient>,
+    _dist_client: Option<Arc<dyn dist::Client>>,
     creator: T,
     _cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -421,7 +421,7 @@ where
 
 #[cfg(feature = "dist-client")]
 async fn dist_or_local_compile<T>(
-    dist_client: Option<dist::ArcDynClient>,
+    dist_client: Option<Arc<dyn dist::Client>>,
     creator: T,
     cwd: PathBuf,
     compilation: Box<dyn Compilation>,
@@ -1845,7 +1845,7 @@ mod test_dist {
     pub struct ErrorPutToolchainClient;
     impl ErrorPutToolchainClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> dist::ArcDynClient {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(ErrorPutToolchainClient)
         }
     }
@@ -1890,7 +1890,7 @@ mod test_dist {
     }
     impl ErrorAllocJobClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> dist::ArcDynClient {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 tc: Toolchain {
                     archive_id: "somearchiveid".to_owned(),
@@ -1941,7 +1941,7 @@ mod test_dist {
     }
     impl ErrorSubmitToolchainClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> dist::ArcDynClient {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: AtomicBool::default(),
                 tc: Toolchain {
@@ -2008,7 +2008,7 @@ mod test_dist {
     }
     impl ErrorRunJobClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new() -> dist::ArcDynClient {
+        pub fn new() -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: AtomicBool::default(),
                 tc: Toolchain {
@@ -2085,7 +2085,7 @@ mod test_dist {
 
     impl OneshotClient {
         #[allow(clippy::new_ret_no_self)]
-        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> dist::ArcDynClient {
+        pub fn new(code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> Arc<dyn dist::Client> {
             Arc::new(Self {
                 has_started: AtomicBool::default(),
                 tc: Toolchain {

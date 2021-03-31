@@ -20,7 +20,6 @@ use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process;
-use std::sync::Arc;
 use std::str::FromStr;
 #[cfg(feature = "dist-server")]
 use std::sync::Mutex;
@@ -711,11 +710,8 @@ pub trait BuilderIncoming: Send + Sync {
 }
 
 /////////
-
-pub type ArcDynClient = Arc<dyn Client + Send + Sync + 'static>;
-
 #[async_trait::async_trait]
-pub trait Client: Send {
+pub trait Client: Send + Sync {
     // To Scheduler
     async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult>;
     // To Scheduler

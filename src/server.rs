@@ -163,7 +163,7 @@ struct DistClientConfig {
 #[cfg(feature = "dist-client")]
 enum DistClientState {
     #[cfg(feature = "dist-client")]
-    Some(Box<DistClientConfig>, dist::ArcDynClient),
+    Some(Box<DistClientConfig>, Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
     FailWithMessage(Box<DistClientConfig>, String),
     #[cfg(feature = "dist-client")]
@@ -191,7 +191,7 @@ impl DistClientContainer {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
-    fn get_client(&self) -> Result<Option<dist::ArcDynClient>> {
+    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
     }
 }
@@ -273,7 +273,7 @@ impl DistClientContainer {
         }))
     }
 
-    fn get_client(&self) -> Result<Option<dist::ArcDynClient>> {
+    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
