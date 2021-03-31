@@ -189,7 +189,7 @@ impl DistClientContainer {
 
     pub fn reset_state(&self) {}
 
-    pub fn get_status(&self) -> DistInfo {
+    pub async fn get_status(&self) -> DistInfo {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
