@@ -91,7 +91,7 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 
 /// Data stored in the compiler cache.
 pub struct CacheRead {
-    zip: ZipArchive<Box<dyn ReadSeek + Send>>,
+    zip: ZipArchive<Box<dyn ReadSeek>>,
 }
 
 /// Represents a failure to decompress stored object data.
@@ -110,9 +110,9 @@ impl CacheRead {
     /// Create a cache entry from `reader`.
     pub fn from<R>(reader: R) -> Result<CacheRead>
     where
-        R: ReadSeek + Send + 'static,
+        R: ReadSeek + 'static,
     {
-        let z = ZipArchive::new(Box::new(reader) as _)
+        let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
             .context("Failed to parse cache entry")?;
         Ok(CacheRead { zip: z })
     }
