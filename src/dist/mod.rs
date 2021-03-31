@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::compiler;
-use pkg::{BoxDynInputsPackager, ToolchainPackager};
 use rand::{rngs::OsRng, RngCore};
 use std::ffi::OsString;
 use std::fmt;
@@ -50,9 +49,7 @@ pub mod pkg;
 #[cfg(not(feature = "dist-client"))]
 mod pkg {
     pub trait ToolchainPackager {}
-    pub type BoxDynToolchainPackager = Box<dyn ToolchainPackager>;
     pub trait InputsPackager {}
-    pub type BoxDynInputsPackager = Box<dyn InputsPackager>;
 }
 
 #[cfg(target_os = "windows")]
@@ -735,13 +732,13 @@ pub trait Client: Send {
         job_alloc: JobAlloc,
         command: CompileCommand,
         outputs: Vec<String>,
-        inputs_packager: BoxDynInputsPackager,
+        inputs_packager: Box<dyn pkg::InputsPackager>,
     ) -> Result<(RunJobResult, PathTransformer)>;
     async fn put_toolchain(
         &self,
         compiler_path: PathBuf,
         weak_key: String,
-        toolchain_packager: Box<dyn ToolchainPackager>,
+        toolchain_packager: Box<dyn pkg::ToolchainPackager>,
     ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
     fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;

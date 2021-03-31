@@ -107,7 +107,7 @@ impl CompilerKind {
 
 #[cfg(feature = "dist-client")]
 pub type DistPackagers = (
-    pkg::BoxDynInputsPackager,
+    Box<dyn pkg::InputsPackager>,
     Box<dyn pkg::ToolchainPackager>,
     Box<dyn OutputsRewriter>,
 );
@@ -1866,7 +1866,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: pkg::BoxDynInputsPackager,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1916,7 +1916,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: pkg::BoxDynInputsPackager,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!()
         }
@@ -1983,7 +1983,7 @@ mod test_dist {
             _: JobAlloc,
             _: CompileCommand,
             _: Vec<String>,
-            _: pkg::BoxDynInputsPackager,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> Result<(RunJobResult, PathTransformer)> {
             unreachable!("fn do_run_job is not used for this test. qed")
         }
@@ -2050,7 +2050,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             _: Vec<String>,
-            _: pkg::BoxDynInputsPackager,
+            _: Box<dyn pkg::InputsPackager>,
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
@@ -2130,7 +2130,7 @@ mod test_dist {
             job_alloc: JobAlloc,
             command: CompileCommand,
             outputs: Vec<String>,
-            inputs_packager: pkg::BoxDynInputsPackager,
+            inputs_packager: Box<dyn pkg::InputsPackager>,
         ) -> Result<(RunJobResult, PathTransformer)> {
             assert_eq!(job_alloc.job_id, JobId(0));
             assert_eq!(command.executable, "/overridden/compiler");
