@@ -13,7 +13,6 @@
 // limitations under the License.
 
 pub use anyhow::{anyhow, bail, Context, Error};
-use std::boxed::Box;
 use std::process;
 
 // We use `anyhow` for error handling.

@@ -14,7 +14,6 @@
 
 use crate::mock_command::*;
 use std::collections::HashMap;
-use std::convert::TryFrom;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};

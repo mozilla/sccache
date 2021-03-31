@@ -31,6 +31,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
@@ -56,6 +57,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+#[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
 use tokio::{
