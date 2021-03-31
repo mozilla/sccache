@@ -623,7 +623,7 @@ type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
 /// entry of the compiler cache
 struct CompilerCacheEntry<C> {
     /// compiler argument trait obj
-    pub compiler: Box<dyn Compiler<C> + Send + 'static>,
+    pub compiler: Box<dyn Compiler<C> + 'static>,
     /// modification time of the compilers executable file
     pub mtime: FileTime,
     /// distributed compilation extra info
@@ -633,7 +633,7 @@ struct CompilerCacheEntry<C> {
 impl<C> CompilerCacheEntry<C>
 {
     fn new(
-        compiler: Box<dyn Compiler<C> + Send + 'static>,
+        compiler: Box<dyn Compiler<C> + 'static>,
         mtime: FileTime,
         dist_info: Option<(PathBuf, FileTime)>,
     ) -> Self {

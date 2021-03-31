@@ -51,7 +51,7 @@ use crate::errors::*;
 
 // only really needed to avoid the hassle of writing it everywhere,
 // since `Compiler<T>: Send` is not enough for rustc
-pub type BoxDynCompiler<T> = Box<dyn Compiler<T> + Send + Sync + 'static>;
+pub type BoxDynCompiler<T> = Box<dyn Compiler<T> + Sync>;
 pub type BoxDynCompilerProxy<T> = Box<dyn CompilerProxy<T> + Send + Sync + 'static>;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
