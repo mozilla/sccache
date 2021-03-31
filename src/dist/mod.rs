@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::compiler;
-use pkg::{BoxDynInputsPackager, BoxDynToolchainPackager};
+use pkg::{BoxDynInputsPackager, ToolchainPackager};
 use rand::{rngs::OsRng, RngCore};
 use std::ffi::OsString;
 use std::fmt;
@@ -741,7 +741,7 @@ pub trait Client: Send {
         &self,
         compiler_path: PathBuf,
         weak_key: String,
-        toolchain_packager: BoxDynToolchainPackager,
+        toolchain_packager: Box<dyn ToolchainPackager>,
     ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
     fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;

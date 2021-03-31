@@ -108,7 +108,7 @@ impl CompilerKind {
 #[cfg(feature = "dist-client")]
 pub type DistPackagers = (
     pkg::BoxDynInputsPackager,
-    pkg::BoxDynToolchainPackager,
+    Box<dyn pkg::ToolchainPackager>,
     Box<dyn OutputsRewriter>,
 );
 
@@ -126,7 +126,7 @@ where
     fn kind(&self) -> CompilerKind;
     /// Retrieve a packager
     #[cfg(feature = "dist-client")]
-    fn get_toolchain_packager(&self) -> pkg::BoxDynToolchainPackager;
+    fn get_toolchain_packager(&self) -> Box<dyn pkg::ToolchainPackager>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -1874,7 +1874,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: pkg::BoxDynToolchainPackager,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Err(anyhow!("MOCK: put toolchain failure"))
         }
@@ -1924,7 +1924,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: pkg::BoxDynToolchainPackager,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
         }
@@ -1991,7 +1991,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: pkg::BoxDynToolchainPackager,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((self.tc.clone(), None))
         }
@@ -2060,7 +2060,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: pkg::BoxDynToolchainPackager,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             Ok((
                 self.tc.clone(),
@@ -2155,7 +2155,7 @@ mod test_dist {
             &self,
             _: PathBuf,
             _: String,
-            _: pkg::BoxDynToolchainPackager,
+            _: Box<dyn pkg::ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
 
             Ok((

@@ -1078,7 +1078,7 @@ mod server {
 mod client {
     use super::super::cache;
     use crate::config;
-    use crate::dist::pkg::{BoxDynInputsPackager, BoxDynToolchainPackager, };
+    use crate::dist::pkg::{BoxDynInputsPackager, ToolchainPackager};
     use crate::dist::{
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
@@ -1324,7 +1324,7 @@ mod client {
             &self,
             compiler_path: PathBuf,
             weak_key: String,
-            toolchain_packager: BoxDynToolchainPackager,
+            toolchain_packager: Box<dyn ToolchainPackager>,
         ) -> Result<(Toolchain, Option<(String, PathBuf)>)> {
             let compiler_path = compiler_path.to_owned();
             let weak_key = weak_key.to_owned();

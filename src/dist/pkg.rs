@@ -22,8 +22,6 @@ use crate::errors::*;
 
 pub use self::toolchain_imp::*;
 
-pub type BoxDynToolchainPackager = Box<dyn ToolchainPackager + Send + 'static>;
-
 pub trait ToolchainPackager: Send {
     fn write_pkg(self: Box<Self>, f: fs::File) -> Result<()>;
 }
