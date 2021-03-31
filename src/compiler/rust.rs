@@ -42,12 +42,14 @@ use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
 use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process;
 #[cfg(feature = "dist-client")]
 use std::sync::{Arc, Mutex};
@@ -495,51 +497,50 @@ where
     }
 }
 
-#[async_trait]
 impl<T> CompilerProxy<T> for RustupProxy
 where
     T: CommandCreatorSync,
 {
-    async fn resolve_proxied_executable(
+    fn resolve_proxied_executable(
         &self,
         mut creator: T,
         cwd: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> Result<(PathBuf, FileTime)> {
-        let proxy_executable = self.proxy_executable.clone();
-
-        let mut child = creator.new_command_sync(&proxy_executable);
+    ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send>> {
+        let mut child = creator.new_command_sync(&self.proxy_executable);
         child
             .current_dir(&cwd)
             .env_clear()
             .envs(ref_env(&env))
             .args(&["which", "rustc"]);
 
-        let output = run_input_output(child, None)
-            .await
-            .with_context(|| format!("Failed to execute rustup which rustc"))?;
+        Box::pin(async move {
+            let output = run_input_output(child, None)
+                .await
+                .with_context(|| format!("Failed to execute rustup which rustc"))?;
 
-        let stdout = String::from_utf8(output.stdout)
-            .with_context(|| format!("Failed to parse output of rustup which rustc"))?;
+            let stdout = String::from_utf8(output.stdout)
+                .with_context(|| format!("Failed to parse output of rustup which rustc"))?;
 
-        let proxied_compiler = PathBuf::from(stdout.trim());
-        trace!(
-            "proxy: rustup which rustc produced: {:?}",
-            &proxied_compiler
-        );
-        // TODO: Delegate FS access to a thread pool if possible
-        let attr = fs::metadata(proxied_compiler.as_path())
-            .context("Failed to obtain metadata of the resolved, true rustc")?;
-        let res = if attr.is_file() {
-            Ok(FileTime::from_last_modification_time(&attr))
-        } else {
-            Err(anyhow!(
-                "proxy: rustup resolved compiler is not of type file"
-            ))
-        }
-        .map(move |filetime| (proxied_compiler, filetime));
+            let proxied_compiler = PathBuf::from(stdout.trim());
+            trace!(
+                "proxy: rustup which rustc produced: {:?}",
+                &proxied_compiler
+            );
+            // TODO: Delegate FS access to a thread pool if possible
+            let attr = fs::metadata(proxied_compiler.as_path())
+                .context("Failed to obtain metadata of the resolved, true rustc")?;
+            let res = if attr.is_file() {
+                Ok(FileTime::from_last_modification_time(&attr))
+            } else {
+                Err(anyhow!(
+                    "proxy: rustup resolved compiler is not of type file"
+                ))
+            }
+            .map(move |filetime| (proxied_compiler, filetime));
 
-        res
+            res
+        })
     }
 
     fn box_clone(&self) -> BoxDynCompilerProxy<T> {

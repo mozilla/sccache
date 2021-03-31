@@ -909,16 +909,20 @@ where
 
         let resolved_with_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.read().await;
+            // Create an owned future - compiler proxy is not Send so we can't
+            // really await while borrowing the proxy since rustc is too conservative
+            let resolve_proxied_executable = compiler_proxies_borrow.get(&path)
+                .map(|(compiler_proxy, _filetime)|
+                    compiler_proxy.resolve_proxied_executable(
+                        creator,
+                        cwd.clone(),
+                        env.as_slice(),
+                    )
+                );
 
-            if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                compiler_proxy.resolve_proxied_executable(
-                    creator,
-                    cwd.clone(),
-                    env.as_slice(),
-                ).await
-                .ok()
-            } else {
-                None
+            match resolve_proxied_executable {
+                Some(fut) => fut.await.ok(),
+                None => None,
             }
         };
 

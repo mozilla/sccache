@@ -39,12 +39,12 @@ use std::fs::File;
 use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{self, Stdio};
 use std::str;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use core::pin::Pin;
 
 use crate::errors::*;
 
@@ -141,8 +141,7 @@ impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
     }
 }
 
-#[async_trait]
-pub trait CompilerProxy<T>: Send + Sync + 'static
+pub trait CompilerProxy<T>: Send + 'static
 where
     T: CommandCreatorSync + Sized,
 {
@@ -151,12 +150,12 @@ where
     /// Returns the absolute path to the true compiler and the timestamp of
     /// timestamp of the true compiler. Iff the resolution fails,
     /// the returned future resolves to an error with more information.
-    async fn resolve_proxied_executable(
+    fn resolve_proxied_executable(
         &self,
         creator: T,
         cwd: PathBuf,
         env_vars: &[(OsString, OsString)],
-    ) -> Result<(PathBuf, FileTime)>;
+    ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send + 'static>>;
 
     /// Create a clone of `Self` and puts it in a `Box`
     fn box_clone(&self) -> BoxDynCompilerProxy<T>;
