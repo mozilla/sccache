@@ -613,7 +613,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 }
 
 /// maps a compiler proxy path to a compiler proxy and it's last modification time
-type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C> + Send + 'static>, FileTime)>;
+type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>;
 
 /// maps a compiler path to a compiler cache entry
 type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
