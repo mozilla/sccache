@@ -15,7 +15,7 @@
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, HashResult, BoxDynCompilerProxy,
+    CompilerKind, CompilerProxy, HashResult
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -543,7 +543,7 @@ where
         })
     }
 
-    fn box_clone(&self) -> BoxDynCompilerProxy<T> {
+    fn box_clone(&self) -> Box<dyn CompilerProxy<T>> {
         Box::new((*self).clone())
     }
 }

@@ -991,7 +991,7 @@ where
                     .await;
 
                 let (c, proxy) = match info {
-                    Ok((ref c, ref proxy)) => (c.clone(), proxy.as_ref().map(|p| p.box_clone())),
+                    Ok((c, proxy)) => (c.clone(), proxy.clone()),
                     Err(err) => {
                         trace!("Inserting PLAIN cache map info for {:?}", &path);
                         me.compilers.write().await.insert(path, None);

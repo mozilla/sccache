@@ -48,11 +48,6 @@ use tempfile::TempDir;
 
 use crate::errors::*;
 
-
-// only really needed to avoid the hassle of writing it everywhere,
-// since `Compiler<T>: Send` is not enough for rustc
-pub type BoxDynCompilerProxy<T> = Box<dyn CompilerProxy<T>>;
-
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
 #[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
 pub const CAN_DIST_DYLIBS: bool = true;
@@ -158,7 +153,13 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send + 'static>>;
 
     /// Create a clone of `Self` and puts it in a `Box`
-    fn box_clone(&self) -> BoxDynCompilerProxy<T>;
+    fn box_clone(&self) -> Box<dyn CompilerProxy<T>>;
+}
+
+impl<T: CommandCreatorSync> Clone for Box<dyn CompilerProxy<T>> {
+    fn clone(&self) -> Box<dyn CompilerProxy<T>> {
+        self.box_clone()
+    }
 }
 
 /// An interface to a compiler for hash key generation, the result of
@@ -820,7 +821,7 @@ async fn detect_compiler<T>(
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
-) -> Result<(Box<dyn Compiler<T>>, Option<BoxDynCompilerProxy<T>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
@@ -873,7 +874,7 @@ where
                     match proxy.resolve_proxied_executable(creator.clone(), cwd, &env).await {
                         Ok((resolved_path, _time)) => {
                             trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                            let proxy = Box::new(proxy) as BoxDynCompilerProxy<T>;
+                            let proxy = Box::new(proxy) as Box<dyn CompilerProxy<T>>;
                             (Some(proxy), resolved_path)
                         }
                         Err(e) => {
@@ -904,7 +905,7 @@ where
             .map(|c| {
                 (
                     Box::new(c) as Box<dyn Compiler<T>>,
-                    proxy as Option<BoxDynCompilerProxy<T>>,
+                    proxy as Option<Box<dyn CompilerProxy<T>>>,
                 )
             })
         }
@@ -1051,7 +1052,7 @@ pub async fn get_compiler_info<T>(
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
-) -> Result<(Box<dyn Compiler<T>>, Option<BoxDynCompilerProxy<T>>)>
+) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
 where
     T: CommandCreatorSync,
 {
