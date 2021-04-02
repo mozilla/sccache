@@ -93,7 +93,7 @@ fn init_logging() {
     if env::var(LOGGING_ENV).is_ok() {
         match env_logger::Builder::from_env(LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
+            Err(e) => panic!("Failed to initalize logging: {:?}", e),
         }
     }
 }

@@ -590,7 +590,7 @@ fn test_gcs_credential_provider() {
                     .timestamp(),
             );
         })
-        .map_err(move |err| panic!(err.to_string()));
+        .map_err(|err| panic!("{}", err));
 
     server.with_graceful_shutdown(cred_fut);
 }
