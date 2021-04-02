@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #![deny(rust_2018_idioms)]
+#![allow(unknown_lints)]
+#![allow(clippy::type_complexity, clippy::new_without_default)]
 #![recursion_limit = "256"]
 
 #[macro_use]
