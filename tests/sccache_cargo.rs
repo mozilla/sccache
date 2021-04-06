@@ -4,11 +4,6 @@
 //! http://creativecommons.org/publicdomain/zero/1.0/
 
 #![deny(rust_2018_idioms)]
-#![allow(dead_code, unused_imports)]
-
-mod harness;
-
-use crate::harness::get_stats;
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[macro_use]
@@ -127,11 +122,10 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // so there are two separate compilations, but cargo will build the test crate with
     // incremental compilation enabled, so sccache will not cache it.
     trace!("sccache --show-stats");
-    get_stats(|info: sccache::server::ServerInfo| {
-        dbg!(&info.stats);
-        // FIXME differs between CI and local execution
-        assert_eq!(Some(&2), info.stats.cache_hits.get("Rust"));
-    });
-
+    sccache_command()
+        .args(&["--show-stats", "--stats-format=json"])
+        .assert()
+        .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())
+        .success();
     stop();
 }
