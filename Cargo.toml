@@ -58,8 +58,9 @@ rsa-der = "0.2"
 rsa-export = "0.2"
 # avoid duplicate dependency by sticking to 0.1
 oid = "0.1"
-picky = "6"
-picky-asn1-x509 = "0.3"
+# Pin exact versions to make sure we use the exact same picky-asn1-x509 version
+picky = "=6.2.0"
+picky-asn1-x509 = "=0.5.0"
 md-5 = { version = "0.9", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.13"
