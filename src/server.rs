@@ -922,7 +922,7 @@ where
                 metadata(&path2)
                     .map(|attr| FileTime::from_last_modification_time(&attr))
                     .ok()
-                    .map(move |filetime| (path2.clone(), filetime))
+                    .map(move |filetime| (path2, filetime))
                     .expect("Must contain sane data, otherwise mtime is not avail")
             }
         };
