@@ -150,7 +150,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
-    Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
+    sccache_command()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
