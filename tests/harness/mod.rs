@@ -2,7 +2,6 @@
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
-#[cfg(feature = "dist-server")]
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -109,11 +108,16 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
-// Override any environment variables that could adversely affect test execution.
+// Prune any environment variables that could adversely affect test execution.
 pub fn sccache_command() -> Command {
+    use sccache::util::OsStrExt;
+
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")));
-    cmd.env("SCCACHE_CONF", "nonexistent_conf_path")
-        .env("SCCACHE_CACHED_CONF", "nonexistent_cached_conf_path");
+    for (var, _) in env::vars_os() {
+        if var.starts_with("SCCACHE_") {
+            cmd.env_remove(var);
+        }
+    }
     cmd
 }
 
