@@ -4,24 +4,21 @@
 
 use chrono::{offset, DateTime, Duration};
 use directories::UserDirs;
-use futures::future::{self, Shared};
-use futures::{Async, Future, Stream};
-use hyper::client::HttpConnector;
-use hyper::{Client, Request};
+use futures::future;
 use hyperx::header::Connection;
 use regex::Regex;
-use serde_json::{from_str, Value};
+use reqwest::Client;
 #[allow(unused_imports, deprecated)]
 use std::ascii::AsciiExt;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env::*;
 use std::fs::{self, File};
+use std::future::Future;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::time::Duration as StdDuration;
-use tokio_timer::Timeout;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::errors::*;
 use crate::util::RequestExt;
@@ -86,17 +83,20 @@ impl AwsCredentials {
 }
 
 /// A trait for types that produce `AwsCredentials`.
-pub trait ProvideAwsCredentials {
+pub trait ProvideAwsCredentials: Send + Sync {
     /// Produce a new `AwsCredentials`.
-    fn credentials(&self) -> SFuture<AwsCredentials>;
+    fn credentials(&self)
+        -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>>;
 }
 
 /// Provides AWS credentials from environment variables.
 pub struct EnvironmentProvider;
 
 impl ProvideAwsCredentials for EnvironmentProvider {
-    fn credentials(&self) -> SFuture<AwsCredentials> {
-        Box::new(future::result(credentials_from_environment()))
+    fn credentials(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>> {
+        Box::pin(async { credentials_from_environment() })
     }
 }
 
@@ -198,11 +198,17 @@ impl ProfileProvider {
 }
 
 impl ProvideAwsCredentials for ProfileProvider {
-    fn credentials(&self) -> SFuture<AwsCredentials> {
-        let result = parse_credentials_file(self.file_path());
-        let result = result
-            .and_then(|mut profiles| profiles.remove(self.profile()).context("profile not found"));
-        Box::new(future::result(result))
+    fn credentials(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>> {
+        let file_path = self.file_path().to_owned();
+        let profile = self.profile.to_owned();
+
+        Box::pin(async move {
+            let mut profiles = parse_credentials_file(&file_path)?;
+
+            profiles.remove(&profile).context("profile not found")
+        })
     }
 }
 
@@ -280,7 +286,7 @@ fn parse_credentials_file(file_path: &Path) -> Result<HashMap<String, AwsCredent
 
 /// Provides AWS credentials from a resource's IAM role.
 pub struct IamProvider {
-    client: Client<HttpConnector>,
+    client: Client,
 }
 
 impl IamProvider {
@@ -290,182 +296,156 @@ impl IamProvider {
         }
     }
 
-    fn iam_role(&self) -> SFuture<String> {
+    async fn iam_role(client: &Client) -> Result<String> {
         // First get the IAM role
         let address = "http://169.254.169.254/latest/meta-data/iam/security-credentials/";
-        let req = Request::get(address)
+        let response = client
+            .get(address)
             .set_header(Connection::close())
-            .body("".into())
-            .unwrap();
-        let response = self.client.request(req).and_then(|response| {
-            response.into_body().fold(Vec::new(), |mut body, chunk| {
-                body.extend_from_slice(&chunk);
-                Ok::<_, hyper::Error>(body)
-            })
-        });
+            .body("")
+            .send()
+            .await
+            .context("couldn't connect to metadata service")?;
+        let bytes = response.bytes().await?;
+        let body = String::from_utf8(bytes.into_iter().collect())
+            .context("Didn't get a parsable response body from metadata service")?;
 
-        Box::new(
-            response
-                .then(|res| {
-                    let bytes = res.context("couldn't connect to metadata service")?;
-                    String::from_utf8(bytes)
-                        .context("Didn't get a parsable response body from metadata service")
-                })
-                .map(move |body| {
-                    let mut address = address.to_string();
-                    address.push_str(&body);
-                    address
-                }),
-        )
+        let mut address = address.to_string();
+        address.push_str(&body);
+        Ok(address)
     }
 }
 
 impl ProvideAwsCredentials for IamProvider {
-    fn credentials(&self) -> SFuture<AwsCredentials> {
-        let url = match var("AWS_IAM_CREDENTIALS_URL") {
-            Ok(url) => f_ok(url),
-            Err(_) => self.iam_role(),
-        };
-        let url = url.and_then(|url| {
-            url.parse::<hyper::Uri>()
-                .with_context(|| format!("failed to parse `{}` as url", url))
-        });
-
+    fn credentials(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>> {
         let client = self.client.clone();
-        let response = url.and_then(move |address| {
-            debug!("Attempting to fetch credentials from {}", address);
-            let req = Request::get(address)
-                .set_header(Connection::close())
-                .body("".into())
-                .unwrap();
-            client.request(req).fcontext("failed to send http request")
-        });
-        let body = response.and_then(|response| {
-            response
-                .into_body()
-                .fold(Vec::new(), |mut body, chunk| {
-                    body.extend_from_slice(&chunk);
-                    Ok::<_, hyper::Error>(body)
-                })
-                .fcontext("failed to read http body")
-        });
-        let body = body
-            .map_err(|e| anyhow!("Failed to get IAM credentials: {}", e))
-            .and_then(|body| String::from_utf8(body).context("failed to read iam role response"));
 
-        let creds = body.and_then(|body| {
-            let json_object: Value;
-            match from_str(&body) {
-                Err(_) => bail!("Couldn't parse metadata response body."),
-                Ok(val) => json_object = val,
+        Box::pin(async {
+            let url = match var("AWS_IAM_CREDENTIALS_URL") {
+                Ok(url) => url,
+                Err(_) => Self::iam_role(&client).await?,
             };
+            let address = url
+                .parse::<reqwest::Url>()
+                .with_context(|| format!("failed to parse `{}` as url", url))?;
 
-            let access_key;
-            match json_object.get("AccessKeyId") {
-                None => bail!("Couldn't find AccessKeyId in response."),
-                Some(val) => {
-                    access_key = val
+            debug!("Attempting to fetch credentials from {}", address);
+
+            let fetch_creds = async move {
+                let response = client
+                    .get(address)
+                    .set_header(Connection::close())
+                    .body("")
+                    .send()
+                    .await
+                    .context("failed to send http request")?;
+
+                let body: serde_json::Value = response
+                    .json()
+                    .await
+                    .context("failed to read IAM role response")?;
+
+                let access_key = match body.get("AccessKeyId") {
+                    None => bail!("Couldn't find AccessKeyId in response."),
+                    Some(val) => val
                         .as_str()
                         .expect("AccessKeyId value was not a string")
                         .to_owned()
-                        .replace("\"", "")
-                }
-            };
+                        .replace("\"", ""),
+                };
 
-            let secret_key;
-            match json_object.get("SecretAccessKey") {
-                None => bail!("Couldn't find SecretAccessKey in response."),
-                Some(val) => {
-                    secret_key = val
+                let secret_key = match body.get("SecretAccessKey") {
+                    None => bail!("Couldn't find SecretAccessKey in response."),
+                    Some(val) => val
                         .as_str()
                         .expect("SecretAccessKey value was not a string")
                         .to_owned()
-                        .replace("\"", "")
-                }
-            };
+                        .replace("\"", ""),
+                };
 
-            let expiration;
-            match json_object.get("Expiration") {
-                None => bail!("Couldn't find Expiration in response."),
-                Some(val) => {
-                    expiration = val
+                let expiration = match body.get("Expiration") {
+                    None => bail!("Couldn't find Expiration in response."),
+                    Some(val) => val
                         .as_str()
                         .expect("Expiration value was not a string")
                         .to_owned()
-                        .replace("\"", "")
-                }
-            };
+                        .replace("\"", ""),
+                };
 
-            let expiration_time = expiration
-                .parse()
-                .context("failed to parse expiration time")?;
+                let expiration_time = expiration
+                    .parse()
+                    .context("failed to parse expiration time")?;
 
-            let token_from_response;
-            match json_object.get("Token") {
-                None => bail!("Couldn't find Token in response."),
-                Some(val) => {
-                    token_from_response = val
+                let token_from_response = match body.get("Token") {
+                    None => bail!("Couldn't find Token in response."),
+                    Some(val) => val
                         .as_str()
                         .expect("Token value was not a string")
                         .to_owned()
-                        .replace("\"", "")
-                }
+                        .replace("\"", ""),
+                };
+
+                Ok(AwsCredentials::new(
+                    access_key,
+                    secret_key,
+                    Some(token_from_response),
+                    expiration_time,
+                ))
             };
 
-            Ok(AwsCredentials::new(
-                access_key,
-                secret_key,
-                Some(token_from_response),
-                expiration_time,
-            ))
-        });
-
-        //XXX: this is crappy, but this blocks on non-EC2 machines like
-        // our mac builders.
-        let timeout = Timeout::new(creds, StdDuration::from_secs(2));
-
-        Box::new(timeout.then(|result| match result {
-            Ok(creds) => Ok(creds),
-            Err(err) => match err.into_inner() {
-                None => bail!("took too long to fetch credentials"),
-                Some(e) => {
+            //XXX: this is crappy, but this blocks on non-EC2 machines like
+            // our mac builders.
+            match tokio::time::timeout(std::time::Duration::from_secs(2), fetch_creds).await {
+                Ok(Ok(creds)) => Ok(creds),
+                Ok(Err(e)) => {
                     warn!("Failed to fetch IAM credentials: {}", e);
                     Err(e)
                 }
-            },
-        }))
+                Err(_elased) => bail!("took too long to fetch credentials"),
+            }
+        })
     }
 }
 
 /// Wrapper for ProvideAwsCredentials that caches the credentials returned by the
 /// wrapped provider.  Each time the credentials are accessed, they are checked to see if
 /// they have expired, in which case they are retrieved from the wrapped provider again.
-pub struct AutoRefreshingProvider<P> {
+pub struct AutoRefreshingProvider<P: Send + Sync> {
     credentials_provider: P,
-    cached_credentials: RefCell<Shared<SFuture<AwsCredentials>>>,
+    cached_credentials: Arc<futures_locks::Mutex<Option<AwsCredentials>>>,
 }
 
-impl<P: ProvideAwsCredentials> AutoRefreshingProvider<P> {
+impl<P: ProvideAwsCredentials + Send + Sync> AutoRefreshingProvider<P> {
     pub fn new(provider: P) -> AutoRefreshingProvider<P> {
         AutoRefreshingProvider {
-            cached_credentials: RefCell::new(provider.credentials().shared()),
+            cached_credentials: Arc::new(futures_locks::Mutex::new(None)),
             credentials_provider: provider,
         }
     }
 }
 
-impl<P: ProvideAwsCredentials> ProvideAwsCredentials for AutoRefreshingProvider<P> {
-    fn credentials(&self) -> SFuture<AwsCredentials> {
-        let mut future = self.cached_credentials.borrow_mut();
-        if let Ok(Async::Ready(creds)) = future.poll() {
-            if creds.credentials_are_expired() {
-                *future = self.credentials_provider.credentials().shared();
+impl<P: ProvideAwsCredentials + Sync> ProvideAwsCredentials for AutoRefreshingProvider<P> {
+    fn credentials(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>> {
+        let cached_credentials = Arc::clone(&self.cached_credentials);
+        let new_creds = self.credentials_provider.credentials();
+
+        Box::pin(async move {
+            let mut cache = cached_credentials.lock().await;
+
+            match *cache {
+                Some(ref creds) if !creds.credentials_are_expired() => Ok(creds.clone()),
+                _ => {
+                    let new_creds = new_creds.await?;
+
+                    *cache = Some(new_creds.clone());
+                    Ok(new_creds)
+                }
             }
-        }
-        Box::new(future.clone().then(|result| match result {
-            Ok(e) => Ok((*e).clone()),
-            Err(e) => Err(anyhow!(e.to_string())),
-        }))
+        })
     }
 }
 
@@ -484,30 +464,38 @@ pub struct ChainProvider {
 }
 
 impl ProvideAwsCredentials for ChainProvider {
-    fn credentials(&self) -> SFuture<AwsCredentials> {
-        let creds = EnvironmentProvider.credentials().map(|c| {
-            debug!("Using AWS credentials from environment");
-            c
-        });
-        let mut creds = Box::new(creds) as SFuture<_>;
-        for provider in self.profile_providers.iter() {
-            let alternate = provider.credentials();
-            creds = Box::new(creds.or_else(|_| alternate));
-        }
-        Box::new(
-            creds
-                .or_else(move |_| {
-                    IamProvider::new().credentials().map(|c| {
-                        debug!("Using AWS credentials from IAM");
-                        c
-                    })
-                })
-                .map_err(|_| {
-                    anyhow!(
+    fn credentials(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<AwsCredentials>> + Send + 'static>> {
+        use futures::FutureExt;
+
+        let environment_provider = EnvironmentProvider
+            .credentials()
+            .inspect(|_| debug!("Using AWS credentials from environment"))
+            .boxed();
+        let iam_provider = IamProvider::new()
+            .credentials()
+            .inspect(|_| debug!("Using AWS credentials from IAM"))
+            .boxed();
+
+        let providers: Vec<_> = std::iter::empty()
+            .chain(std::iter::once(environment_provider))
+            .chain(
+                self.profile_providers
+                    .iter()
+                    .map(ProvideAwsCredentials::credentials),
+            )
+            .chain(std::iter::once(iam_provider))
+            .collect();
+
+        Box::pin(async move {
+            match future::select_ok(providers).await {
+                Ok((creds, _rest)) => Ok(creds),
+                Err(_) => bail!(
                     "Couldn't find AWS credentials in environment, credentials file, or IAM role."
-                )
-                }),
-        )
+                ),
+            }
+        })
     }
 }
 

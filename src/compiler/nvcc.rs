@@ -21,10 +21,10 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use futures::future::{self, Future};
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -35,6 +35,7 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct NVCC;
 
+#[async_trait]
 impl CCompilerImpl for NVCC {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::NVCC
@@ -50,7 +51,7 @@ impl CCompilerImpl for NVCC {
         gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
     }
 
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -59,7 +60,7 @@ impl CCompilerImpl for NVCC {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -131,9 +132,13 @@ impl CCompilerImpl for NVCC {
         if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
-            Box::new(first.join(second).map(|(f, s)| s))
+            // TODO: If we need to chain these to emulate a frontend, shouldn't
+            // we explicitly wait on the first one before starting the second one?
+            // (rather than via which drives these concurrently)
+            let (_f, s) = futures::future::try_join(first, second).await?;
+            Ok(s)
         } else {
-            Box::new(run_input_output(cmd, None))
+            run_input_output(cmd, None).await
         }
     }
 
@@ -205,7 +210,6 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

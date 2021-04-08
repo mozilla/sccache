@@ -23,8 +23,6 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
-use futures::Future;
-use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -163,7 +161,8 @@ pub enum CCompilerKind {
 }
 
 /// An interface to a specific C compiler.
-pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
+#[async_trait]
+pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// Return the kind of compiler.
     fn kind(&self) -> CCompilerKind;
     /// Return true iff this is g++ or clang++.
@@ -176,7 +175,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     ) -> CompilerArguments<ParsedArguments>;
     /// Run the C preprocessor with the specified set of arguments.
     #[allow(clippy::too_many_arguments)]
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -185,7 +184,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
     /// Generate a command that can be used to invoke the C compiler to perform
@@ -205,28 +204,28 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub fn new(
+    pub async fn new(
         compiler: I,
         executable: PathBuf,
         version: Option<String>,
-        pool: &ThreadPool,
-    ) -> SFuture<CCompiler<I>> {
-        Box::new(
-            Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
-                executable,
-                executable_digest: {
-                    if let Some(version) = version {
-                        let mut m = Digest::new();
-                        m.update(digest.as_bytes());
-                        m.update(version.as_bytes());
-                        m.finish()
-                    } else {
-                        digest
-                    }
-                },
-                compiler,
-            }),
-        )
+        pool: &tokio::runtime::Handle,
+    ) -> Result<CCompiler<I>> {
+        let digest = Digest::file(executable.clone(), pool).await?;
+
+        Ok(CCompiler {
+            executable,
+            executable_digest: {
+                if let Some(version) = version {
+                    let mut m = Digest::new();
+                    m.update(digest.as_bytes());
+                    m.update(version.as_bytes());
+                    m.finish()
+                } else {
+                    digest
+                }
+            },
+            compiler,
+        })
     }
 }
 
@@ -265,125 +264,121 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
 }
 
+#[async_trait]
 impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 where
     T: CommandCreatorSync,
     I: CCompilerImpl,
 {
-    fn generate_hash_key(
+    async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
-    ) -> SFuture<HashResult> {
-        let me = *self;
+    ) -> Result<HashResult> {
         let CCompilerHasher {
             parsed_args,
             executable,
             executable_digest,
             compiler,
-        } = me;
-        let result = compiler.preprocess(
-            creator,
-            &executable,
-            &parsed_args,
-            &cwd,
-            &env_vars,
-            may_dist,
-            rewrite_includes_only,
-        );
+        } = *self;
+
+        let result = compiler
+            .preprocess(
+                creator,
+                &executable,
+                &parsed_args,
+                &cwd,
+                &env_vars,
+                may_dist,
+                rewrite_includes_only,
+            )
+            .await;
         let out_pretty = parsed_args.output_pretty().into_owned();
-        let result = result.map_err(move |e| {
+        let result = result.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });
-        let out_pretty = parsed_args.output_pretty().into_owned();
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone());
+
+        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
         let outputs = parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
 
-        Box::new(
-            result
-                .or_else(move |err| {
-                    // Errors remove all traces of potential output.
-                    debug!("removing files {:?}", &outputs);
+        let preprocessor_result = result.or_else(move |err| {
+            // Errors remove all traces of potential output.
+            debug!("removing files {:?}", &outputs);
 
-                    let v: std::result::Result<(), std::io::Error> =
-                        outputs.values().fold(Ok(()), |r, f| {
-                            r.and_then(|_| {
-                                let mut path = (&args_cwd).clone();
-                                path.push(&f);
-                                match fs::metadata(&path) {
-                                    // File exists, remove it.
-                                    Ok(_) => fs::remove_file(&path),
-                                    _ => Ok(()),
-                                }
-                            })
-                        });
-                    if v.is_err() {
-                        warn!("Could not remove files after preprocessing failed!\n");
-                    }
-
-                    match err.downcast::<ProcessError>() {
-                        Ok(ProcessError(output)) => {
-                            debug!(
-                                "[{}]: preprocessor returned error status {:?}",
-                                out_pretty,
-                                output.status.code()
-                            );
-                            // Drop the stdout since it's the preprocessor output,
-                            // just hand back stderr and the exit status.
-                            bail!(ProcessError(process::Output {
-                                stdout: vec!(),
-                                ..output
-                            }))
+            let v: std::result::Result<(), std::io::Error> =
+                outputs.values().fold(Ok(()), |r, f| {
+                    r.and_then(|_| {
+                        let mut path = (&args_cwd).clone();
+                        path.push(&f);
+                        match fs::metadata(&path) {
+                            // File exists, remove it.
+                            Ok(_) => fs::remove_file(&path),
+                            _ => Ok(()),
                         }
-                        Err(err) => Err(err),
-                    }
-                })
-                .and_then(move |preprocessor_result| {
-                    trace!(
-                        "[{}]: Preprocessor output is {} bytes",
-                        parsed_args.output_pretty(),
-                        preprocessor_result.stdout.len()
-                    );
+                    })
+                });
+            if v.is_err() {
+                warn!("Could not remove files after preprocessing failed!");
+            }
 
-                    Box::new(extra_hashes.and_then(move |extra_hashes| {
-                        let key = {
-                            hash_key(
-                                &executable_digest,
-                                parsed_args.language,
-                                &parsed_args.common_args,
-                                &extra_hashes,
-                                &env_vars,
-                                &preprocessor_result.stdout,
-                                compiler.plusplus(),
-                            )
-                        };
-                        // A compiler binary may be a symlink to another and so has the same digest, but that means
-                        // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
-                        // executable path to try and prevent this
-                        let weak_toolchain_key =
-                            format!("{}-{}", executable.to_string_lossy(), executable_digest);
-                        Ok(HashResult {
-                            key,
-                            compilation: Box::new(CCompilation {
-                                parsed_args,
-                                #[cfg(feature = "dist-client")]
-                                preprocessed_input: preprocessor_result.stdout,
-                                executable,
-                                compiler,
-                                cwd,
-                                env_vars,
-                            }),
-                            weak_toolchain_key,
-                        })
+            match err.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => {
+                    debug!(
+                        "[{}]: preprocessor returned error status {:?}",
+                        out_pretty,
+                        output.status.code()
+                    );
+                    // Drop the stdout since it's the preprocessor output,
+                    // just hand back stderr and the exit status.
+                    bail!(ProcessError(process::Output {
+                        stdout: vec!(),
+                        ..output
                     }))
-                }),
-        )
+                }
+                Err(err) => Err(err),
+            }
+        })?;
+
+        trace!(
+            "[{}]: Preprocessor output is {} bytes",
+            parsed_args.output_pretty(),
+            preprocessor_result.stdout.len()
+        );
+
+        let key = {
+            hash_key(
+                &executable_digest,
+                parsed_args.language,
+                &parsed_args.common_args,
+                &extra_hashes,
+                &env_vars,
+                &preprocessor_result.stdout,
+                compiler.plusplus(),
+            )
+        };
+        // A compiler binary may be a symlink to another and so has the same digest, but that means
+        // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
+        // executable path to try and prevent this
+        let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+        Ok(HashResult {
+            key,
+            compilation: Box::new(CCompilation {
+                parsed_args,
+                #[cfg(feature = "dist-client")]
+                preprocessed_input: preprocessor_result.stdout,
+                executable,
+                compiler,
+                cwd,
+                env_vars,
+            }),
+            weak_toolchain_key,
+        })
     }
 
     fn color_mode(&self) -> ColorMode {
