@@ -24,8 +24,6 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
-use crate::util::SpawnExt;
-use futures_03::executor::ThreadPool;
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -151,11 +149,15 @@ impl CacheRead {
         bytes
     }
 
-    pub fn extract_objects<T>(mut self, objects: T, pool: &ThreadPool) -> SFuture<()>
+    pub async fn extract_objects<T>(
+        mut self,
+        objects: T,
+        pool: &tokio::runtime::Handle,
+    ) -> Result<()>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        Box::new(pool.spawn_fn(move || {
+        pool.spawn_blocking(move || {
             for (key, path) in objects {
                 let dir = match path.parent() {
                     Some(d) => d,
@@ -172,7 +174,8 @@ impl CacheRead {
                 }
             }
             Ok(())
-        }))
+        })
+        .await?
     }
 }
 
@@ -190,11 +193,11 @@ impl CacheWrite {
     }
 
     /// Create a new cache entry populated with the contents of `objects`.
-    pub fn from_objects<T>(objects: T, pool: &ThreadPool) -> SFuture<CacheWrite>
+    pub async fn from_objects<T>(objects: T, pool: &tokio::runtime::Handle) -> Result<CacheWrite>
     where
         T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
     {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
+        pool.spawn_blocking(move || {
             let mut entry = CacheWrite::new();
             for (key, path) in objects {
                 let mut f = fs::File::open(&path)?;
@@ -204,7 +207,8 @@ impl CacheWrite {
                     .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
             }
             Ok(entry)
-        }))
+        })
+        .await?
     }
 
     /// Add an object containing the contents of `from` to this cache entry at `name`.
@@ -259,7 +263,8 @@ impl Default for CacheWrite {
 }
 
 /// An interface to cache storage.
-pub trait Storage {
+#[async_trait]
+pub trait Storage: Send + Sync {
     /// Get a cache entry by `key`.
     ///
     /// If an error occurs, this method should return a `Cache::Error`.
@@ -267,27 +272,27 @@ pub trait Storage {
     /// it should return a `Cache::Miss`.
     /// If the entry is successfully found in the cache, it should
     /// return a `Cache::Hit`.
-    fn get(&self, key: &str) -> SFuture<Cache>;
+    async fn get(&self, key: &str) -> Result<Cache>;
 
     /// Put `entry` in the cache under `key`.
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration>;
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
 
     /// Get the storage location.
     fn location(&self) -> String;
 
     /// Get the current storage usage, if applicable.
-    fn current_size(&self) -> SFuture<Option<u64>>;
+    async fn current_size(&self) -> Result<Option<u64>>;
 
     /// Get the maximum storage size, if applicable.
-    fn max_size(&self) -> SFuture<Option<u64>>;
+    async fn max_size(&self) -> Result<Option<u64>>;
 }
 
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
-pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storage> {
+pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
             CacheType::Azure(config::AzureCacheConfig) => {

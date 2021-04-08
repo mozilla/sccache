@@ -16,15 +16,14 @@
 use crate::azure::BlobContainer;
 use crate::azure::*;
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use futures::future::Future;
 use std::io;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
 pub struct AzureBlobCache {
-    container: Rc<BlobContainer>,
+    container: Arc<BlobContainer>,
     credentials: AzureCredentials,
 }
 
@@ -44,53 +43,48 @@ impl AzureBlobCache {
         };
 
         Ok(AzureBlobCache {
-            container: Rc::new(container),
+            container: Arc::new(container),
             credentials,
         })
     }
 }
 
+#[async_trait]
 impl Storage for AzureBlobCache {
-    fn get(&self, key: &str) -> SFuture<Cache> {
-        Box::new(
-            self.container
-                .get(key, &self.credentials)
-                .then(|result| match result {
-                    Ok(data) => {
-                        let hit = CacheRead::from(io::Cursor::new(data))?;
-                        Ok(Cache::Hit(hit))
-                    }
-                    Err(e) => {
-                        warn!("Got Azure error: {:?}", e);
-                        Ok(Cache::Miss)
-                    }
-                }),
-        )
+    async fn get(&self, key: &str) -> Result<Cache> {
+        match self.container.get(key, &self.credentials).await {
+            Ok(data) => {
+                let hit = CacheRead::from(io::Cursor::new(data))?;
+                Ok(Cache::Hit(hit))
+            }
+            Err(e) => {
+                warn!("Got Azure error: {:?}", e);
+                Ok(Cache::Miss)
+            }
+        }
     }
 
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let start = Instant::now();
-        let data = match entry.finish() {
-            Ok(data) => data,
-            Err(e) => return f_err(e),
-        };
+        let data = entry.finish()?;
 
-        let response = self
+        let _ = self
             .container
             .put(key, data, &self.credentials)
-            .fcontext("Failed to put cache entry in Azure");
+            .await
+            .context("Failed to put cache entry in Azure")?;
 
-        Box::new(response.map(move |_| start.elapsed()))
+        Ok(start.elapsed())
     }
 
     fn location(&self) -> String {
         format!("Azure, container: {}", self.container)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        f_ok(None)
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        f_ok(None)
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
 }

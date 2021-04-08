@@ -19,9 +19,7 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
-use futures::sync::oneshot::{self, Sender};
-use futures_03::compat::*;
-use futures_03::executor::ThreadPool;
+use futures::channel::oneshot::{self, Sender};
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -33,7 +31,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::u64;
-use tokio_compat::runtime::current_thread::Runtime;
+use tokio::runtime::Runtime;
 
 /// Options for running the server in tests.
 #[derive(Default)]
@@ -76,13 +74,12 @@ where
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let pool = ThreadPool::sized(1);
-        let dist_client = DistClientContainer::new_disabled();
-        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
-
         let runtime = Runtime::new().unwrap();
+        let dist_client = DistClientContainer::new_disabled();
+        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, runtime.handle()));
+
         let client = unsafe { Client::new() };
-        let srv = SccacheServer::new(0, pool, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {
@@ -93,7 +90,7 @@ where
         let port = srv.port();
         let creator = srv.command_creator().clone();
         tx.send((port, creator)).unwrap();
-        srv.run(shutdown_rx.compat()).unwrap();
+        srv.run(shutdown_rx).unwrap();
     });
     let (port, creator) = rx.recv().unwrap();
     (port, shutdown_tx, creator, handle)
