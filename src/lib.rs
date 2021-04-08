@@ -17,6 +17,8 @@
 #![recursion_limit = "256"]
 
 #[macro_use]
+extern crate async_trait;
+#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate counted_array;

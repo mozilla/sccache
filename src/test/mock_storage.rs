@@ -14,48 +14,50 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
-use futures::future;
-use std::cell::RefCell;
+use futures::channel::mpsc;
+use futures_locks::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
-    gets: RefCell<Vec<SFuture<Cache>>>,
+    rx: Arc<Mutex<mpsc::UnboundedReceiver<Result<Cache>>>>,
+    tx: mpsc::UnboundedSender<Result<Cache>>,
 }
 
 impl MockStorage {
     /// Create a new `MockStorage`.
-    pub fn new() -> MockStorage {
-        MockStorage {
-            gets: RefCell::new(vec![]),
+    pub(crate) fn new() -> MockStorage {
+        let (tx, rx) = mpsc::unbounded();
+        Self {
+            tx,
+            rx: Arc::new(Mutex::new(rx)),
         }
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
-    pub fn next_get(&self, res: SFuture<Cache>) {
-        self.gets.borrow_mut().push(res)
+    pub(crate) fn next_get(&self, res: Result<Cache>) {
+        self.tx.unbounded_send(res).unwrap();
     }
 }
 
+#[async_trait]
 impl Storage for MockStorage {
-    fn get(&self, _key: &str) -> SFuture<Cache> {
-        let mut g = self.gets.borrow_mut();
-        assert!(
-            g.len() > 0,
-            "MockStorage get called, but no get results available"
-        );
-        g.remove(0)
+    async fn get(&self, _key: &str) -> Result<Cache> {
+        let next = self.rx.lock().await.try_next().unwrap();
+
+        next.expect("MockStorage get called but no get results available")
     }
-    fn put(&self, _key: &str, _entry: CacheWrite) -> SFuture<Duration> {
-        f_ok(Duration::from_secs(0))
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
+        Ok(Duration::from_secs(0))
     }
     fn location(&self) -> String {
         "Mock Storage".to_string()
     }
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
 }
