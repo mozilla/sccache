@@ -17,10 +17,10 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use futures_03::executor::ThreadPool;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -230,6 +230,33 @@ impl TestFixture {
     }
 }
 
+pub fn single_threaded_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new()
+        .enable_all()
+        .basic_scheduler()
+        .core_threads(1)
+        .build()
+        .unwrap()
+}
+
+/// An add on trait, to allow calling `.wait()` for `futures::Future`
+/// as it was possible for `futures` at `0.1`.
+///
+/// Intended for test only!
+pub(crate) trait Waiter<R> {
+    fn wait(self) -> R;
+}
+
+impl<T, O> Waiter<O> for T
+where
+    T: Future<Output = O>,
+{
+    fn wait(self) -> O {
+        let mut rt = single_threaded_runtime();
+        rt.block_on(self)
+    }
+}
+
 #[test]
 fn test_map_contains_ok() {
     let mut m = HashMap::new();
@@ -262,17 +289,4 @@ fn test_map_contains_wrong_value() {
     m.insert("a", 1);
     m.insert("b", 3);
     assert_map_contains!(m, ("a", 1), ("b", 2));
-}
-
-pub trait ThreadPoolExt {
-    fn sized(size: usize) -> Self;
-}
-
-impl ThreadPoolExt for ThreadPool {
-    fn sized(size: usize) -> Self {
-        ThreadPool::builder()
-            .pool_size(size)
-            .create()
-            .expect("Failed to start thread pool")
-    }
 }

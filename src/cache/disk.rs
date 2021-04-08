@@ -15,8 +15,6 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::lru_disk_cache::Error as LruError;
 use crate::lru_disk_cache::LruDiskCache;
-use crate::util::SpawnExt;
-use futures_03::executor::ThreadPool;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,12 +28,16 @@ pub struct DiskCache {
     /// `LruDiskCache` does all the real work here.
     lru: Arc<Mutex<LruDiskCache>>,
     /// Thread pool to execute disk I/O
-    pool: ThreadPool,
+    pool: tokio::runtime::Handle,
 }
 
 impl DiskCache {
     /// Create a new `DiskCache` rooted at `root`, with `max_size` as the maximum cache size on-disk, in bytes.
-    pub fn new<T: AsRef<OsStr>>(root: &T, max_size: u64, pool: &ThreadPool) -> DiskCache {
+    pub fn new<T: AsRef<OsStr>>(
+        root: &T,
+        max_size: u64,
+        pool: &tokio::runtime::Handle,
+    ) -> DiskCache {
         DiskCache {
             //TODO: change this function to return a Result
             lru: Arc::new(Mutex::new(
@@ -51,53 +53,60 @@ fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
 }
 
+#[async_trait]
 impl Storage for DiskCache {
-    fn get(&self, key: &str) -> SFuture<Cache> {
+    async fn get(&self, key: &str) -> Result<Cache> {
         trace!("DiskCache::get({})", key);
         let path = make_key_path(key);
         let lru = self.lru.clone();
         let key = key.to_owned();
-        Box::new(self.pool.spawn_fn(move || {
-            let mut lru = lru.lock().unwrap();
-            let f = match lru.get(&path) {
-                Ok(f) => f,
-                Err(LruError::FileNotInCache) => {
-                    trace!("DiskCache::get({}): FileNotInCache", key);
-                    return Ok(Cache::Miss);
-                }
-                Err(LruError::Io(e)) => {
-                    trace!("DiskCache::get({}): IoError: {:?}", key, e);
-                    return Err(e.into());
-                }
-                Err(_) => unreachable!(),
-            };
-            let hit = CacheRead::from(f)?;
-            Ok(Cache::Hit(hit))
-        }))
+
+        self.pool
+            .spawn_blocking(move || {
+                let mut lru = lru.lock().unwrap();
+                let io = match lru.get(&path) {
+                    Ok(f) => f,
+                    Err(LruError::FileNotInCache) => {
+                        trace!("DiskCache::get({}): FileNotInCache", key);
+                        return Ok(Cache::Miss);
+                    }
+                    Err(LruError::Io(e)) => {
+                        trace!("DiskCache::get({}): IoError: {:?}", key, e);
+                        return Err(e.into());
+                    }
+                    Err(_) => unreachable!(),
+                };
+                let hit = CacheRead::from(io)?;
+                Ok(Cache::Hit(hit))
+            })
+            .await?
     }
 
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
         let lru = self.lru.clone();
         let key = make_key_path(key);
-        Box::new(self.pool.spawn_fn(move || {
-            let start = Instant::now();
-            let v = entry.finish()?;
-            lru.lock().unwrap().insert_bytes(key, &v)?;
-            Ok(start.elapsed())
-        }))
+
+        self.pool
+            .spawn_blocking(move || {
+                let start = Instant::now();
+                let v = entry.finish()?;
+                lru.lock().unwrap().insert_bytes(key, &v)?;
+                Ok(start.elapsed())
+            })
+            .await?
     }
 
     fn location(&self) -> String {
         format!("Local disk: {:?}", self.lru.lock().unwrap().path())
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        f_ok(Some(self.lru.lock().unwrap().size()))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(Some(self.lru.lock().unwrap().size()))
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        f_ok(Some(self.lru.lock().unwrap().capacity()))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(Some(self.lru.lock().unwrap().capacity()))
     }
 }

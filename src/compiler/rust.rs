@@ -26,10 +26,8 @@ use crate::dist::pkg;
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
-use crate::util::{ref_env, HashToDigest, OsStrExt, SpawnExt};
+use crate::util::{ref_env, HashToDigest, OsStrExt};
 use filetime::FileTime;
-use futures::Future;
-use futures_03::executor::ThreadPool;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
@@ -44,12 +42,14 @@ use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
 use std::io::Read;
 use std::iter;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process;
 #[cfg(feature = "dist-client")]
 use std::sync::{Arc, Mutex};
@@ -197,24 +197,24 @@ lazy_static! {
 const CACHE_VERSION: &[u8] = b"6";
 
 /// Get absolute paths for all source files listed in rustc's dep-info output.
-fn get_source_files<T>(
+async fn get_source_files<T>(
     creator: &T,
     crate_name: &str,
     executable: &Path,
     arguments: &[OsString],
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    pool: &ThreadPool,
-) -> SFuture<Vec<PathBuf>>
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<PathBuf>>
 where
     T: CommandCreatorSync,
 {
     let start = time::Instant::now();
     // Get the full list of source files from rustc's dep-info.
-    let temp_dir = ftry!(tempfile::Builder::new()
+    let temp_dir = tempfile::Builder::new()
         .prefix("sccache")
         .tempdir()
-        .context("Failed to create temp dir"));
+        .context("Failed to create temp dir")?;
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
@@ -225,29 +225,29 @@ where
         .envs(ref_env(env_vars))
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
-    let dep_info = run_input_output(cmd, None);
+    // Output of command is in file under dep_file, so we ignore stdout&stderr
+    let _dep_info = run_input_output(cmd, None).await?;
     // Parse the dep-info file, then hash the contents of those files.
-    let pool = pool.clone();
     let cwd = cwd.to_owned();
-    let crate_name = crate_name.to_owned();
-    Box::new(dep_info.and_then(move |_| -> SFuture<_> {
-        let name2 = crate_name.clone();
-        let parsed = pool.spawn_fn(move || {
+    let name2 = crate_name.to_owned();
+    let parsed = pool
+        .spawn_blocking(move || {
             parse_dep_file(&dep_file, &cwd)
                 .with_context(|| format!("Failed to parse dep info for {}", name2))
-        });
-        Box::new(parsed.map(move |files| {
-            trace!(
-                "[{}]: got {} source files from dep-info in {}",
-                crate_name,
-                files.len(),
-                fmt_duration_as_secs(&start.elapsed())
-            );
-            // Just to make sure we capture temp_dir.
-            drop(temp_dir);
-            files
-        }))
-    }))
+        })
+        .await?;
+
+    parsed.map(move |files| {
+        trace!(
+            "[{}]: got {} source files from dep-info in {}",
+            crate_name,
+            files.len(),
+            fmt_duration_as_secs(&start.elapsed())
+        );
+        // Just to make sure we capture temp_dir.
+        drop(temp_dir);
+        files
+    })
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
@@ -315,15 +315,15 @@ where
 }
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
-fn get_compiler_outputs<T>(
+async fn get_compiler_outputs<T>(
     creator: &T,
     executable: &Path,
     arguments: Vec<OsString>,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-) -> SFuture<Vec<String>>
+) -> Result<Vec<String>>
 where
-    T: CommandCreatorSync,
+    T: Clone + CommandCreatorSync,
 {
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.args(&arguments)
@@ -334,37 +334,36 @@ where
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", cmd);
     }
-    let outputs = run_input_output(cmd, None);
-    Box::new(outputs.and_then(move |output| -> Result<_> {
-        let outstr = String::from_utf8(output.stdout).context("Error parsing rustc output")?;
-        if log_enabled!(Trace) {
-            trace!("get_compiler_outputs: {:?}", outstr);
-        }
-        Ok(outstr.lines().map(|l| l.to_owned()).collect())
-    }))
+    let outputs = run_input_output(cmd, None).await?;
+
+    let outstr = String::from_utf8(outputs.stdout).context("Error parsing rustc output")?;
+    if log_enabled!(Trace) {
+        trace!("get_compiler_outputs: {:?}", outstr);
+    }
+    Ok(outstr.lines().map(|l| l.to_owned()).collect())
 }
 
 impl Rust {
     /// Create a new Rust compiler instance, calculating the hashes of
     /// all the shared libraries in its sysroot.
-    pub fn new<T>(
+    pub async fn new<T>(
         mut creator: T,
         executable: PathBuf,
         env_vars: &[(OsString, OsString)],
         rustc_verbose_version: &str,
         dist_archive: Option<PathBuf>,
-        pool: ThreadPool,
-    ) -> SFuture<Rust>
+        pool: tokio::runtime::Handle,
+    ) -> Result<Rust>
     where
         T: CommandCreatorSync,
     {
         // Taken from Cargo
-        let host = ftry!(rustc_verbose_version
+        let host = rustc_verbose_version
             .lines()
             .find(|l| l.starts_with("host: "))
             .map(|l| &l[6..])
-            .context("rustc verbose version didn't have a line for `host:`"))
-        .to_string();
+            .context("rustc verbose version didn't have a line for `host:`")?
+            .to_string();
 
         // it's fine to use the `executable` directly no matter if proxied or not
         let mut cmd = creator.new_command_sync(&executable);
@@ -373,8 +372,8 @@ impl Rust {
             .arg("--print=sysroot")
             .env_clear()
             .envs(ref_env(env_vars));
-        let output = run_input_output(cmd, None);
-        let sysroot_and_libs = output.and_then(move |output| -> Result<_> {
+        let sysroot_and_libs = async move {
+            let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
             let outstr = String::from_utf8(output.stdout).context("Error parsing sysroot")?;
             let sysroot = PathBuf::from(outstr.trim_end());
@@ -401,45 +400,48 @@ impl Rust {
                 libs.push(path);
             };
             libs.sort();
-            Ok((sysroot, libs))
-        });
-
-        #[cfg(feature = "dist-client")]
-        let rlib_dep_reader = {
-            let executable = executable.clone();
-            let env_vars = env_vars.to_owned();
-            pool.spawn_fn(move || Ok(RlibDepReader::new_with_check(executable, &env_vars)))
+            Result::Ok((sysroot, libs))
         };
 
         #[cfg(feature = "dist-client")]
-        return Box::new(sysroot_and_libs.join(rlib_dep_reader).and_then(move |((sysroot, libs), rlib_dep_reader)| {
+        {
+            use futures::TryFutureExt;
+            let rlib_dep_reader = {
+                let executable = executable.clone();
+                let env_vars = env_vars.to_owned();
+                pool.spawn_blocking(move || RlibDepReader::new_with_check(executable, &env_vars))
+                    .map_err(anyhow::Error::from)
+            };
+
+            let ((sysroot, libs), rlib_dep_reader) =
+                futures::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
+
             let rlib_dep_reader = match rlib_dep_reader {
                 Ok(r) => Some(Arc::new(r)),
                 Err(e) => {
                     warn!("Failed to initialise RlibDepDecoder, distributed compiles will be inefficient: {}", e);
                     None
-                },
-            };
-            hash_all(&libs, &pool).map(move |digests| {
-                Rust {
-                    executable,
-                    host,
-                    sysroot,
-                    compiler_shlibs_digests: digests,
-                    rlib_dep_reader,
                 }
+            };
+            hash_all(&libs, &pool).await.map(move |digests| Rust {
+                executable,
+                host,
+                sysroot,
+                compiler_shlibs_digests: digests,
+                rlib_dep_reader,
             })
-        }));
+        }
 
         #[cfg(not(feature = "dist-client"))]
-        return Box::new(sysroot_and_libs.and_then(move |(sysroot, libs)| {
-            hash_all(&libs, &pool).map(move |digests| Rust {
+        {
+            let (sysroot, libs) = sysroot_and_libs.await?;
+            hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
                 sysroot,
                 compiler_shlibs_digests: digests,
             })
-        }));
+        }
     }
 }
 
@@ -503,49 +505,40 @@ where
         mut creator: T,
         cwd: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> SFuture<(PathBuf, FileTime)> {
-        let proxy_executable = self.proxy_executable.clone();
-
-        let mut child = creator.new_command_sync(&proxy_executable);
+    ) -> Pin<Box<dyn Future<Output = Result<(PathBuf, FileTime)>> + Send>> {
+        let mut child = creator.new_command_sync(&self.proxy_executable);
         child
             .current_dir(&cwd)
             .env_clear()
             .envs(ref_env(&env))
             .args(&["which", "rustc"]);
 
-        let lookup = run_input_output(child, None)
-            .map_err(|e| anyhow!("Failed to execute rustup which rustc: {}", e))
-            .and_then(move |output| {
-                String::from_utf8(output.stdout)
-                    .map_err(|e| anyhow!("Failed to parse output of rustup which rustc: {}", e))
-                    .and_then(|stdout| {
-                        let proxied_compiler = PathBuf::from(stdout.trim());
-                        trace!(
-                            "proxy: rustup which rustc produced: {:?}",
-                            &proxied_compiler
-                        );
-                        let res = fs::metadata(proxied_compiler.as_path())
-                            .map_err(|e| {
-                                anyhow!(
-                                    "Failed to obtain metadata of the resolved, true rustc: {}",
-                                    e
-                                )
-                            })
-                            .and_then(|attr| {
-                                if attr.is_file() {
-                                    Ok(FileTime::from_last_modification_time(&attr))
-                                } else {
-                                    Err(anyhow!(
-                                        "proxy: rustup resolved compiler is not of type file"
-                                    ))
-                                }
-                            })
-                            .map(|filetime| (proxied_compiler, filetime));
-                        res
-                    })
-            });
+        Box::pin(async move {
+            let output = run_input_output(child, None)
+                .await
+                .context("Failed to execute rustup which rustc")?;
 
-        Box::new(lookup)
+            let stdout = String::from_utf8(output.stdout)
+                .context("Failed to parse output of rustup which rustc")?;
+
+            let proxied_compiler = PathBuf::from(stdout.trim());
+            trace!(
+                "proxy: rustup which rustc produced: {:?}",
+                &proxied_compiler
+            );
+            // TODO: Delegate FS access to a thread pool if possible
+            let attr = fs::metadata(proxied_compiler.as_path())
+                .context("Failed to obtain metadata of the resolved, true rustc")?;
+
+            if attr.is_file() {
+                Ok(FileTime::from_last_modification_time(&attr))
+            } else {
+                Err(anyhow!(
+                    "proxy: rustup resolved compiler is not of type file"
+                ))
+            }
+            .map(move |filetime| (proxied_compiler, filetime))
+        })
     }
 
     fn box_clone(&self) -> Box<dyn CompilerProxy<T>> {
@@ -567,23 +560,15 @@ impl RustupProxy {
         })
     }
 
-    pub fn find_proxy_executable<T>(
+    pub async fn find_proxy_executable<T>(
         compiler_executable: &Path,
         proxy_name: &str,
         mut creator: T,
         env: &[(OsString, OsString)],
-    ) -> SFuture<Result<Option<Self>>>
+    ) -> Result<Result<Option<Self>>>
     where
         T: CommandCreatorSync,
     {
-        let compiler_executable1 = compiler_executable.to_owned();
-        let compiler_executable2 = compiler_executable.to_owned();
-        let proxy_name1 = proxy_name.to_owned();
-        let proxy_name2 = proxy_name.to_owned();
-
-        let env1 = env.to_owned();
-        let env2 = env.to_owned();
-
         enum ProxyPath {
             Candidate(PathBuf),
             ToBeDiscovered,
@@ -613,93 +598,82 @@ impl RustupProxy {
 
         // verify rustc is proxy
         let mut child = creator.new_command_sync(compiler_executable.to_owned());
-        child.env_clear().envs(ref_env(&env1)).args(&["+stable"]);
-        let find_candidate = run_input_output(child, None)
-            .map(move |output| {
-                if output.status.success() {
-                    trace!("proxy: Found a compiler proxy managed by rustup");
-                    ProxyPath::ToBeDiscovered
-                } else {
-                    trace!("proxy: Found a regular compiler");
-                    ProxyPath::None
-                }
-            })
-            .and_then(move |state| {
-                let state = match state {
-                    ProxyPath::Candidate(_) => { unreachable!("qed") }
-                    ProxyPath::ToBeDiscovered => {
-                        // simple check: is there a rustup in the same parent dir as rustc?
-                        // that would be the prefered one
-                        Ok(match compiler_executable1.parent().map(|parent| { parent.to_owned() }) {
-                            Some(mut parent) => {
-                                parent.push(proxy_name1);
-                                let proxy_candidate = parent;
-                                if proxy_candidate.exists() {
-                                    trace!("proxy: Found a compiler proxy at {}", proxy_candidate.display());
-                                    ProxyPath::Candidate(proxy_candidate)
-                                } else {
-                                    ProxyPath::ToBeDiscovered
-                                }
-                            },
-                            None => {
-                                ProxyPath::ToBeDiscovered
-                            },
-                        })
-                    },
-                    x => Ok(x),
-                };
-                f_ok(state)
-            }).and_then(move |state| {
-                let state = match state {
-                    Ok(ProxyPath::ToBeDiscovered) => {
-                        // still no rustup found, use which crate to find one
-                        match which::which(&proxy_name2) {
-                            Ok(proxy_candidate) => {
-                                warn!("proxy: rustup found, but not where it was expected (next to rustc {})", compiler_executable2.display());
-                                Ok(ProxyPath::Candidate(proxy_candidate))
-                            },
-                            Err(e) => {
-                                trace!("proxy: rustup is not present: {}", e);
-                                Ok(ProxyPath::ToBeDiscovered)
-                            },
-                        }
-                    }
-                    x => x,
-                };
-                f_ok(state)
-            });
-
-        let f = find_candidate.and_then(move |state| {
-            match state {
-                Err(e) => f_ok(Err(e)),
-                Ok(ProxyPath::ToBeDiscovered) => f_ok(Err(anyhow!(
-                    "Failed to discover a rustup executable, but rustc behaves like a proxy"
-                ))),
-                Ok(ProxyPath::None) => f_ok(Ok(None)),
-                Ok(ProxyPath::Candidate(proxy_executable)) => {
-                    // verify the candidate is a rustup
-                    let mut child = creator.new_command_sync(proxy_executable.to_owned());
-                    child.env_clear().envs(ref_env(&env2)).args(&["--version"]);
-                    let rustup_candidate_check = run_input_output(child, None).map(move |output| {
-                        String::from_utf8(output.stdout)
-                            .map_err(|_e| {
-                                anyhow!("Response of `rustup --version` is not valid UTF-8")
-                            })
-                            .and_then(|stdout| {
-                                if stdout.trim().starts_with("rustup ") {
-                                    trace!("PROXY rustup --version produced: {}", &stdout);
-                                    Self::new(&proxy_executable).map(Some)
-                                } else {
-                                    Err(anyhow!("Unexpected output or `rustup --version`"))
-                                }
-                            })
-                    });
-                    Box::new(rustup_candidate_check)
-                }
+        child.env_clear().envs(ref_env(&env)).args(&["+stable"]);
+        let state = run_input_output(child, None).await.map(move |output| {
+            if output.status.success() {
+                trace!("proxy: Found a compiler proxy managed by rustup");
+                ProxyPath::ToBeDiscovered
+            } else {
+                trace!("proxy: Found a regular compiler");
+                ProxyPath::None
             }
         });
 
-        Box::new(f)
+        let state = match state {
+            Ok(ProxyPath::Candidate(_)) => unreachable!("Q.E.D."),
+            Ok(ProxyPath::ToBeDiscovered) => {
+                // simple check: is there a rustup in the same parent dir as rustc?
+                // that would be the prefered one
+                Ok(match compiler_executable.parent().map(Path::to_owned) {
+                    Some(parent) => {
+                        let proxy_candidate = parent.join(proxy_name);
+                        if proxy_candidate.exists() {
+                            trace!(
+                                "proxy: Found a compiler proxy at {}",
+                                proxy_candidate.display()
+                            );
+                            ProxyPath::Candidate(proxy_candidate)
+                        } else {
+                            ProxyPath::ToBeDiscovered
+                        }
+                    }
+                    None => ProxyPath::ToBeDiscovered,
+                })
+            }
+            x => x,
+        };
+        let state = match state {
+            Ok(ProxyPath::ToBeDiscovered) => {
+                // still no rustup found, use which crate to find one
+                match which::which(&proxy_name) {
+                    Ok(proxy_candidate) => {
+                        warn!(
+                            "proxy: rustup found, but not where it was expected (next to rustc {})",
+                            compiler_executable.display()
+                        );
+                        Ok(ProxyPath::Candidate(proxy_candidate))
+                    }
+                    Err(e) => {
+                        trace!("proxy: rustup is not present: {}", e);
+                        Ok(ProxyPath::ToBeDiscovered)
+                    }
+                }
+            }
+            x => x,
+        };
+
+        match state {
+            Err(e) => Err(e),
+            Ok(ProxyPath::ToBeDiscovered) => Ok(Err(anyhow!(
+                "Failed to discover a rustup executable, but rustc behaves like a proxy"
+            ))),
+            Ok(ProxyPath::None) => Ok(Ok(None)),
+            Ok(ProxyPath::Candidate(proxy_executable)) => {
+                // verify the candidate is a rustup
+                let mut child = creator.new_command_sync(proxy_executable.to_owned());
+                child.env_clear().envs(ref_env(&env)).args(&["--version"]);
+                let rustup_candidate_check = run_input_output(child, None).await?;
+
+                let stdout = String::from_utf8(rustup_candidate_check.stdout)
+                    .map_err(|_e| anyhow!("Response of `rustup --version` is not valid UTF-8"))?;
+                Ok(if stdout.trim().starts_with("rustup ") {
+                    trace!("PROXY rustup --version produced: {}", &stdout);
+                    Self::new(&proxy_executable).map(Some)
+                } else {
+                    Err(anyhow!("Unexpected output or `rustup --version`"))
+                })
+            }
+        }
     }
 }
 
@@ -1211,19 +1185,21 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     })
 }
 
+#[allow(clippy::suspicious_else_formatting)] // False positive
+#[async_trait]
 impl<T> CompilerHasher<T> for RustHasher
 where
     T: CommandCreatorSync,
 {
-    fn generate_hash_key(
+    async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         _may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-    ) -> SFuture<HashResult> {
+    ) -> Result<HashResult> {
         let RustHasher {
             executable,
             host,
@@ -1274,19 +1250,21 @@ where
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
-        let source_files = get_source_files(
-            creator,
-            &crate_name,
-            &executable,
-            &filtered_arguments,
-            &cwd,
-            &env_vars,
-            pool,
-        );
-        let source_files_and_hashes = source_files.and_then(move |source_files| {
-            hash_all(&source_files, &source_hashes_pool)
-                .map(|source_hashes| (source_files, source_hashes))
-        });
+        let source_files_and_hashes = async {
+            let source_files = get_source_files(
+                creator,
+                &crate_name,
+                &executable,
+                &filtered_arguments,
+                &cwd,
+                &env_vars,
+                pool,
+            )
+            .await?;
+            let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
+            Ok((source_files, source_hashes))
+        };
+
         // Hash the contents of the externs listed on the commandline.
         trace!("[{}]: hashing {} externs", crate_name, externs.len());
         let abs_externs = externs.iter().map(|e| cwd.join(e)).collect::<Vec<_>>();
@@ -1295,196 +1273,190 @@ where
         trace!("[{}]: hashing {} staticlibs", crate_name, staticlibs.len());
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all(&abs_staticlibs, pool);
-        let creator = creator.clone();
-        let hashes = source_files_and_hashes.join3(extern_hashes, staticlib_hashes);
-        Box::new(hashes.and_then(
-            move |((source_files, source_hashes), extern_hashes, staticlib_hashes)| -> SFuture<_> {
-                // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
-                let mut m = Digest::new();
-                // Hash inputs:
-                // 1. A version
-                m.update(CACHE_VERSION);
-                // 2. compiler_shlibs_digests
-                for d in compiler_shlibs_digests {
-                    m.update(d.as_bytes());
+
+        let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
+            futures::try_join!(source_files_and_hashes, extern_hashes, staticlib_hashes)?;
+        // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
+        let mut m = Digest::new();
+        // Hash inputs:
+        // 1. A version
+        m.update(CACHE_VERSION);
+        // 2. compiler_shlibs_digests
+        for d in compiler_shlibs_digests {
+            m.update(d.as_bytes());
+        }
+        let weak_toolchain_key = m.clone().finish();
+        // 3. The full commandline (self.arguments)
+        // TODO: there will be full paths here, it would be nice to
+        // normalize them so we can get cross-machine cache hits.
+        // A few argument types are not passed in a deterministic order
+        // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
+        // and append them to the rest of the arguments.
+        let args = {
+            let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments
+                .iter()
+                // We exclude a few arguments from the hash:
+                //   -L, --extern, --out-dir
+                // These contain paths which aren't relevant to the output, and the compiler inputs
+                // in those paths (rlibs and static libs used in the compilation) are used as hash
+                // inputs below.
+                .filter(|&&(ref arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
+                // A few argument types were not passed in a deterministic order
+                // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
+                // out, sort them, and append them to the rest of the arguments.
+                .partition(|&&(ref arg, _)| arg == "--cfg");
+            sortables.sort();
+            rest.into_iter()
+                .chain(sortables)
+                .flat_map(|&(ref arg, ref val)| iter::once(arg).chain(val.as_ref()))
+                .fold(OsString::new(), |mut a, b| {
+                    a.push(b);
+                    a
+                })
+        };
+        args.hash(&mut HashToDigest { digest: &mut m });
+        // 4. The digest of all source files (this includes src file from cmdline).
+        // 5. The digest of all files listed on the commandline (self.externs).
+        // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
+        for h in source_hashes
+            .into_iter()
+            .chain(extern_hashes)
+            .chain(staticlib_hashes)
+        {
+            m.update(h.as_bytes());
+        }
+        // 7. Environment variables. Ideally we'd use anything referenced
+        // via env! in the program, but we don't have a way to determine that
+        // currently, and hashing all environment variables is too much, so
+        // we'll just hash the CARGO_ env vars and hope that's sufficient.
+        // Upstream Rust issue tracking getting information about env! usage:
+        // https://github.com/rust-lang/rust/issues/40364
+        let mut env_vars: Vec<_> = env_vars
+            .iter()
+            // Filter out RUSTC_COLOR since we control color usage with command line flags.
+            // rustc reports an error when both are present.
+            .filter(|(ref k, _)| k != "RUSTC_COLOR")
+            .cloned()
+            .collect();
+        env_vars.sort();
+        for &(ref var, ref val) in env_vars.iter() {
+            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
+            if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
+                var.hash(&mut HashToDigest { digest: &mut m });
+                m.update(b"=");
+                val.hash(&mut HashToDigest { digest: &mut m });
+            }
+        }
+        // 8. The cwd of the compile. This will wind up in the rlib.
+        cwd.hash(&mut HashToDigest { digest: &mut m });
+        // Turn arguments into a simple Vec<OsString> to calculate outputs.
+        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
+            .into_iter()
+            .flat_map(|(arg, val)| iter::once(arg).chain(val))
+            .collect();
+
+        let mut outputs = get_compiler_outputs(
+            creator,
+            &executable,
+            flat_os_string_arguments,
+            &cwd,
+            &env_vars,
+        )
+        .await?;
+
+        // metadata / dep-info don't ever generate binaries, but
+        // rustc still makes them appear in the --print
+        // file-names output (see
+        // https://github.com/rust-lang/rust/pull/68799).
+        //
+        // So if we see a binary in the rustc output and figure
+        // out that we're not _actually_ generating it, then we
+        // can avoid generating everything that isn't an rlib /
+        // rmeta.
+        //
+        // This can go away once the above rustc PR makes it in.
+        let emit_generates_only_metadata =
+            !emit.is_empty() && emit.iter().all(|e| e == "metadata" || e == "dep-info");
+
+        if emit_generates_only_metadata {
+            outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
+        }
+
+        if emit.contains("metadata") {
+            // rustc currently does not report rmeta outputs with --print file-names
+            // --emit metadata the rlib is printed, and with --emit metadata,link
+            // only the rlib is printed.
+            let rlibs: HashSet<_> = outputs
+                .iter()
+                .cloned()
+                .filter(|p| p.ends_with(".rlib"))
+                .collect();
+            for lib in rlibs {
+                let rmeta = lib.replacen(".rlib", ".rmeta", 1);
+                // Do this defensively for future versions of rustc that may
+                // be fixed.
+                if !outputs.contains(&rmeta) {
+                    outputs.push(rmeta);
                 }
-                let weak_toolchain_key = m.clone().finish();
-                // 3. The full commandline (self.arguments)
-                // TODO: there will be full paths here, it would be nice to
-                // normalize them so we can get cross-machine cache hits.
-                // A few argument types are not passed in a deterministic order
-                // by cargo: --extern, -L, --cfg. We'll filter those out, sort them,
-                // and append them to the rest of the arguments.
-                let args = {
-                    let (mut sortables, rest): (Vec<_>, Vec<_>) = os_string_arguments
-                        .iter()
-                        // We exclude a few arguments from the hash:
-                        //   -L, --extern, --out-dir
-                        // These contain paths which aren't relevant to the output, and the compiler inputs
-                        // in those paths (rlibs and static libs used in the compilation) are used as hash
-                        // inputs below.
-                        .filter(|&&(ref arg, _)| {
-                            !(arg == "--extern" || arg == "-L" || arg == "--out-dir")
-                        })
-                        // A few argument types were not passed in a deterministic order
-                        // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
-                        // out, sort them, and append them to the rest of the arguments.
-                        .partition(|&&(ref arg, _)| arg == "--cfg");
-                    sortables.sort();
-                    rest.into_iter()
-                        .chain(sortables)
-                        .flat_map(|&(ref arg, ref val)| iter::once(arg).chain(val.as_ref()))
-                        .fold(OsString::new(), |mut a, b| {
-                            a.push(b);
-                            a
-                        })
-                };
-                args.hash(&mut HashToDigest { digest: &mut m });
-                // 4. The digest of all source files (this includes src file from cmdline).
-                // 5. The digest of all files listed on the commandline (self.externs).
-                // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
-                for h in source_hashes
-                    .into_iter()
-                    .chain(extern_hashes)
-                    .chain(staticlib_hashes)
-                {
-                    m.update(h.as_bytes());
+                if !emit.contains("link") {
+                    outputs.retain(|p| *p != lib);
                 }
-                // 7. Environment variables. Ideally we'd use anything referenced
-                // via env! in the program, but we don't have a way to determine that
-                // currently, and hashing all environment variables is too much, so
-                // we'll just hash the CARGO_ env vars and hope that's sufficient.
-                // Upstream Rust issue tracking getting information about env! usage:
-                // https://github.com/rust-lang/rust/issues/40364
-                let mut env_vars: Vec<_> = env_vars
-                    .iter()
-                    // Filter out RUSTC_COLOR since we control color usage with command line flags.
-                    // rustc reports an error when both are present.
-                    .filter(|(ref k, _)| k != "RUSTC_COLOR")
-                    .cloned()
-                    .collect();
-                env_vars.sort();
-                for &(ref var, ref val) in env_vars.iter() {
-                    // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-                    if var.eq("CARGO") || (var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS") {
-                        var.hash(&mut HashToDigest { digest: &mut m });
-                        m.update(b"=");
-                        val.hash(&mut HashToDigest { digest: &mut m });
-                    }
-                }
-                // 8. The cwd of the compile. This will wind up in the rlib.
-                cwd.hash(&mut HashToDigest { digest: &mut m });
-                // Turn arguments into a simple Vec<OsString> to calculate outputs.
-                let flat_os_string_arguments: Vec<OsString> = os_string_arguments
-                    .into_iter()
-                    .flat_map(|(arg, val)| iter::once(arg).chain(val))
-                    .collect();
-                Box::new(
-                    get_compiler_outputs(
-                        &creator,
-                        &executable,
-                        flat_os_string_arguments,
-                        &cwd,
-                        &env_vars,
-                    )
-                    .map(move |mut outputs| {
-                        // metadata / dep-info don't ever generate binaries, but
-                        // rustc still makes them appear in the --print
-                        // file-names output (see
-                        // https://github.com/rust-lang/rust/pull/68799).
-                        //
-                        // So if we see a binary in the rustc output and figure
-                        // out that we're not _actually_ generating it, then we
-                        // can avoid generating everything that isn't an rlib /
-                        // rmeta.
-                        //
-                        // This can go away once the above rustc PR makes it in.
-                        let emit_generates_only_metadata = !emit.is_empty()
-                            && emit.iter().all(|e| e == "metadata" || e == "dep-info");
+            }
+        }
 
-                        if emit_generates_only_metadata {
-                            outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
-                        }
+        // Convert output files into a map of basename -> full
+        // path, and remove some unneeded / non-existing ones,
+        // see https://github.com/rust-lang/rust/pull/68799.
+        let mut outputs = outputs
+            .into_iter()
+            .map(|o| {
+                let p = output_dir.join(&o);
+                (o, p)
+            })
+            .collect::<HashMap<_, _>>();
+        let dep_info = if let Some(dep_info) = dep_info {
+            let p = output_dir.join(&dep_info);
+            outputs.insert(dep_info.to_string_lossy().into_owned(), p.clone());
+            Some(p)
+        } else {
+            None
+        };
+        let mut arguments = arguments;
+        // Request color output unless json was requested. The client will strip colors if needed.
+        if !has_json {
+            arguments.push(Argument::WithValue(
+                "--color",
+                ArgData::Color("always".into()),
+                ArgDisposition::Separated,
+            ));
+        }
 
-                        if emit.contains("metadata") {
-                            // rustc currently does not report rmeta outputs with --print file-names
-                            // --emit metadata the rlib is printed, and with --emit metadata,link
-                            // only the rlib is printed.
-                            let rlibs: HashSet<_> = outputs
-                                .iter()
-                                .cloned()
-                                .filter(|p| p.ends_with(".rlib"))
-                                .collect();
-                            for lib in rlibs {
-                                let rmeta = lib.replacen(".rlib", ".rmeta", 1);
-                                // Do this defensively for future versions of rustc that may
-                                // be fixed.
-                                if !outputs.contains(&rmeta) {
-                                    outputs.push(rmeta);
-                                }
-                                if !emit.contains("link") {
-                                    outputs.retain(|p| *p != lib);
-                                }
-                            }
-                        }
+        let inputs = source_files
+            .into_iter()
+            .chain(abs_externs)
+            .chain(abs_staticlibs)
+            .collect();
 
-                        // Convert output files into a map of basename -> full
-                        // path, and remove some unneeded / non-existing ones,
-                        // see https://github.com/rust-lang/rust/pull/68799.
-                        let mut outputs = outputs
-                            .into_iter()
-                            .map(|o| {
-                                let p = output_dir.join(&o);
-                                (o, p)
-                            })
-                            .collect::<HashMap<_, _>>();
-                        let dep_info = if let Some(dep_info) = dep_info {
-                            let p = output_dir.join(&dep_info);
-                            outputs.insert(dep_info.to_string_lossy().into_owned(), p.clone());
-                            Some(p)
-                        } else {
-                            None
-                        };
-                        let mut arguments = arguments;
-                        // Request color output unless json was requested. The client will strip colors if needed.
-                        if !has_json {
-                            arguments.push(Argument::WithValue(
-                                "--color",
-                                ArgData::Color("always".into()),
-                                ArgDisposition::Separated,
-                            ));
-                        }
-
-                        let inputs = source_files
-                            .into_iter()
-                            .chain(abs_externs)
-                            .chain(abs_staticlibs)
-                            .collect();
-
-                        HashResult {
-                            key: m.finish(),
-                            compilation: Box::new(RustCompilation {
-                                executable,
-                                host,
-                                sysroot,
-                                arguments,
-                                inputs,
-                                outputs,
-                                crate_link_paths,
-                                crate_name,
-                                crate_types,
-                                dep_info,
-                                cwd,
-                                env_vars,
-                                #[cfg(feature = "dist-client")]
-                                rlib_dep_reader,
-                            }),
-                            weak_toolchain_key,
-                        }
-                    }),
-                )
-            },
-        ))
+        Ok(HashResult {
+            key: m.finish(),
+            compilation: Box::new(RustCompilation {
+                executable,
+                host,
+                sysroot,
+                arguments,
+                inputs,
+                outputs,
+                crate_link_paths,
+                crate_name,
+                crate_types,
+                dep_info,
+                cwd,
+                env_vars,
+                #[cfg(feature = "dist-client")]
+                rlib_dep_reader,
+            }),
+            weak_toolchain_key,
+        })
     }
 
     fn color_mode(&self) -> ColorMode {
@@ -2956,7 +2928,8 @@ c:/foo/bar.rs:
         let creator = new_creator();
         mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
         mock_file_names(&creator, &["foo.rlib", "foo.a"]);
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
         let res = hasher
             .generate_hash_key(
                 &creator,
@@ -3046,7 +3019,9 @@ c:/foo/bar.rs:
         });
 
         let creator = new_creator();
-        let pool = ThreadPool::sized(1);
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle().clone();
+
         mock_dep_info(&creator, &["foo.rs"]);
         mock_file_names(&creator, &["foo.rlib"]);
         hasher

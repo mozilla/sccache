@@ -29,15 +29,16 @@ use crate::util;
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
 use filetime::FileTime;
-use futures::Future as _;
-use futures_03::executor::ThreadPool;
-use futures_03::{channel::mpsc, compat::*, future, prelude::*, stream};
+use futures::channel::mpsc;
+use futures::future::FutureExt;
+use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
+use futures_locks::RwLock;
 use number_prefix::NumberPrefix;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
+use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
@@ -46,20 +47,19 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
-use std::rc::Rc;
 use std::sync::Arc;
-#[cfg(feature = "dist-client")]
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+#[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
+use tokio::runtime::Runtime;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
     time::{self, delay_for, Delay},
 };
-use tokio_compat::runtime::current_thread::Runtime;
 use tokio_serde::Framed;
 use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
 use tower::Service;
@@ -143,7 +143,7 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: ThreadPool,
+    pool: tokio::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
@@ -168,7 +168,7 @@ enum DistClientState {
 #[cfg(not(feature = "dist-client"))]
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
-    fn new(config: &Config, _: &ThreadPool) -> Self {
+    fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
@@ -181,7 +181,7 @@ impl DistClientContainer {
 
     pub fn reset_state(&self) {}
 
-    pub fn get_status(&self) -> DistInfo {
+    pub async fn get_status(&self) -> DistInfo {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
@@ -192,7 +192,7 @@ impl DistClientContainer {
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
-    fn new(config: &Config, pool: &ThreadPool) -> Self {
+    fn new(config: &Config, pool: &tokio::runtime::Handle) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -230,28 +230,41 @@ impl DistClientContainer {
         }
     }
 
-    pub fn get_status(&self) -> DistInfo {
+    pub fn get_status(&self) -> impl Future<Output = DistInfo> {
+        // This function can't be wholly async because we can't hold mutex guard
+        // across the yield point - instead, either return an immediately ready
+        // future or perform async query with the client cloned beforehand.
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
-        match state {
-            DistClientState::Disabled => DistInfo::Disabled("disabled".to_string()),
-            DistClientState::FailWithMessage(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, auth not configured".to_string(),
-            ),
-            DistClientState::RetryCreateAt(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, not connected, will retry".to_string(),
-            ),
-            DistClientState::Some(cfg, client) => match client.do_get_status().wait() {
-                Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
-                Err(_) => DistInfo::NotConnected(
+        let (client, scheduler_url) = match state {
+            DistClientState::Disabled => {
+                return Either::Left(future::ready(DistInfo::Disabled("disabled".to_string())))
+            }
+            DistClientState::FailWithMessage(cfg, _) => {
+                return Either::Left(future::ready(DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
+                    "enabled, auth not configured".to_string(),
+                )))
+            }
+            DistClientState::RetryCreateAt(cfg, _) => {
+                return Either::Left(future::ready(DistInfo::NotConnected(
+                    cfg.scheduler_url.clone(),
+                    "enabled, not connected, will retry".to_string(),
+                )))
+            }
+            DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
+        };
+
+        Either::Right(Box::pin(async move {
+            match client.do_get_status().await {
+                Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
+                Err(_) => DistInfo::NotConnected(
+                    scheduler_url.clone(),
                     "could not communicate with scheduler".to_string(),
                 ),
-            },
-        }
+            }
+        }))
     }
 
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
@@ -350,7 +363,7 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                match dist_client.do_get_status().wait() {
+                match config.pool.block_on(dist_client.do_get_status()) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -389,20 +402,16 @@ impl DistClientContainer {
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
-    let runtime = Runtime::new()?;
-    let pool = ThreadPool::builder()
-        .pool_size(std::cmp::max(20, 2 * num_cpus::get()))
-        .create()?;
+    let runtime = tokio::runtime::Builder::new()
+        .enable_all()
+        .threaded_scheduler()
+        .core_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .build()?;
+    let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
     let storage = storage_from_config(config, &pool);
-    let res = SccacheServer::<ProcessCommandCreator>::new(
-        port,
-        pool,
-        runtime,
-        client,
-        dist_client,
-        storage,
-    );
+    let res =
+        SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
@@ -440,19 +449,19 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
-        pool: ThreadPool,
         mut runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
-        let listener = runtime.block_on_std(TcpListener::bind(&SocketAddr::V4(addr)))?;
+        let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
 
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
+        let pool = runtime.handle().clone();
         let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 
         Ok(SccacheServer {
@@ -479,8 +488,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns a reference to a thread pool to run work on
     #[allow(dead_code)]
-    pub fn pool(&self) -> &ThreadPool {
-        &self.service.pool
+    pub fn pool(&self) -> &tokio::runtime::Handle {
+        &self.service.rt
     }
 
     /// Returns a reference to the command creator this server will use
@@ -503,10 +512,11 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
         F: Future,
+        C: Send,
     {
         let SccacheServer {
             mut runtime,
-            mut listener,
+            listener,
             rx,
             service,
             timeout,
@@ -515,20 +525,16 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let server = listener.incoming().try_for_each(move |socket| {
-            let service = service.clone();
-            async move {
-                trace!("incoming connection");
-                tokio_compat::runtime::current_thread::TaskExecutor::current()
-                    .spawn_local(Box::new(
-                        Box::pin(service.bind(socket).map_err(|err| {
-                            error!("{}", err);
-                        }))
-                        .compat(),
-                    ))
-                    .unwrap();
-                Ok(())
-            }
+        let server = listener.try_for_each(move |socket| {
+            trace!("incoming connection");
+            let conn = service.clone().bind(socket).map_err(|res| {
+                error!("Failed to bind socket: {}", res);
+            });
+
+            // We're not interested if the task panicked; immediately process
+            // another connection
+            let _ = tokio::spawn(conn);
+            async { Ok(()) }
         });
 
         // Right now there's a whole bunch of ways to shut down this server for
@@ -547,12 +553,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             info!("shutting down due to explicit signal");
         });
 
-        let mut futures = vec![
-            Box::pin(server) as Pin<Box<dyn Future<Output = _>>>,
-            Box::pin(shutdown.map(Ok)),
-        ];
-
-        futures.push(Box::pin(async {
+        let shutdown_idle = async {
             ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
@@ -564,15 +565,21 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             }
             .await;
             info!("shutting down due to being idle or request");
-            Ok(())
-        }));
+        };
 
-        let server = future::select_all(futures).map(|t| t.0);
-        runtime.block_on_std(server)?;
+        runtime.block_on(async {
+            futures::select! {
+                server = server.fuse() => server,
+                _res = shutdown.fuse() => Ok(()),
+                _res = shutdown_idle.fuse() => Ok(()),
+            }
+        })?;
 
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
         info!(
-            "moving into the shutdown phase now, waiting at most 10 seconds \
-             for all client requests to complete"
+            "moving into the shutdown phase now, waiting at most {} seconds \
+             for all client requests to complete",
+            SHUTDOWN_TIMEOUT.as_secs()
         );
 
         // Once our server has shut down either due to inactivity or a manual
@@ -582,14 +589,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         //
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
-        runtime
-            .block_on_std(async {
-                time::timeout(Duration::new(30, 0), wait)
-                    .await
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                    .unwrap_or_else(|e| Err(io::Error::new(io::ErrorKind::Other, e)))
-            })
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        runtime.block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })?;
 
         info!("ok, fully shutting down now");
 
@@ -604,7 +604,7 @@ type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime
 type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
 
 /// entry of the compiler cache
-struct CompilerCacheEntry<C: CommandCreatorSync> {
+struct CompilerCacheEntry<C> {
     /// compiler argument trait obj
     pub compiler: Box<dyn Compiler<C>>,
     /// modification time of the compilers executable file
@@ -613,10 +613,7 @@ struct CompilerCacheEntry<C: CommandCreatorSync> {
     pub dist_info: Option<(PathBuf, FileTime)>,
 }
 
-impl<C> CompilerCacheEntry<C>
-where
-    C: CommandCreatorSync,
-{
+impl<C> CompilerCacheEntry<C> {
     fn new(
         compiler: Box<dyn Compiler<C>>,
         mtime: FileTime,
@@ -631,28 +628,32 @@ where
 }
 /// Service implementation for sccache
 #[derive(Clone)]
-struct SccacheService<C: CommandCreatorSync> {
+struct SccacheService<C>
+where
+    C: Send,
+{
     /// Server statistics.
-    stats: Rc<RefCell<ServerStats>>,
+    stats: Arc<RwLock<ServerStats>>,
 
     /// Distributed sccache client
-    dist_client: Rc<DistClientContainer>,
+    dist_client: Arc<DistClientContainer>,
 
     /// Cache storage.
     storage: Arc<dyn Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<CompilerMap<C>>>,
+    compilers: Arc<RwLock<CompilerMap<C>>>,
 
     /// map the cwd with compiler proxy path to a proxy resolver, which
     /// will dynamically resolve the input compiler for the current context
     /// (usually file or current working directory)
     /// the associated `FileTime` is the modification time of
     /// the compiler proxy, in order to track updates of the proxy itself
-    compiler_proxies: Rc<RefCell<CompilerProxyMap<C>>>,
+    compiler_proxies: Arc<RwLock<CompilerProxyMap<C>>>,
 
-    /// Thread pool to execute work in
-    pool: ThreadPool,
+    /// Task pool for blocking (used mostly for disk I/O-bound tasks) and
+    // non-blocking tasks
+    rt: tokio::runtime::Handle,
 
     /// An object for creating commands.
     ///
@@ -688,11 +689,11 @@ pub enum ServerMessage {
 
 impl<C> Service<SccacheRequest> for Arc<SccacheService<C>>
 where
-    C: CommandCreatorSync + 'static,
+    C: CommandCreatorSync + Send + Sync + 'static,
 {
     type Response = SccacheResponse;
     type Error = Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response>>>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response>> + Send + 'static>>;
 
     fn call(&mut self, req: SccacheRequest) -> Self::Future {
         trace!("handle_client");
@@ -702,48 +703,45 @@ where
         // that every message is received.
         drop(self.tx.clone().start_send(ServerMessage::Request));
 
-        let self_ = self.clone();
+        let me = self.clone();
         Box::pin(async move {
             match req.into_inner() {
                 Request::Compile(compile) => {
                     debug!("handle_client: compile");
-                    self_.stats.borrow_mut().compile_requests += 1;
-                    self_.handle_compile(compile).await
+                    me.stats.write().await.compile_requests += 1;
+                    me.handle_compile(compile).await
                 }
                 Request::GetStats => {
                     debug!("handle_client: get_stats");
-                    self_
-                        .get_info()
+                    me.get_info()
                         .await
                         .map(|i| Response::Stats(Box::new(i)))
                         .map(Message::WithoutBody)
                 }
                 Request::DistStatus => {
                     debug!("handle_client: dist_status");
-                    self_
-                        .get_dist_status()
+                    me.get_dist_status()
                         .await
                         .map(Response::DistStatus)
                         .map(Message::WithoutBody)
                 }
                 Request::ZeroStats => {
                     debug!("handle_client: zero_stats");
-                    self_.zero_stats();
-                    self_
-                        .get_info()
+                    me.zero_stats().await;
+                    me.get_info()
                         .await
                         .map(|i| Response::Stats(Box::new(i)))
                         .map(Message::WithoutBody)
                 }
                 Request::Shutdown => {
                     debug!("handle_client: shutdown");
-                    let mut tx = self_.tx.clone();
+                    let mut tx = me.tx.clone();
                     future::try_join(
                         async {
                             let _ = tx.send(ServerMessage::Shutdown).await;
                             Ok(())
                         },
-                        self_.get_info(),
+                        me.get_info(),
                     )
                     .await
                     .map(move |(_, info)| {
@@ -759,34 +757,37 @@ where
     }
 }
 
+use futures::future::Either;
+use futures::TryStreamExt;
+
 impl<C> SccacheService<C>
 where
-    C: CommandCreatorSync,
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
 {
     pub fn new(
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
         client: &Client,
-        pool: ThreadPool,
+        rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
         SccacheService {
-            stats: Rc::new(RefCell::new(ServerStats::default())),
-            dist_client: Rc::new(dist_client),
+            stats: Arc::new(RwLock::new(ServerStats::default())),
+            dist_client: Arc::new(dist_client),
             storage,
-            compilers: Rc::new(RefCell::new(HashMap::new())),
-            compiler_proxies: Rc::new(RefCell::new(HashMap::new())),
-            pool,
+            compilers: Arc::new(RwLock::new(HashMap::new())),
+            compiler_proxies: Arc::new(RwLock::new(HashMap::new())),
+            rt,
             creator: C::new(client),
             tx,
             info,
         }
     }
 
-    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>>
+    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
     where
-        T: AsyncRead + AsyncWrite + Unpin + 'static,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
         if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
@@ -804,53 +805,51 @@ where
         .split();
         let sink = sink.sink_err_into::<Error>();
 
-        let mut self_ = Arc::new(self);
+        let me = Arc::new(self);
         stream
             .err_into::<Error>()
-            .and_then(move |input| self_.call(input))
-            .and_then(|message| async move {
-                let f: Pin<Box<dyn Stream<Item = _>>> = match message {
+            .and_then(move |input| me.clone().call(input))
+            .and_then(move |message| async move {
+                let fut = match message {
                     Message::WithoutBody(message) => {
-                        Box::pin(stream::once(async { Ok(Frame::Message { message }) }))
+                        let stream = stream::once(async move { Ok(Frame::Message { message }) });
+                        Either::Left(stream)
                     }
-                    Message::WithBody(message, body) => Box::pin(
-                        stream::once(async { Ok(Frame::Message { message }) })
+                    Message::WithBody(message, body) => {
+                        let stream = stream::once(async move { Ok(Frame::Message { message }) })
                             .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
-                            .chain(stream::once(async { Ok(Frame::Body { chunk: None }) })),
-                    ),
+                            .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
+                        Either::Right(stream)
+                    }
                 };
-                Ok(f.err_into::<Error>())
+                Ok(Box::pin(fut))
             })
             .try_flatten()
             .forward(sink)
-            .map_ok(|_| ())
     }
 
     /// Get dist status.
     async fn get_dist_status(&self) -> Result<DistInfo> {
-        Ok(self.dist_client.get_status())
+        Ok(self.dist_client.get_status().await)
     }
 
     /// Get info and stats about the cache.
     async fn get_info(&self) -> Result<ServerInfo> {
-        let stats = self.stats.borrow().clone();
+        let stats = self.stats.read().await.clone();
         let cache_location = self.storage.location();
-        future::try_join(
-            self.storage.current_size().compat(),
-            self.storage.max_size().compat(),
+        futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
+            move |(cache_size, max_cache_size)| ServerInfo {
+                stats,
+                cache_location,
+                cache_size,
+                max_cache_size,
+            },
         )
-        .await
-        .map(move |(cache_size, max_cache_size)| ServerInfo {
-            stats,
-            cache_location,
-            cache_size,
-            max_cache_size,
-        })
     }
 
     /// Zero stats about the cache.
-    fn zero_stats(&self) {
-        *self.stats.borrow_mut() = ServerStats::default();
+    async fn zero_stats(&self) {
+        *self.stats.write().await = ServerStats::default();
     }
 
     /// Handle a compile request from a client.
@@ -866,7 +865,7 @@ where
         let me = self.clone();
 
         let info = self.compiler_info(exe.into(), cwd.clone(), &env_vars).await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars))
+        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
@@ -881,37 +880,42 @@ where
 
         let me = self.clone();
         let me1 = self.clone();
-
         // lookup if compiler proxy exists for the current compiler path
 
         let path2 = path.clone();
         let path1 = path.clone();
         let env = env.to_vec();
 
-        let res: Option<(PathBuf, FileTime)> = {
-            let compiler_proxies_borrow = self.compiler_proxies.borrow();
+        let resolved_with_proxy = {
+            let compiler_proxies_borrow = self.compiler_proxies.read().await;
+            // Create an owned future - compiler proxy is not Send so we can't
+            // really await while borrowing the proxy since rustc is too conservative
+            let resolve_proxied_executable =
+                compiler_proxies_borrow
+                    .get(&path)
+                    .map(|(compiler_proxy, _filetime)| {
+                        compiler_proxy.resolve_proxied_executable(
+                            self.creator.clone(),
+                            cwd.clone(),
+                            env.as_slice(),
+                        )
+                    });
 
-            if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                let fut = compiler_proxy
-                    .resolve_proxied_executable(self.creator.clone(), cwd.clone(), env.as_slice())
-                    .compat();
-                Box::pin(fut.map(|res: Result<_>| res.ok())) as Pin<Box<dyn Future<Output = _>>>
-            } else {
-                Box::pin(async { None })
+            match resolve_proxied_executable {
+                Some(fut) => fut.await.ok(),
+                None => None,
             }
-        }
-        .await;
+        };
 
         // use the supplied compiler path as fallback, lookup its modification time too
-
-        let (resolved_compiler_path, mtime) = match res {
+        let (resolved_compiler_path, mtime) = match resolved_with_proxy {
             Some(x) => x, // TODO resolve the path right away
-            None => {
+            _ => {
                 // fallback to using the path directly
                 metadata(&path2)
                     .map(|attr| FileTime::from_last_modification_time(&attr))
                     .ok()
-                    .map(move |filetime| (path2.clone(), filetime))
+                    .map(move |filetime| (path2, filetime))
                     .expect("Must contain sane data, otherwise mtime is not avail")
             }
         };
@@ -932,11 +936,11 @@ where
             _ => None,
         };
 
-        let opt = match me1.compilers.borrow().get(&resolved_compiler_path) {
+        let opt = match me1.compilers.read().await.get(&resolved_compiler_path) {
             // It's a hit only if the mtime and dist archive data matches.
             Some(&Some(ref entry)) => {
                 if entry.mtime == mtime && entry.dist_info == dist_info {
-                    Some(entry.compiler.clone())
+                    Some(entry.compiler.box_clone())
                 } else {
                     None
                 }
@@ -957,70 +961,71 @@ where
 
                 // the compiler path might be compiler proxy, so it is important to use
                 // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
-                let info: Result<(Box<dyn Compiler<C>>, Option<Box<dyn CompilerProxy<C>>>)> =
-                    get_compiler_info::<C>(
-                        me.creator.clone(),
-                        &path1,
-                        &cwd,
-                        env.as_slice(),
-                        &me.pool,
-                        dist_info.clone().map(|(p, _)| p),
-                    )
-                    .compat()
-                    .await;
+                let info = get_compiler_info::<C>(
+                    me.creator.clone(),
+                    &path1,
+                    &cwd,
+                    env.as_slice(),
+                    &me.rt,
+                    dist_info.clone().map(|(p, _)| p),
+                )
+                .await;
 
-                match info {
-                    Ok((ref c, ref proxy)) => {
-                        // register the proxy for this compiler, so it will be used directly from now on
-                        // and the true/resolved compiler will create table hits in the hash map
-                        // based on the resolved path
-                        if let Some(proxy) = proxy {
-                            trace!(
-                                "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                                &path,
-                                &cwd,
-                                resolved_compiler_path
-                            );
-                            let proxy: Box<dyn CompilerProxy<C>> = proxy.box_clone();
-                            me.compiler_proxies
-                                .borrow_mut()
-                                .insert(path, (proxy, mtime.clone()));
-                        }
-                        // TODO add some safety checks in case a proxy exists, that the initial `path` is not
-                        // TODO the same as the resolved compiler binary
-
-                        // cache
-                        let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
-                        trace!(
-                            "Inserting POSSIBLY PROXIED cache map info for {:?}",
-                            &resolved_compiler_path
-                        );
-                        me.compilers
-                            .borrow_mut()
-                            .insert(resolved_compiler_path, Some(map_info));
-                    }
-                    Err(_) => {
+                let (c, proxy) = match info {
+                    Ok((c, proxy)) => (c.clone(), proxy.clone()),
+                    Err(err) => {
                         trace!("Inserting PLAIN cache map info for {:?}", &path);
-                        me.compilers.borrow_mut().insert(path, None);
+                        me.compilers.write().await.insert(path, None);
+
+                        return Err(err);
                     }
+                };
+
+                // register the proxy for this compiler, so it will be used directly from now on
+                // and the true/resolved compiler will create table hits in the hash map
+                // based on the resolved path
+                if let Some(proxy) = proxy {
+                    trace!(
+                        "Inserting new path proxy {:?} @ {:?} -> {:?}",
+                        &path,
+                        &cwd,
+                        resolved_compiler_path
+                    );
+                    me.compiler_proxies
+                        .write()
+                        .await
+                        .insert(path, (proxy, mtime));
                 }
+                // TODO add some safety checks in case a proxy exists, that the initial `path` is not
+                // TODO the same as the resolved compiler binary
+
+                // cache
+                let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
+                trace!(
+                    "Inserting POSSIBLY PROXIED cache map info for {:?}",
+                    &resolved_compiler_path
+                );
+                me.compilers
+                    .write()
+                    .await
+                    .insert(resolved_compiler_path, Some(map_info));
+
                 // drop the proxy information, response is compiler only
-                let r: Result<Box<dyn Compiler<C>>> = info.map(|info| info.0);
-                r
+                Ok(c)
             }
         }
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.
     /// If so, run `start_compile_task` to execute it.
-    fn check_compiler(
+    async fn check_compiler(
         &self,
         compiler: Result<Box<dyn Compiler<C>>>,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
     ) -> SccacheResponse {
-        let mut stats = self.stats.borrow_mut();
+        let mut stats = self.stats.write().await;
         match compiler {
             Err(e) => {
                 debug!("check_compiler: Unsupported compiler: {}", e.to_string());
@@ -1088,22 +1093,31 @@ where
         };
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let result = hasher
-            .get_cached_or_compile(
-                self.dist_client.get_client(),
-                self.creator.clone(),
-                self.storage.clone(),
-                arguments,
-                cwd,
-                env_vars,
-                cache_control,
-                self.pool.clone(),
-            )
-            .compat();
         let me = self.clone();
         let kind = compiler.kind();
+        let dist_client = self.dist_client.get_client();
+        let creator = self.creator.clone();
+        let storage = self.storage.clone();
+        let pool = self.rt.clone();
+
         let task = async move {
-            let result = result.await;
+            let result = match dist_client {
+                Ok(client) => {
+                    hasher
+                        .get_cached_or_compile(
+                            client,
+                            creator,
+                            storage,
+                            arguments,
+                            cwd,
+                            env_vars,
+                            cache_control,
+                            pool,
+                        )
+                        .await
+                }
+                Err(e) => Err(e),
+            };
             let mut cache_write = None;
             let mut res = CompileFinished {
                 color_mode,
@@ -1111,7 +1125,7 @@ where
             };
             match result {
                 Ok((compiled, out)) => {
-                    let mut stats = me.stats.borrow_mut();
+                    let mut stats = me.stats.write().await;
                     match compiled {
                         CompileResult::Error => {
                             stats.cache_errors.increment(&kind);
@@ -1145,7 +1159,7 @@ where
                             }
                             stats.cache_misses.increment(&kind);
                             stats.cache_read_miss_duration += duration;
-                            cache_write = Some(future.compat());
+                            cache_write = Some(future);
                         }
                         CompileResult::NotCacheable => {
                             stats.cache_misses.increment(&kind);
@@ -1169,7 +1183,7 @@ where
                     res.stderr = stderr;
                 }
                 Err(err) => {
-                    let mut stats = me.stats.borrow_mut();
+                    let mut stats = me.stats.write().await;
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
                             debug!("Compilation failed: {:?}", output);
@@ -1210,15 +1224,17 @@ where
                     }
                 }
             };
-            let send = Box::pin(async move { tx.send(Ok(Response::CompileFinished(res))).await });
+            let send = tx
+                .send(Ok(Response::CompileFinished(res)))
+                .map_err(|e| anyhow!("send on finish failed").context(e));
 
             let me = me.clone();
-            let cache_write = async {
+            let cache_write = async move {
                 if let Some(cache_write) = cache_write {
                     match cache_write.await {
                         Err(e) => {
                             debug!("Error executing cache write: {}", e);
-                            me.stats.borrow_mut().cache_write_errors += 1;
+                            me.stats.write().await.cache_write_errors += 1;
                         }
                         //TODO: save cache stats!
                         Ok(info) => {
@@ -1227,20 +1243,24 @@ where
                                 info.object_file_pretty,
                                 util::fmt_duration_as_secs(&info.duration)
                             );
-                            me.stats.borrow_mut().cache_writes += 1;
-                            me.stats.borrow_mut().cache_write_duration += info.duration;
+                            let mut stats = me.stats.write().await;
+                            stats.cache_writes += 1;
+                            stats.cache_write_duration += info.duration;
                         }
                     }
                 }
                 Ok(())
             };
 
-            future::try_join(send, cache_write).map(|_| Ok(())).await
+            futures::future::try_join(send, cache_write).await?;
+
+            Ok::<_, Error>(())
         };
 
-        tokio_compat::runtime::current_thread::TaskExecutor::current()
-            .spawn_local(Box::new(Box::pin(task).compat()))
-            .unwrap();
+        self.rt.spawn(async move {
+            task.await
+                .unwrap_or_else(|e| warn!("Failed to execute task: {:?}", e));
+        });
     }
 }
 
@@ -1560,7 +1580,7 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> futures_03::Stream for Body<R> {
+impl<R> futures::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -1627,8 +1647,8 @@ where
 ///   below.
 struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
     inner: Framed<
-        futures_03::stream::ErrInto<
-            futures_03::sink::SinkErrInto<
+        futures::stream::ErrInto<
+            futures::sink::SinkErrInto<
                 tokio_util::codec::Framed<I, LengthDelimitedCodec>,
                 Bytes,
                 Error,
@@ -1709,60 +1729,66 @@ impl Future for ShutdownOrInactive {
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
 struct WaitUntilZero {
-    info: Rc<RefCell<Info>>,
+    info: std::sync::Weak<Mutex<Info>>,
 }
 
+#[derive(Clone)]
 struct ActiveInfo {
-    info: Rc<RefCell<Info>>,
+    info: Arc<Mutex<Info>>,
 }
 
 struct Info {
-    active: usize,
     waker: Option<Waker>,
 }
 
-impl WaitUntilZero {
-    fn new() -> (WaitUntilZero, ActiveInfo) {
-        let info = Rc::new(RefCell::new(Info {
-            active: 1,
-            waker: None,
-        }));
-
-        (WaitUntilZero { info: info.clone() }, ActiveInfo { info })
-    }
-}
-
-impl Clone for ActiveInfo {
-    fn clone(&self) -> ActiveInfo {
-        self.info.borrow_mut().active += 1;
-        ActiveInfo {
-            info: self.info.clone(),
+impl Drop for Info {
+    fn drop(&mut self) {
+        if let Some(waker) = self.waker.as_ref() {
+            waker.wake_by_ref();
         }
     }
 }
 
-impl Drop for ActiveInfo {
-    fn drop(&mut self) {
-        let mut info = self.info.borrow_mut();
-        info.active -= 1;
-        if info.active == 0 {
-            if let Some(waker) = info.waker.take() {
-                waker.wake();
+impl WaitUntilZero {
+    #[rustfmt::skip]
+    fn new() -> (WaitUntilZero, ActiveInfo) {
+        let info = Arc::new(Mutex::new(Info { waker: None }));
+
+        (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
+    }
+}
+
+impl std::future::Future for WaitUntilZero {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
+        match self.info.upgrade() {
+            None => std::task::Poll::Ready(()),
+            Some(arc) => {
+                let mut info = arc.lock().expect("we can't panic when holding lock");
+                info.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
             }
         }
     }
 }
 
-impl std::future::Future for WaitUntilZero {
-    type Output = io::Result<()>;
+#[test]
+fn waits_until_zero() {
+    let (wait, _active) = WaitUntilZero::new();
+    assert_eq!(wait.now_or_never(), None);
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
-        let mut info = self.info.borrow_mut();
-        if info.active == 0 {
-            std::task::Poll::Ready(Ok(()))
-        } else {
-            info.waker = Some(cx.waker().clone());
-            std::task::Poll::Pending
-        }
-    }
+    let (wait, active) = WaitUntilZero::new();
+    let _active2 = active.clone();
+    drop(active);
+    assert_eq!(wait.now_or_never(), None);
+
+    let (wait, _) = WaitUntilZero::new();
+    assert_eq!(wait.now_or_never(), Some(()));
+
+    let (wait, active) = WaitUntilZero::new();
+    let active2 = active.clone();
+    drop(active);
+    drop(active2);
+    assert_eq!(wait.now_or_never(), Some(()));
 }
