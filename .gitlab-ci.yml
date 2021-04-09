@@ -78,17 +78,17 @@ nightly-test:
   variables:
     FEATURES:                      "unstable"
   script:
-    - cargo +nightly build --verbose --features="${EXTRA_FEATURES}" || exit 1
-    - cargo +nightly test --workspace --verbose --features="${EXTRA_FEATURES}"
+    - cargo +nightly build --verbose --features="${FEATURES}" || exit 1
+    - cargo +nightly test --workspace --verbose --features="${FEATURES}"
 
 stable-test:
   <<:                              *docker-env
   stage:                           test
   variables:
-    EXTRA_FEATURES:                ""
+    FEATURES:                      ""
   script:
-    - cargo +stable build --verbose --features="${EXTRA_FEATURES}" || exit 1
-    - cargo +stable test --workspace --verbose --features="${EXTRA_FEATURES}"
+    - cargo +stable build --verbose --features="${FEATURES}" || exit 1
+    - cargo +stable test --workspace --verbose --features="${FEATURES}"
 
 # For now simply collect artifacts
 artifacts:
@@ -96,9 +96,9 @@ artifacts:
   <<:                              *collect-artifacts
   stage:                           deploy
   variables:
-    EXTRA_FEATURES:                "dist-client,dist-server"
+    FEATURES:                     "dist-client,dist-server"
   script:
-    - cargo +stable build --release --features="${EXTRA_FEATURES}"
+    - cargo +stable build --release --features="${FEATURES}"
     # collect artifacts
     - mkdir -p ./artifacts/sccache/
     - mv ./target/release/sccache ./artifacts/sccache/.
