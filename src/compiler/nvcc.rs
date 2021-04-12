@@ -51,6 +51,7 @@ impl CCompilerImpl for Nvcc {
         gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
         &self,
         creator: &T,
