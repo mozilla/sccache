@@ -50,6 +50,7 @@ impl CCompilerImpl for GCC {
         parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
         &self,
         creator: &T,
