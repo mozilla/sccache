@@ -58,6 +58,7 @@ impl CCompilerImpl for Clang {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
         &self,
         creator: &T,

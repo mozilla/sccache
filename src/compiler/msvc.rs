@@ -57,6 +57,7 @@ impl CCompilerImpl for MSVC {
         parse_arguments(arguments, cwd, self.is_clang)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
         &self,
         creator: &T,
