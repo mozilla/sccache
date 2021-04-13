@@ -894,7 +894,9 @@ where
         None
     };
 
+    let creator1 = creator.clone();
     let executable = executable.to_owned();
+    let executable2 = executable.clone();
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     match rustc_vv {
@@ -902,41 +904,53 @@ where
             debug!("Found rustc");
 
             let proxy = RustupProxy::find_proxy_executable::<T>(
-                &executable,
+                &executable2,
                 "rustup",
                 creator.clone(),
                 &env,
-            )
-            .await?;
-
-            let (proxy, resolved_rustc) = match proxy {
-                Ok(Some(proxy)) => {
-                    trace!("Found rustup proxy executable");
-                    // take the pathbuf for rustc as resolved by the proxy
-                    match proxy
-                        .resolve_proxied_executable(creator.clone(), cwd, &env)
-                        .await
-                    {
-                        Ok((resolved_path, _time)) => {
-                            trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                            let proxy = Box::new(proxy) as Box<dyn CompilerProxy<T>>;
-                            (Some(proxy), resolved_path)
-                        }
-                        Err(e) => {
-                            trace!("Could not resolve compiler with rustup proxy: {}", e);
-                            (None, executable)
+            );
+            use futures::TryFutureExt;
+            let res = proxy.and_then(move |proxy| async move {
+                match proxy {
+                    Ok(Some(proxy)) => {
+                        trace!("Found rustup proxy executable");
+                        // take the pathbuf for rustc as resolved by the proxy
+                        match proxy.resolve_proxied_executable(creator1, cwd, &env).await {
+                            Ok((resolved_path, _time)) => {
+                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                Ok((Some(proxy), resolved_path))
+                            }
+                            Err(e) => {
+                                trace!("Could not resolve compiler with rustup proxy: {}", e);
+                                Ok((None, executable))
+                            }
                         }
                     }
+                    Ok(None) => {
+                        trace!("Did not find rustup");
+                        Ok((None, executable))
+                    }
+                    Err(e) => {
+                        trace!("Did not find rustup due to {}, compiling without proxy", e);
+                        Ok((None, executable))
+                    }
                 }
-                Ok(None) => {
-                    trace!("Did not find rustup");
-                    (None, executable)
-                }
-                Err(e) => {
-                    trace!("Did not find rustup due to {}, compiling without proxy", e);
-                    (None, executable)
-                }
-            };
+            });
+
+            let (proxy, resolved_rustc) = res
+                .await
+                .map(|(proxy, resolved_compiler_executable)| {
+                    (
+                        proxy
+                            .map(Box::new)
+                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+                        resolved_compiler_executable,
+                    )
+                })
+                .unwrap_or_else(|_e| {
+                    trace!("Compiling rust without proxy");
+                    (None, executable2)
+                });
 
             Rust::new(
                 creator,
