@@ -184,7 +184,7 @@ jobs:
         if: failure()
 
   build:
-    name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
+    name: build ${{ matrix.binary || 'cachepot' }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -194,7 +194,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             extra_args: --features="dist-server"
           - os: ubuntu-20.04
-            binary: sccache-dist
+            binary: cachepot-dist
             extra_args: --features="dist-server"
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
@@ -248,7 +248,7 @@ jobs:
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
 
       - name: Build
-        run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'cachepot' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
@@ -267,8 +267,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
         with:
-          name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
+          name: ${{ matrix.binary || 'cachepot' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'cachepot' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
 
   release:
@@ -285,7 +285,7 @@ jobs:
 
       - name: Create release assets
         run: |
-          for d in sccache-*; do
+          for d in cachepot-*; do
             cp README.md LICENSE $d/
             tar -zcvf $d.tar.gz $d
             echo -n $(shasum -ba 256 $d.tar.gz | cut -d " " -f 1) > $d.tar.gz.sha256
@@ -294,6 +294,6 @@ jobs:
       - name: Create release
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          hub release create -m $tag_name $tag_name $(for f in sccache-*.tar.gz*; do echo "-a $f"; done)
+          hub release create -m $tag_name $tag_name $(for f in cachepot-*.tar.gz*; do echo "-a $f"; done)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

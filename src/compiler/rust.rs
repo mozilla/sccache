@@ -212,7 +212,7 @@ where
     let start = time::Instant::now();
     // Get the full list of source files from rustc's dep-info.
     let temp_dir = tempfile::Builder::new()
-        .prefix("sccache")
+        .prefix("cachepot")
         .tempdir()
         .context("Failed to create temp dir")?;
     let dep_file = temp_dir.path().join("deps.d");
@@ -1101,13 +1101,13 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 match (opt.as_ref(), value) {
                     ("extra-filename", Some(value)) => extra_filename = Some(value.to_owned()),
                     ("extra-filename", None) => cannot_cache!("extra-filename"),
-                    // Incremental compilation makes a mess of sccache's entire world
+                    // Incremental compilation makes a mess of cachepot's entire world
                     // view. It produces additional compiler outputs that we don't cache,
                     // and just letting rustc do its work in incremental mode is likely
                     // to be faster than trying to fetch a result from cache anyway, so
                     // don't bother caching compiles where it's enabled currently.
                     // Longer-term we would like to figure out better integration between
-                    // sccache and rustc in the incremental scenario:
+                    // cachepot and rustc in the incremental scenario:
                     // https://github.com/mozilla/sccache/issues/236
                     ("incremental", _) => cannot_cache!("incremental"),
                     (_, _) => (),
@@ -2027,26 +2027,26 @@ fn test_rust_outputs_rewriter() {
     assert!(mappings.len() == 1);
     let linux_prefix = &mappings[0].1;
 
-    let depinfo_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+    let depinfo_data = format!("{prefix}/cachepot/target/x86_64-unknown-linux-gnu/debug/deps/cachepot_dist-c6f3229b9ef0a5c3.rmeta: src/bin/cachepot-dist/main.rs src/bin/cachepot-dist/build.rs src/bin/cachepot-dist/token_check.rs
 
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+{prefix}/cachepot/target/x86_64-unknown-linux-gnu/debug/deps/cachepot_dist-c6f3229b9ef0a5c3.d: src/bin/cachepot-dist/main.rs src/bin/cachepot-dist/build.rs src/bin/cachepot-dist/token_check.rs
 
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
+src/bin/cachepot-dist/main.rs:
+src/bin/cachepot-dist/build.rs:
+src/bin/cachepot-dist/token_check.rs:
 ", prefix=linux_prefix);
 
-    let depinfo_resulting_data = format!("{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.rmeta: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+    let depinfo_resulting_data = format!("{prefix}/cachepot/target/x86_64-unknown-linux-gnu/debug/deps/cachepot_dist-c6f3229b9ef0a5c3.rmeta: src/bin/cachepot-dist/main.rs src/bin/cachepot-dist/build.rs src/bin/cachepot-dist/token_check.rs
 
-{prefix}/sccache/target/x86_64-unknown-linux-gnu/debug/deps/sccache_dist-c6f3229b9ef0a5c3.d: src/bin/sccache-dist/main.rs src/bin/sccache-dist/build.rs src/bin/sccache-dist/token_check.rs
+{prefix}/cachepot/target/x86_64-unknown-linux-gnu/debug/deps/cachepot_dist-c6f3229b9ef0a5c3.d: src/bin/cachepot-dist/main.rs src/bin/cachepot-dist/build.rs src/bin/cachepot-dist/token_check.rs
 
-src/bin/sccache-dist/main.rs:
-src/bin/sccache-dist/build.rs:
-src/bin/sccache-dist/token_check.rs:
+src/bin/cachepot-dist/main.rs:
+src/bin/cachepot-dist/build.rs:
+src/bin/cachepot-dist/token_check.rs:
 ", prefix="c:");
 
     let tempdir = tempfile::Builder::new()
-        .prefix("sccache_test")
+        .prefix("cachepot_test")
         .tempdir()
         .unwrap();
     let tempdir = tempdir.path();
@@ -2113,7 +2113,7 @@ struct RlibDepReader {
 impl RlibDepReader {
     fn new_with_check(executable: PathBuf, env_vars: &[(OsString, OsString)]) -> Result<Self> {
         let temp_dir = tempfile::Builder::new()
-            .prefix("sccache-rlibreader")
+            .prefix("cachepot-rlibreader")
             .tempdir()
             .context("Could not create temporary directory for rlib output")?;
         let temp_rlib = temp_dir.path().join("x.rlib");

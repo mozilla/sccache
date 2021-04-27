@@ -13,5 +13,5 @@
 // limitations under the License.
 
 fn main() {
-    sccache::main();
+    cachepot::main();
 }

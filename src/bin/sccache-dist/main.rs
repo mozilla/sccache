@@ -12,17 +12,17 @@ use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use jsonwebtoken as jwt;
 use rand::{rngs::OsRng, RngCore};
-use sccache::config::{
+use cachepot::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
-use sccache::dist::{
+use cachepot::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
     InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
     SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId, ServerIncoming,
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
-use sccache::util::daemonize;
+use cachepot::util::daemonize;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
@@ -62,18 +62,18 @@ fn main() {
         Ok(cmd) => match run(cmd) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("sccache-dist: error: {}", e);
+                eprintln!("cachepot-dist: error: {}", e);
 
                 for e in e.chain().skip(1) {
-                    eprintln!("sccache-dist: caused by: {}", e);
+                    eprintln!("cachepot-dist: caused by: {}", e);
                 }
                 2
             }
         },
         Err(e) => {
-            println!("sccache-dist: {}", e);
+            println!("cachepot-dist: {}", e);
             for e in e.chain().skip(1) {
-                println!("sccache-dist: caused by: {}", e);
+                println!("cachepot-dist: caused by: {}", e);
             }
             get_app().print_help().unwrap();
             println!();
@@ -203,7 +203,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-scheduler", &matches);
+            check_init_syslog("cachepot-scheduler", &matches);
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
@@ -216,7 +216,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-buildserver", &matches);
+            check_init_syslog("cachepot-buildserver", &matches);
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
@@ -404,14 +404,14 @@ fn run(command: Command) -> Result<i32> {
             };
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
-                .context("Failed to create sccache server instance")?;
+                .context("Failed to create cachepot server instance")?;
             let http_server = dist::http::Server::new(
                 public_addr,
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,
             )
-            .context("Failed to create sccache HTTP server instance")?;
+            .context("Failed to create cachepot HTTP server instance")?;
             void::unreachable(http_server.start()?)
         }
     }

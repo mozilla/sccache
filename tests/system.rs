@@ -20,7 +20,7 @@
 #[macro_use]
 extern crate log;
 use crate::harness::{
-    get_stats, sccache_client_cfg, sccache_command, start_local_daemon, stop_local_daemon,
+    get_stats, cachepot_client_cfg, cachepot_command, start_local_daemon, stop_local_daemon,
     write_json_cfg, write_source, zero_stats,
 };
 use assert_cmd::prelude::*;
@@ -99,13 +99,13 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    trace!("run_cachepot_command_test: {}", name);
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
     let out_file = tempdir.join("test.o");
     trace!("compile");
-    sccache_command()
+    cachepot_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -122,7 +122,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
-    sccache_command()
+    cachepot_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -150,7 +150,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
-    sccache_command()
+    cachepot_command()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
@@ -177,7 +177,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     trace!("compile with -deps");
     let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
     args.push("-depstest.d".into());
-    sccache_command()
+    cachepot_command()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -211,7 +211,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
     // This should fail, but the error should be from the #error!
-    sccache_command()
+    cachepot_command()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
     let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
-    sccache_command()
+    cachepot_command()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -262,7 +262,7 @@ int main(int argc, char** argv) {
     });
     // Compile the same source again to ensure we can get a cache hit.
     trace!("compile source.c (2)");
-    sccache_command()
+    cachepot_command()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars.clone())
@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
 ",
     );
     trace!("compile source.c (3)");
-    sccache_command()
+    cachepot_command()
         .args(&args)
         .current_dir(tempdir)
         .envs(env_vars)
@@ -317,7 +317,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     copy_to_tempdir(&[INPUT_MACRO_EXPANSION], tempdir);
 
     trace!("compile");
-    sccache_command()
+    cachepot_command()
         .args(
             [
                 &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT)[..],
@@ -343,11 +343,11 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT_WITH_DEFINE], tempdir);
 
     trace!("compile");
-    sccache_command()
+    cachepot_command()
         .args(
             [
                 &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT)[..],
-                &vec_from!(OsString, "-DSCCACHE_TEST_DEFINE")[..],
+                &vec_from!(OsString, "-DCACHEPOT_TEST_DEFINE")[..],
             ]
             .concat(),
         )
@@ -358,7 +358,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
-fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
+fn run_cachepot_command_tests(compiler: Compiler, tempdir: &Path) {
     test_basic_compile(compiler.clone(), tempdir);
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
@@ -413,30 +413,29 @@ fn find_compilers() -> Vec<Compiler> {
 // are not run.
 #[test]
 #[cfg(any(unix, target_env = "msvc"))]
-fn test_sccache_command() {
+fn test_cachepot_command() {
     let _ = env_logger::Builder::new().is_test(true).try_init();
     let tempdir = tempfile::Builder::new()
-        .prefix("sccache_system_test")
+        .prefix("cachepot_system_test")
         .tempdir()
         .unwrap();
     let compilers = find_compilers();
     if compilers.is_empty() {
         warn!("No compilers found, skipping test");
     } else {
-        // Ensure there's no existing sccache server running.
+        // Ensure there's no existing cachepot server running.
         stop_local_daemon();
         // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path());
-        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
-        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
+        let cachepot_cfg = cachepot_client_cfg(tempdir.path());
+        write_json_cfg(tempdir.path(), "cachepot-cfg.json", &cachepot_cfg);
+        let cachepot_cached_cfg_path = tempdir.path().join("cachepot-cached-cfg");
         // Start a server.
-        trace!("start server");
         start_local_daemon(
-            &tempdir.path().join("sccache-cfg.json"),
-            &sccache_cached_cfg_path,
+            &tempdir.path().join("cachepot-cfg.json"),
+            &cachepot_cached_cfg_path,
         );
         for compiler in compilers {
-            run_sccache_command_tests(compiler, tempdir.path());
+            run_cachepot_command_tests(compiler, tempdir.path());
             zero_stats();
         }
         stop_local_daemon();

@@ -110,19 +110,19 @@ pub fn next_command_calls<C: Fn(&[OsString]) -> Result<MockChild> + Send + 'stat
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn find_sccache_binary() -> PathBuf {
-    // Older versions of cargo put the test binary next to the sccache binary.
+pub fn find_cachepot_binary() -> PathBuf {
+    // Older versions of cargo put the test binary next to the cachepot binary.
     // Newer versions put it in the deps/ subdirectory.
     let exe = env::current_exe().unwrap();
     let this_dir = exe.parent().unwrap();
     let dirs = &[&this_dir, &this_dir.parent().unwrap()];
     dirs.iter()
-        .map(|d| d.join("sccache").with_extension(env::consts::EXE_EXTENSION))
+        .map(|d| d.join("cachepot").with_extension(env::consts::EXE_EXTENSION))
         .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
         .next()
         .unwrap_or_else(|| {
             panic!(
-            "Error: sccache binary not found, looked in `{:?}`. Do you need to run `cargo build`?",
+            "Error: cachepot binary not found, looked in `{:?}`. Do you need to run `cargo build`?",
             dirs
         )
         })
@@ -211,7 +211,7 @@ pub fn mk_bin(dir: &Path, path: &str) -> io::Result<PathBuf> {
 impl TestFixture {
     pub fn new() -> TestFixture {
         let tempdir = tempfile::Builder::new()
-            .prefix("sccache_test")
+            .prefix("cachepot_test")
             .tempdir()
             .unwrap();
         let mut builder = std::fs::DirBuilder::new();

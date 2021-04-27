@@ -1,4 +1,4 @@
-# Distributed sccache
+# Distributed cachepot
 
 Background:
 
@@ -17,13 +17,13 @@ Background:
 
 ## Overview
 
-Distributed sccache consists of three parts:
+Distributed cachepot consists of three parts:
 
- - the client, an sccache binary that wishes to perform a compilation on
+ - the client, an cachepot binary that wishes to perform a compilation on
    remote machines
- - the scheduler (`sccache-dist` binary), responsible for deciding where
+ - the scheduler (`cachepot-dist` binary), responsible for deciding where
    a compilation job should run
- - the server (`sccache-dist` binary), responsible for actually executing
+ - the server (`cachepot-dist` binary), responsible for actually executing
    a build
 
 All servers are required to be a 64-bit Linux install. Clients may request
@@ -33,7 +33,7 @@ need to specify a toolchain for cross-compilation ahead of time.
 
 ## Communication
 
-The HTTP implementation of sccache has the following API, where all HTTP body content is encoded using [`bincode`](http://docs.rs/bincode):
+The HTTP implementation of cachepot has the following API, where all HTTP body content is encoded using [`bincode`](http://docs.rs/bincode):
 
  - scheduler
    - `POST /api/v1/scheduler/alloc_job`
@@ -84,7 +84,7 @@ You *must* keep the secret key safe.
 
 *To use it*:
 
-Create a scheduler key with `sccache-dist auth generate-jwt-hs256-key` (which will
+Create a scheduler key with `cachepot-dist auth generate-jwt-hs256-key` (which will
 use your OS random number generator) and put it in your scheduler config file as
 follows:
 
@@ -96,7 +96,7 @@ Now generate a token for the server, giving the IP and port the scheduler and cl
 connect to the server on (address `192.168.1.10:10501` here):
 
 ```
-sccache-dist auth generate-jwt-hs256-server-token \
+cachepot-dist auth generate-jwt-hs256-server-token \
     --secret-key YOUR_KEY_HERE \
     --server 192.168.1.10:10501
 ```
@@ -104,7 +104,7 @@ sccache-dist auth generate-jwt-hs256-server-token \
 *or:*
 
 ```
-sccache-dist auth generate-jwt-hs256-server-token \
+cachepot-dist auth generate-jwt-hs256-server-token \
     --config /path/to/scheduler-config.toml \
     --server 192.168.1.10:10501
 ```
@@ -166,7 +166,7 @@ Done!
 
 ### Client Trust
 
-If a client is malicious, they can cause a DoS of distributed sccache servers or
+If a client is malicious, they can cause a DoS of distributed cachepot servers or
 explore ways to escape the build sandbox. To protect against this, clients must
 be authenticated.
 
@@ -219,7 +219,7 @@ auth = { type = "oauth2_code_grant_pkce", client_id = "...", auth_url = "...", t
 auth = { type = "oauth2_implicit", client_id = "...", auth_url = "..." }
 ```
 
-The client should then run `sccache --dist-auth` and follow the instructions to retrieve
+The client should then run `cachepot --dist-auth` and follow the instructions to retrieve
 a token. This will be automatically cached locally for the token expiry period (manual
 revalidation will be necessary after expiry).
 
@@ -272,7 +272,7 @@ If third parties can see traffic to the servers, source code can be leaked. If t
 parties can modify traffic to and from the servers or the scheduler, they can cause
 the client to receive malicious compiled objects.
 
-Securing communication with the scheduler is the responsibility of the sccache cluster
+Securing communication with the scheduler is the responsibility of the cachepot cluster
 administrator - it is recommended to put a webserver with a HTTPS certificate in front
 of the scheduler and instruct clients to configure their `scheduler_url` with the
 appropriate `https://` address. The scheduler will verify the server's IP in this
@@ -287,7 +287,7 @@ certificate will be requested from the scheduler.
 
 # Building the Distributed Server Binaries
 
-Until these binaries [are included in releases](https://github.com/mozilla/sccache/issues/393) I've put together a Docker container that can be used to easily build a release binary:
+Until these binaries [are included in releases](https://github.com/paritytech/cachepot/issues/393) I've put together a Docker container that can be used to easily build a release binary:
 ```
-docker run -ti --rm -v $PWD:/sccache luser/sccache-musl-build:0.1 /bin/bash -c "cd /sccache; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/sccache-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf sccache-dist.tar.gz sccache-dist"
+docker run -ti --rm -v $PWD:/cachepot luser/cachepot-musl-build:0.1 /bin/bash -c "cd /cachepot; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/cachepot-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf cachepot-dist.tar.gz cachepot-dist"
 ```

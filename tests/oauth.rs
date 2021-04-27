@@ -20,7 +20,7 @@ const LOGIN_SELECTOR: &str = ".auth0-lock-submit";
 const BROWSER_RETRY_WAIT: Duration = Duration::from_secs(1);
 const BROWSER_MAX_WAIT: Duration = Duration::from_secs(10);
 
-// The configuration below is for the sccache-test tenant under aidanhs' auth0 account. There
+// The configuration below is for the cachepot-test tenant under aidanhs' auth0 account. There
 // is one user, one api and two applications. There is a rule ensuring that oauth access is
 // never granted to the built-in auth0 tenant management API (though the worst that could happen
 // is tests start failing because someone deliberately messes up the configuration).
@@ -28,31 +28,31 @@ const BROWSER_MAX_WAIT: Duration = Duration::from_secs(10);
 const TEST_USERNAME: &str = "test@example.com";
 const TEST_PASSWORD: &str = "test1234";
 
-fn generate_code_grant_pkce_auth_config() -> sccache::config::DistAuth {
-    sccache::config::DistAuth::Oauth2CodeGrantPKCE {
+fn generate_code_grant_pkce_auth_config() -> cachepot::config::DistAuth {
+    cachepot::config::DistAuth::Oauth2CodeGrantPKCE {
         client_id: "Xmbl6zRW1o1tJ5LQOz0p65NwY47aMO7A".to_owned(),
         auth_url:
-            "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
+            "https://cachepot-test.auth0.com/authorize?audience=https://cachepot-dist-test-api/"
                 .to_owned(),
-        token_url: "https://sccache-test.auth0.com/oauth/token".to_owned(),
+        token_url: "https://cachepot-test.auth0.com/oauth/token".to_owned(),
     }
 }
-fn generate_implicit_auth_config() -> sccache::config::DistAuth {
-    sccache::config::DistAuth::Oauth2Implicit {
+fn generate_implicit_auth_config() -> cachepot::config::DistAuth {
+    cachepot::config::DistAuth::Oauth2Implicit {
         client_id: "TTborSAyjBnSi1W11201ZzNu9gSg63bq".to_owned(),
         auth_url:
-            "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
+            "https://cachepot-test.auth0.com/authorize?audience=https://cachepot-dist-test-api/"
                 .to_owned(),
     }
 }
 
 fn config_with_dist_auth(
     tmpdir: &Path,
-    auth_config: sccache::config::DistAuth,
-) -> sccache::config::FileConfig {
-    sccache::config::FileConfig {
+    auth_config: cachepot::config::DistAuth,
+) -> cachepot::config::FileConfig {
+    cachepot::config::FileConfig {
         cache: Default::default(),
-        dist: sccache::config::DistConfig {
+        dist: cachepot::config::DistConfig {
             auth: auth_config,
             scheduler_url: None,
             cache_dir: tmpdir.join("unused-cache"),
@@ -63,7 +63,7 @@ fn config_with_dist_auth(
     }
 }
 
-fn sccache_command() -> Command {
+fn cachepot_command() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
 }
 
@@ -192,8 +192,8 @@ impl Drop for SeleniumContainer {
 )]
 #[serial]
 fn test_auth() {
-    // Make sure the client auth port isn't in use, as sccache will gracefully fall back
-    let client_auth_port = sccache::dist::client_auth::VALID_PORTS[0];
+    // Make sure the client auth port isn't in use, as cachepot will gracefully fall back
+    let client_auth_port = cachepot::dist::client_auth::VALID_PORTS[0];
     assert_eq!(
         TcpStream::connect(("localhost", client_auth_port))
             .unwrap_err()
@@ -220,29 +220,29 @@ fn test_auth() {
     test_auth_with_config(generate_implicit_auth_config());
 }
 
-fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
+fn test_auth_with_config(dist_auth: cachepot::config::DistAuth) {
     let conf_dir = tempfile::Builder::new()
-        .prefix("sccache-test-conf")
+        .prefix("cachepot-test-conf")
         .tempdir()
         .unwrap();
-    let sccache_config = config_with_dist_auth(conf_dir.path(), dist_auth);
-    let sccache_config_path = conf_dir.path().join("sccache-config.json");
-    fs::File::create(&sccache_config_path)
+    let cachepot_config = config_with_dist_auth(conf_dir.path(), dist_auth);
+    let cachepot_config_path = conf_dir.path().join("cachepot-config.json");
+    fs::File::create(&cachepot_config_path)
         .unwrap()
-        .write_all(&serde_json::to_vec(&sccache_config).unwrap())
+        .write_all(&serde_json::to_vec(&cachepot_config).unwrap())
         .unwrap();
-    let sccache_cached_config_path = conf_dir.path().join("sccache-cached-config");
+    let cachepot_cached_config_path = conf_dir.path().join("cachepot-cached-config");
     let envs = vec![
-        ("RUST_LOG", "sccache=trace".into()),
-        ("SCCACHE_CONF", sccache_config_path.into_os_string()),
+        ("RUST_LOG", "cachepot=trace".into()),
+        ("CACHEPOT_CONF", cachepot_config_path.into_os_string()),
         (
-            "SCCACHE_CACHED_CONF",
-            sccache_cached_config_path.clone().into_os_string(),
+            "CACHEPOT_CACHED_CONF",
+            cachepot_cached_config_path.clone().into_os_string(),
         ),
     ];
 
-    println!("Starting sccache --dist-auth");
-    let mut sccache_process = sccache_command()
+    println!("Starting cachepot --dist-auth");
+    let mut cachepot_process = cachepot_command()
         .arg("--dist-auth")
         .envs(envs)
         .stdin(Stdio::null())
@@ -252,22 +252,22 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
     println!("Beginning in-browser auth");
     login();
     let status = retry(Duration::from_secs(1), Duration::from_secs(10), || {
-        sccache_process.try_wait().unwrap()
+        cachepot_process.try_wait().unwrap()
     });
     match status {
         Some(s) => assert!(s.success()),
         None => {
-            sccache_process.kill().unwrap();
+            cachepot_process.kill().unwrap();
             panic!("Waited too long for process to exit")
         }
     }
     println!("Validating cached config");
     let mut cached_config_bytes = vec![];
-    fs::File::open(sccache_cached_config_path)
+    fs::File::open(cachepot_cached_config_path)
         .unwrap()
         .read_to_end(&mut cached_config_bytes)
         .unwrap();
-    let cached_config: sccache::config::CachedFileConfig =
+    let cached_config: cachepot::config::CachedFileConfig =
         toml::from_slice(&cached_config_bytes).unwrap();
     assert_eq!(cached_config.dist.auth_tokens.len(), 1);
 }

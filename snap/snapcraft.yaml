@@ -1,11 +1,11 @@
-name: sccache
-version: '0.2.2'
+name: cachepot
+version: '0.1.0'
 version-script: |
     git describe --tags
 
-summary: sccache is ccache with cloud storage
+summary: cachepot is a fork of sccache and also ccache with cloud storage and security
 description: |
-    sccache is a ccache-like tool. It is used as a compiler wrapper and avoids
+    cachepot is a ccache-like tool. It is used as a compiler wrapper and avoids
     compilation when possible, storing a cache in a remote storage using the
     Amazon Simple Cloud Storage Service (S3) API, the Google Cloud Storage (GCS)
     API, or Redis.
@@ -15,18 +15,18 @@ confinement: classic
 
 apps:
     sccache:
-        command: bin/sccache.wrapper
+        command: bin/cachepot.wrapper
 
-    sccache-server:
+    cachepot-server:
         environment:
             SCCACHE_START_SERVER: 1
             SCCACHE_NO_DAEMON: 1
             SCCACHE_IDLE_TIMEOUT: 0
-        command: bin/sccache.wrapper
+        command: bin/cachepot.wrapper
         daemon: simple
 
 parts:
-    sccache:
+    cachepot:
         plugin: rust
         source: .
         source-type: git

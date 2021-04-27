@@ -9,7 +9,7 @@
 #[macro_use]
 extern crate log;
 
-/// Test that building a simple Rust crate with cargo using sccache results in a cache hit
+/// Test that building a simple Rust crate with cargo using cachepot results in a cache hit
 /// when built a second time.
 #[test]
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -30,14 +30,14 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use std::path::Path;
     use std::process::{Command, Stdio};
 
-    fn sccache_command() -> Command {
+    fn cachepot_command() -> Command {
         Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
     }
 
     fn stop() {
-        trace!("sccache --stop-server");
+        trace!("cachepot --stop-server");
         drop(
-            sccache_command()
+            cachepot_command()
                 .arg("--stop-server")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -60,32 +60,32 @@ fn test_rust_cargo_cmd(cmd: &str) {
 
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
-    let sccache = assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME"));
-    debug!("sccache: {:?}", sccache);
+    let cachepot = assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME"));
+    debug!("cachepot: {:?}", cachepot);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
-    // Ensure there's no existing sccache server running.
+    // Ensure there's no existing cachepot server running.
     stop();
     // Create a temp directory to use for the disk cache.
     let tempdir = tempfile::Builder::new()
-        .prefix("sccache_test_rust_cargo")
+        .prefix("cachepot_test_rust_cargo")
         .tempdir()
         .unwrap();
     let cache_dir = tempdir.path().join("cache");
     fs::create_dir(&cache_dir).unwrap();
     let cargo_dir = tempdir.path().join("cargo");
     fs::create_dir(&cargo_dir).unwrap();
-    // Start a new sccache server.
-    trace!("sccache --start-server");
-    sccache_command()
+    // Start a new cachepot server.
+    trace!("cachepot --start-server");
+    cachepot_command()
         .arg("--start-server")
-        .env("SCCACHE_DIR", &cache_dir)
+        .env("CACHEPOT_DIR", &cache_dir)
         .assert()
         .success();
     // `cargo clean` first, just to be sure there's no leftover build objects.
     let envs = vec![
-        ("RUSTC_WRAPPER", sccache.as_ref()),
+        ("RUSTC_WRAPPER", cachepot.as_ref()),
         ("CARGO_TARGET_DIR", cargo_dir.as_ref()),
-        // Explicitly disable incremental compilation because sccache is unable
+        // Explicitly disable incremental compilation because cachepot is unable
         // to cache it at the time of writing.
         ("CARGO_INCREMENTAL", OsStr::new("0")),
     ];
@@ -120,8 +120,8 @@ fn test_rust_cargo_cmd(cmd: &str) {
     // Now get the stats and ensure that we had a cache hit for the second build.
     // The test crate has one dependency (itoa) so there are two separate
     // compilations.
-    trace!("sccache --show-stats");
-    sccache_command()
+    trace!("cachepot --show-stats");
+    cachepot_command()
         .args(&["--show-stats", "--stats-format=json"])
         .assert()
         .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":2}}"#).from_utf8())

@@ -393,7 +393,7 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
             //
             // [1]: http://www.vxdev.com/docs/vx55man/diab5.0ppc/c-invoke.htm#3000619
             //
-            // The environment variable feature is *not* supported by sccache
+            // The environment variable feature is *not* supported by cachepot
             // since this would raise the need for the clients environment
             // and not just env::var. This is technically possible, but
             // considered as a unneeded edge case for now.
@@ -622,7 +622,7 @@ mod test {
     #[test]
     fn test_at_signs_file_not_readable() {
         let td = tempfile::Builder::new()
-            .prefix("sccache")
+            .prefix("cachepot")
             .tempdir()
             .unwrap();
         let arg = format!("-@{}", td.path().join("foo").display());
@@ -636,7 +636,7 @@ mod test {
     #[test]
     fn test_at_signs_file() {
         let td = tempfile::Builder::new()
-            .prefix("sccache")
+            .prefix("cachepot")
             .tempdir()
             .unwrap();
         File::create(td.path().join("foo"))

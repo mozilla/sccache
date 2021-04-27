@@ -1,5 +1,5 @@
 [Unit]
-Description=sccache server
+Description=cachepot server
 
 After=suspend.target
 After=hibernate.target
@@ -7,7 +7,7 @@ After=hybrid-sleep.target
 After=network.target
 Requires=network.target
 RequiresMountsFor=/mnt/cache-dir
-Wants=sccache-scheduler.service
+Wants=cachepot-scheduler.service
 
 [Service]
 Type=simple
@@ -18,9 +18,9 @@ TasksMax=1000
 User=root
 Group=root
 Environment=SCCACHE_NO_DAEMON=1
-Environment=RUST_LOG=sccache=trace,sccache-dist=trace
+Environment=RUST_LOG=cachepot=trace,cachepot-dist=trace
 ExecPreStart=-/mnt/cache-dir
-ExecStart=/usr/local/bin/sccache-dist server --config /etc/sccache/server.conf
+ExecStart=/usr/local/bin/cachepot-dist server --config /etc/cachepot/server.conf
 SELinuxContext=system_u:object_r:unreserved_port_t:s0
 
 [Install]

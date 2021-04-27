@@ -1,7 +1,7 @@
 use crate::jwt;
 use anyhow::{bail, Context, Result};
-use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccache::util::RequestExt;
+use cachepot::dist::http::{ClientAuthCheck, ClientVisibleMsg};
+use cachepot::util::RequestExt;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
@@ -86,7 +86,7 @@ impl ClientAuthCheck for MozillaCheck {
         self.check_mozilla(token).map_err(|e| {
             warn!("Mozilla token validation failed: {}", e);
             ClientVisibleMsg::from_nonsensitive(
-                "Failed to validate Mozilla OAuth token, run sccache --dist-auth".to_owned(),
+                "Failed to validate Mozilla OAuth token, run cachepot --dist-auth".to_owned(),
             )
         })
     }
@@ -107,7 +107,7 @@ impl MozillaCheck {
         //   "iss": "https://auth.mozilla.auth0.com/",
         //   "sub": "ad|Mozilla-LDAP|asayers",
         //   "aud": [
-        //     "sccache",
+        //     "cachepot",
         //     "https://auth.mozilla.auth0.com/userinfo"
         //   ],
         //   "iat": 1541103283,

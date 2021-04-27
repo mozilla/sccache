@@ -77,11 +77,11 @@ impl AzureCredentialsProvider for EnvironmentProvider {
 }
 
 fn credentials_from_environment() -> Result<AzureCredentials> {
-    let env_conn_str = var("SCCACHE_AZURE_CONNECTION_STRING")
-        .context("No SCCACHE_AZURE_CONNECTION_STRING in environment")?;
+    let env_conn_str = var("CACHEPOT_AZURE_CONNECTION_STRING")
+        .context("No CACHEPOT_AZURE_CONNECTION_STRING in environment")?;
 
-    let container_name = var("SCCACHE_AZURE_BLOB_CONTAINER")
-        .context("No SCCACHE_AZURE_BLOB_CONTAINER in environment")?;
+    let container_name = var("CACHEPOT_AZURE_BLOB_CONTAINER")
+        .context("No CACHEPOT_AZURE_BLOB_CONTAINER in environment")?;
 
     parse_connection_string(&env_conn_str, container_name)
 }

@@ -545,8 +545,8 @@ pub fn parse_arguments(
             //
             // -FS forces synchronous access to PDB files via a MSPDBSRV process.
             // This option is only useful when multiple compiler invocations are going
-            // to share the same PDB file, which is not supported by sccache. So either
-            // -Fd was passed with a pdb that is not shared and sccache is going to
+            // to share the same PDB file, which is not supported by cachepot. So either
+            // -Fd was passed with a pdb that is not shared and cachepot is going to
             // handle the compile, in which case -FS is not needed, or -Fd was not passed
             // and we're going to bail out and not cache.
             //
@@ -892,7 +892,7 @@ fn generate_compile_commands(
         // It's important to avoid preprocessor_args because of things like /FI which
         // forcibly includes another file. This does mean we're potentially vulnerable
         // to misidentification of flags like -DYNAMICBASE (though in that specific
-        // case we're safe as it only applies to link time, which sccache avoids).
+        // case we're safe as it only applies to link time, which cachepot avoids).
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
 
         Some(dist::CompileCommand {

@@ -50,4 +50,4 @@ done
 mv -f ${CONFIG_FILE}.new $CONFIG_FILE || /bin/true
 
 # Restart the server to pick up new values
-systemctl restart snap.sccache.sccache-server.service
+systemctl restart snap.cachepot.cachepot-server.service

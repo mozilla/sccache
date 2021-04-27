@@ -15,12 +15,12 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use flate2::read::GzDecoder;
 use libmount::Overlay;
-use sccache::dist::{
+use cachepot::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
-use sccache::lru_disk_cache::Error as LruError;
-use sccache::util::fs;
+use cachepot::lru_disk_cache::Error as LruError;
+use cachepot::util::fs;
 use std::collections::{hash_map, HashMap};
 use std::io;
 use std::iter;
@@ -179,7 +179,7 @@ impl OverlayBuilder {
             // Create the toolchain dir (if necessary) while we have an exclusive lock
             let toolchain_dir = self.dir.join("toolchains").join(&tc.archive_id);
             if toolchain_dir_map.contains_key(tc) && toolchain_dir.exists() {
-                // TODO: use if let when sccache can use NLL
+                // TODO: use if let when cachepot can use NLL
                 let entry = toolchain_dir_map
                     .get_mut(tc)
                     .expect("Key missing after checking");
@@ -524,7 +524,7 @@ impl DockerBuilder {
                 if iter.next() != None {
                     bail!("Malformed container listing - third field on row")
                 }
-                if image_name.starts_with("sccache-builder-") {
+                if image_name.starts_with("cachepot-builder-") {
                     containers_to_rm.push(container_id)
                 }
             }
@@ -554,7 +554,7 @@ impl DockerBuilder {
                 if iter.next() != None {
                     bail!("Malformed image listing - third field on row")
                 }
-                if image_name.starts_with("sccache-builder-") {
+                if image_name.starts_with("cachepot-builder-") {
                     images_to_rm.push(image_id)
                 }
             }
@@ -723,7 +723,7 @@ impl DockerBuilder {
             .context("Failed to copy toolchain tar into container")?;
         drop(toolchain_rdr);
 
-        let imagename = format!("sccache-builder-{}", &tc.archive_id);
+        let imagename = format!("cachepot-builder-{}", &tc.archive_id);
         Command::new("docker")
             .args(&["commit", &cid, &imagename])
             .check_run()

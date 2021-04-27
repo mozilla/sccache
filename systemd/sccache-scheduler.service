@@ -1,5 +1,5 @@
 [Unit]
-Description=sccache scheduler
+Description=cachepot scheduler
 
 After=suspend.target
 After=hibernate.target
@@ -17,9 +17,9 @@ TasksMax=1000
 User=root
 Group=root
 Environment=SCCACHE_NO_DAEMON=1
-Environment=RUST_LOG=sccache=trace,sccache-dist=trace
+Environment=RUST_LOG=cachepot=trace,cachepot-dist=trace
 ExecStartPre=-/usr/bin/mkdir /mnt/cache-dir
-ExecStart=/usr/local/bin/sccache-dist scheduler --config /etc/sccache/scheduler.conf
+ExecStart=/usr/local/bin/cachepot-dist scheduler --config /etc/cachepot/scheduler.conf
 SELinuxContext=system_u:object_r:unreserved_port_t:s0
 
 [Install]

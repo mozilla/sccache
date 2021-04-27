@@ -90,7 +90,7 @@ pub enum ServerStartup {
 /// Get the time the server should idle for before shutting down.
 fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
-    env::var("SCCACHE_IDLE_TIMEOUT")
+    env::var("CACHEPOT_IDLE_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
@@ -170,7 +170,7 @@ impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
     fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
-            warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
+            warn!("Scheduler address configured but dist feature disabled, disabling distributed cachepot")
         }
         Self {}
     }
@@ -341,7 +341,7 @@ impl DistClientContainer {
         match config.scheduler_url {
             Some(ref addr) => {
                 let url = addr.to_url();
-                info!("Enabling distributed sccache to {}", url);
+                info!("Enabling distributed cachepot to {}", url);
                 let auth_token = match &config.auth {
                     config::DistAuth::Token { token } => Ok(token.to_owned()),
                     config::DistAuth::Oauth2CodeGrantPKCE { auth_url, .. }
@@ -350,7 +350,7 @@ impl DistClientContainer {
                     }
                 };
                 let auth_token = try_or_fail_with_message!(auth_token
-                    .context("could not load client auth token, run |sccache --dist-auth|"));
+                    .context("could not load client auth token, run |cachepot --dist-auth|"));
                 let dist_client = dist::http::Client::new(
                     &config.pool,
                     url,
@@ -381,7 +381,7 @@ impl DistClientContainer {
                 }
             }
             None => {
-                info!("No scheduler address configured, disabling distributed sccache");
+                info!("No scheduler address configured, disabling distributed cachepot");
                 DistClientState::Disabled
             }
         }
@@ -395,7 +395,7 @@ impl DistClientContainer {
     }
 }
 
-/// Start an sccache server, listening on `port`.
+/// Start an cachepot server, listening on `port`.
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
@@ -412,7 +412,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
     let storage = storage_from_config(config, &pool);
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
-    let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
+    let notify = env::var_os("CACHEPOT_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
             let port = srv.port();
@@ -626,7 +626,7 @@ impl<C> CompilerCacheEntry<C> {
         }
     }
 }
-/// Service implementation for sccache
+/// Service implementation for cachepot
 #[derive(Clone)]
 struct SccacheService<C>
 where
@@ -635,7 +635,7 @@ where
     /// Server statistics.
     stats: Arc<RwLock<ServerStats>>,
 
-    /// Distributed sccache client
+    /// Distributed cachepot client
     dist_client: Arc<DistClientContainer>,
 
     /// Cache storage.
@@ -790,11 +790,11 @@ where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
-        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
+        if let Ok(max_frame_length_str) = env::var("CACHEPOT_MAX_FRAME_LENGTH") {
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {
-                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is  not a valid number, using default");
+                warn!("Content of CACHEPOT_MAX_FRAME_LENGTH is  not a valid number, using default");
             }
         }
         let io = builder.new_framed(socket);
@@ -1085,7 +1085,7 @@ where
     ) {
         let force_recache = env_vars
             .iter()
-            .any(|&(ref k, ref _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
+            .any(|&(ref k, ref _v)| k.as_os_str() == OsStr::new("CACHEPOT_RECACHE"));
         let cache_control = if force_recache {
             CacheControl::ForceRecache
         } else {
@@ -1209,11 +1209,11 @@ where
 
                                 error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                                let mut error = "sccache: encountered fatal error\n".to_string();
-                                let _ = writeln!(error, "sccache: error: {}", err);
+                                let mut error = "cachepot: encountered fatal error\n".to_string();
+                                let _ = writeln!(error, "cachepot: error: {}", err);
                                 for e in err.chain() {
                                     error!("[{:?}] \t{}", out_pretty, e);
-                                    let _ = writeln!(error, "sccache: caused by: {}", e);
+                                    let _ = writeln!(error, "cachepot: caused by: {}", e);
                                 }
                                 stats.cache_errors.increment(&kind);
                                 //TODO: figure out a better way to communicate this?
