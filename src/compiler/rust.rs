@@ -229,6 +229,7 @@ where
     let _dep_info = run_input_output(cmd, None).await?;
     // Parse the dep-info file, then hash the contents of those files.
     let cwd = cwd.to_owned();
+    let cwd2 = cwd.to_owned();
     let name2 = crate_name.to_owned();
     let parsed = pool
         .spawn_blocking(move || {
@@ -237,12 +238,48 @@ where
         })
         .await?;
 
-    parsed.map(move |files| {
-        trace!(
+    parsed.map(move |mut files| {
+        // HACK: Ideally, if we're compiling a Cargo package, we should be
+        // compiling it with the same files included in the published .crate
+        // package to ensure maximum compatibility. While it's possible for
+        // the crate developers to mark files as required for the compilation
+        // via mechanisms such as `include_bytes!`, this is also a hack and
+        // may leave an undesired footprint in the compilation outputs.
+        // An upstream mechanism to only track required additional files is
+        // pending at https://github.com/rust-lang/rust/pull/84029.
+        // Until then, unconditionally include Cargo.toml manifest to provide
+        // a minimal support and to keep some crates compiling that may
+        // read additional info directly from the manifest file.
+        let cargo_manifest_dir = env_vars
+            .iter()
+            .find(|(key, _)| key.to_str() == Some("CARGO_MANIFEST_DIR"))
+            .map(|(_, value)| Path::new(value));
+        const KNOWN_AUX_DEP_FILES: &[(Option<&str>, &str)] = &[
+            (None, "Cargo.toml"),
+            (Some("libp2p_wasm_ext"), "src/websockets.js"),
+        ];
+        for (target_crate_name, file_path) in KNOWN_AUX_DEP_FILES {
+            let name_matches = target_crate_name.map_or(true, |x| x == crate_name);
+            // If this is a Cargo package, try to get the same path prefix as
+            // other paths are probably using. If, let's say, a package registry
+            // is symlinked, it might be troublesome for the path transformer to
+            // correctly figure out which files to include.
+            let base_dir = cargo_manifest_dir.unwrap_or(&cwd2);
+            let file_path = base_dir.join(file_path);
+            if name_matches && file_path.exists() {
+                files.push(file_path);
+            }
+        }
+        debug!(
             "[{}]: got {} source files from dep-info in {}",
             crate_name,
             files.len(),
             fmt_duration_as_secs(&start.elapsed())
+        );
+        trace!(
+            "[{}]: source files calculated from dep-info: {:?}",
+            crate_name,
+            files
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
