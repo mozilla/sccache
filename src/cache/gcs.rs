@@ -464,6 +464,7 @@ impl GCSCredentialProvider {
         Box::new(
             client
                 .get(url)
+                .header("Metadata-Flavor", "Google")
                 .send()
                 .map_err(Into::into)
                 .and_then(move |res| {
