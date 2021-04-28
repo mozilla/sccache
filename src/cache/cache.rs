@@ -304,12 +304,13 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
             CacheType::GCS(config::GCSCacheConfig {
                 ref bucket,
                 ref cred_path,
-                ref url,
+                ref deprecated_url,
+                ref oauth_url,
                 rw_mode,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {:?}, {:?}, {:?})",
-                    bucket, cred_path, url, rw_mode
+                    "Trying GCS bucket({}, {:?}, {:?}, {:?}, {:?})",
+                    bucket, cred_path, deprecated_url, oauth_url, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
@@ -336,8 +337,10 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
                             service_account_key_res
                                 .ok()
                                 .map(ServiceAccountInfo::AccountKey)
-                        } else if let Some(ref url) = *url {
-                            Some(ServiceAccountInfo::URL(url.clone()))
+                        } else if let Some(ref url) = *deprecated_url {
+                            Some(ServiceAccountInfo::DeprecatedURL(url.clone()))
+                        } else if let Some(ref url) = *oauth_url {
+                            Some(ServiceAccountInfo::OAuthURL(url.clone()))
                         } else {
                             warn!(
                             "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."

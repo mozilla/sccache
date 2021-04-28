@@ -181,8 +181,12 @@ Set `SCCACHE_MEMCACHED` to a [Memcached](https://memcached.org/) url in format `
 
 ### Google Cloud Storage
 To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
-If you're using authentication, either set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials or `SCCACHE_GCS_CREDENTIALS_URL` with
-a URL that returns the oauth token.
+
+If you're using authentication, either:
+- Set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials
+- (Deprecated) Set `SCCACHE_GCS_CREDENTIALS_URL` to a URL returning an OAuth token in non-standard `{"accessToken": "...", "expireTime": "..."}` format.
+- Set `SCCACHE_GCS_OAUTH_URL` to a URL returning an OAuth token. If you are running on a Google Cloud instance, this is of the form `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/${YOUR_SERVICE_ACCOUNT}/token`
+
 By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
 
 ### Azure
