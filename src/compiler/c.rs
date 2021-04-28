@@ -653,6 +653,10 @@ lazy_static! {
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
+        "TVOS_DEPLOYMENT_TARGET",
+        "WATCHOS_DEPLOYMENT_TARGET",
+        "SDKROOT",
+        "CCC_OVERRIDE_OPTIONS",
     ].iter().map(OsStr::new).collect();
 }
 
