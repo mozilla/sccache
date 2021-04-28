@@ -12,8 +12,8 @@ One option to solve this problem is to spawn a always running cachepot server pr
 to `0` and start the server beside Jenkins as a system service. This implies that all jobs use the same cachepot
 configuration and share the statistics.
 
-If a per-jobs cachepot configuration is needed or preferred (e.g place a local disc cache in `$WORKSPACE`) the [Port
-allocator plugin](https://wiki.jenkins.io/display/JENKINS/Port+Allocator+Plugin) does a good job. It assigns a free and
+If a per-jobs cachepot configuration is needed or preferred (e.g place a local disc cache in `$WORKSPACE`) the Port
+allocator plugin does a good job. It assigns a free and
 unique port number to a job by exporting a variable. Naming this variable `CACHEPOT_SERVER_PORT` is enough to make the
 job spawn it's own cachepot server that is save to terminate upon job termination. This approach has the advantage that
 each job (with a dedicated server instance) maintains it's own statistics that might be interesting upon job

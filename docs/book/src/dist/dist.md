@@ -2,29 +2,29 @@
 
 Background:
 
- - You should read about JSON Web Tokens - https://jwt.io/.
+- You should read about JSON Web Tokens - https://jwt.io/.
    - HS256 in short: you can sign a piece of (typically unencrypted)
      data with a key. Verification involves signing the data again
      with the same key and comparing the result. As a result, if you
      want two parties to verify each others messages, the key must be
      shared beforehand.
- - 'secure token's referenced below should be generated with a CSPRNG
-   (your OS random number generator should suffice).
-   For example, on Linux this is accessible with: `openssl rand -hex 64`.
- - When relying on random number generators (for generating keys or
-   tokens), be aware that a lack of entropy is possible in cloud or
-   virtualized environments in some scenarios.
+- 'secure token's referenced below should be generated with a CSPRNG
+  (your OS random number generator should suffice).
+  For example, on Linux this is accessible with: `openssl rand -hex 64`.
+- When relying on random number generators (for generating keys or
+  tokens), be aware that a lack of entropy is possible in cloud or
+  virtualized environments in some scenarios.
 
 ## Overview
 
 Distributed cachepot consists of three parts:
 
- - the client, an cachepot binary that wishes to perform a compilation on
-   remote machines
- - the scheduler (`cachepot-dist` binary), responsible for deciding where
-   a compilation job should run
- - the server (`cachepot-dist` binary), responsible for actually executing
-   a build
+- the client, an cachepot binary that wishes to perform a compilation on
+  remote machines
+- the scheduler (`cachepot-dist` binary), responsible for deciding where
+  a compilation job should run
+- the server (`cachepot-dist` binary), responsible for actually executing
+  a build
 
 All servers are required to be a 64-bit Linux install. Clients may request
 compilation from Linux, Windows or macOS. Linux compilations will attempt to
@@ -35,29 +35,29 @@ need to specify a toolchain for cross-compilation ahead of time.
 
 The HTTP implementation of cachepot has the following API, where all HTTP body content is encoded using [`bincode`](http://docs.rs/bincode):
 
- - scheduler
-   - `POST /api/v1/scheduler/alloc_job`
-      - Called by a client to submit a compilation request.
-      - Returns information on where the job is allocated it should run.
-   - `GET /api/v1/scheduler/server_certificate`
-      - Called by a client to retrieve the (dynamically created) HTTPS
-        certificate for a server, for use in communication with that server.
-      - Returns a digest and PEM for the temporary server HTTPS certificate.
-   - `POST /api/v1/scheduler/heartbeat_server`
-      - Called (repeatedly) by servers to register as available for jobs.
-   - `POST /api/v1/scheduler/job_state`
-      - Called by servers to inform the scheduler of the state of the job.
-   - `GET /api/v1/scheduler/status`
-      - Returns information about the scheduler.
- - `server`
-   - `POST /api/v1/distserver/assign_job`
-      - Called by the scheduler to inform of a new job being assigned to this server.
-      - Returns whether the toolchain is already on the server or needs submitting.
-   - `POST /api/v1/distserver/submit_toolchain`
-      - Called by the client to submit a toolchain.
-   - `POST /api/v1/distserver/run_job`
-      - Called by the client to run a job.
-      - Returns the compilation stdout along with files created.
+- scheduler
+  - `POST /api/v1/scheduler/alloc_job`
+    - Called by a client to submit a compilation request.
+    - Returns information on where the job is allocated it should run.
+  - `GET /api/v1/scheduler/server_certificate`
+    - Called by a client to retrieve the (dynamically created) HTTPS
+       certificate for a server, for use in communication with that server.
+    - Returns a digest and PEM for the temporary server HTTPS certificate.
+  - `POST /api/v1/scheduler/heartbeat_server`
+    - Called (repeatedly) by servers to register as available for jobs.
+  - `POST /api/v1/scheduler/job_state`
+    - Called by servers to inform the scheduler of the state of the job.
+  - `GET /api/v1/scheduler/status`
+    - Returns information about the scheduler.
+- `server`
+  - `POST /api/v1/distserver/assign_job`
+    - Called by the scheduler to inform of a new job being assigned to this server.
+    - Returns whether the toolchain is already on the server or needs submitting.
+  - `POST /api/v1/distserver/submit_toolchain`
+    - Called by the client to submit a toolchain.
+  - `POST /api/v1/distserver/run_job`
+    - Called by the client to run a job.
+    - Returns the compilation stdout along with files created.
 
 There are three axes of security in this setup:
 
@@ -88,14 +88,14 @@ Create a scheduler key with `cachepot-dist auth generate-jwt-hs256-key` (which w
 use your OS random number generator) and put it in your scheduler config file as
 follows:
 
-```
+```toml
 server_auth = { type = "jwt_hs256", secret_key = "YOUR_KEY_HERE" }
 ```
 
 Now generate a token for the server, giving the IP and port the scheduler and clients can
 connect to the server on (address `192.168.1.10:10501` here):
 
-```
+```sh
 cachepot-dist auth generate-jwt-hs256-server-token \
     --secret-key YOUR_KEY_HERE \
     --server 192.168.1.10:10501
@@ -103,7 +103,7 @@ cachepot-dist auth generate-jwt-hs256-server-token \
 
 *or:*
 
-```
+```sh
 cachepot-dist auth generate-jwt-hs256-server-token \
     --config /path/to/scheduler-config.toml \
     --server 192.168.1.10:10501
@@ -112,7 +112,7 @@ cachepot-dist auth generate-jwt-hs256-server-token \
 This will output a token (you can examine it with https://jwt.io if you're
 curious) that you should add to your server config file as follows:
 
-```
+```toml
 scheduler_auth = { type = "jwt_token", token = "YOUR_TOKEN_HERE" }
 ```
 
@@ -129,13 +129,13 @@ Choose a 'secure token' you can share between your scheduler and all servers.
 
 Put the following in your scheduler config file:
 
-```
+```toml
 server_auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 ```
 
 Put the following in your server config file:
 
-```
+```toml
 scheduler_auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 ```
 
@@ -234,13 +234,13 @@ Choose a 'secure token' you can share between your scheduler and all clients.
 
 Put the following in your scheduler config file:
 
-```
+```toml
 client_auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 ```
 
 Put the following in your client config file:
 
-```
+```toml
 auth = { type = "token", token = "YOUR_TOKEN_HERE" }
 ```
 
@@ -257,7 +257,7 @@ provides no security at all.
 
 Put the following in your scheduler config file:
 
-```
+```toml
 client_auth = { type = "DANGEROUSLY_INSECURE" }
 ```
 
@@ -288,6 +288,7 @@ certificate will be requested from the scheduler.
 # Building the Distributed Server Binaries
 
 Until these binaries [are included in releases](https://github.com/paritytech/cachepot/issues/393) I've put together a Docker container that can be used to easily build a release binary:
-```
+
+```toml
 docker run -ti --rm -v $PWD:/cachepot luser/cachepot-musl-build:0.1 /bin/bash -c "cd /cachepot; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/cachepot-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf cachepot-dist.tar.gz cachepot-dist"
 ```
