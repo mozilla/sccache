@@ -510,7 +510,7 @@ impl GCSCredentialProvider {
                     self.request_new_token_from_tcauth(url, client)
                 }
                 ServiceAccountInfo::OAuthURL(ref url) => {
-                    self.request_new_token_from_tcauth(url, client)
+                    self.request_new_token_from_oauth(url, client)
                 }
             };
             *future_opt = Some(credentials.shared());

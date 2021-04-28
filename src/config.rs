@@ -491,7 +491,7 @@ fn config_from_env() -> EnvConfig {
         let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
         if oauth_url.is_some() && cred_path.is_some() {
-            warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
+            warn!("Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set");
             warn!("You should set only one of them!");
             warn!("SCCACHE_GCS_KEY_PATH will take precedence");
         }
