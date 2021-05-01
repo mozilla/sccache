@@ -45,20 +45,19 @@ fn test_rust_cargo_cmd(cmd: &str) {
         );
     }
 
-    drop(
-        env_logger::Builder::new()
-            .format(|f, record| {
-                write!(
-                    f,
-                    "{} [{}] - {}",
-                    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                    record.level(),
-                    record.args()
-                )
-            })
-            .parse_env("RUST_LOG")
-            .try_init(),
-    );
+    let _ = env_logger::Builder::new()
+        .format(|f, record| {
+            write!(
+                f,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .parse_env("RUST_LOG")
+        .try_init();
+
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
     let sccache = assert_cmd::cargo::cargo_bin("sccache");
