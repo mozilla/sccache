@@ -31,7 +31,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use std::process::{Command, Stdio};
 
     fn sccache_command() -> Command {
-        Command::new(assert_cmd::cargo::cargo_bin("sccache"))
+        Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")))
     }
 
     fn stop() {
@@ -45,23 +45,22 @@ fn test_rust_cargo_cmd(cmd: &str) {
         );
     }
 
-    drop(
-        env_logger::Builder::new()
-            .format(|f, record| {
-                write!(
-                    f,
-                    "{} [{}] - {}",
-                    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-                    record.level(),
-                    record.args()
-                )
-            })
-            .parse_env("RUST_LOG")
-            .try_init(),
-    );
+    let _ = env_logger::Builder::new()
+        .format(|f, record| {
+            write!(
+                f,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .parse_env("RUST_LOG")
+        .try_init();
+
     let cargo = env!("CARGO");
     debug!("cargo: {}", cargo);
-    let sccache = assert_cmd::cargo::cargo_bin("sccache");
+    let sccache = assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME"));
     debug!("sccache: {:?}", sccache);
     let crate_dir = Path::new(file!()).parent().unwrap().join("test-crate");
     // Ensure there's no existing sccache server running.
