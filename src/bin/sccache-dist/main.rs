@@ -1,3 +1,6 @@
+#![deny(clippy::perf)]
+#![allow(clippy::complexity, clippy::new_without_default)]
+
 #[macro_use]
 extern crate clap;
 #[macro_use]
