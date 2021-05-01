@@ -1,28 +1,13 @@
-extern crate base64;
 #[macro_use]
 extern crate clap;
-extern crate crossbeam_utils;
-extern crate env_logger;
-extern crate flate2;
-extern crate hyperx;
-extern crate jsonwebtoken as jwt;
-extern crate libmount;
 #[macro_use]
 extern crate log;
-extern crate nix;
-extern crate openssl;
-extern crate rand;
-extern crate reqwest;
-extern crate sccache;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
-extern crate syslog;
-extern crate tar;
-extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
+use jsonwebtoken as jwt;
 use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
