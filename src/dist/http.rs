@@ -306,7 +306,6 @@ mod server {
     use picky::x509::name::{DirectoryName, GeneralNames};
     use picky::x509::Extensions;
     use picky::{hash::HashAlgorithm, signature::SignatureAlgorithm};
-    use rsa_pem::KeyExt;
     use sha2::Digest;
     use std::net::{IpAddr, SocketAddr};
     use std::ops::DerefMut;
@@ -318,8 +317,8 @@ mod server {
         let bits = 2048;
         let rsa_key = rsa::RSAPrivateKey::new(&mut rng, bits)?;
 
-        let sk_pkcs8 = <rsa::RSAPrivateKey>::to_pem_pkcs8(&rsa_key)?;
-        let pk_pkcs8 = <rsa::RSAPublicKey>::to_pem_pkcs8(&rsa_key)?;
+        let sk_pkcs8 = rsa::PrivateKeyPemEncoding::to_pem_pkcs8(&rsa_key)?;
+        let pk_pkcs8 = rsa::PublicKeyPemEncoding::to_pem_pkcs8(&*rsa_key)?;
 
         // convert to picky
         let sk = PrivateKey::from_pem_str(sk_pkcs8.as_str())?;

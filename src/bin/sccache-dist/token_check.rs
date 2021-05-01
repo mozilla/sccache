@@ -38,9 +38,7 @@ impl Jwk {
         let e = rsa::BigUint::from_bytes_be(&e);
         let pk = rsa::RSAPublicKey::new(n, e)?;
 
-        let pk = rsa_export::RsaKey::new(pk);
-        let pkcs1_der: Vec<u8> = pk
-            .as_pkcs1()
+        let pkcs1_der: Vec<u8> = rsa::PublicKeyEncoding::to_pkcs1(&pk)
             .map_err(|e| anyhow::anyhow!("{}", e))
             .context("Failed to create rsa pub key from (n, e)")?;
 
