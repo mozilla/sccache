@@ -52,12 +52,7 @@ linked-hash-map = "0.5"
 local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
-rsa = "0.3"
-# both are pkcs8 only
-rsa-pem = "0.2"
-rsa-der = "0.2"
-# exports pkcs#1
-rsa-export = "0.2"
+rsa = "0.4"
 # Pin exact versions to make sure we use the exact same picky-asn1-x509 version
 picky = "=6.2.0"
 picky-asn1-x509 = "=0.5.0"
@@ -65,7 +60,7 @@ memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.4"
 percent-encoding = { version = "2", optional = true }
-rand = "0.7"
+rand = "0.8"
 redis = { version = "0.17", optional = true }
 regex = "1"
 reqwest = { version = "0.10", features = ["json", "blocking"], optional = true }
