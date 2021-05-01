@@ -925,7 +925,7 @@ mod test {
 
     #[test]
     fn test_detect_showincludes_prefix() {
-        drop(env_logger::try_init());
+        let _ = env_logger::Builder::new().is_test(true).try_init();
         let creator = new_creator();
         let pool = ThreadPool::sized(1);
         let f = TestFixture::new();
