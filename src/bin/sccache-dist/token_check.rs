@@ -33,16 +33,18 @@ impl Jwk {
             .context("Failed to base64 decode n")?;
         let e = base64::decode_config(&self.e, base64::URL_SAFE)
             .context("Failed to base64 decode e")?;
-        let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .context("Failed to create openssl bignum from n")?;
-        let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .context("Failed to create openssl bignum from e")?;
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .context("Failed to create pubkey from n and e")?;
-        let der: Vec<u8> = pubkey
-            .public_key_to_der_pkcs1()
-            .context("Failed to convert public key to der pkcs1")?;
-        Ok(der)
+
+        let n = rsa::BigUint::from_bytes_be(&n);
+        let e = rsa::BigUint::from_bytes_be(&e);
+        let pk = rsa::RSAPublicKey::new(n, e)?;
+
+        let pk = rsa_export::RsaKey::new(pk);
+        let pkcs1_der: Vec<u8> = pk
+            .as_pkcs1()
+            .map_err(|e| anyhow::anyhow!("{}", e))
+            .context("Failed to create rsa pub key from (n, e)")?;
+
+        Ok(pkcs1_der)
     }
 }
 
@@ -363,5 +365,51 @@ impl ValidJWTCheck {
         let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "vs_openssl"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn der_repr() {
+        let n_be_bytes = rsa::BigUint::from(23757u32).to_bytes_be();
+        let e_be_bytes = rsa::BigUint::from(65537u32).to_bytes_be();
+        let n = base64::encode_config(n_be_bytes.as_slice(), base64::URL_SAFE);
+        let e = base64::encode_config(e_be_bytes.as_slice(), base64::URL_SAFE);
+
+        let jwk = Jwk {
+            kty: "RSA".to_owned(),
+            kid: "XXX".to_owned(),
+            n,
+            e,
+        };
+
+        let expected = {
+            let n_bn = openssl::bn::BigNum::from_slice(&n_be_bytes)
+                .expect("Failed to create openssl bignum from n");
+            let e_bn = openssl::bn::BigNum::from_slice(&e_be_bytes)
+                .expect("Failed to create openssl bignum from e");
+            let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
+                .expect("Failed to create pubkey from n and e");
+            let der: Vec<u8> = pubkey
+                .public_key_to_der_pkcs1()
+                .expect("Failed to convert public key to der pkcs1");
+            der
+        };
+        let der = jwk.to_der_pkcs1().expect("Always able to encode.");
+
+        let truth = openssl::rsa::Rsa::public_key_from_der_pkcs1(&der)
+            .expect("Openssl must be able to load pkcs#1 der key");
+        let expected2 = truth
+            .public_key_to_der_pkcs1()
+            .expect("Must convert to der pkcs1");
+        assert_eq!(
+            expected, expected2,
+            "Assumption that n and e are correct be slices failed"
+        );
+
+        assert_eq!(der, expected);
     }
 }

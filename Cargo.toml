@@ -52,10 +52,18 @@ linked-hash-map = "0.5"
 local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
+rsa = "0.3"
+# both are pkcs8 only
+rsa-pem = "0.2"
+rsa-der = "0.2"
+# exports pkcs#1
+rsa-export = "0.2"
+# Pin exact versions to make sure we use the exact same picky-asn1-x509 version
+picky = "=6.2.0"
+picky-asn1-x509 = "=0.5.0"
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.4"
-openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
 redis = { version = "0.17", optional = true }
@@ -94,6 +102,9 @@ syslog = { version = "5", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.0.11", optional = true }
 
+# test only
+openssl = { version = "0.10", optional = true }
+
 [dev-dependencies]
 assert_cmd = "1"
 cc = "1.0"
@@ -130,9 +141,11 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["chrono", "crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "reqwest", "rouille", "sha2", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
+# Run JWK token crypto against openssl ref impl
+vs_openssl = ["openssl", "dist-server"]
 
 [workspace]
 exclude = ["tests/test-crate"]
