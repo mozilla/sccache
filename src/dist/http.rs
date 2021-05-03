@@ -301,7 +301,6 @@ mod server {
     use picky::x509::certificate::CertificateBuilder;
     use picky::x509::date::UTCDate;
     use picky::x509::extension::ExtendedKeyUsage;
-    use picky::x509::key_id_gen_method::KeyIdGenMethod;
     use picky::x509::name::{DirectoryName, GeneralNames};
 
     use picky::{hash::HashAlgorithm, signature::SignatureAlgorithm};
@@ -362,9 +361,6 @@ mod server {
             .subject_alt_name(subject_alt_name)
             .serial_number(vec![1]) // cannot be 0 according to picky internal notes
             .signature_hash_type(SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA1))
-            .key_id_gen_method(KeyIdGenMethod::SPKValueHashedLeftmost160(
-                HashAlgorithm::SHA2_256,
-            ))
             .extended_key_usage(extended_key_usage)
             .self_signed(issuer_name, &sk)
             .build()?;
