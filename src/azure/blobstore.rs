@@ -98,14 +98,12 @@ impl BlobContainer {
             "x-ms-date",
             HeaderValue::from_str(&date).expect("Date is an invalid header value"),
         );
-        request
-            .headers_mut()
-            .insert("x-ms-version", HeaderValue::from_static(BLOB_API_VERSION));
-        if let Some(auth) = auth {
+           if let Some(auth) = auth {
             request.headers_mut().insert(
                 "Authorization",
                 HeaderValue::from_str(&auth).expect("Authorization is an invalid header value"),
             );
+        }
         }
 
         Box::new(
