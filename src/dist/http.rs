@@ -301,7 +301,6 @@ mod server {
     use picky::x509::certificate::CertificateBuilder;
     use picky::x509::date::UTCDate;
     use picky::x509::extension::ExtendedKeyUsage;
-    use picky::x509::extension::KeyUsage;
     use picky::x509::key_id_gen_method::KeyIdGenMethod;
     use picky::x509::name::{DirectoryName, GeneralNames};
 
@@ -359,7 +358,6 @@ mod server {
         let cert = CertificateBuilder::new()
             .ca(false)
             .validity(start, end)
-            .key_usage(KeyUsage::new(1))
             .subject(subject_name, pk)
             .subject_alt_name(subject_alt_name)
             .serial_number(vec![1]) // cannot be 0 according to picky internal notes
