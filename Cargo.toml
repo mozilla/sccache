@@ -53,9 +53,7 @@ local-encoding = "0.2.0"
 log = "0.4"
 md-5 = { version = "0.9", optional = true }
 rsa = "0.4"
-# Pin exact versions to make sure we use the exact same picky-asn1-x509 version
-picky = "=6.2.0"
-picky-asn1-x509 = "=0.5.0"
+picky = "6.2"
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.0"
 number_prefix = "0.4"
@@ -102,6 +100,7 @@ openssl = { version = "0.10", optional = true }
 
 [dev-dependencies]
 assert_cmd = "1"
+assert_matches = "1.5"
 cc = "1.0"
 chrono = "0.4"
 itertools = "0.10"
