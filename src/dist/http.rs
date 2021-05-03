@@ -1431,6 +1431,15 @@ mod tests {
         Ok((cert_digest, cert_pem, privkey_pem))
     }
 
+    macro_rules! timeit {
+        ($work:expr) => {{
+            let start = ::std::time::Instant::now();
+            let x = { $work };
+            eprintln!("took: {:#?}", start.elapsed());
+            x
+        }};
+    }
+
     #[test]
     fn create_cert_and_sk() {
         let addr = "242.11.9.38:29114".parse().unwrap();
@@ -1466,8 +1475,10 @@ mod tests {
             picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. Q.E.D.")
         };
 
-        let generated: Triple = create_https_cert_and_privkey(addr).unwrap().into();
-        let expected: Triple = legacy_create_https_cert_and_privkey(addr).unwrap().into();
+        let generated: Triple = timeit!(create_https_cert_and_privkey(addr)).unwrap().into();
+        let expected: Triple = timeit!(legacy_create_https_cert_and_privkey(addr))
+            .unwrap()
+            .into();
         // cert
         {
             let expected_cert = convert("exp", &expected.cert_pem);
