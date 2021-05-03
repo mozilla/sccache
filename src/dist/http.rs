@@ -1460,19 +1460,30 @@ mod tests {
             }
         }
 
-        use std::io::Write;
+        struct PersistOnPanic(Option<tempfile::NamedTempFile>);
+        impl Drop for PersistOnPanic {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    std::mem::forget(self.0.take());
+                }
+            }
+        }
 
-        let convert = |tag: &'static str, mut data: &[u8]| {
+        let parse_and_dump_cert = |tag: &'static str, mut data: &[u8]| {
+            use std::io::Write;
             let pem = picky::pem::Pem::read_from(&mut data).expect("PEM must be valid. Q.E.D.");
-            eprintln!("{} {}", tag, &pem);
-            let mut f = std::fs::OpenOptions::new()
-                .truncate(true)
-                .create(true)
-                .write(true)
-                .open(format!("./{}.cert.pem", tag))
-                .unwrap();
-            f.write_all(pem.to_string().as_bytes()).unwrap();
-            picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. Q.E.D.")
+            let mut tempfile = tempfile::Builder::new()
+                .prefix(tag)
+                .suffix(".cert.pem")
+                .tempfile()
+                .ok();
+            if let Some(tempfile) = tempfile.as_mut() {
+                println!("Writing '{}' cert to {}", tag, tempfile.path().display());
+                tempfile.write_all(pem.to_string().as_bytes()).unwrap();
+            }
+
+            let cert = picky::x509::Cert::from_pem(&pem).expect("Cert from PEM must be ok. Q.E.D.");
+            (cert, PersistOnPanic(tempfile))
         };
 
         let generated: Triple = timeit!(create_https_cert_and_privkey(addr)).unwrap().into();
@@ -1481,8 +1492,8 @@ mod tests {
             .into();
         // cert
         {
-            let expected_cert = convert("exp", &expected.cert_pem);
-            let generated_cert = convert("gen", &generated.cert_pem);
+            let (expected_cert, _file) = parse_and_dump_cert("exp", &expected.cert_pem);
+            let (generated_cert, _file) = parse_and_dump_cert("gen", &generated.cert_pem);
 
             // XXX the openssl generated certificate lacks the type
             // XXX which shouldn't be the case, so we accept this
