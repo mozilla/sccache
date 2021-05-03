@@ -141,5 +141,10 @@ dist-tests = ["dist-client", "dist-server"]
 # Run JWK token crypto against openssl ref impl
 vs_openssl = ["openssl", "dist-server"]
 
+# Make sure to always optimize big integer calculations as this cuts down
+# certificate generation time by two orders of magnitude (down to ~0.1s)
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
 [workspace]
 exclude = ["tests/test-crate"]
