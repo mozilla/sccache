@@ -3,6 +3,7 @@
 
 use selenium_rs::webdriver::{Browser, Selector, WebDriver};
 use std::fs;
+use serial_test::serial;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -189,6 +190,7 @@ impl Drop for SeleniumContainer {
     not(all(target_os = "linux", target_arch = "x86_64", feature = "dist-tests")),
     ignore
 )]
+#[serial]
 fn test_auth() {
     // Make sure the client auth port isn't in use, as sccache will gracefully fall back
     let client_auth_port = sccache::dist::client_auth::VALID_PORTS[0];
