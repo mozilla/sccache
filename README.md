@@ -113,7 +113,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.43.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.46.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
