@@ -503,7 +503,10 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    let server = try_bind()?.serve(make_service!(code_grant_pkce::serve));
+    let mut runtime = Runtime::new()?;
+    let server = runtime
+        .enter(try_bind)?
+        .serve(make_service!(code_grant_pkce::serve));
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -532,7 +535,6 @@ pub fn get_token_oauth2_code_grant_pkce(
     };
     *code_grant_pkce::STATE.lock().unwrap() = Some(state);
 
-    let mut runtime = Runtime::new()?;
     runtime.block_on(server.with_graceful_shutdown(async move {
         if let Err(e) = shutdown_rx.await {
             warn!(
@@ -552,7 +554,10 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let server = try_bind()?.serve(make_service!(implicit::serve));
+    let mut runtime = Runtime::new()?;
+    let server = runtime
+        .enter(try_bind)?
+        .serve(make_service!(implicit::serve));
 
     let port = server.local_addr().port();
 
@@ -575,7 +580,6 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     };
     *implicit::STATE.lock().unwrap() = Some(state);
 
-    let mut runtime = Runtime::new()?;
     runtime.block_on(server.with_graceful_shutdown(async move {
         if let Err(e) = shutdown_rx.await {
             warn!(
