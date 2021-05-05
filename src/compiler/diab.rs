@@ -22,11 +22,11 @@ use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments};
 use crate::dist;
 use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
+use crate::util::fs::File;
 use crate::util::{run_input_output, OsStrExt};
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -424,7 +424,7 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use std::fs::File;
+    use crate::util::fs::File;
     use std::io::Write;
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {

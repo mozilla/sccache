@@ -2,6 +2,7 @@
 //! Types for loading and managing AWS access credentials for API requests.
 #![allow(dead_code)]
 
+use crate::util::fs::{self, File};
 use chrono::{offset, DateTime, Duration};
 use directories::UserDirs;
 use futures::future;
@@ -12,7 +13,6 @@ use reqwest::Client;
 use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::env::*;
-use std::fs::{self, File};
 use std::future::Future;
 use std::io::prelude::*;
 use std::io::BufReader;

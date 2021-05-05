@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::util::fs::{self, File};
 use directories::ProjectDirs;
 use regex::Regex;
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
@@ -20,7 +21,6 @@ use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 use serde::ser::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::env;
-use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;

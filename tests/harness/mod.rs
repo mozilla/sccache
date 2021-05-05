@@ -2,8 +2,8 @@
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
+use sccache::util::fs;
 use std::env;
-use std::fs;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};

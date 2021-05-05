@@ -19,8 +19,8 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
+use crate::util::fs::File;
 use futures::channel::oneshot::{self, Sender};
-use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
 use std::net::TcpListener;

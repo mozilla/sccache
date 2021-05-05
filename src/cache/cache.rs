@@ -24,10 +24,10 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
-use std::fmt;
-use std::fs;
+use crate::util::fs;
 #[cfg(feature = "gcs")]
-use std::fs::File;
+use crate::util::fs::File;
+use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

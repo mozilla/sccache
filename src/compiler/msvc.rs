@@ -19,12 +19,12 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
+use crate::util::fs::File;
 use crate::util::run_input_output;
 use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};

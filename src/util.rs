@@ -13,17 +13,23 @@
 // limitations under the License.
 
 use crate::mock_command::{CommandChild, RunCommand};
+use crate::util::fs::File;
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::time;
 use std::time::Duration;
+
+// The `std::fs` implementation more or less directly wraps the underlying OS
+// errors and often does not include the file path which the error relates to.
+// As such, we use the `fs_err` wrapper crate that ergonomically creates such
+// an error itself.
+pub use fs_err as fs;
 
 use crate::errors::*;
 

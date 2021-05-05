@@ -25,6 +25,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+use crate::util::fs::metadata;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
@@ -37,7 +38,6 @@ use number_prefix::NumberPrefix;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::metadata;
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
@@ -114,7 +114,7 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 
 #[cfg(windows)]
 fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
-    use std::fs::OpenOptions;
+    use crate::util::fs::OpenOptions;
 
     let name = match *name {
         Some(ref s) => s,

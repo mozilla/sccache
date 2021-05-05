@@ -25,6 +25,7 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
+use crate::util::fs;
 use crate::util::{fmt_duration_as_secs, hash_all, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
 use filetime::FileTime;
@@ -41,7 +42,6 @@ use std::env::consts::DLL_EXTENSION;
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
 use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
@@ -294,7 +294,7 @@ where
     T: AsRef<Path>,
     U: AsRef<Path>,
 {
-    let mut f = fs::File::open(file)?;
+    let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
     Ok(parse_dep_info(&deps, cwd))
@@ -2302,9 +2302,9 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
+    use crate::util::fs::File;
     use itertools::Itertools;
     use std::ffi::OsStr;
-    use std::fs::File;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 

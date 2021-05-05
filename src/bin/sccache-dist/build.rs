@@ -20,8 +20,8 @@ use sccache::dist::{
     Toolchain,
 };
 use sccache::lru_disk_cache::Error as LruError;
+use sccache::util::fs;
 use std::collections::{hash_map, HashMap};
-use std::fs;
 use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};

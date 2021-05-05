@@ -22,7 +22,6 @@ use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use std::ffi::OsString;
-use std::fs::File;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
