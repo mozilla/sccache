@@ -15,7 +15,7 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use futures::future;
 use futures::future::Future;
-use futures_03::{future::TryFutureExt as _};
+use futures_03::future::TryFutureExt as _;
 use hyperx::header::CacheDirective;
 use rusoto_core::{self, Client, HttpClient, Region};
 use rusoto_s3::{GetObjectOutput, GetObjectRequest, PutObjectRequest, S3Client, S3 as _};
@@ -49,7 +49,7 @@ impl S3Cache {
             Some(endpoint) => Region::Custom {
                 name: region
                     .map(ToOwned::to_owned)
-                    .unwrap_or(Region::default().name().to_owned()),
+                    .unwrap_or_else(|| Region::default().name().to_owned()),
                 endpoint: endpoint.to_owned(),
             },
             None => region
@@ -103,7 +103,6 @@ impl S3Cache {
             .await
             .map(|_| ())
             .context("failed to put cache entry in s3")
-            .into()
     }
 
     fn normalize_key(&self, key: &str) -> String {
