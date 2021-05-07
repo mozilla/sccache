@@ -1,5 +1,12 @@
 name: ci
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+  # Run periodic nightly checks to catch unrelated possible breakages
+  # in the meantime (e.g. some not pinned Docker image being updated or
+  # a change in the CI environment)
+  schedule:
+    - cron: '0 0 * * *'
 jobs:
   lint:
     name: ${{ matrix.component }} ${{ matrix.os }}
