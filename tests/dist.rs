@@ -15,6 +15,7 @@ use sccache::dist::{
     AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
     ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
 };
+use serial_test::serial;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -55,6 +56,7 @@ pub fn dist_test_sccache_client_cfg(
 
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
+#[serial]
 fn test_dist_basic() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
@@ -88,6 +90,7 @@ fn test_dist_basic() {
 
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
+#[serial]
 fn test_dist_restartedserver() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
@@ -124,6 +127,7 @@ fn test_dist_restartedserver() {
 
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
+#[serial]
 fn test_dist_nobuilder() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")
@@ -189,6 +193,7 @@ impl ServerIncoming for FailingServer {
 
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
+#[serial]
 fn test_dist_failingserver() {
     let tmpdir = tempfile::Builder::new()
         .prefix("sccache_dist_test")

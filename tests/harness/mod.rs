@@ -25,16 +25,6 @@ use predicates::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
 
-#[cfg(feature = "dist-server")]
-macro_rules! matches {
-    ($expression:expr, $($pattern:tt)+) => {
-        match $expression {
-            $($pattern)+ => true,
-            _ => false
-        }
-    }
-}
-
 const CONTAINER_NAME_PREFIX: &str = "sccache_dist_test";
 const DIST_IMAGE: &str = "sccache_dist_test_image";
 const DIST_DOCKERFILE: &str = include_str!("Dockerfile.sccache-dist");
