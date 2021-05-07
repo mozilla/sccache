@@ -4,7 +4,6 @@ use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 use std::env;
 use std::fs;
-use std::future::Future;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
