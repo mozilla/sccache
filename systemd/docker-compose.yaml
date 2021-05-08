@@ -1,0 +1,82 @@
+# An example setup for a distributed sccache cluster that uses
+# - a single scheduler (172.25.0.10)
+# - a single build server (172.25.0.11)
+# both served from a local network.
+# To test this locally, make sure to set up `dist.scheduler_url` and `dist.auth`
+# correctly, as used by the `sccache` binary (the "client") and verify that the
+# connection works by running `sccache --dist-status`.
+# It's worth noting that the security is virtually none using this exact setup.
+# To correctly set everything up (e.g. set up auth across scheduler <-> server
+# and client <-> scheduler, use HTTPS for the scheduler) refer to the
+# `docs/Distributed.md` file.
+version: "3.6"
+
+services:
+    scheduler:
+        build:
+            context: .
+            dockerfile: Dockerfile.sccache-dist
+        environment:
+            RUST_LOG:
+            SCCACHE_NO_DAEMON: 1
+            SCCACHE_CONFIG_TOML: |
+                public_addr = "172.25.0.10:10600"
+                [server_auth]
+                type = "DANGEROUSLY_INSECURE"
+                [client_auth]
+                type = "token"
+                token = "a concrete secret that's shared client and scheduler"
+        ports:
+            - 10600
+        networks:
+            dist_network:
+                ipv4_address: 172.25.0.10
+        command: /bin/sh -c "echo \"$$SCCACHE_CONFIG_TOML\" > config.toml; sccache-dist scheduler --config config.toml"
+    server:
+        # XXX: For the time being, due to the usage of bubblewrap and overlayfs
+        # we are required to run this in the privileged mode (as we do in the
+        # integration tests). Please keep that in mind when running the container.
+        # TODO: In the future we'd like to run the build sandbox in an unprivileged
+        # mode.
+        privileged: true
+        build:
+            context: .
+            dockerfile: Dockerfile.sccache-dist
+        environment:
+            RUST_LOG:
+            SCCACHE_NO_DAEMON: 1
+            SCCACHE_CONFIG_TOML: |
+                # A public IP address and port that clients will use to connect to this builder.
+                public_addr = "172.25.0.11:10501"
+                # The URL used to connect to the scheduler (should use https, given an ideal
+                # setup of a HTTPS server in front of the scheduler)
+                scheduler_url = "http://172.25.0.10:10600"
+                # The maximum size of the toolchain cache, in bytes.
+                # If unspecified the default is 10GB.
+                # toolchain_cache_size = 10737418240
+                cache_dir="/sccache-dirs/cache/"
+
+                [builder]
+                type = "overlay"
+                build_dir = "/sccache-dirs/builder/"
+                # The path to the bubblewrap version 0.3.0+ `bwrap` binary.
+                bwrap_path = "/usr/bin/bwrap"
+
+                [scheduler_auth]
+                type = "DANGEROUSLY_INSECURE"
+        ports:
+            - 10501
+        networks:
+            dist_network:
+                ipv4_address: 172.25.0.11
+        tmpfs:
+            - /sccache-dirs
+        command: /bin/sh -c "echo \"$$SCCACHE_CONFIG_TOML\" > config.toml; sccache-dist server --config config.toml"
+# We need to set static IPs for the services as scheduler/server always use it
+# to authorize themselves (even when using the DANGEROUSLY_INSECURE scheme)
+networks:
+    dist_network:
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.25.0.0/24
