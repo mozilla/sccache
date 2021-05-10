@@ -21,6 +21,7 @@ use crate::compiler::msvc;
 use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::rust::{Rust, RustupProxy};
+use crate::compiler::tasking_vx::TaskingVX;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
@@ -1016,6 +1017,8 @@ g++
 gcc
 #elif defined(__DCC__)
 diab
+#elif definded(__CTC__)
+tasking_vx
 #else
 unknown
 #endif
@@ -1133,6 +1136,12 @@ __VERSION__
                 )
                 .await
                 .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+            }
+            "tasking_vx" => {
+                debug!("Found Tasking VX");
+                return CCompiler::new(TaskingVX, executable, &pool)
+                    .await
+                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             _ => (),
         }

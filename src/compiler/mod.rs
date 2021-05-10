@@ -24,5 +24,6 @@ mod gcc;
 mod msvc;
 mod nvcc;
 mod rust;
+mod tasking_vx;
 
 pub use crate::compiler::compiler::*;
