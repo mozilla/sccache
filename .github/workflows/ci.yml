@@ -80,6 +80,91 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
+  smoke:
+    name: smoke test ${{ matrix.rustc || 'stable' }} ${{ matrix.target_repository }}
+    runs-on: ubuntu-18.04
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    strategy:
+      matrix:
+        include:
+          - target_repository: paritytech/polkadot
+            # Pin a well-known nightly version to avoid upstream breakage
+            rustc: nightly-2021-05-10
+            target: wasm32-unknown-unknown
+            allow_failure: true
+          - target_repository: paritytech/substrate
+            rustc: nightly-2021-05-10
+            target: wasm32-unknown-unknown
+            allow_failure: true
+          - target_repository: serde-rs/serde
+          - target_repository: serde-rs/json
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v1
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ matrix.rustc }}
+          target: ${{ matrix.target }}
+
+      - name: Install a local sccache build
+        run: cargo install --locked --features="dist-client" --path .
+      - run: which sccache
+
+      - name: Set up local distributed sccache stack
+        env:
+          RUST_LOG: sccache=trace
+        run: docker-compose --file systemd/docker-compose.yaml up -d
+      # TODO: Wait until the stack is up/ready
+      - run: docker ps -a
+
+      - name: Clone the project repository being tested
+        uses: actions/checkout@v2
+        with:
+          repository: ${{ matrix.target_repository }}
+          path: target_repo
+
+      - name: Double-check that sccache is not running
+        run: sccache --stop-server || true
+      - name: Start the local sccache server daemon
+        run: sccache --start-server
+        # This is the main server that's going to send the compilation requests
+        # so logging is more important for this than for subsequent (client)
+        # sccache invocations
+        env:
+          SCCACHE_CONF: ${{ github.workspace }}/systemd/config/client.conf
+          SCCACHE_LOG: sccache=trace
+          SCCACHE_ERROR_LOG: ${{ github.workspace }}/sccache.err.log
+      - name: Verify that the local distributed sccache stack is running
+        run: test $(sccache --dist-status | jq ".SchedulerStatus[1].num_servers") -gt 0
+
+      - name: Run a smoke check build
+        env:
+          RUSTC_WRAPPER: sccache
+        working-directory: target_repo
+        run: cargo check --verbose ${{ matrix.extra_args }}
+      - run: sccache --show-stats
+      - name: Verify that the distribution compilation *did* take place
+        run:
+          test $(sccache --show-stats --stats-format json | jq ".stats.dist_compiles | to_entries[].value") -gt 0
+
+      - name: Dump Compose logs
+        run: docker-compose --file systemd/docker-compose.yaml logs
+        if: failure()
+      - name: Dump local sccache daemon server logs
+        run: cat ${{ github.workspace }}/sccache.err.log
+        if: failure()
 
   build:
     name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
@@ -163,7 +248,7 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
-    needs: [build, lint, test]
+    needs: [build, lint, test, smoke]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
