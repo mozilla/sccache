@@ -14,18 +14,19 @@
 
 use directories::ProjectDirs;
 use regex::Regex;
+use serde::de;
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
 use std::collections::HashMap;
-use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::{env, fmt};
 
 use crate::errors::*;
 
@@ -147,12 +148,43 @@ pub struct AzureCacheConfig {
     pub key_prefix: String,
 }
 
+fn deserialize_disk_size<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> de::Visitor<'de> for Visitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("string disk size with suffix K/M/G/T or integer for Bytes")
+        }
+
+        fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            parse_size(&v).ok_or_else(|| E::custom(format!("could not parse {}", v)))
+        }
+
+        fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v)
+        }
+    }
+
+    deserializer.deserialize_any(Visitor)
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct DiskCacheConfig {
     pub dir: PathBuf,
-    // TODO: use deserialize_with to allow human-readable sizes in toml
+    #[serde(deserialize_with = "deserialize_disk_size")]
     pub size: u64,
 }
 
@@ -887,6 +919,28 @@ fn config_overrides() {
             dist: Default::default(),
         }
     );
+}
+
+#[test]
+fn test_disk_config_parsing() {
+    let cfg_json = r#"{"dir":"/path", "size":"10G"}"#;
+    let res = serde_json::from_str(&cfg_json).ok();
+    assert_eq! {
+        Some(DiskCacheConfig {
+            dir: "/path".into(),
+            size: TEN_GIGS,
+        }),
+        res
+    }
+    let cfg_json = r#"{"dir":"/path", "size":10}"#;
+    let res = serde_json::from_str(&cfg_json).ok();
+    assert_eq! {
+        Some(DiskCacheConfig {
+            dir: "/path".into(),
+            size: 10,
+        }),
+        res
+    }
 }
 
 #[test]
