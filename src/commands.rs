@@ -84,7 +84,9 @@ fn run_server_process() -> Result<ServerStartup> {
     let mut runtime = Runtime::new()?;
     let listener = tokio_uds::UnixListener::bind(&socket_path)?;
     let exe_path = env::current_exe()?;
-    let _child = process::Command::new(exe_path)
+    let workdir = exe_path.parent().expect("executable path has no parent?!");
+    let _child = process::Command::new(&exe_path)
+        .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
@@ -110,18 +112,17 @@ fn run_server_process() -> Result<ServerStartup> {
 }
 
 #[cfg(not(windows))]
-fn redirect_stderr(f: File) -> Result<()> {
+fn redirect_stderr(f: File) {
     use libc::dup2;
     use std::os::unix::io::IntoRawFd;
     // Ignore errors here.
     unsafe {
         dup2(f.into_raw_fd(), 2);
     }
-    Ok(())
 }
 
 #[cfg(windows)]
-fn redirect_stderr(f: File) -> Result<()> {
+fn redirect_stderr(f: File) {
     use std::os::windows::io::IntoRawHandle;
     use winapi::um::processenv::SetStdHandle;
     use winapi::um::winbase::STD_ERROR_HANDLE;
@@ -129,7 +130,6 @@ fn redirect_stderr(f: File) -> Result<()> {
     unsafe {
         SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle());
     }
-    Ok(())
 }
 
 /// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
@@ -139,7 +139,8 @@ fn redirect_error_log() -> Result<()> {
         _ => return Ok(()),
     };
     let f = OpenOptions::new().create(true).append(true).open(name)?;
-    redirect_stderr(f)
+    redirect_stderr(f);
+    Ok(())
 }
 
 /// Re-execute the current executable as a background server.
@@ -157,7 +158,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use winapi::um::handleapi::CloseHandle;
     use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
     use winapi::um::winbase::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS,
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
     };
 
     trace!("run_server_process");
@@ -209,6 +210,13 @@ fn run_server_process() -> Result<ServerStartup> {
         v.push(0);
         v
     };
+    let workdir = exe_path
+        .parent()
+        .expect("executable path has no parent?!")
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0u16))
+        .collect::<Vec<u16>>();
 
     // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
     //       standard library's `Command` type and then use that instead.
@@ -227,12 +235,9 @@ fn run_server_process() -> Result<ServerStartup> {
             ptr::null_mut(),
             ptr::null_mut(),
             FALSE,
-            CREATE_UNICODE_ENVIRONMENT
-                | DETACHED_PROCESS
-                | CREATE_NEW_PROCESS_GROUP
-                | CREATE_NO_WINDOW,
+            CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             envp.as_mut_ptr() as LPVOID,
-            ptr::null(),
+            workdir.as_ptr(),
             &mut si,
             &mut pi,
         ) == TRUE
@@ -252,7 +257,7 @@ fn run_server_process() -> Result<ServerStartup> {
         if err.is_elapsed() {
             Ok(ServerStartup::TimedOut)
         } else if err.is_inner() {
-            Err(err.into_inner().unwrap().into())
+            Err(err.into_inner().unwrap())
         } else {
             Err(err.into_timer().unwrap().into())
         }

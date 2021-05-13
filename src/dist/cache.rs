@@ -1,7 +1,7 @@
 use crate::dist::Toolchain;
+use crate::lru_disk_cache::Result as LruResult;
+use crate::lru_disk_cache::{LruDiskCache, ReadSeek};
 use anyhow::{anyhow, Result};
-use lru_disk_cache::Result as LruResult;
-use lru_disk_cache::{LruDiskCache, ReadSeek};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,8 +16,8 @@ mod client {
     use crate::config;
     use crate::dist::pkg::ToolchainPackager;
     use crate::dist::Toolchain;
+    use crate::lru_disk_cache::Error as LruError;
     use anyhow::{bail, Context, Error, Result};
-    use lru_disk_cache::Error as LruError;
     use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;

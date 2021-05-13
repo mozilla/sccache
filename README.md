@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/mozilla/sccache.svg?branch=master)](https://travis-ci.org/mozilla/sccache) [![Build status](https://ci.appveyor.com/api/projects/status/h4yqo430634pmfmt?svg=true)](https://ci.appveyor.com/project/luser/sccache2)
+[![Build Status](https://github.com/mozilla/sccache/workflows/ci/badge.svg)](https://github.com/mozilla/sccache/actions?query=workflow%3Aci)
 
 sccache - Shared Compilation Cache
 ==================================
@@ -85,7 +85,8 @@ Note that you need to use cargo 1.40 or newer for this to work.
 Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 
 ```bash
-RUSTC_WRAPPER=/path/to/sccache cargo build
+export RUSTC_WRAPPER=/path/to/sccache
+cargo build
 ```
 
 sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
@@ -112,7 +113,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.41.1**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.43.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -120,43 +121,26 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--features=all|s3|redis|gcs|memcached|azure]
+cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure]
 ```
 
-By default, `sccache` supports a local disk cache and S3. Use the `--features` flag to build `sccache` with support for other storage options. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
 ### Building portable binaries
 
-When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the steps below before building with `cargo`.
+When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
 
 #### Linux
-
-You will need to download and build OpenSSL with `-fPIC` in order to statically link against it.
-
-```bash
-./config -fPIC --prefix=/usr/local --openssldir=/usr/local/ssl
-make
-make install
-export OPENSSL_LIB_DIR=/usr/local/lib
-export OPENSSL_INCLUDE_DIR=/usr/local/include
-export OPENSSL_STATIC=yes
-```
 
 Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### macOS
 
-Just setting the below environment variable will enable static linking.
-
-```bash
-export OPENSSL_STATIC=yes
-```
-
 Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### Windows
 
-On Windows it is fairly straightforward to just ship the required `libcrypto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+On Windows, the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
 It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
 
@@ -167,17 +151,7 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
 
-In order to statically link against both the CRT and OpenSSL, you will need to either build OpenSSL static libraries (with a statically linked CRT) yourself or get a pre-built distribution that provides these.
-
-Then you can set environment variables which get picked up by the `openssl-sys` crate.
-
-See the following example for using pre-built libraries from [Shining Light Productions](https://slproweb.com/products/Win32OpenSSL.html), assuming an installation in `C:\OpenSSL-Win64`:
-
-```
-set OPENSSL_LIB_DIR=C:\OpenSSL-Win64\lib\VC\static
-set OPENSSL_INCLUDE_DIR=C:\OpenSSL-Win64\include
-set OPENSSL_LIBS=libcrypto64MT:libssl64MT
-```
+When statically linking with OpenSSL, you will need Perl available in your `$PATH`.
 
 ---
 
@@ -220,16 +194,27 @@ the container for you - you'll need to do that yourself.
 
 ---
 
+Overwriting the cache
+---------------------
+
+In situations where the cache contains broken build artifacts, it can be necessary to overwrite the contents in the cache. That can be achieved by setting the `SCCACHE_RECACHE` environment variable.
+
+---
+
 Debugging
 ---------
 
-You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example
-
-    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
-
-Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
+You can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
 
     SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=debug sccache
+
+You can also set these environment variables for your build system, for example
+
+    SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=debug cmake --build /path/to/cmake/build/directory
+
+Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
+
+    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
 
 ---
 
@@ -247,7 +232,7 @@ Known Caveats
 
 ### General
 
-* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in $HOME) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
+* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in `$HOME`) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
 
 ### Rust
 

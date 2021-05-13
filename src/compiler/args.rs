@@ -357,7 +357,7 @@ impl IntoArg for PathBuf {
         self.into()
     }
     fn into_arg_string(self, transformer: PathTransformerFn<'_>) -> ArgToStringResult {
-        transformer(&self).ok_or_else(|| ArgToStringError::FailedPathTransform(self))
+        transformer(&self).ok_or(ArgToStringError::FailedPathTransform(self))
     }
 }
 impl IntoArg for String {
@@ -994,6 +994,8 @@ mod tests {
         }
     }
 
+    // https://github.com/rust-lang/rust-clippy/issues/6550
+    #[allow(clippy::from_iter_instead_of_collect)]
     #[test]
     fn test_argument_into_iter() {
         // Needs type annotation or ascription

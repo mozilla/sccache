@@ -28,13 +28,14 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::util;
+#[cfg(feature = "dist-client")]
 use anyhow::Context as _;
 use filetime::FileTime;
 use futures::sync::mpsc;
 use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures_03::compat::Compat;
 use futures_03::executor::ThreadPool;
-use number_prefix::{binary_prefix, Prefixed, Standalone};
+use number_prefix::NumberPrefix;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -873,10 +874,7 @@ where
 
         let path2 = path.clone();
         let path1 = path.clone();
-        let env = env
-            .into_iter()
-            .cloned()
-            .collect::<Vec<(OsString, OsString)>>();
+        let env = env.to_vec();
 
         let resolve_w_proxy = {
             let compiler_proxies_borrow = self.compiler_proxies.borrow();
@@ -902,7 +900,7 @@ where
                     metadata(&path2)
                         .map(|attr| FileTime::from_last_modification_time(&attr))
                         .ok()
-                        .map(move |filetime| (path2.clone(), filetime))
+                        .map(move |filetime| (path2, filetime))
                 }
             };
             f_ok(opt)
@@ -992,7 +990,7 @@ where
                                                 proxy.box_clone();
                                             me.compiler_proxies
                                                 .borrow_mut()
-                                                .insert(path, (proxy, mtime.clone()));
+                                                .insert(path, (proxy, mtime));
                                         }
                                         // TODO add some safety checks in case a proxy exists, that the initial `path` is not
                                         // TODO the same as the resolved compiler binary
@@ -1023,7 +1021,7 @@ where
             },
         );
 
-        return Box::new(obtain);
+        Box::new(obtain)
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.
@@ -1118,8 +1116,10 @@ where
         let task = result.then(move |result| {
             let mut cache_write = None;
             let mut stats = me.stats.borrow_mut();
-            let mut res = CompileFinished::default();
-            res.color_mode = color_mode;
+            let mut res = CompileFinished {
+                color_mode,
+                ..Default::default()
+            };
             match result {
                 Ok((compiled, out)) => {
                     match compiled {
@@ -1534,9 +1534,11 @@ impl ServerInfo {
             ("Max cache size", &self.max_cache_size),
         ] {
             if let Some(val) = *val {
-                let (val, suffix) = match binary_prefix(val as f64) {
-                    Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
-                    Prefixed(prefix, n) => (format!("{:.0}", n), format!("{}B", prefix)),
+                let (val, suffix) = match NumberPrefix::binary(val as f64) {
+                    NumberPrefix::Standalone(bytes) => (bytes.to_string(), "bytes".to_string()),
+                    NumberPrefix::Prefixed(prefix, n) => {
+                        (format!("{:.0}", n), format!("{}B", prefix))
+                    }
                 };
                 println!(
                     "{:<name_width$} {:>stat_width$} {}",

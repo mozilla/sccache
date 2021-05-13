@@ -39,7 +39,7 @@ pub trait SpawnExt: task::SpawnExt {
     {
         self.spawn_with_handle(async move { f() })
             .map(|f| Box::new(f.compat()) as _)
-            .unwrap_or_else(|e| f_err(e))
+            .unwrap_or_else(f_err)
     }
 }
 
@@ -272,10 +272,10 @@ impl OsStrExt for OsStr {
         // man's" implementation, however, as it only handles a subset of
         // unicode characters in `s`. Currently that's sufficient, though, as
         // we're only calling `starts_with` with ascii string literals.
-        let mut u16s = self.encode_wide();
+        let u16s = self.encode_wide();
         let mut utf8 = s.chars();
 
-        while let Some(codepoint) = u16s.next() {
+        for codepoint in u16s {
             let to_match = match utf8.next() {
                 Some(ch) => ch,
                 None => return true,

@@ -121,11 +121,11 @@ impl MozillaCheck {
             sub: String,
         }
         // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
-        let unsafe_token =
-            jwt::dangerous_unsafe_decode::<MozillaToken>(token).context("Unable to decode jwt")?;
-        let user = unsafe_token.claims.sub;
+        let insecure_token = jwt::dangerous_insecure_decode::<MozillaToken>(token)
+            .context("Unable to decode jwt")?;
+        let user = insecure_token.claims.sub;
         trace!("Validating token for user {} with mozilla", user);
-        if UNIX_EPOCH + Duration::from_secs(unsafe_token.claims.exp) < SystemTime::now() {
+        if UNIX_EPOCH + Duration::from_secs(insecure_token.claims.exp) < SystemTime::now() {
             bail!("JWT expired")
         }
         // If the token is cached and not expired, return it
@@ -353,17 +353,18 @@ impl ValidJWTCheck {
         trace!("Validating JWT in scheduler");
         // Prepare validation
         let kid = header.kid.context("No kid found")?;
-        let pkcs1 = self
-            .kid_to_pkcs1
-            .get(&kid)
-            .context("kid not found in jwks")?;
+        let pkcs1 = jwt::DecodingKey::from_rsa_der(
+            self.kid_to_pkcs1
+                .get(&kid)
+                .context("kid not found in jwks")?,
+        );
         let mut validation = jwt::Validation::new(header.alg);
-        validation.set_audience(&self.audience);
+        validation.set_audience(&[&self.audience]);
         validation.iss = Some(self.issuer.clone());
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, pkcs1, &validation)
+        let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
     }

@@ -1,0 +1,25 @@
+name: rust-toolchain
+inputs:
+  toolchain:
+    description: |
+      Rust toolchain name.
+      See https://rust-lang.github.io/rustup/concepts/toolchains.html#toolchain-specification
+    required: false
+  target:
+    description: Target triple to install for this toolchain
+    required: false
+  components:
+    description: Space-separated list of components to be additionally installed for a new toolchain
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -x
+        rustup override set ${{ inputs.toolchain || 'stable' }}
+        ${{ inputs.target && format('rustup target add {0}', inputs.target) }}
+        ${{ inputs.components && format('rustup component add {0}', inputs.components) }}
+        cargo --version
+        rustc --version

@@ -15,16 +15,16 @@
 
 use crate::azure::credentials::*;
 use futures::{Future, Stream};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, Mac, NewMac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
 use md5::{Digest, Md5};
 use reqwest::r#async::{Client, Request};
+use reqwest::Url;
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
-use url::Url;
 
 use crate::errors::*;
 use crate::util::HeadersExt;
@@ -33,20 +33,20 @@ const BLOB_API_VERSION: &str = "2017-04-17";
 
 fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
-    hmac.input(data);
-    hmac.result().code().iter().copied().collect::<Vec<u8>>()
+    hmac.update(data);
+    hmac.finalize().into_bytes().as_slice().to_vec()
 }
 
 fn signature(to_sign: &str, secret: &str) -> String {
     let decoded_secret = base64::decode_config(secret.as_bytes(), base64::STANDARD).unwrap();
     let sig = hmac(to_sign.as_bytes(), &decoded_secret);
-    base64::encode_config::<Vec<u8>>(&sig, base64::STANDARD)
+    base64::encode_config(&sig, base64::STANDARD)
 }
 
 fn md5(data: &[u8]) -> String {
     let mut digest = Md5::new();
-    digest.input(data);
-    base64::encode_config(&digest.result(), base64::STANDARD)
+    digest.update(data);
+    base64::encode_config(&digest.finalize(), base64::STANDARD)
 }
 
 pub struct BlobContainer {
@@ -75,7 +75,8 @@ impl BlobContainer {
     pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
-        let date = time::now_utc().rfc822().to_string();
+        let dt = chrono::Utc::now();
+        let date = format!("{}", dt.format("%a, %d %b %Y %T GMT"));
 
         let canonical_headers = format!("x-ms-date:{}\nx-ms-version:{}\n", date, BLOB_API_VERSION);
 
@@ -149,7 +150,8 @@ impl BlobContainer {
     pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
-        let date = time::now_utc().rfc822().to_string();
+        let dt = chrono::Utc::now();
+        let date = format!("{}", dt.format("%a, %d %b %Y %T GMT"));
         let content_type = "application/octet-stream";
         let content_md5 = md5(&content);
 
@@ -271,7 +273,7 @@ fn compute_auth_header(
 
 fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
     let mut canonical_resource = String::new();
-    canonical_resource.push_str("/");
+    canonical_resource.push('/');
     canonical_resource.push_str(account_name);
     canonical_resource.push_str(uri.path());
 

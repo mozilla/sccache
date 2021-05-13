@@ -110,7 +110,7 @@ macro_rules! ftry {
     };
 }
 
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+#[cfg(feature = "dist-client")]
 macro_rules! ftry_send {
     ($e:expr) => {
         match $e {

@@ -128,8 +128,10 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
-    let mut disk_cache: sccache::config::DiskCacheConfig = Default::default();
-    disk_cache.dir = tmpdir.join(cache_relpath);
+    let disk_cache = sccache::config::DiskCacheConfig {
+        dir: tmpdir.join(cache_relpath),
+        ..Default::default()
+    };
     sccache::config::FileConfig {
         cache: sccache::config::CacheConfigs {
             azure: None,
@@ -294,8 +296,14 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
-                {
+                if matches!(
+                    self.scheduler_status(),
+                    SchedulerStatusResult {
+                        num_servers: 0,
+                        num_cpus: _,
+                        in_progress: 0
+                    }
+                ) {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
@@ -382,7 +390,7 @@ impl DistSystem {
         let server =
             dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
                 .unwrap();
-        let pid = match nix::unistd::fork().unwrap() {
+        let pid = match unsafe { nix::unistd::fork() }.unwrap() {
             ForkResult::Parent { child } => {
                 self.server_pids.push(child);
                 child
@@ -428,8 +436,14 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
-                {
+                if matches!(
+                    self.scheduler_status(),
+                    SchedulerStatusResult {
+                        num_servers: 1,
+                        num_cpus: _,
+                        in_progress: 0
+                    }
+                ) {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))

@@ -145,7 +145,7 @@ mod test {
         Clang {
             clangplusplus: false,
         }
-        .parse_arguments(&arguments, ".".as_ref())
+        .parse_arguments(&arguments, &std::env::current_dir().unwrap())
     }
 
     macro_rules! parses {
@@ -246,7 +246,10 @@ mod test {
             ovec!["-Xclang", "-load", "-Xclang", "plugin.so"],
             a.common_args
         );
-        assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("plugin.so")],
+            a.extra_hash_files
+        );
     }
 
     #[test]
@@ -367,7 +370,10 @@ mod test {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin", "plugin.so");
         println!("A {:#?}", a);
         assert_eq!(ovec!["-fplugin", "plugin.so"], a.common_args);
-        assert_eq!(ovec!["plugin.so"], a.extra_hash_files);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("plugin.so")],
+            a.extra_hash_files
+        );
     }
 
     #[test]
@@ -380,7 +386,10 @@ mod test {
             "-fsanitize-blacklist=list.txt"
         );
         assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], a.common_args);
-        assert_eq!(ovec!["list.txt"], a.extra_hash_files);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("list.txt")],
+            a.extra_hash_files
+        );
     }
 
     #[test]

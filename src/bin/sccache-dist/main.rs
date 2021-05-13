@@ -9,7 +9,6 @@ extern crate jsonwebtoken as jwt;
 extern crate libmount;
 #[macro_use]
 extern crate log;
-extern crate lru_disk_cache;
 extern crate nix;
 extern crate openssl;
 extern crate rand;
@@ -24,7 +23,7 @@ extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
-use rand::RngCore;
+use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
@@ -89,7 +88,7 @@ fn main() {
                 println!("sccache-dist: caused by: {}", e);
             }
             get_app().print_help().unwrap();
-            println!("");
+            println!();
             1
         }
     });
@@ -262,10 +261,11 @@ fn create_jwt_server_token(
     header: &jwt::Header,
     key: &[u8],
 ) -> Result<String> {
-    jwt::encode(&header, &ServerJwt { server_id }, key).map_err(Into::into)
+    let key = jwt::EncodingKey::from_secret(key);
+    jwt::encode(&header, &ServerJwt { server_id }, &key).map_err(Into::into)
 }
-fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
-    jwt::dangerous_unsafe_decode::<ServerJwt>(&server_token)
+fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
+    jwt::dangerous_insecure_decode::<ServerJwt>(&server_token)
         .map(|res| res.claims.server_id)
         .ok()
 }
@@ -274,7 +274,8 @@ fn check_jwt_server_token(
     key: &[u8],
     validation: &jwt::Validation,
 ) -> Option<ServerId> {
-    jwt::decode::<ServerJwt>(server_token, key, validation)
+    let key = jwt::DecodingKey::from_secret(key);
+    jwt::decode::<ServerJwt>(server_token, &key, validation)
         .map(|res| res.claims.server_id)
         .ok()
 }
@@ -283,9 +284,7 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng =
-                rand::OsRng::new().context("Failed to initialise a random number generator")?;
-            rng.fill_bytes(&mut bytes);
+            OsRng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
             Ok(0)
@@ -319,12 +318,8 @@ fn run(command: Command) -> Result<i32> {
                     issuer,
                     jwks_url,
                 } => Box::new(
-                    token_check::ValidJWTCheck::new(
-                        audience.to_owned(),
-                        issuer.to_owned(),
-                        &jwks_url,
-                    )
-                    .context("Failed to create a checker for valid JWTs")?,
+                    token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
+                        .context("Failed to create a checker for valid JWTs")?,
                 ),
                 scheduler_config::ClientAuth::Mozilla { required_groups } => {
                     Box::new(token_check::MozillaCheck::new(required_groups))
@@ -407,7 +402,7 @@ fn run(command: Command) -> Result<i32> {
                 }
                 server_config::SchedulerAuth::JwtToken { token } => {
                     let token_server_id: ServerId =
-                        dangerous_unsafe_extract_jwt_server_token(&token)
+                        dangerous_insecure_extract_jwt_server_token(&token)
                             .context("Could not decode scheduler auth jwt")?;
                     if token_server_id != server_id {
                         bail!(
@@ -712,7 +707,7 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
-                if stale_jobs.len() > 0 {
+                if !stale_jobs.is_empty() {
                     warn!(
                         "The following stale jobs will be de-allocated: {:?}",
                         stale_jobs
@@ -941,6 +936,6 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Complete)
             .context("Updating job state failed")?;
-        return res;
+        res
     }
 }

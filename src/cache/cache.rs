@@ -37,7 +37,6 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
-use zstd;
 
 use crate::errors::*;
 
@@ -48,6 +47,7 @@ fn get_file_mode(file: &fs::File) -> Result<Option<u32>> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
 fn get_file_mode(_file: &fs::File) -> Result<Option<u32>> {
     Ok(None)
 }
@@ -62,6 +62,7 @@ fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
 fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }

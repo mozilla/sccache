@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::simples3::credential::*;
 use futures::{Future, Stream};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, Mac, NewMac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
@@ -40,13 +40,13 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut hmac = Hmac::<Sha1>::new_varkey(key).expect("HMAC can take key of any size");
-    hmac.input(data);
-    hmac.result().code().iter().copied().collect::<Vec<u8>>()
+    hmac.update(data);
+    hmac.finalize().into_bytes().as_slice().to_vec()
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
     let s = hmac(signing_key.as_bytes(), string_to_sign.as_bytes());
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
+    base64::encode_config(&s, base64::STANDARD)
 }
 
 /// An S3 bucket.
@@ -88,7 +88,7 @@ impl Bucket {
                 canonical_headers
                     .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
             }
-            let date = time::now_utc().rfc822().to_string();
+            let date = chrono::offset::Utc::now().to_rfc2822();
             let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
             request.headers_mut().insert(
                 "Date",
@@ -145,7 +145,7 @@ impl Bucket {
         let mut request = Request::new(Method::PUT, url.parse().unwrap());
 
         let content_type = "application/octet-stream";
-        let date = time::now_utc().rfc822().to_string();
+        let date = chrono::offset::Utc::now().to_rfc2822();
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!

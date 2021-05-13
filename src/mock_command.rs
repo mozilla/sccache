@@ -403,12 +403,10 @@ impl CommandChild for MockChild {
             wait_result,
             ..
         } = self;
-        let result = wait_result.unwrap().and_then(|status| {
-            Ok(Output {
-                status,
-                stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
-                stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(|| vec![]),
-            })
+        let result = wait_result.unwrap().map(|status| Output {
+            status,
+            stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
+            stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
         });
         Box::new(future::result(result))
     }

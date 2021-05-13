@@ -66,7 +66,7 @@ impl CCompilerImpl for MSVC {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
-        _rewrite_includes_only: bool,
+        rewrite_includes_only: bool,
     ) -> SFuture<process::Output>
     where
         T: CommandCreatorSync,
@@ -79,6 +79,8 @@ impl CCompilerImpl for MSVC {
             env_vars,
             may_dist,
             &self.includes_prefix,
+            rewrite_includes_only,
+            self.is_clang,
         )
     }
 
@@ -228,9 +230,12 @@ ArgData! {
     PassThrough, // Miscellaneous flags that don't prevent caching.
     PassThroughWithPath(PathBuf), // As above, recognised by prefix.
     PassThroughWithSuffix(OsString), // As above, recognised by prefix.
+    Ignore, // The flag is not passed to the compiler.
+    IgnoreWithSuffix(OsString), // As above, recognized by prefix.
     ExtraHashFile(PathBuf),
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
+    ExternalIncludePath(PathBuf),
 }
 
 use self::ArgData::*;
@@ -254,7 +259,7 @@ macro_rules! msvc_args {
 msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("?", SuppressCompilation),
     msvc_flag!("C", PassThrough), // Ignored unless a preprocess-only flag is specified.
-    msvc_take_arg!("D", OsString, Concatenated, PreprocessorArgument),
+    msvc_take_arg!("D", OsString, CanBeSeparated, PreprocessorArgument),
     msvc_flag!("E", SuppressCompilation),
     msvc_take_arg!("EH", OsString, Concatenated, PassThroughWithSuffix), // /EH[acsr\-]+ - TODO: use a regex?
     msvc_flag!("EP", SuppressCompilation),
@@ -263,7 +268,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("FC", TooHardFlag), // Use absolute paths in error messages.
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
-    msvc_flag!("FS", TooHardFlag),
+    msvc_flag!("FS", Ignore),
     msvc_take_arg!("FU", PathBuf, CanBeSeparated, TooHardPath),
     msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
@@ -308,7 +313,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("LDd", PassThrough),
     msvc_flag!("MD", PassThrough),
     msvc_flag!("MDd", PassThrough),
-    msvc_flag!("MP", TooHardFlag), // Multiple source files.
+    msvc_take_arg!("MP", OsString, Concatenated, IgnoreWithSuffix),
     msvc_flag!("MT", PassThrough),
     msvc_flag!("MTd", PassThrough),
     msvc_flag!("O1", PassThrough),
@@ -389,8 +394,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("experimental:module", TooHardFlag),
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
-    msvc_take_arg!("favor:", OsString, Separated, PassThroughWithSuffix),
-    msvc_take_arg!("fp:", OsString, Separated, PassThroughWithSuffix),
+    msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
+    msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     msvc_flag!("fsyntax-only", SuppressCompilation),
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
@@ -468,7 +474,10 @@ pub fn parse_arguments(
                 compilation_flag =
                     OsString::from(arg.flag_str().expect("Compilation flag expected"));
             }
-            Some(ShowIncludes) => show_includes = true,
+            Some(ShowIncludes) => {
+                show_includes = true;
+                dependency_args.push(arg.to_os_string());
+            }
             Some(Output(out)) => {
                 output_arg = Some(out.clone());
                 // Can't usefully cache output that goes to nul anyway,
@@ -482,7 +491,10 @@ pub fn parse_arguments(
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
-            | Some(ExtraHashFile(_)) => {}
+            | Some(ExtraHashFile(_))
+            | Some(Ignore)
+            | Some(IgnoreWithSuffix(_))
+            | Some(ExternalIncludePath(_)) => {}
             Some(SuppressCompilation) => {
                 return CompilerArguments::NotCompilation;
             }
@@ -517,12 +529,36 @@ pub fn parse_arguments(
                     .iter_os_strings(),
             ),
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 common_args.extend(
                     arg.normalize(NormalizedDisposition::Concatenated)
                         .iter_os_strings(),
                 )
             }
+            Some(ExternalIncludePath(_)) => common_args.extend(
+                arg.normalize(NormalizedDisposition::Separated)
+                    .iter_os_strings(),
+            ),
+            // We ignore -MP and -FS and never pass them down to the compiler.
+            //
+            // -MP tells the compiler to build with multiple processes and is used
+            // to spread multiple compilations when there are multiple inputs.
+            // Either we have multiple inputs on the command line, and we're going
+            // to bail out and not cache, or -MP is not going to be useful.
+            // -MP also implies -FS.
+            //
+            // -FS forces synchronous access to PDB files via a MSPDBSRV process.
+            // This option is only useful when multiple compiler invocations are going
+            // to share the same PDB file, which is not supported by sccache. So either
+            // -Fd was passed with a pdb that is not shared and sccache is going to
+            // handle the compile, in which case -FS is not needed, or -Fd was not passed
+            // and we're going to bail out and not cache.
+            //
+            // In both cases, the flag is not going to be useful if we are going to cache,
+            // so we just skip them entirely. -FS may also have a side effect of creating
+            // race conditions in which we may try to read the PDB before MSPDBSRC is done
+            // writing it, so we're better off ignoring the flags.
+            Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
             _ => {}
         }
     }
@@ -561,6 +597,7 @@ pub fn parse_arguments(
                 Some(DiagnosticsColor(_))
                 | Some(DiagnosticsColorFlag)
                 | Some(NoDiagnosticsColorFlag)
+                | Some(Arch(_))
                 | Some(PassThrough(_))
                 | Some(PassThroughPath(_)) => &mut common_args,
 
@@ -569,7 +606,7 @@ pub fn parse_arguments(
                     &mut common_args
                 }
                 Some(ExtraHashFile(path)) => {
-                    extra_hash_files.push(path.clone());
+                    extra_hash_files.push(cwd.join(path));
                     &mut common_args
                 }
                 Some(PreprocessorArgumentFlag)
@@ -658,8 +695,7 @@ fn normpath(path: &str) -> String {
             if size == 0 {
                 return Err(io::Error::last_os_error());
             }
-            let mut wchars = Vec::with_capacity(size as usize);
-            wchars.resize(size as usize, 0);
+            let mut wchars = vec![0; size as usize];
             if unsafe {
                 GetFinalPathNameByHandleW(handle, wchars.as_mut_ptr(), wchars.len() as u32, 0)
             } == 0
@@ -671,12 +707,9 @@ fn normpath(path: &str) -> String {
             let o = OsString::from_wide(&wchars[4..wchars.len() - 1]);
             o.into_string()
                 .map(|s| s.replace('\\', "/"))
-                .or(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error converting string",
-                )))
+                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Error converting string"))
         })
-        .unwrap_or(path.replace('\\', "/"))
+        .unwrap_or_else(|_| path.replace('\\', "/"))
 }
 
 #[cfg(not(windows))]
@@ -684,21 +717,36 @@ fn normpath(path: &str) -> String {
     path.to_owned()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn preprocess<T>(
     creator: &T,
     executable: &Path,
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
-    _may_dist: bool,
+    may_dist: bool,
     includes_prefix: &str,
+    rewrite_includes_only: bool,
+    is_clang: bool,
 ) -> SFuture<process::Output>
 where
     T: CommandCreatorSync,
 {
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-EP")
-        .arg(&parsed_args.input)
+
+    // When performing distributed compilation, line number info is important for error
+    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
+    // fails due to exceptions transitively included in the stdlib).
+    // With -fprofile-generate line number information is important, so use -E.
+    // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
+    // emitted) and improve performance.
+    if may_dist || parsed_args.profile_generate {
+        cmd.arg("-E");
+    } else {
+        cmd.arg("-EP");
+    }
+
+    cmd.arg(&parsed_args.input)
         .arg("-nologo")
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
@@ -706,8 +754,11 @@ where
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(&cwd);
-    if parsed_args.depfile.is_some() || parsed_args.msvc_show_includes {
+    if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
+    }
+    if rewrite_includes_only && is_clang {
+        cmd.arg("-clang:-frewrite-includes");
     }
 
     if log_enabled!(Debug) {
@@ -818,6 +869,7 @@ fn generate_compile_commands(
         fo,
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.dependency_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
     let command = CompileCommand {
@@ -862,14 +914,13 @@ fn generate_compile_commands(
 mod test {
     use super::*;
     use crate::compiler::*;
-    use crate::env;
     use crate::mock_command::*;
     use crate::test::utils::*;
     use futures::Future;
     use futures_03::executor::ThreadPool;
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
-        super::parse_arguments(&arguments, &env::current_dir().unwrap(), false)
+        super::parse_arguments(&arguments, &std::env::current_dir().unwrap(), false)
     }
 
     #[test]
@@ -1021,7 +1072,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert_eq!(profile_generate, true);
+        assert!(profile_generate);
         assert!(preprocessor_args.is_empty());
         assert_eq!(
             dependency_args,
@@ -1072,6 +1123,7 @@ mod test {
             language,
             outputs,
             preprocessor_args,
+            dependency_args,
             msvc_show_includes,
             common_args,
             ..
@@ -1083,6 +1135,7 @@ mod test {
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         assert_eq!(preprocessor_args, ovec!["-FIfile"]);
+        assert_eq!(dependency_args, ovec!["/showIncludes"]);
         assert!(common_args.is_empty());
         assert!(msvc_show_includes);
     }
@@ -1111,6 +1164,48 @@ mod test {
         );
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-Zi", "-Fdfoo.pdb"]);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_external_include() {
+        // Parsing -external:I relies on -experimental:external being parsed
+        // and placed into common_args.
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-Fofoo.obj",
+            "-experimental:external",
+            "-external:templates-",
+            "-external:I",
+            "path/to/system/includes"
+        ];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_eq!(1, outputs.len());
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(
+            common_args,
+            ovec![
+                "-experimental:external",
+                "-external:templates-",
+                "-external:I",
+                "path/to/system/includes"
+            ]
+        );
         assert!(!msvc_show_includes);
     }
 
@@ -1309,6 +1404,9 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert_eq!(ovec!["-fsanitize-blacklist=list.txt"], common_args);
-        assert_eq!(ovec!["list.txt"], extra_hash_files);
+        assert_eq!(
+            ovec![std::env::current_dir().unwrap().join("list.txt")],
+            extra_hash_files
+        );
     }
 }

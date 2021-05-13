@@ -124,6 +124,7 @@ ArgData! { pub
     ExtraHashFile(PathBuf),
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
     XClang(OsString),
+    Arch(OsString),
 }
 
 use self::ArgData::*;
@@ -158,7 +159,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
     take_arg!("-Xpreprocessor", OsString, Separated, PreprocessorArgument),
-    take_arg!("-arch", OsString, Separated, PassThrough),
+    take_arg!("-arch", OsString, Separated, Arch),
     take_arg!("-aux-info", OsString, Separated, PassThrough),
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
@@ -235,6 +236,7 @@ where
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
+    let mut seen_arch = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -310,6 +312,13 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
+            Some(Arch(arch)) => {
+                match seen_arch {
+                    Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
+                    _ => {}
+                };
+                seen_arch = Some(arch.clone());
+            }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
                 Argument::Raw(ref val) => {
@@ -330,10 +339,11 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
+            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -388,10 +398,11 @@ where
             Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
+            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(path.clone());
+                extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
             Some(PreprocessorArgumentFlag)
@@ -1219,6 +1230,35 @@ mod test {
         assert_eq!(
             CompilerArguments::CannotCache("@", None),
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"], false)
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_multiple_arch() {
+        match parse_arguments_(
+            stringvec!["-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+
+        match parse_arguments_(
+            stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple different -arch", None),
+            parse_arguments_(
+                stringvec![
+                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                ],
+                false
+            )
         );
     }
 
