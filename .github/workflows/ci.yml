@@ -82,6 +82,7 @@ jobs:
         run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
   smoke:
     name: smoke test ${{ matrix.rustc || 'stable' }} ${{ matrix.target_repository }}
+    needs: [build]
     runs-on: ubuntu-18.04
     continue-on-error: ${{ matrix.allow_failure || false }}
     strategy:
@@ -104,28 +105,38 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v1
 
-      - uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
           target: ${{ matrix.target }}
 
-      - name: Install a local sccache build
-        run: cargo install --locked --all-features --path .
-      - run: which sccache
+      - name: Fetch current git tag/sha
+        id: id
+        shell: bash
+        run: echo "::set-output name=id::${ID#refs/tags/}"
+        env:
+          ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
-      # To cut down on the workflow execution time, we compile both binaries
+      # To cut down on the workflow execution time, we re-use pre-compiled binaries
       # here and simply vendor the `sccache-dist` in the container via
       # `SCCACHE_IN_DOCKERFILE: vendor` rather than build separately it via Dockerfile
-      - run: cp target/release/sccache-dist systemd/sccache-dist
+      - name: Download artifacts (sccache)
+        uses: actions/download-artifact@v2
+        with:
+          name: sccache-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
+          path: artifacts/
+      - name: Download artifacts (sccache-dist)
+        uses: actions/download-artifact@v2
+        with:
+          name: sccache-dist-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
+          path: artifacts/
+      - name: Set up pre-built artifact binaries
+        run: |
+          cp artifacts/sccache ~/.cargo/bin/sccache
+          cp artifacts/sccache-dist systemd/sccache-dist
+          chmod +x ~/.cargo/bin/sccache systemd/sccache-dist
+          ls -la ~/.cargo/bin/sccache systemd/sccache-dist
 
       - name: Set up local distributed sccache stack
         env:
