@@ -192,9 +192,10 @@ jobs:
         include:
           - os: ubuntu-20.04
             target: x86_64-unknown-linux-musl
+            extra_args: --features="dist-server"
           - os: ubuntu-20.04
             binary: sccache-dist
-            extra_args: --no-default-features --features="dist-server"
+            extra_args: --features="dist-server"
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-musl
@@ -214,6 +215,14 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@v1
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-v2-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
