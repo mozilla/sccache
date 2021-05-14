@@ -119,12 +119,18 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install a local sccache build
-        run: cargo install --locked --features="dist-client" --path .
+        run: cargo install --locked --all-features --path .
       - run: which sccache
+
+      # To cut down on the workflow execution time, we compile both binaries
+      # here and simply vendor the `sccache-dist` in the container via
+      # `SCCACHE_IN_DOCKERFILE: vendor` rather than build separately it via Dockerfile
+      - run: cp target/release/sccache-dist systemd/sccache-dist
 
       - name: Set up local distributed sccache stack
         env:
           RUST_LOG: sccache=trace
+          SCCACHE_IN_DOCKERFILE: vendor
         run: docker-compose --file systemd/docker-compose.yaml up -d
       # TODO: Wait until the stack is up/ready
       - run: docker ps -a

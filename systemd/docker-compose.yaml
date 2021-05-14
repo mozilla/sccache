@@ -15,7 +15,7 @@ services:
     scheduler:
         build:
             context: .
-            dockerfile: Dockerfile.sccache-dist
+            dockerfile: Dockerfile.${SCCACHE_IN_DOCKERFILE:-build}.sccache-dist
         environment:
             RUST_LOG:
             SCCACHE_NO_DAEMON: 1
@@ -41,7 +41,7 @@ services:
         privileged: true
         build:
             context: .
-            dockerfile: Dockerfile.sccache-dist
+            dockerfile: Dockerfile.${SCCACHE_IN_DOCKERFILE:-build}.sccache-dist
         environment:
             RUST_LOG:
             SCCACHE_NO_DAEMON: 1
