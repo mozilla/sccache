@@ -109,12 +109,7 @@ build:
     - cargo +stable build --locked --release --verbose --bin sccache-dist --target x86_64-unknown-linux-musl --features=${FEATURES}
     # collect artifacts
     - mkdir -p ./artifacts/sccache/
-    - ls -la ./target/x86_64-unknown-linux-musl/release/build || exit 0
-    - ls -la ./target/x86_64-unknown-linux-musl/release || exit 0
-    - ls -la ./target/x86_64-unknown-linux-musl || exit 0
-    - ls -la ./target/ || exit 0
-    - ls -la ./target/release || exit 0
-    - mv ./target/release/sccache-dist ./artifacts/sccache/.
+    - mv ./target/x86_64-unknown-linux-musl/release/sccache-dist ./artifacts/sccache/.
     - mv ./systemd/Dockerfile.vendor.sccache-dist ./artifacts/sccache/.
 
 
