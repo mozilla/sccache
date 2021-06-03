@@ -5,7 +5,8 @@
 stages:
   - check
   - test
-  - deploy
+  - build
+  - publish
 
 variables:
   GIT_STRATEGY:                    fetch
@@ -38,6 +39,13 @@ workflow:
   interruptible:                   true
   tags:
     - linux-docker
+
+.kubernetes-env:                   &kubernetes-env
+  tags:
+    - kubernetes-parity-build
+  interruptible:                   true
+
+.build-refs:                       &build-refs
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
     - if: $CI_PIPELINE_SOURCE == "schedule"
@@ -90,15 +98,53 @@ stable-test:
     - cargo +stable build --verbose --features="${FEATURES}" || exit 1
     - cargo +stable test --workspace --verbose --features="${FEATURES}"
 
-# For now simply collect artifacts
-artifacts:
+build:
   <<:                              *docker-env
   <<:                              *collect-artifacts
-  stage:                           deploy
+  <<:                              *build-refs
+  stage:                           build
   variables:
-    FEATURES:                     "dist-client,dist-server"
+    BINARIES:                     "sccache-dist,sccache"
+    FEATURES:                     "openssl/vendored,dist-server"
   script:
-    - cargo +stable build --release --features="${FEATURES}"
+    - cargo +stable build --locked --release --verbose --bin ${BINARIES} --target x86_64-unknown-linux-musl --features=${FEATURES}
     # collect artifacts
     - mkdir -p ./artifacts/sccache/
-    - mv ./target/release/sccache ./artifacts/sccache/.
+    - mv ./target/release/sccache-dist ./artifacts/sccache/.
+    - mv ./systemd/Dockerfile.vendor.sccache-dist ./artifacts/sccache/.
+
+
+.build-push-docker-image:          &build-push-docker-image
+  <<:                              *build-refs
+  <<:                              *kubernetes-env
+  image:                           quay.io/buildah/stable
+  variables:                       &docker-build-vars
+    GIT_STRATEGY:                  none
+    DOCKERFILE:                    Dockerfile.vendor.sccache-dist
+    IMAGE_NAME:                    docker.io/paritytech/sccache-dist
+  before_script:
+    - cd ./artifacts/sccache/
+    - VERSION=${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
+  script:
+    - test "$Docker_Hub_User_Parity" -a "$Docker_Hub_Pass_Parity" ||
+        ( echo "no docker credentials provided"; exit 1 )
+    - buildah bud
+        --format=docker
+        --build-arg VCS_REF="${CI_COMMIT_SHA}"
+        --build-arg BUILD_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        --tag "$IMAGE_NAME:$VERSION"
+        --tag "$IMAGE_NAME:latest"
+        --file "$DOCKERFILE" .
+    - echo "$Docker_Hub_Pass_Parity" |
+        buildah login --username "$Docker_Hub_User_Parity" --password-stdin docker.io
+    - buildah info
+    - buildah push --format=v2s2 "$IMAGE_NAME:$VERSION"
+  after_script:
+    - buildah logout --all
+
+publish-sccache-dist:
+  stage:                           publish
+  <<:                              *build-push-docker-image
+  needs:
+    - job:                         build
+      artifacts:                   true
