@@ -104,10 +104,9 @@ build:
   <<:                              *build-refs
   stage:                           build
   variables:
-    BINARIES:                     "sccache-dist,sccache"
     FEATURES:                     "openssl/vendored,dist-server"
   script:
-    - cargo +stable build --locked --release --verbose --bin ${BINARIES} --target x86_64-unknown-linux-musl --features=${FEATURES}
+    - cargo +stable build --locked --release --verbose --bin sccache-dist --target x86_64-unknown-linux-musl --features=${FEATURES}
     # collect artifacts
     - mkdir -p ./artifacts/sccache/
     - mv ./target/release/sccache-dist ./artifacts/sccache/.
