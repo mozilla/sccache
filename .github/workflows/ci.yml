@@ -239,7 +239,7 @@ jobs:
           set -x
           echo deb [arch=arm64] http://azure.ports.ubuntu.com/ubuntu-ports/ $(lsb_release -c -s) main restricted universe multiverse | sudo tee /etc/apt/sources.list.d/99ports.list > /dev/null
           sudo dpkg --add-architecture arm64
-          sudo apt-get update || true
+          sudo apt-get update --fix-missing || true
           sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           apt-get download musl-tools:arm64
           sudo dpkg-deb -x musl-tools_*_arm64.deb /
