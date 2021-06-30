@@ -122,7 +122,6 @@ build:
 
 
 .build-push-docker-image:          &build-push-docker-image
-  <<:                              *build-refs
   <<:                              *kubernetes-env
   image:                           quay.io/buildah/stable
   variables:                       &docker-build-vars
