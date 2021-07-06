@@ -2782,11 +2782,11 @@ bar.rs:
         let deps = "foo: baz.rs abc.rs bar.rs
 
 # env-dep:VAR=VALUE
+# env-dep:X
 ";
-        assert_eq!(
-            pathvec!["abc.rs", "bar.rs", "baz.rs"],
-            parse_dep_info(&deps, "").0
-        );
+        let (files, envs) = parse_dep_info(&deps, "");
+        assert_eq!(pathvec!["abc.rs", "bar.rs", "baz.rs"], files);
+        assert_eq!(envvec!["VAR" = "VALUE", "X" = ""], envs);
     }
 
     #[test]

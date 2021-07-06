@@ -48,6 +48,18 @@ macro_rules! pathvec {
     };
 }
 
+/// Return a `Vec` with `(k,v)` tuples.
+macro_rules! envvec {
+    ( $( $k:literal = $v:literal),* ) => {
+        vec!($(
+            (
+                ::std::ffi::OsString::from($k),
+                ::std::ffi::OsString::from($v)
+            ),
+        )*)
+    };
+}
+
 /// Assert that `left != right`.
 macro_rules! assert_neq {
     ($left:expr , $right:expr) => {{
