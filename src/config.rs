@@ -800,186 +800,229 @@ pub mod server {
     }
 }
 
-#[test]
-fn test_parse_size() {
-    assert_eq!(None, parse_size(""));
-    assert_eq!(None, parse_size("100"));
-    assert_eq!(Some(2048), parse_size("2K"));
-    assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
-    assert_eq!(Some(TEN_GIGS), parse_size("10G"));
-    assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
 
-#[test]
-fn config_overrides() {
-    let env_conf = EnvConfig {
-        cache: CacheConfigs {
-            azure: Some(AzureCacheConfig),
-            disk: Some(DiskCacheConfig {
-                dir: "/env-cache".into(),
-                size: 5,
-            }),
-            redis: Some(RedisCacheConfig {
-                url: "myotherredisurl".to_owned(),
-            }),
-            ..Default::default()
-        },
-    };
+    #[test]
+    fn test_parse_size() {
+        assert_eq!(None, parse_size(""));
+        assert_eq!(None, parse_size("100"));
+        assert_eq!(Some(2048), parse_size("2K"));
+        assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
+        assert_eq!(Some(TEN_GIGS), parse_size("10G"));
+        assert_eq!(Some(1024 * TEN_GIGS), parse_size("10T"));
+    }
 
-    let file_conf = FileConfig {
-        cache: CacheConfigs {
-            disk: Some(DiskCacheConfig {
-                dir: "/file-cache".into(),
-                size: 15,
-            }),
-            memcached: Some(MemcachedCacheConfig {
-                url: "memurl".to_owned(),
-            }),
-            redis: Some(RedisCacheConfig {
-                url: "myredisurl".to_owned(),
-            }),
-            ..Default::default()
-        },
-        dist: Default::default(),
-    };
-
-    assert_eq!(
-        Config::from_env_and_file_configs(env_conf, file_conf),
-        Config {
-            caches: vec![
-                CacheType::Redis(RedisCacheConfig {
-                    url: "myotherredisurl".to_owned()
-                }),
-                CacheType::Memcached(MemcachedCacheConfig {
-                    url: "memurl".to_owned()
-                }),
-                CacheType::Azure(AzureCacheConfig),
-            ],
-            fallback_cache: DiskCacheConfig {
-                dir: "/env-cache".into(),
-                size: 5,
-            },
-            dist: Default::default(),
-        }
-    );
-}
-
-#[test]
-fn test_gcs_credentials_url() {
-    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-    env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
-    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
-
-    let env_cfg = config_from_env();
-    match env_cfg.cache.gcs {
-        Some(GCSCacheConfig {
-            ref bucket,
-            ref url,
-            rw_mode,
-            ..
-        }) => {
-            assert_eq!(bucket, "my-bucket");
-            match url {
-                Some(ref url) => assert_eq!(url, "http://localhost/"),
-                None => panic!("URL can't be none"),
-            };
-            assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
-        }
-        None => unreachable!(),
-    };
-}
-
-#[test]
-fn full_toml_parse() {
-    const CONFIG_STR: &str = r#"
-[dist]
-# where to find the scheduler
-scheduler_url = "http://1.2.3.4:10600"
-# a set of prepackaged toolchains
-toolchains = []
-# the maximum size of the toolchain cache in bytes
-toolchain_cache_size = 5368709120
-cache_dir = "/home/user/.cache/sccache-dist-client"
-
-[dist.auth]
-type = "token"
-token = "secrettoken"
-
-
-#[cache.azure]
-# does not work as it appears
-
-[cache.disk]
-dir = "/tmp/.cache/sccache"
-size = 7516192768 # 7 GiBytes
-
-[cache.gcs]
-# optional url
-url = "..."
-rw_mode = "READ_ONLY"
-# rw_mode = "READ_WRITE"
-cred_path = "/psst/secret/cred"
-bucket = "bucket"
-
-[cache.memcached]
-url = "..."
-
-[cache.redis]
-url = "redis://user:passwd@1.2.3.4:6379/1"
-
-[cache.s3]
-bucket = "name"
-endpoint = "s3-us-east-1.amazonaws.com"
-use_ssl = true
-key_prefix = "prefix"
-"#;
-
-    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
-    assert_eq!(
-        file_config,
-        FileConfig {
+    #[test]
+    fn config_overrides() {
+        let env_conf = EnvConfig {
             cache: CacheConfigs {
-                azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
+                azure: Some(AzureCacheConfig),
                 disk: Some(DiskCacheConfig {
-                    dir: PathBuf::from("/tmp/.cache/sccache"),
-                    size: 7 * 1024 * 1024 * 1024,
-                }),
-                gcs: Some(GCSCacheConfig {
-                    url: Some("...".to_owned()),
-                    bucket: "bucket".to_owned(),
-                    cred_path: Some(PathBuf::from("/psst/secret/cred")),
-                    rw_mode: GCSCacheRWMode::ReadOnly,
+                    dir: "/env-cache".into(),
+                    size: 5,
                 }),
                 redis: Some(RedisCacheConfig {
-                    url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                    url: "myotherredisurl".to_owned(),
+                }),
+                ..Default::default()
+            },
+        };
+
+        let file_conf = FileConfig {
+            cache: CacheConfigs {
+                disk: Some(DiskCacheConfig {
+                    dir: "/file-cache".into(),
+                    size: 15,
                 }),
                 memcached: Some(MemcachedCacheConfig {
-                    url: "...".to_owned(),
+                    url: "memurl".to_owned(),
                 }),
-                s3: Some(S3CacheConfig {
-                    bucket: "name".to_owned(),
-                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
-                    use_ssl: true,
-                    key_prefix: "prefix".to_owned(),
+                redis: Some(RedisCacheConfig {
+                    url: "myredisurl".to_owned(),
                 }),
+                ..Default::default()
             },
-            dist: DistConfig {
-                auth: DistAuth::Token {
-                    token: "secrettoken".to_owned()
+            dist: Default::default(),
+        };
+
+        assert_matches!(
+            Config::from_env_and_file_configs(env_conf, file_conf),
+            Config {
+                caches,
+                fallback_cache: DiskCacheConfig {
+                    dir: fallback_cache_size,
+                    size: 5,
                 },
-                #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-                scheduler_url: Some(
-                    parse_http_url("http://1.2.3.4:10600")
-                        .map(|url| { HTTPUrl::from_url(url) })
-                        .expect("Scheduler url must be valid url str")
-                ),
-                #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
-                scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
-                cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
-                toolchains: vec![],
-                toolchain_cache_size: 5368709120,
-                rewrite_includes_only: false,
-            },
-        }
-    )
+                ..
+            } => {
+                assert_eq!(caches, vec![
+                    CacheType::Redis(RedisCacheConfig {
+                        url: "myotherredisurl".to_owned()
+                    }),
+                    CacheType::Azure(AzureCacheConfig),
+                ]);
+                assert_eq!(fallback_cache_size, PathBuf::from("/env-cache"));
+            }
+        );
+    }
+
+    #[test]
+    fn test_gcs_credentials_url() {
+        env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
+        env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
+        env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+
+        let env_cfg = config_from_env();
+        assert_matches!{
+            env_cfg.cache.gcs,
+            Some(GCSCacheConfig {
+                ref bucket,
+                ref url,
+                rw_mode,
+                ..
+            }) => {
+                assert_eq!(bucket, "my-bucket");
+                match url {
+                    Some(ref url) => assert_eq!(url, "http://localhost/"),
+                    None => panic!("URL can't be none"),
+                };
+                assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
+            }
+        };
+    }
+
+
+    #[test]
+    fn insecure() {
+        const CONFIG_STR: &str = r#"
+    [dist]
+    # where to find the scheduler
+    scheduler_url = "http://1.2.3.4:10600"
+    # a set of prepackaged toolchains
+    toolchains = []
+    # the maximum size of the toolchain cache in bytes
+    toolchain_cache_size = 5368709120
+    cache_dir = "/home/user/.cache/sccache-dist-client"
+
+    [dist.auth]
+    type = "DANEGEROUSLY_INSECURE"
+
+    [cache.redis]
+    url = "redis://user:passwd@1.2.3.4:6379/1"
+
+    "#;
+
+        let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+        assert_matches!(
+            file_config,
+            FileConfig {
+                dist: DistConfig {
+                    auth: DistAuth::Insecure,
+                    toolchain_cache_size: 5368709120,
+                    rewrite_includes_only: false,
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
+
+    #[test]
+    fn full_toml_parse() {
+        const CONFIG_STR: &str = r#"
+    [dist]
+    # where to find the scheduler
+    scheduler_url = "http://1.2.3.4:10600"
+    # a set of prepackaged toolchains
+    toolchains = []
+    # the maximum size of the toolchain cache in bytes
+    toolchain_cache_size = 5368709120
+    cache_dir = "/home/user/.cache/sccache-dist-client"
+
+    [dist.auth]
+    type = "token"
+    token = "secrettoken"
+
+
+    #[cache.azure]
+    # does not work as it appears
+
+    [cache.disk]
+    dir = "/tmp/.cache/sccache"
+    size = 7516192768 # 7 GiBytes
+
+    [cache.gcs]
+    # optional url
+    url = "..."
+    rw_mode = "READ_ONLY"
+    # rw_mode = "READ_WRITE"
+    cred_path = "/psst/secret/cred"
+    bucket = "bucket"
+
+    [cache.memcached]
+    url = "..."
+
+    [cache.redis]
+    url = "redis://user:passwd@1.2.3.4:6379/1"
+
+    [cache.s3]
+    bucket = "name"
+    endpoint = "s3-us-east-1.amazonaws.com"
+    use_ssl = true
+    key_prefix = "prefix"
+    "#;
+
+        let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+        assert_eq!(
+            file_config,
+            FileConfig {
+                cache: CacheConfigs {
+                    azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
+                    disk: Some(DiskCacheConfig {
+                        dir: PathBuf::from("/tmp/.cache/sccache"),
+                        size: 7 * 1024 * 1024 * 1024,
+                    }),
+                    gcs: Some(GCSCacheConfig {
+                        url: Some("...".to_owned()),
+                        bucket: "bucket".to_owned(),
+                        cred_path: Some(PathBuf::from("/psst/secret/cred")),
+                        rw_mode: GCSCacheRWMode::ReadOnly,
+                    }),
+                    redis: Some(RedisCacheConfig {
+                        url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                    }),
+                    memcached: Some(MemcachedCacheConfig {
+                        url: "...".to_owned(),
+                    }),
+                    s3: Some(S3CacheConfig {
+                        bucket: "name".to_owned(),
+                        endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
+                        use_ssl: true,
+                        key_prefix: "prefix".to_owned(),
+                    }),
+                },
+                dist: DistConfig {
+                    auth: DistAuth::Token {
+                        token: "secrettoken".to_owned()
+                    },
+                    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+                    scheduler_url: Some(
+                        parse_http_url("http://1.2.3.4:10600")
+                            .map(|url| { HTTPUrl::from_url(url) })
+                            .expect("Scheduler url must be valid url str")
+                    ),
+                    #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+                    scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
+                    cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
+                    toolchains: vec![],
+                    toolchain_cache_size: 5368709120,
+                    rewrite_includes_only: false,
+                },
+            }
+        )
+    }
 }
