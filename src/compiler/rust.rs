@@ -317,14 +317,17 @@ where
     const ENV_DEP_PREFIX: &str = "# env-dep:";
     let mut dep_envs = lines
         .filter(|line| line.starts_with(ENV_DEP_PREFIX) && line.len() > ENV_DEP_PREFIX.len())
-        .map(|line| &line[ENV_DEP_PREFIX.len()..])
         // TODO handle escaping in key and value part of the env
         // github: https://github.com/rust-lang/rust/blob/master/src/test/run-make/env-dep-info/Makefile#L14
-        .map(|s| {
-            if let Some((k, v)) = s.split_once('=') {
-                (OsString::from(k), OsString::from(v))
+        .filter_map(|line| {
+            let mut spliter = line[ENV_DEP_PREFIX.len()..].splitn(2, '=');
+            if let Some(key) = spliter.next() {
+                Some((
+                    OsString::from(key),
+                    spliter.next().map(OsString::from).unwrap_or_default(),
+                ))
             } else {
-                (OsString::from(s), OsString::new())
+                None
             }
         })
         .collect::<Vec<_>>();
