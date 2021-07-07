@@ -117,9 +117,13 @@ impl CCompilerImpl for NVCC {
 
         //NVCC only supports `-E` when it comes after preprocessor
         //and common flags.
-        cmd.arg("-E")
-            .arg("-Xcompiler=-P")
-            .env_clear()
+        cmd.arg("-E");
+        if cfg!(windows) {
+            cmd.arg("-Xcompiler=-EP");
+        } else {
+            cmd.arg("-Xcompiler=-P");
+        }
+        cmd.env_clear()
             .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
             .current_dir(cwd);
         if log_enabled!(Trace) {
