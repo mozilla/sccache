@@ -22,7 +22,7 @@ path = "src/main.rs"
 [[bin]]
 name = "cachepot-dist"
 required-features = ["dist-server"]
-path = "src/bin/sccache-dist/main.rs"
+path = "src/bin/cachepot-dist/main.rs"
 
 [dependencies]
 anyhow = "1.0"

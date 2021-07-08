@@ -14,14 +14,14 @@ grade: stable
 confinement: classic
 
 apps:
-    sccache:
+    cachepot:
         command: bin/cachepot.wrapper
 
     cachepot-server:
         environment:
-            SCCACHE_START_SERVER: 1
-            SCCACHE_NO_DAEMON: 1
-            SCCACHE_IDLE_TIMEOUT: 0
+            CACHEPOT_START_SERVER: 1
+            CACHEPOT_NO_DAEMON: 1
+            CACHEPOT_IDLE_TIMEOUT: 0
         command: bin/cachepot.wrapper
         daemon: simple
 

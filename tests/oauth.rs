@@ -1,7 +1,7 @@
 #![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
 
-use sccache::util::fs;
+use cachepot::util::fs;
 use selenium_rs::webdriver::{Browser, Selector, WebDriver};
 use serial_test::serial;
 use std::io::{self, Read, Write};

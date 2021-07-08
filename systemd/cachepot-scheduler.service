@@ -16,7 +16,7 @@ LimitNOFILE=5000
 TasksMax=1000
 User=root
 Group=root
-Environment=SCCACHE_NO_DAEMON=1
+Environment=CACHEPOT_NO_DAEMON=1
 Environment=RUST_LOG=cachepot=trace,cachepot-dist=trace
 ExecStartPre=-/usr/bin/mkdir /mnt/cache-dir
 ExecStart=/usr/local/bin/cachepot-dist scheduler --config /etc/cachepot/scheduler.conf

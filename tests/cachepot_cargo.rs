@@ -23,7 +23,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
     use assert_cmd::prelude::*;
     use chrono::Local;
     use predicates::prelude::*;
-    use sccache::util::fs;
+    use cachepot::util::fs;
     use std::env;
     use std::ffi::OsStr;
     use std::io::Write;
