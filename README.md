@@ -1,4 +1,5 @@
 [![Build Status](https://github.com/mozilla/sccache/workflows/ci/badge.svg)](https://github.com/mozilla/sccache/actions?query=workflow%3Aci)
+[![rust 1.43.0+ badge](https://img.shields.io/badge/rust-1.43.0+-93450a.svg)](https://blog.rust-lang.org/2020/04/23/Rust-1.43.0.html)
 
 sccache - Shared Compilation Cache
 ==================================
