@@ -7,7 +7,8 @@ extern crate cachepot;
 extern crate serde_json;
 
 use crate::harness::{
-    get_stats, cachepot_command, start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
+    cachepot_command, get_stats, start_local_daemon, stop_local_daemon, write_json_cfg,
+    write_source,
 };
 use assert_cmd::prelude::*;
 use cachepot::config::HTTPUrl;

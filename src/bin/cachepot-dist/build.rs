@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use anyhow::{anyhow, bail, Context, Error, Result};
-use flate2::read::GzDecoder;
-use libmount::Overlay;
 use cachepot::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
 use cachepot::lru_disk_cache::Error as LruError;
 use cachepot::util::fs;
+use flate2::read::GzDecoder;
+use libmount::Overlay;
 use std::collections::{hash_map, HashMap};
 use std::io;
 use std::iter;

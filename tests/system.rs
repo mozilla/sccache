@@ -20,13 +20,13 @@
 #[macro_use]
 extern crate log;
 use crate::harness::{
-    get_stats, cachepot_client_cfg, cachepot_command, start_local_daemon, stop_local_daemon,
+    cachepot_client_cfg, cachepot_command, get_stats, start_local_daemon, stop_local_daemon,
     write_json_cfg, write_source, zero_stats,
 };
 use assert_cmd::prelude::*;
+use cachepot::util::fs::{self, File};
 use log::Level::Trace;
 use predicates::prelude::*;
-use cachepot::util::fs::{self, File};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};

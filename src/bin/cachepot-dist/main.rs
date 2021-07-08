@@ -9,9 +9,6 @@ extern crate log;
 extern crate serde_derive;
 
 use anyhow::{bail, Context, Error, Result};
-use clap::{App, Arg, ArgMatches, SubCommand};
-use jsonwebtoken as jwt;
-use rand::{rngs::OsRng, RngCore};
 use cachepot::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
@@ -23,6 +20,9 @@ use cachepot::dist::{
     UpdateJobStateResult,
 };
 use cachepot::util::daemonize;
+use clap::{App, Arg, ArgMatches, SubCommand};
+use jsonwebtoken as jwt;
+use rand::{rngs::OsRng, RngCore};
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;

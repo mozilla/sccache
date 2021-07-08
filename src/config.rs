@@ -493,7 +493,10 @@ fn config_from_env() -> EnvConfig {
             warn!("CACHEPOT_GCS_KEY_PATH will take precedence");
         }
 
-        let rw_mode = match env::var("CACHEPOT_GCS_RW_MODE").as_ref().map(String::as_str) {
+        let rw_mode = match env::var("CACHEPOT_GCS_RW_MODE")
+            .as_ref()
+            .map(String::as_str)
+        {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
             // TODO: unsure if these should warn during the configuration loading

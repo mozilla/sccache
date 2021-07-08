@@ -117,7 +117,10 @@ pub fn find_cachepot_binary() -> PathBuf {
     let this_dir = exe.parent().unwrap();
     let dirs = &[&this_dir, &this_dir.parent().unwrap()];
     dirs.iter()
-        .map(|d| d.join("cachepot").with_extension(env::consts::EXE_EXTENSION))
+        .map(|d| {
+            d.join("cachepot")
+                .with_extension(env::consts::EXE_EXTENSION)
+        })
         .filter_map(|d| fs::metadata(&d).ok().map(|_| d))
         .next()
         .unwrap_or_else(|| {
