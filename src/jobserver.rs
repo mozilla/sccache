@@ -10,9 +10,9 @@ use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Client {
-    helper: Option<Arc<jobserver::HelperThread>>,
     tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
     inner: jobserver::Client,
+    helper: Option<Arc<jobserver::HelperThread>>,
 }
 
 pub struct Acquired {
@@ -55,7 +55,7 @@ impl Client {
             (Some(Arc::new(helper)), Some(tx))
         };
 
-        Client { inner, helper, tx }
+        Client { tx, inner, helper }
     }
 
     /// Configures this jobserver to be inherited by the specified command

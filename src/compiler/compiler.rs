@@ -2002,7 +2002,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2056,7 +2056,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2125,7 +2125,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2202,7 +2202,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2299,7 +2299,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }

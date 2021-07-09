@@ -154,9 +154,6 @@ pub struct RustCompilation {
     host: String,
     /// The sysroot for this rustc
     sysroot: PathBuf,
-    /// A shared, caching reader for rlib dependencies
-    #[cfg(feature = "dist-client")]
-    rlib_dep_reader: Option<Arc<RlibDepReader>>,
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
     /// The compiler inputs.
@@ -175,6 +172,9 @@ pub struct RustCompilation {
     cwd: PathBuf,
     /// The environment variables
     env_vars: Vec<(OsString, OsString)>,
+    /// A shared, caching reader for rlib dependencies
+    #[cfg(feature = "dist-client")]
+    rlib_dep_reader: Option<Arc<RlibDepReader>>,
 }
 
 // The selection of crate types for this compilation
