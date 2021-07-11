@@ -205,7 +205,7 @@ async fn get_source_files<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<Vec<PathBuf>>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
 where
     T: CommandCreatorSync,
 {
@@ -238,7 +238,7 @@ where
         })
         .await?;
 
-    parsed.map(move |mut files| {
+    parsed.map(move |(mut files, dep_envs)| {
         // HACK: Ideally, if we're compiling a Cargo package, we should be
         // compiling it with the same files included in the published .crate
         // package to ensure maximum compatibility. While it's possible for
@@ -246,7 +246,7 @@ where
         // via mechanisms such as `include_bytes!`, this is also a hack and
         // may leave an undesired footprint in the compilation outputs.
         // An upstream mechanism to only track required additional files is
-        // pending at https://github.com/rust-lang/rust/pull/84029.
+        // pending at <https://github.com/rust-lang/rust/pull/84029>.
         // Until then, unconditionally include Cargo.toml manifest to provide
         // a minimal support and to keep some crates compiling that may
         // read additional info directly from the manifest file.
@@ -283,13 +283,13 @@ where
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
-        files
+        (files, dep_envs)
     })
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
 /// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<PathBuf>>
+fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -300,19 +300,41 @@ where
     Ok(parse_dep_info(&deps, cwd))
 }
 
-fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
+fn parse_dep_info<T>(dep_info: &str, cwd: T) -> (Vec<PathBuf>, Vec<(OsString, OsString)>)
 where
     T: AsRef<Path>,
 {
     let cwd = cwd.as_ref();
     // Just parse the first line, which should have the dep-info file and all
     // source files.
-    let line = match dep_info.lines().next() {
-        None => return vec![],
+    let mut lines = dep_info.lines();
+    let line = match lines.next() {
+        None => return (vec![], vec![]),
         Some(l) => l,
     };
+
+    // collect the env variables referenced via `env!` or required by `build.rs`.
+    const ENV_DEP_PREFIX: &str = "# env-dep:";
+    let mut dep_envs = lines
+        .filter(|line| line.starts_with(ENV_DEP_PREFIX) && line.len() > ENV_DEP_PREFIX.len())
+        // TODO handle escaping in key and value part of the env
+        // github: https://github.com/rust-lang/rust/blob/master/src/test/run-make/env-dep-info/Makefile#L14
+        .filter_map(|line| {
+            let mut spliter = line[ENV_DEP_PREFIX.len()..].splitn(2, '=');
+            if let Some(key) = spliter.next() {
+                Some((
+                    OsString::from(key),
+                    spliter.next().map(OsString::from).unwrap_or_default(),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    dep_envs.sort();
+
     let pos = match line.find(": ") {
-        None => return vec![],
+        None => return (vec![], dep_envs),
         Some(p) => p,
     };
 
@@ -321,9 +343,9 @@ where
 
     let mut iter = line[pos + 2..].chars().peekable();
 
-    loop {
-        match iter.next() {
-            Some('\\') => {
+    while let Some(c) = iter.next() {
+        match c {
+            '\\' => {
                 if iter.peek() == Some(&' ') {
                     current_dep.push(' ');
                     iter.next();
@@ -331,24 +353,21 @@ where
                     current_dep.push('\\');
                 }
             }
-            Some(' ') => {
+            ' ' => {
                 deps.push(current_dep);
                 current_dep = String::new();
             }
-            Some(c) => current_dep.push(c),
-            None => {
-                if !current_dep.is_empty() {
-                    deps.push(current_dep);
-                }
-
-                break;
-            }
+            c => current_dep.push(c),
         }
+    }
+    if !current_dep.is_empty() {
+        deps.push(current_dep);
     }
 
     let mut deps = deps.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
+
     deps.sort();
-    deps
+    (deps, dep_envs)
 }
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
@@ -1288,7 +1307,7 @@ where
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
         let source_files_and_hashes = async {
-            let source_files = get_source_files(
+            let (source_files, source_envs) = get_source_files(
                 creator,
                 &crate_name,
                 &executable,
@@ -1299,7 +1318,7 @@ where
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes))
+            Ok((source_files, source_envs, source_hashes))
         };
 
         // Hash the contents of the externs listed on the commandline.
@@ -1311,7 +1330,7 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all(&abs_staticlibs, pool);
 
-        let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
+        let ((source_files, source_envs, source_hashes), extern_hashes, staticlib_hashes) =
             futures::try_join!(source_files_and_hashes, extern_hashes, staticlib_hashes)?;
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
@@ -1362,14 +1381,11 @@ where
         {
             m.update(h.as_bytes());
         }
-        // 7. Environment variables. Ideally we'd use anything referenced
-        // via env! in the program, but we don't have a way to determine that
-        // currently, and hashing all environment variables is too much, so
-        // we'll just hash the CARGO_ env vars and hope that's sufficient.
-        // Upstream Rust issue tracking getting information about env! usage:
-        // https://github.com/rust-lang/rust/issues/40364
+        // 7. Environment variables. We use anything referenced
+        // via env! in the program, plus CARGO_ env vars.
         let mut env_vars: Vec<_> = env_vars
             .iter()
+            .chain(source_envs.iter())
             // Filter out RUSTC_COLOR since we control color usage with command line flags.
             // rustc reports an error when both are present.
             .filter(|(ref k, _)| k != "RUSTC_COLOR")
@@ -2760,8 +2776,20 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["abc.rs", "bar.rs", "baz.rs"],
-            parse_dep_info(&deps, "")
+            parse_dep_info(&deps, "").0
         );
+    }
+
+    #[test]
+    fn test_parse_dep_info_with_env() {
+        let deps = "foo: baz.rs abc.rs bar.rs
+
+# env-dep:VAR=VALUE
+# env-dep:X
+";
+        let (files, envs) = parse_dep_info(&deps, "");
+        assert_eq!(pathvec!["abc.rs", "bar.rs", "baz.rs"], files);
+        assert_eq!(envvec!["VAR" = "VALUE", "X" = ""], envs);
     }
 
     #[test]
@@ -2772,7 +2800,10 @@ baz.rs:
 
 abc def.rs:
 "#;
-        assert_eq!(pathvec!["abc def.rs", "baz.rs"], parse_dep_info(&deps, ""));
+        assert_eq!(
+            pathvec!["abc def.rs", "baz.rs"],
+            parse_dep_info(&deps, "").0
+        );
     }
 
     #[cfg(not(windows))]
@@ -2788,12 +2819,12 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
-            parse_dep_info(&deps, "foo/")
+            parse_dep_info(&deps, "foo/").0
         );
 
         assert_eq!(
             pathvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
-            parse_dep_info(&deps, "/foo/bar/")
+            parse_dep_info(&deps, "/foo/bar/").0
         );
     }
 
@@ -2810,7 +2841,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
-            parse_dep_info(&deps, "/bar/")
+            parse_dep_info(&deps, "/bar/").0
         );
     }
 
@@ -2827,7 +2858,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
-            parse_dep_info(&deps, "foo/")
+            parse_dep_info(&deps, "foo/").0
         );
 
         assert_eq!(
@@ -2836,7 +2867,7 @@ bar.rs:
                 "c:/foo/bar/bar.rs",
                 "c:/foo/bar/baz.rs"
             ],
-            parse_dep_info(&deps, "c:/foo/bar/")
+            parse_dep_info(&deps, "c:/foo/bar/").0
         );
     }
 
@@ -2851,7 +2882,7 @@ c:/foo/bar.rs:
 ";
         assert_eq!(
             pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
-            parse_dep_info(&deps, "c:/bar/")
+            parse_dep_info(&deps, "c:/bar/").0
         );
     }
 

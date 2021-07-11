@@ -152,13 +152,13 @@ provides no security at all.
 
 Put the following in your scheduler config file:
 
-```
+```toml
 server_auth = { type = "DANGEROUSLY_INSECURE" }
 ```
 
 Put the following in your server config file:
 
-```
+```toml
 scheduler_auth = { type = "DANGEROUSLY_INSECURE" }
 ```
 
@@ -191,7 +191,7 @@ which has a few different options for performing validation on that token.
 Put one of the following settings in your scheduler config file to determine how
 the scheduler will validate tokens from the client:
 
-```
+```toml
 # Use the known settings for Mozilla OAuth2 token validation
 client_auth = { type = "mozilla" }
 
@@ -204,7 +204,7 @@ client_auth = { type = "proxy_token", url = "...", cache_secs = 60 }
 Additionally, each client should set up an OAuth2 configuration in the with one of
 the following settings (as appropriate for your OAuth service):
 
-```
+```toml
 # Use the known settings for Mozilla OAuth2 authentication
 auth = { type = "mozilla" }
 
