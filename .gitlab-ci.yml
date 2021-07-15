@@ -29,7 +29,7 @@ workflow:
     - which clang && clang --version
     - rustc +stable --version
     - rustc +nightly --version
-    - cachepot -s
+    - sccache -s
   retry:
     max: 2
     when:
