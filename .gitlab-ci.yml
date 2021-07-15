@@ -15,7 +15,7 @@ variables:
   RUST_BACKTRACE:                  1
   # this var is changed to "-:staging" when the CI image gets rebuilt
   # read more https://github.com/paritytech/scripts/pull/244
-  CI_IMAGE:                        "paritytech/cachepot-ci-ubuntu:staging" # temporary override
+  CI_IMAGE:                        "paritytech/cachepot-ci:staging" # temporary override
 
 workflow:
   rules:
