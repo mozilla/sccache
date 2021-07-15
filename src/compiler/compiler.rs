@@ -1955,7 +1955,7 @@ mod test_dist {
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
         SubmitToolchainResult, Toolchain,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{atomic::AtomicBool, Arc};
 
     use crate::errors::*;
