@@ -1,0 +1,38 @@
+[book]
+language = "en"
+multilingual = false
+src = "src"
+title = "cachepot design goals"
+authors = [
+	"Bernhard Schuster <bernhard@ahoi.io>",
+	"Grzegorz Wierzowiecki"
+]
+
+[output.html]
+mathjax-support = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.playpen]
+editable = true
+line-numbers = true
+
+[output.html.search]
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 2
+
+[output.linkcheck]
+follow-web-links = true
+cache-timeout = 43200
+warning-policy = "warn"
+
+
+[output.linkcheck.http-headers]
+'crates\.io' = ["Accept: text/html"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

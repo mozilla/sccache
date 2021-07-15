@@ -96,9 +96,9 @@ pub fn get_app<'a, 'b>() -> App<'a, 'b> {
 pub fn parse() -> Result<Command> {
     trace!("parse");
     let cwd =
-        env::current_dir().context("sccache: Couldn't determine current working directory")?;
+        env::current_dir().context("cachepot: Couldn't determine current working directory")?;
     // The internal start server command is passed in the environment.
-    let internal_start_server = match env::var("SCCACHE_START_SERVER") {
+    let internal_start_server = match env::var("CACHEPOT_START_SERVER") {
         Ok(val) => val == "1",
         Err(_) => false,
     };
@@ -113,7 +113,7 @@ pub fn parse() -> Result<Command> {
                 // If the executable has its standard name, do nothing.
                 Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
                 // Otherwise, if it was copied/hardlinked under a different $name, act
-                // as if it were invoked with `sccache $name`, but avoid $name resolving
+                // as if it were invoked with `cachepot $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())

@@ -1,25 +1,28 @@
 [package]
-name = "sccache"
-version = "0.2.16-alpha.0"
-authors = ["Ted Mielczarek <ted@mielczarek.org>", "Alex Crichton <alex@alexcrichton.com>"]
+name = "cachepot"
+version = "0.1.0"
+authors = [
+    "Bernhard Schuster <bernhard@ahoi.io>",
+    "Igor Matuszewski <xanework@gmail.com>",
+    "Ted Mielczarek <ted@mielczarek.org>",
+    "Alex Crichton <alex@alexcrichton.com>"
+]
 license = "Apache-2.0"
-description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API."
-repository = "https://github.com/mozilla/sccache/"
+description = "cachepot is a sccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using cloud storage."
+repository = "https://github.com/paritytech/cachepot/"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
-keywords = ["ccache"]
+keywords = ["ccache", "sccache", "cachepot"]
 edition = "2018"
 
-[badges]
-travis-ci = { repository = "mozilla/sccache" }
-appveyor = { repository = "mozilla/sccache" }
+[[bin]]
+name = "cachepot"
+path = "src/main.rs"
 
 [[bin]]
-name = "sccache"
-
-[[bin]]
-name = "sccache-dist"
+name = "cachepot-dist"
 required-features = ["dist-server"]
+path = "src/bin/cachepot-dist/main.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -134,9 +137,9 @@ memcached = ["memcached-rs"]
 native-zlib = []
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
-# Enables distributed support in the sccache client
+# Enables distributed support in the cachepot client
 dist-client = ["ar", "flate2", "hyper", "hyperx", "reqwest", "url", "sha2"]
-# Enables the sccache-dist binary
+# Enables the cachepot-dist binary
 dist-server = ["chrono", "crossbeam-utils", "jsonwebtoken", "flate2", "hyperx", "libmount", "nix", "reqwest", "rouille", "sha2", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]

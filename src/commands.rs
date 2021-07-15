@@ -39,7 +39,7 @@ use which::which_in;
 
 use crate::errors::*;
 
-/// The default sccache server port.
+/// The default cachepot server port.
 pub const DEFAULT_PORT: u16 = 4226;
 
 /// The number of milliseconds to wait for server startup.
@@ -47,7 +47,7 @@ const SERVER_STARTUP_TIMEOUT_MS: u32 = 10000;
 
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
-    env::var("SCCACHE_SERVER_PORT")
+    env::var("CACHEPOT_SERVER_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT)
@@ -75,15 +75,15 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::time::Duration;
 
     trace!("run_server_process");
-    let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
+    let tempdir = tempfile::Builder::new().prefix("cachepot").tempdir()?;
     let socket_path = tempdir.path().join("sock");
     let mut runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
-        .env("SCCACHE_START_SERVER", "1")
-        .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
+        .env("CACHEPOT_START_SERVER", "1")
+        .env("CACHEPOT_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
         .spawn()?;
 
@@ -125,9 +125,9 @@ fn redirect_stderr(f: File) {
     }
 }
 
-/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
+/// If `CACHEPOT_ERROR_LOG` is set, redirect stderr to it.
 fn redirect_error_log() -> Result<()> {
-    let name = match env::var("SCCACHE_ERROR_LOG") {
+    let name = match env::var("CACHEPOT_ERROR_LOG") {
         Ok(filename) if !filename.is_empty() => filename,
         _ => return Ok(()),
     };
@@ -167,9 +167,9 @@ fn run_server_process() -> Result<ServerStartup> {
     let mut envp = {
         let mut v = vec![];
         let extra_vars = vec![
-            (OsString::from("SCCACHE_START_SERVER"), OsString::from("1")),
+            (OsString::from("CACHEPOT_START_SERVER"), OsString::from("1")),
             (
-                OsString::from("SCCACHE_STARTUP_NOTIFY"),
+                OsString::from("CACHEPOT_STARTUP_NOTIFY"),
                 OsString::from(&pipe_name),
             ),
             (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
@@ -242,7 +242,7 @@ fn run_server_process() -> Result<ServerStartup> {
     })
 }
 
-/// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
+/// Attempt to connect to an cachepot server listening on `port`, or start one if no server is running.
 fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
     trace!("connect_or_start_server({})", port);
     match connect_to_server(port) {
@@ -258,7 +258,7 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
                     if port != actualport {
                         // bail as the next connect_with_retry will fail
                         bail!(
-                            "sccache: Listening on port {} instead of {}",
+                            "cachepot: Listening on port {} instead of {}",
                             actualport,
                             port
                         );
@@ -426,10 +426,10 @@ fn handle_compile_finished(
         trace!("compiler exited with status {}", ret);
         Ok(ret)
     } else if let Some(signal) = response.signal {
-        println!("sccache: Compiler killed by signal {}", signal);
+        println!("cachepot: Compiler killed by signal {}", signal);
         Ok(-2)
     } else {
-        println!("sccache: Missing compiler exit status!");
+        println!("cachepot: Missing compiler exit status!");
         Ok(-3)
     }
 }
@@ -469,7 +469,7 @@ where
                     match e.downcast_ref::<io::Error>() {
                         Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
                             eprintln!(
-                                "sccache: warning: The server looks like it shut down \
+                                "cachepot: warning: The server looks like it shut down \
                                  unexpectedly, compiling locally instead"
                             );
                         }
@@ -506,14 +506,14 @@ where
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
-            println!("sccache: Compile terminated by signal {}", sig);
+            println!("cachepot: Compile terminated by signal {}", sig);
         }
         // Arbitrary.
         2
     }))
 }
 
-/// Send a `Compile` request to the sccache server `conn`, and handle the response.
+/// Send a `Compile` request to the cachepot server `conn`, and handle the response.
 ///
 /// The first entry in `cmdline` will be looked up in `path` if it is not
 /// an absolute path.
@@ -567,12 +567,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::StartServer => {
             trace!("Command::StartServer");
-            println!("sccache: Starting the server...");
+            println!("cachepot: Starting the server...");
             let startup = run_server_process().context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { port } => {
                     if port != DEFAULT_PORT {
-                        println!("sccache: Listening on port {}", port);
+                        println!("cachepot: Listening on port {}", port);
                     }
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
@@ -582,7 +582,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::StopServer => {
             trace!("Command::StopServer");
-            println!("Stopping sccache server...");
+            println!("Stopping cachepot server...");
             let server = connect_to_server(get_port()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
             stats.print();

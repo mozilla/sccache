@@ -17,7 +17,6 @@ use directories::ProjectDirs;
 use regex::Regex;
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::env;
@@ -34,23 +33,23 @@ lazy_static! {
     static ref CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 }
 
-const ORGANIZATION: &str = "Mozilla";
-const APP_NAME: &str = "sccache";
-const DIST_APP_NAME: &str = "sccache-dist-client";
+const ORGANIZATION: &str = "Parity";
+const APP_NAME: &str = "cachepot";
+const DIST_APP_NAME: &str = "cachepot-dist-client";
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 const MOZILLA_OAUTH_PKCE_CLIENT_ID: &str = "F1VVD6nRTckSVrviMRaOdLBWIk1AvHYo";
-// The sccache audience is an API set up in auth0 for sccache to allow 7 day expiry,
+// The cachepot audience is an API set up in auth0 for cachepot to allow 7 day expiry,
 // the openid scope allows us to query the auth0 /userinfo endpoint which contains
 // group information due to Mozilla rules.
 const MOZILLA_OAUTH_PKCE_AUTH_URL: &str =
-    "https://auth.mozilla.auth0.com/authorize?audience=sccache&scope=openid%20profile";
+    "https://auth.mozilla.auth0.com/authorize?audience=cachepot&scope=openid%20profile";
 const MOZILLA_OAUTH_PKCE_TOKEN_URL: &str = "https://auth.mozilla.auth0.com/oauth/token";
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
-// Unfortunately this means that nothing else can use the sccache cache dir as
-// this top level directory is used directly to store sccache cached objects...
+// Unfortunately this means that nothing else can use the cachepot cache dir as
+// this top level directory is used directly to store cachepot cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
     ProjectDirs::from("", ORGANIZATION, APP_NAME)
         .expect("Unable to retrieve disk cache directory")
@@ -446,21 +445,21 @@ pub struct EnvConfig {
 }
 
 fn config_from_env() -> EnvConfig {
-    let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
-        let endpoint = match env::var("SCCACHE_ENDPOINT") {
+    let s3 = env::var("CACHEPOT_BUCKET").ok().map(|bucket| {
+        let endpoint = match env::var("CACHEPOT_ENDPOINT") {
             Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-            _ => match env::var("SCCACHE_REGION") {
+            _ => match env::var("CACHEPOT_REGION") {
                 Ok(ref region) if region != "us-east-1" => {
                     format!("{}.s3-{}.amazonaws.com", bucket, region)
                 }
                 _ => format!("{}.s3.amazonaws.com", bucket),
             },
         };
-        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
+        let use_ssl = env::var("CACHEPOT_S3_USE_SSL")
             .ok()
             .filter(|value| value != "off")
             .is_some();
-        let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
+        let key_prefix = env::var("CACHEPOT_S3_KEY_PREFIX")
             .ok()
             .as_ref()
             .map(|s| s.trim_end_matches('/'))
@@ -476,35 +475,38 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
-    let redis = env::var("SCCACHE_REDIS")
+    let redis = env::var("CACHEPOT_REDIS")
         .ok()
         .map(|url| RedisCacheConfig { url });
 
-    let memcached = env::var("SCCACHE_MEMCACHED")
+    let memcached = env::var("CACHEPOT_MEMCACHED")
         .ok()
         .map(|url| MemcachedCacheConfig { url });
 
-    let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
-        let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
-        let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
+    let gcs = env::var("CACHEPOT_GCS_BUCKET").ok().map(|bucket| {
+        let url = env::var("CACHEPOT_GCS_CREDENTIALS_URL").ok();
+        let cred_path = env::var_os("CACHEPOT_GCS_KEY_PATH").map(PathBuf::from);
 
         if url.is_some() && cred_path.is_some() {
-            warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
+            warn!("Both CACHEPOT_GCS_CREDENTIALS_URL and CACHEPOT_GCS_KEY_PATH are set");
             warn!("You should set only one of them!");
-            warn!("SCCACHE_GCS_KEY_PATH will take precedence");
+            warn!("CACHEPOT_GCS_KEY_PATH will take precedence");
         }
 
-        let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
+        let rw_mode = match env::var("CACHEPOT_GCS_RW_MODE")
+            .as_ref()
+            .map(String::as_str)
+        {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
             // TODO: unsure if these should warn during the configuration loading
             // or at the time when they're actually used to connect to GCS
             Ok(_) => {
-                warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
+                warn!("Invalid CACHEPOT_GCS_RW_MODE-- defaulting to READ_ONLY.");
                 GCSCacheRWMode::ReadOnly
             }
             _ => {
-                warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
+                warn!("No CACHEPOT_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
                 GCSCacheRWMode::ReadOnly
             }
         };
@@ -516,12 +518,12 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
-    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING")
+    let azure = env::var("CACHEPOT_AZURE_CONNECTION_STRING")
         .ok()
         .map(|_| AzureCacheConfig);
 
-    let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = env::var("SCCACHE_CACHE_SIZE")
+    let disk_dir = env::var_os("CACHEPOT_DIR").map(PathBuf::from);
+    let disk_sz = env::var("CACHEPOT_CACHE_SIZE")
         .ok()
         .and_then(|v| parse_size(&v));
 
@@ -580,7 +582,7 @@ impl Config {
     pub fn load() -> Result<Config> {
         let env_conf = config_from_env();
 
-        let file_conf_path = config_file("SCCACHE_CONF", "config");
+        let file_conf_path = config_file("CACHEPOT_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
@@ -658,7 +660,7 @@ impl CachedConfig {
     }
 
     fn file_config_path() -> PathBuf {
-        config_file("SCCACHE_CACHED_CONF", "cached-config")
+        config_file("CACHEPOT_CACHED_CONF", "cached-config")
     }
     fn load_file_config() -> Result<CachedFileConfig> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
@@ -866,9 +868,9 @@ fn config_overrides() {
 
 #[test]
 fn test_gcs_credentials_url() {
-    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-    env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
-    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+    env::set_var("CACHEPOT_GCS_BUCKET", "my-bucket");
+    env::set_var("CACHEPOT_GCS_CREDENTIALS_URL", "http://localhost/");
+    env::set_var("CACHEPOT_GCS_RW_MODE", "READ_WRITE");
 
     let env_cfg = config_from_env();
     match env_cfg.cache.gcs {
@@ -899,7 +901,7 @@ scheduler_url = "http://1.2.3.4:10600"
 toolchains = []
 # the maximum size of the toolchain cache in bytes
 toolchain_cache_size = 5368709120
-cache_dir = "/home/user/.cache/sccache-dist-client"
+cache_dir = "/home/user/.cache/cachepot-dist-client"
 
 [dist.auth]
 type = "token"
@@ -910,7 +912,7 @@ token = "secrettoken"
 # does not work as it appears
 
 [cache.disk]
-dir = "/tmp/.cache/sccache"
+dir = "/tmp/.cache/cachepot"
 size = 7516192768 # 7 GiBytes
 
 [cache.gcs]
@@ -941,7 +943,7 @@ key_prefix = "prefix"
             cache: CacheConfigs {
                 azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
                 disk: Some(DiskCacheConfig {
-                    dir: PathBuf::from("/tmp/.cache/sccache"),
+                    dir: PathBuf::from("/tmp/.cache/cachepot"),
                     size: 7 * 1024 * 1024 * 1024,
                 }),
                 gcs: Some(GCSCacheConfig {
@@ -975,7 +977,7 @@ key_prefix = "prefix"
                 ),
                 #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
                 scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
-                cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
+                cache_dir: PathBuf::from("/home/user/.cache/cachepot-dist-client"),
                 toolchains: vec![],
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,

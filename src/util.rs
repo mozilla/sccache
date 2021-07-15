@@ -463,7 +463,7 @@ pub fn daemonize() -> Result<()> {
     use std::env;
     use std::mem;
 
-    match env::var("SCCACHE_NO_DAEMON") {
+    match env::var("CACHEPOT_NO_DAEMON") {
         Ok(ref val) if val == "1" => {}
         _ => {
             Daemonize::new().start().context("failed to daemonize")?;
@@ -480,7 +480,7 @@ pub fn daemonize() -> Result<()> {
     // rlimit to allow runtime dumps and we also install a signal handler for
     // segfaults which at least prints out what just happened.
     unsafe {
-        match env::var("SCCACHE_ALLOW_CORE_DUMPS") {
+        match env::var("CACHEPOT_ALLOW_CORE_DUMPS") {
             Ok(ref val) if val == "1" => {
                 let rlim = libc::rlimit {
                     rlim_cur: libc::RLIM_INFINITY,

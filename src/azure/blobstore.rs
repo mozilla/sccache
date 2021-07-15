@@ -312,7 +312,7 @@ mod test {
         let client_name = "devstoreaccount1";
         let client_key = Some("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".to_string());
 
-        let container_name = "sccache";
+        let container_name = "cachepot";
         let creds = AzureCredentials::new(
             &blob_endpoint,
             &client_name,

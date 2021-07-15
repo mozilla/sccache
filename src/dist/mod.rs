@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
 #[cfg(feature = "dist-server")]
@@ -737,5 +737,5 @@ pub trait Client: Send + Sync {
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
     ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
-    fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;
+    fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf>;
 }

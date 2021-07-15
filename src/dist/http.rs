@@ -834,7 +834,7 @@ mod server {
                 ))();
                 trace!("Res {}: {:?}", req_id, response);
                 response
-            }).map_err(|e| anyhow!(format!("Failed to start http server for sccache scheduler: {}", e)))?;
+            }).map_err(|e| anyhow!(format!("Failed to start http server for cachepot scheduler: {}", e)))?;
 
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
@@ -1009,7 +1009,7 @@ mod server {
                 ))();
                 trace!("Res {}: {:?}", req_id, response);
                 response
-            }, cert_pem, privkey_pem).map_err(|e| anyhow!(format!("Failed to start http server for sccache server: {}", e)))?;
+            }, cert_pem, privkey_pem).map_err(|e| anyhow!(format!("Failed to start http server for cachepot server: {}", e)))?;
 
             // This limit is rouille's default for `start_server_with_pool`, which
             // we would use, except that interface doesn't permit any sort of
@@ -1327,7 +1327,7 @@ mod client {
         fn rewrite_includes_only(&self) -> bool {
             self.rewrite_includes_only
         }
-        fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf> {
             match self.tc_cache.get_custom_toolchain(exe) {
                 Some(Ok((_, _, path))) => Some(path),
                 _ => None,

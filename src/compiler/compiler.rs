@@ -845,7 +845,7 @@ pub async fn write_temp_file(
 ) -> Result<(TempDir, PathBuf)> {
     let path = path.to_owned();
     pool.spawn_blocking(move || {
-        let dir = tempfile::Builder::new().prefix("sccache").tempdir()?;
+        let dir = tempfile::Builder::new().prefix("cachepot").tempdir()?;
         let src = dir.path().join(path);
         let mut file = File::create(&src)?;
         file.write_all(&contents)?;
@@ -1955,7 +1955,7 @@ mod test_dist {
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
         SubmitToolchainResult, Toolchain,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{atomic::AtomicBool, Arc};
 
     use crate::errors::*;
@@ -2002,7 +2002,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2056,7 +2056,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2125,7 +2125,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2202,7 +2202,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2299,7 +2299,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }

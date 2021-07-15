@@ -119,29 +119,29 @@ jobs:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
       # To cut down on the workflow execution time, we re-use pre-compiled binaries
-      # here and simply vendor the `sccache-dist` in the container via
-      # `SCCACHE_IN_DOCKERFILE: vendor` rather than build separately it via Dockerfile
-      - name: Download artifacts (sccache)
+      # here and simply vendor the `cachepot-dist` in the container via
+      # `CACHEPOT_IN_DOCKERFILE: vendor` rather than build separately it via Dockerfile
+      - name: Download artifacts (cachepot)
         uses: actions/download-artifact@v2
         with:
-          name: sccache-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
+          name: cachepot-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
           path: artifacts/
-      - name: Download artifacts (sccache-dist)
+      - name: Download artifacts (cachepot-dist)
         uses: actions/download-artifact@v2
         with:
-          name: sccache-dist-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
+          name: cachepot-dist-${{ steps.id.outputs.id }}-x86_64-unknown-linux-musl
           path: artifacts/
       - name: Set up pre-built artifact binaries
         run: |
-          cp artifacts/sccache ~/.cargo/bin/sccache
-          cp artifacts/sccache-dist systemd/sccache-dist
-          chmod +x ~/.cargo/bin/sccache systemd/sccache-dist
-          ls -la ~/.cargo/bin/sccache systemd/sccache-dist
+          cp artifacts/cachepot ~/.cargo/bin/cachepot
+          cp artifacts/cachepot-dist systemd/cachepot-dist
+          chmod +x ~/.cargo/bin/cachepot systemd/cachepot-dist
+          ls -la ~/.cargo/bin/cachepot systemd/cachepot-dist
 
-      - name: Set up local distributed sccache stack
+      - name: Set up local distributed cachepot stack
         env:
-          RUST_LOG: sccache=trace
-          SCCACHE_IN_DOCKERFILE: vendor
+          RUST_LOG: cachepot=trace
+          CACHEPOT_IN_DOCKERFILE: vendor
         run: docker-compose --file systemd/docker-compose.yaml up -d
       # TODO: Wait until the stack is up/ready
       - run: docker ps -a
@@ -152,39 +152,39 @@ jobs:
           repository: ${{ matrix.target_repository }}
           path: target_repo
 
-      - name: Double-check that sccache is not running
-        run: sccache --stop-server || true
-      - name: Start the local sccache server daemon
-        run: sccache --start-server
+      - name: Double-check that cachepot is not running
+        run: cachepot --stop-server || true
+      - name: Start the local cachepot server daemon
+        run: cachepot --start-server
         # This is the main server that's going to send the compilation requests
         # so logging is more important for this than for subsequent (client)
-        # sccache invocations
+        # cachepot invocations
         env:
-          SCCACHE_CONF: ${{ github.workspace }}/systemd/config/client.conf
-          SCCACHE_LOG: sccache=trace
-          SCCACHE_ERROR_LOG: ${{ github.workspace }}/sccache.err.log
-      - name: Verify that the local distributed sccache stack is running
-        run: test $(sccache --dist-status | jq ".SchedulerStatus[1].num_servers") -gt 0
+          CACHEPOT_CONF: ${{ github.workspace }}/systemd/config/client.conf
+          CACHEPOT_LOG: cachepot=trace
+          CACHEPOT_ERROR_LOG: ${{ github.workspace }}/cachepot.err.log
+      - name: Verify that the local distributed cachepot stack is running
+        run: test $(cachepot --dist-status | jq ".SchedulerStatus[1].num_servers") -gt 0
 
       - name: Run a smoke check build
         env:
-          RUSTC_WRAPPER: sccache
+          RUSTC_WRAPPER: cachepot
         working-directory: target_repo
         run: cargo check --verbose ${{ matrix.extra_args }}
-      - run: sccache --show-stats
+      - run: cachepot --show-stats
       - name: Verify that the distribution compilation *did* take place
         run:
-          test $(sccache --show-stats --stats-format json | jq ".stats.dist_compiles | to_entries[].value") -gt 0
+          test $(cachepot --show-stats --stats-format json | jq ".stats.dist_compiles | to_entries[].value") -gt 0
 
       - name: Dump Compose logs
         run: docker-compose --file systemd/docker-compose.yaml logs
         if: failure()
-      - name: Dump local sccache daemon server logs
-        run: cat ${{ github.workspace }}/sccache.err.log
+      - name: Dump local cachepot daemon server logs
+        run: cat ${{ github.workspace }}/cachepot.err.log
         if: failure()
 
   build:
-    name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
+    name: build ${{ matrix.binary || 'cachepot' }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -194,7 +194,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             extra_args: --features="dist-server"
           - os: ubuntu-20.04
-            binary: sccache-dist
+            binary: cachepot-dist
             extra_args: --features="dist-server"
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
@@ -248,7 +248,7 @@ jobs:
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
 
       - name: Build
-        run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'cachepot' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
@@ -267,8 +267,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v2
         with:
-          name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
+          name: ${{ matrix.binary || 'cachepot' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'cachepot' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
 
   release:
@@ -285,7 +285,7 @@ jobs:
 
       - name: Create release assets
         run: |
-          for d in sccache-*; do
+          for d in cachepot-*; do
             cp README.md LICENSE $d/
             tar -zcvf $d.tar.gz $d
             echo -n $(shasum -ba 256 $d.tar.gz | cut -d " " -f 1) > $d.tar.gz.sha256
@@ -294,6 +294,6 @@ jobs:
       - name: Create release
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          hub release create -m $tag_name $tag_name $(for f in sccache-*.tar.gz*; do echo "-a $f"; done)
+          hub release create -m $tag_name $tag_name $(for f in cachepot-*.tar.gz*; do echo "-a $f"; done)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

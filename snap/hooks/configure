@@ -4,17 +4,17 @@ set -xe
 CONFIG_FILE=$SNAP_DATA/config
 
 declare -A OPTIONS DEFAULTS VALUES
-OPTIONS[port]=SCCACHE_PORT
-OPTIONS[log-level]=SCCACHE_LOG_LEVEL
-OPTIONS[cache-dir]=SCCACHE_DIR
-OPTIONS[s3.bucket]=SCCACHE_BUCKET
-OPTIONS[s3.endpoint]=SCCACHE_ENDPOINT
+OPTIONS[port]=CACHEPOT_PORT
+OPTIONS[log-level]=CACHEPOT_LOG_LEVEL
+OPTIONS[cache-dir]=CACHEPOT_DIR
+OPTIONS[s3.bucket]=CACHEPOT_BUCKET
+OPTIONS[s3.endpoint]=CACHEPOT_ENDPOINT
 OPTIONS[s3.key-id]=AWS_ACCESS_KEY_ID
 OPTIONS[s3.secret]=AWS_SECRET_ACCESS_KEY
-OPTIONS[redis.url]=SCCACHE_REDIS
-OPTIONS[gcs.bucket]=SCCACHE_GCS_BUCKET
-OPTIONS[gcs.key-path]=SCCACHE_GCS_KEY_PATH
-OPTIONS[gcs.rw-mode]=SCCACHE_GCS_RW_MODE
+OPTIONS[redis.url]=CACHEPOT_REDIS
+OPTIONS[gcs.bucket]=CACHEPOT_GCS_BUCKET
+OPTIONS[gcs.key-path]=CACHEPOT_GCS_KEY_PATH
+OPTIONS[gcs.rw-mode]=CACHEPOT_GCS_RW_MODE
 
 DEFAULTS[port]=4226
 DEFAULTS[cache-dir]=$SNAP_COMMON/cache
@@ -50,4 +50,4 @@ done
 mv -f ${CONFIG_FILE}.new $CONFIG_FILE || /bin/true
 
 # Restart the server to pick up new values
-systemctl restart snap.sccache.sccache-server.service
+systemctl restart snap.cachepot.cachepot-server.service

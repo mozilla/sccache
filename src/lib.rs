@@ -68,7 +68,7 @@ pub mod util;
 
 use std::env;
 
-const LOGGING_ENV: &str = "SCCACHE_LOG";
+const LOGGING_ENV: &str = "CACHEPOT_LOG";
 
 pub fn main() {
     init_logging();
@@ -76,17 +76,17 @@ pub fn main() {
         Ok(cmd) => match commands::run_command(cmd) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("sccache: error: {}", e);
+                eprintln!("cachepot: error: {}", e);
                 for e in e.chain().skip(1) {
-                    eprintln!("sccache: caused by: {}", e);
+                    eprintln!("cachepot: caused by: {}", e);
                 }
                 2
             }
         },
         Err(e) => {
-            println!("sccache: {}", e);
+            println!("cachepot: {}", e);
             for e in e.chain().skip(1) {
-                println!("sccache: caused by: {}", e);
+                println!("cachepot: caused by: {}", e);
             }
             cmdline::get_app().print_help().unwrap();
             println!();

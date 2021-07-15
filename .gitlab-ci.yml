@@ -1,6 +1,6 @@
 # .gitlab-ci.yml
 #
-# sccache
+# cachepot
 
 stages:
   - check
@@ -15,7 +15,7 @@ variables:
   RUST_BACKTRACE:                  1
   # this var is changed to "-:staging" when the CI image gets rebuilt
   # read more https://github.com/paritytech/scripts/pull/244
-  CI_IMAGE:                        "paritytech/sccache-ci-ubuntu:staging" # temporary override
+  CI_IMAGE:                        "paritytech/cachepot-ci:staging" # temporary override
 
 workflow:
   rules:
@@ -114,11 +114,11 @@ build:
   variables:
     FEATURES:                     "openssl/vendored,dist-server"
   script:
-    - cargo +stable build --locked --release --verbose --bin sccache-dist --target x86_64-unknown-linux-musl --features=${FEATURES}
+    - cargo +stable build --locked --release --verbose --bin cachepot-dist --target x86_64-unknown-linux-musl --features=${FEATURES}
     # collect artifacts
-    - mkdir -p ./artifacts/sccache/
-    - mv ./target/x86_64-unknown-linux-musl/release/sccache-dist ./artifacts/sccache/.
-    - mv ./systemd/Dockerfile.vendor.sccache-dist ./artifacts/sccache/.
+    - mkdir -p ./artifacts/cachepot/
+    - mv ./target/x86_64-unknown-linux-musl/release/cachepot-dist ./artifacts/cachepot/.
+    - mv ./systemd/Dockerfile.vendor.cachepot-dist ./artifacts/cachepot/.
 
 
 .build-push-docker-image:          &build-push-docker-image
@@ -126,10 +126,10 @@ build:
   image:                           quay.io/buildah/stable
   variables:                       &docker-build-vars
     GIT_STRATEGY:                  none
-    DOCKERFILE:                    Dockerfile.vendor.sccache-dist
-    IMAGE_NAME:                    docker.io/paritytech/sccache-dist
+    DOCKERFILE:                    Dockerfile.vendor.cachepot-dist
+    IMAGE_NAME:                    docker.io/paritytech/cachepot-dist
   before_script:
-    - cd ./artifacts/sccache/
+    - cd ./artifacts/cachepot/
     - VERSION=${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}
   script:
     - test "$Docker_Hub_User_Parity" -a "$Docker_Hub_Pass_Parity" ||
@@ -148,7 +148,7 @@ build:
   after_script:
     - buildah logout --all
 
-publish-sccache-dist:
+publish-cachepot-dist:
   stage:                           publish
   <<:                              *publish-refs
   <<:                              *build-push-docker-image

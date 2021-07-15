@@ -75,7 +75,7 @@ elif [ "$1" = test ]; then
     #NOCAPTURE=--nocapture
     TESTTHREADS="--test-threads 1"
 
-    # Since integration tests start up the sccache server they must be run sequentially. This only matters
+    # Since integration tests start up the cachepot server they must be run sequentially. This only matters
     # if you have multiple test functions in one file.
 
     set +x

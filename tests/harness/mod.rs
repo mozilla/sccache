@@ -1,8 +1,8 @@
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-use sccache::config::HTTPUrl;
-use sccache::dist::{self, SchedulerStatusResult, ServerId};
-use sccache::server::ServerInfo;
-use sccache::util::fs;
+use cachepot::config::HTTPUrl;
+use cachepot::dist::{self, SchedulerStatusResult, ServerId};
+use cachepot::server::ServerInfo;
+use cachepot::util::fs;
 use std::env;
 use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
@@ -25,16 +25,16 @@ use predicates::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
 
-const CONTAINER_NAME_PREFIX: &str = "sccache_dist_test";
-const DIST_IMAGE: &str = "sccache_dist_test_image";
-const DIST_DOCKERFILE: &str = include_str!("Dockerfile.sccache-dist");
+const CONTAINER_NAME_PREFIX: &str = "cachepot_dist_test";
+const DIST_IMAGE: &str = "cachepot_dist_test_image";
+const DIST_DOCKERFILE: &str = include_str!("Dockerfile.cachepot-dist");
 const DIST_IMAGE_BWRAP_PATH: &str = "/bwrap";
 const MAX_STARTUP_WAIT: Duration = Duration::from_secs(5);
 
 const DIST_SERVER_TOKEN: &str = "THIS IS THE TEST TOKEN";
 
-const CONFIGS_CONTAINER_PATH: &str = "/sccache-bits";
-const BUILD_DIR_CONTAINER_PATH: &str = "/sccache-bits/build-dir";
+const CONFIGS_CONTAINER_PATH: &str = "/cachepot-bits";
+const BUILD_DIR_CONTAINER_PATH: &str = "/cachepot-bits/build-dir";
 const SCHEDULER_PORT: u16 = 10500;
 const SERVER_PORT: u16 = 12345; // arbitrary
 
@@ -43,18 +43,19 @@ const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    sccache_command()
+    trace!("cachepot --start-server");
+    cachepot_command()
         .arg("--start-server")
-        .env("SCCACHE_CONF", cfg_path)
-        .env("SCCACHE_CACHED_CONF", cached_cfg_path)
+        .env("CACHEPOT_CONF", cfg_path)
+        .env("CACHEPOT_CACHED_CONF", cached_cfg_path)
         .status()
         .unwrap()
         .success();
 }
 pub fn stop_local_daemon() {
-    trace!("sccache --stop-server");
+    trace!("cachepot --stop-server");
     drop(
-        sccache_command()
+        cachepot_command()
             .arg("--stop-server")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -63,7 +64,7 @@ pub fn stop_local_daemon() {
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
-    sccache_command()
+    cachepot_command()
         .args(&["--show-stats", "--stats-format=json"])
         .assert()
         .success()
@@ -76,9 +77,9 @@ pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
 
 #[allow(unused)]
 pub fn zero_stats() {
-    trace!("sccache --zero-stats");
+    trace!("cachepot --zero-stats");
     drop(
-        sccache_command()
+        cachepot_command()
             .arg("--zero-stats")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -99,12 +100,12 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
 }
 
 // Prune any environment variables that could adversely affect test execution.
-pub fn sccache_command() -> Command {
-    use sccache::util::OsStrExt;
+pub fn cachepot_command() -> Command {
+    use cachepot::util::OsStrExt;
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin(env!("CARGO_PKG_NAME")));
     for (var, _) in env::vars_os() {
-        if var.starts_with("SCCACHE_") {
+        if var.starts_with("CACHEPOT_") {
             cmd.env_remove(var);
         }
     }
@@ -112,22 +113,22 @@ pub fn sccache_command() -> Command {
 }
 
 #[cfg(feature = "dist-server")]
-pub fn sccache_dist_path() -> PathBuf {
-    assert_cmd::cargo::cargo_bin("sccache-dist")
+pub fn cachepot_dist_path() -> PathBuf {
+    assert_cmd::cargo::cargo_bin("cachepot-dist")
 }
 
-pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
+pub fn cachepot_client_cfg(tmpdir: &Path) -> cachepot::config::FileConfig {
     let cache_relpath = "client-cache";
     let dist_cache_relpath = "client-dist-cache";
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
-    let disk_cache = sccache::config::DiskCacheConfig {
+    let disk_cache = cachepot::config::DiskCacheConfig {
         dir: tmpdir.join(cache_relpath),
         ..Default::default()
     };
-    sccache::config::FileConfig {
-        cache: sccache::config::CacheConfigs {
+    cachepot::config::FileConfig {
+        cache: cachepot::config::CacheConfigs {
             azure: None,
             disk: Some(disk_cache),
             gcs: None,
@@ -135,7 +136,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             redis: None,
             s3: None,
         },
-        dist: sccache::config::DistConfig {
+        dist: cachepot::config::DistConfig {
             auth: Default::default(), // dangerously_insecure
             scheduler_url: None,
             cache_dir: tmpdir.join(dist_cache_relpath),
@@ -146,40 +147,40 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
     }
 }
 #[cfg(feature = "dist-server")]
-fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
-    sccache::config::scheduler::Config {
+fn cachepot_scheduler_cfg() -> cachepot::config::scheduler::Config {
+    cachepot::config::scheduler::Config {
         public_addr: SocketAddr::from(([0, 0, 0, 0], SCHEDULER_PORT)),
-        client_auth: sccache::config::scheduler::ClientAuth::Insecure,
-        server_auth: sccache::config::scheduler::ServerAuth::Token {
+        client_auth: cachepot::config::scheduler::ClientAuth::Insecure,
+        server_auth: cachepot::config::scheduler::ServerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
         },
     }
 }
 #[cfg(feature = "dist-server")]
-fn sccache_server_cfg(
+fn cachepot_server_cfg(
     tmpdir: &Path,
     scheduler_url: HTTPUrl,
     server_ip: IpAddr,
-) -> sccache::config::server::Config {
+) -> cachepot::config::server::Config {
     let relpath = "server-cache";
     fs::create_dir(tmpdir.join(relpath)).unwrap();
 
-    sccache::config::server::Config {
-        builder: sccache::config::server::BuilderType::Overlay {
+    cachepot::config::server::Config {
+        builder: cachepot::config::server::BuilderType::Overlay {
             build_dir: BUILD_DIR_CONTAINER_PATH.into(),
             bwrap_path: DIST_IMAGE_BWRAP_PATH.into(),
         },
         cache_dir: Path::new(CONFIGS_CONTAINER_PATH).join(relpath),
         public_addr: SocketAddr::new(server_ip, SERVER_PORT),
         scheduler_url,
-        scheduler_auth: sccache::config::server::SchedulerAuth::Token {
+        scheduler_auth: cachepot::config::server::SchedulerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
         },
         toolchain_cache_size: TC_CACHE_SIZE,
     }
 }
 
-// TODO: this is copied from the sccache-dist binary - it's not clear where would be a better place to put the
+// TODO: this is copied from the cachepot-dist binary - it's not clear where would be a better place to put the
 // code so that it can be included here
 #[cfg(feature = "dist-server")]
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
@@ -194,7 +195,7 @@ pub enum ServerHandle {
 
 #[cfg(feature = "dist-server")]
 pub struct DistSystem {
-    sccache_dist: PathBuf,
+    cachepot_dist: PathBuf,
     tmpdir: PathBuf,
 
     scheduler_name: Option<String>,
@@ -204,7 +205,7 @@ pub struct DistSystem {
 
 #[cfg(feature = "dist-server")]
 impl DistSystem {
-    pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
+    pub fn new(cachepot_dist: &Path, tmpdir: &Path) -> Self {
         // Make sure the docker image is available, building it if necessary
         let mut child = Command::new("docker")
             .args(&["build", "-q", "-t", DIST_IMAGE, "-"])
@@ -226,7 +227,7 @@ impl DistSystem {
         fs::create_dir(&tmpdir).unwrap();
 
         Self {
-            sccache_dist: sccache_dist.to_owned(),
+            cachepot_dist: cachepot_dist.to_owned(),
             tmpdir,
 
             scheduler_name: None,
@@ -240,7 +241,7 @@ impl DistSystem {
         let scheduler_cfg_path = self.tmpdir.join(scheduler_cfg_relpath);
         let scheduler_cfg_container_path =
             Path::new(CONFIGS_CONTAINER_PATH).join(scheduler_cfg_relpath);
-        let scheduler_cfg = sccache_scheduler_cfg();
+        let scheduler_cfg = cachepot_scheduler_cfg();
         fs::File::create(&scheduler_cfg_path)
             .unwrap()
             .write_all(&serde_json::to_vec(&scheduler_cfg).unwrap())
@@ -254,13 +255,13 @@ impl DistSystem {
                 "--name",
                 &scheduler_name,
                 "-e",
-                "SCCACHE_NO_DAEMON=1",
+                "CACHEPOT_NO_DAEMON=1",
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "RUST_LOG=cachepot=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/cachepot-dist", self.cachepot_dist.to_str().unwrap()),
                 "-v",
                 &format!(
                     "{}:{}",
@@ -274,7 +275,7 @@ impl DistSystem {
                 &format!(
                     r#"
                     set -o errexit &&
-                    exec /sccache-dist scheduler --config {cfg}
+                    exec /cachepot-dist scheduler --config {cfg}
                 "#,
                     cfg = scheduler_cfg_container_path.to_str().unwrap()
                 ),
@@ -322,11 +323,11 @@ impl DistSystem {
                 "--name",
                 &server_name,
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "RUST_LOG=cachepot=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
-                &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
+                &format!("{}:/cachepot-dist", self.cachepot_dist.to_str().unwrap()),
                 "-v",
                 &format!(
                     "{}:{}",
@@ -341,7 +342,7 @@ impl DistSystem {
                     r#"
                     set -o errexit &&
                     while [ ! -f {cfg}.ready ]; do sleep 0.1; done &&
-                    exec /sccache-dist server --config {cfg}
+                    exec /cachepot-dist server --config {cfg}
                 "#,
                     cfg = server_cfg_container_path.to_str().unwrap()
                 ),
@@ -353,7 +354,7 @@ impl DistSystem {
         check_output(&output);
 
         let server_ip = self.container_ip(&server_name);
-        let server_cfg = sccache_server_cfg(&self.tmpdir, self.scheduler_url(), server_ip);
+        let server_cfg = cachepot_server_cfg(&self.tmpdir, self.scheduler_url(), server_ip);
         fs::File::create(&server_cfg_path)
             .unwrap()
             .write_all(&serde_json::to_vec(&server_cfg).unwrap())
@@ -390,7 +391,7 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("RUST_LOG", "sccache=trace");
+                env::set_var("RUST_LOG", "cachepot=trace");
                 env_logger::try_init().unwrap();
                 void::unreachable(server.start().unwrap())
             }
