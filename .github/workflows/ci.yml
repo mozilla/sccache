@@ -297,3 +297,54 @@ jobs:
           hub release create -m $tag_name $tag_name $(for f in cachepot-*.tar.gz*; do echo "-a $f"; done)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+  deploy-gh-pages:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout local repo
+      uses: actions/checkout@v2
+
+    - name: Clone cachepot repo
+      uses: actions/checkout@v2
+      with:
+        repository: paritytech/cachepot
+        path: .tmp_cachepot
+
+    - name: Setup mdbook
+      uses: peaceiris/actions-mdbook@v1
+      with:
+        mdbook-version: 'latest'
+
+    - name: Setup mdbook-linkcheck
+      run: |
+        cargo install mdbook-linkcheck
+
+    - name: Use Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Setup mdbook-graphviz
+      run: |
+        sudo apt install -y graphviz
+        cargo install mdbook-graphviz
+
+    - name: Setup mdbook-mermaid
+      run: |
+        cargo install mdbook-mermaid
+
+    - name: Setup mdbook-linkcheck
+      run: |
+        cargo install mdbook-linkcheck
+
+    - name: Build book.
+      run: |
+        mdbook build .tmp_cachepot/docs
+
+    - name: Deploy
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: .tmp_cachepot/docs/book/html/
