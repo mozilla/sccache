@@ -40,31 +40,13 @@ Table of Contents (ToC)
 
 ## Installation
 
-There are prebuilt x86-64 binaries available for Windows, Linux (a portable binary compiled against musl), and macOS [on the releases page](https://github.com/paritytech/cachepot/releases/latest). Several package managers also include cachepot packages, you can install the latest release from source using cargo, or build directly from a source checkout.
-
-### macOS
-
-On macOS cachepot can be installed via [Homebrew](https://brew.sh/):
-
-```bash
-brew install cachepot
-```
-
-### Windows
-
-On Windows, cachepot can be installed via [scoop](https://scoop.sh/):
-
-```
-scoop install cachepot
-```
-
-### Via cargo
+There are prebuilt x86-64 binaries available for Windows, Linux (a portable binary compiled against musl), and macOS [on the releases page](https://github.com/paritytech/cachepot/releases/latest).
 
 If you have a Rust toolchain installed you can install cachepot using cargo. **Note that this will compile cachepot from source which is fairly resource-intensive. For CI purposes you should use prebuilt binary packages.**
 
 
 ```bash
-cargo install cachepot
+cargo install --git https://github.com/paritytech/cachepot
 ```
 
 ---
