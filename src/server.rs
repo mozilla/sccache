@@ -137,7 +137,7 @@ fn get_signal(_status: ExitStatus) -> i32 {
 pub struct DistClientContainer {
     // The actual dist client state
     #[cfg(feature = "dist-client")]
-    state: Mutex<DistClientState>,
+    state: futures::lock::Mutex<DistClientState>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -179,13 +179,13 @@ impl DistClientContainer {
         Self {}
     }
 
-    pub fn reset_state(&self) {}
+    pub async fn reset_state(&self) {}
 
     pub async fn get_status(&self) -> DistInfo {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
-    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+    async fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
     }
 }
@@ -203,21 +203,21 @@ impl DistClientContainer {
             rewrite_includes_only: config.dist.rewrite_includes_only,
         };
         let state = Self::create_state(config);
+        let state = pool.block_on(state);
         Self {
-            state: Mutex::new(state),
+            state: futures::lock::Mutex::new(state),
         }
     }
 
     pub fn new_disabled() -> Self {
         Self {
-            state: Mutex::new(DistClientState::Disabled),
+            state: futures::lock::Mutex::new(DistClientState::Disabled),
         }
     }
 
-    pub fn reset_state(&self) {
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
+    pub async fn reset_state(&self) {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
         match mem::replace(state, DistClientState::Disabled) {
             DistClientState::Some(cfg, _)
             | DistClientState::FailWithMessage(cfg, _)
@@ -230,48 +230,39 @@ impl DistClientContainer {
         }
     }
 
-    pub fn get_status(&self) -> impl Future<Output = DistInfo> {
-        // This function can't be wholly async because we can't hold mutex guard
-        // across the yield point - instead, either return an immediately ready
-        // future or perform async query with the client cloned beforehand.
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
+    pub async fn get_status(&self) -> DistInfo {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
         let (client, scheduler_url) = match state {
-            DistClientState::Disabled => {
-                return Either::Left(future::ready(DistInfo::Disabled("disabled".to_string())))
-            }
+            DistClientState::Disabled => return DistInfo::Disabled("disabled".to_string()),
             DistClientState::FailWithMessage(cfg, _) => {
-                return Either::Left(future::ready(DistInfo::NotConnected(
+                return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, auth not configured".to_string(),
-                )))
+                )
             }
             DistClientState::RetryCreateAt(cfg, _) => {
-                return Either::Left(future::ready(DistInfo::NotConnected(
+                return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, not connected, will retry".to_string(),
-                )))
+                )
             }
             DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
         };
 
-        Either::Right(Box::pin(async move {
-            match client.do_get_status().await {
-                Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
-                Err(_) => DistInfo::NotConnected(
-                    scheduler_url.clone(),
-                    "could not communicate with scheduler".to_string(),
-                ),
-            }
-        }))
+        match client.do_get_status().await {
+            Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
+            Err(_) => DistInfo::NotConnected(
+                scheduler_url.clone(),
+                "could not communicate with scheduler".to_string(),
+            ),
+        }
     }
 
-    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
-        Self::maybe_recreate_state(state);
+    async fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        Self::maybe_recreate_state(state).await;
         let res = match state {
             DistClientState::Some(_, dc) => Ok(Some(dc.clone())),
             DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => Ok(None),
@@ -290,7 +281,7 @@ impl DistClientContainer {
         res
     }
 
-    fn maybe_recreate_state(state: &mut DistClientState) {
+    async fn maybe_recreate_state(state: &mut DistClientState) {
         if let DistClientState::RetryCreateAt(_, instant) = *state {
             if instant > Instant::now() {
                 return;
@@ -300,12 +291,12 @@ impl DistClientContainer {
                 _ => unreachable!(),
             };
             info!("Attempting to recreate the dist client");
-            *state = Self::create_state(*config)
+            *state = Self::create_state(*config).await
         }
     }
 
     // Attempt to recreate the dist client
-    fn create_state(config: DistClientConfig) -> DistClientState {
+    async fn create_state(config: DistClientConfig) -> DistClientState {
         macro_rules! try_or_retry_later {
             ($v:expr) => {{
                 match $v {
@@ -363,16 +354,7 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                let status = {
-                    match Handle::try_current() {
-                        Ok(handle) => {
-                            let _ = handle.enter();
-                            futures::executor::block_on(dist_client.do_get_status())
-                        }
-                        Err(_) => config.pool.block_on(dist_client.do_get_status()),
-                    }
-                };
-                match status {
+                match dist_client.do_get_status().await {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -785,7 +767,6 @@ where
 
 use futures::future::Either;
 use futures::TryStreamExt;
-use tokio::runtime::Handle;
 
 impl<C> SccacheService<C>
 where
@@ -947,7 +928,7 @@ where
             }
         };
 
-        let dist_info = match me1.dist_client.get_client() {
+        let dist_info = match me1.dist_client.get_client().await {
             Ok(Some(ref client)) => {
                 if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
                     match metadata(&archive)
@@ -1122,12 +1103,12 @@ where
         let color_mode = hasher.color_mode();
         let me = self.clone();
         let kind = compiler.kind();
-        let dist_client = self.dist_client.get_client();
         let creator = self.creator.clone();
         let storage = self.storage.clone();
         let pool = self.rt.clone();
 
         let task = async move {
+            let dist_client = me.dist_client.get_client().await;
             let result = match dist_client {
                 Ok(client) => {
                     hasher
@@ -1224,7 +1205,7 @@ where
                         }
                         Err(err) => match err.downcast::<HttpClientError>() {
                             Ok(HttpClientError(msg)) => {
-                                me.dist_client.reset_state();
+                                me.dist_client.reset_state().await;
                                 let errmsg =
                                     format!("[{:?}] http error status: {}", out_pretty, msg);
                                 error!("{}", errmsg);
