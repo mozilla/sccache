@@ -118,6 +118,7 @@ impl CCompilerImpl for NVCC {
         //NVCC only supports `-E` when it comes after preprocessor
         //and common flags.
         cmd.arg("-E")
+            .arg("-D__FILE__=\"empty\"")
             .arg("-Xcompiler=-P")
             .env_clear()
             .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
