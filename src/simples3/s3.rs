@@ -15,7 +15,7 @@ use reqwest::r#async::{Client, Request};
 use sha1::Sha1;
 
 use crate::errors::*;
-use crate::util::HeadersExt;
+use crate::util::{DateTimeExt, HeadersExt};
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
@@ -88,7 +88,7 @@ impl Bucket {
                 canonical_headers
                     .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
             }
-            let date = chrono::offset::Utc::now().to_rfc2822();
+            let date = chrono::offset::Utc::now().to_rfc7231();
             let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
             request.headers_mut().insert(
                 "Date",
@@ -145,7 +145,7 @@ impl Bucket {
         let mut request = Request::new(Method::PUT, url.parse().unwrap());
 
         let content_type = "application/octet-stream";
-        let date = chrono::offset::Utc::now().to_rfc2822();
+        let date = chrono::offset::Utc::now().to_rfc7231();
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!

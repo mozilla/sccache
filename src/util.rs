@@ -456,6 +456,19 @@ mod http_extension {
     }
 }
 
+pub trait DateTimeExt {
+    fn to_rfc7231(&self) -> String;
+}
+
+impl<Tz: chrono::TimeZone> DateTimeExt for chrono::DateTime<Tz>
+    where
+        Tz::Offset: core::fmt::Display,
+{
+    fn to_rfc7231(&self) -> String {
+        self.naive_utc().format("%a, %d %b %Y %T GMT").to_string()
+    }
+}
+
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
