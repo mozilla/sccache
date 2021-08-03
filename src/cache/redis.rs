@@ -20,19 +20,25 @@ use redis::{cmd, Client, InfoDict};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
+use url::Url;
 
 /// A cache that stores entries in a Redis.
 #[derive(Clone)]
 pub struct RedisCache {
-    url: String,
+    display_url: String, // for display only: password (if any) will be masked
     client: Client,
 }
 
 impl RedisCache {
     /// Create a new `RedisCache`.
     pub fn new(url: &str) -> Result<RedisCache> {
+        let mut parsed = Url::parse(url)?;
+        // If the URL has a password set, mask it when displaying.
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("*****"));
+        }
         Ok(RedisCache {
-            url: url.to_owned(),
+            display_url: parsed.into_string(),
             client: Client::open(url)?,
         })
     }
@@ -67,7 +73,7 @@ impl Storage for RedisCache {
 
     /// Returns the cache location.
     fn location(&self) -> String {
-        format!("Redis: {}", self.url)
+        format!("Redis: {}", self.display_url)
     }
 
     /// Returns the current cache size. This value is aquired via
