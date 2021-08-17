@@ -1845,7 +1845,7 @@ LLVM version: 6.0",
         assert_eq!(b"", res.stdout.as_slice());
         assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
         // Errors in preprocessing should remove the object file.
-        assert_eq!(fs::metadata(&obj).is_ok(), false);
+        assert!(!fs::metadata(&obj).is_ok());
     }
 
     #[test]
@@ -1993,7 +1993,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2042,7 +2042,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2107,7 +2107,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2180,7 +2180,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }
@@ -2274,7 +2274,7 @@ mod test_dist {
         fn rewrite_includes_only(&self) -> bool {
             false
         }
-        fn get_custom_toolchain(&self, _exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, _exe: &Path) -> Option<PathBuf> {
             None
         }
     }

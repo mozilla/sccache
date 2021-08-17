@@ -1467,6 +1467,8 @@ where
                                 executable,
                                 host,
                                 sysroot,
+                                #[cfg(feature = "dist-client")]
+                                rlib_dep_reader,
                                 arguments,
                                 inputs,
                                 outputs,
@@ -1476,8 +1478,6 @@ where
                                 dep_info,
                                 cwd,
                                 env_vars,
-                                #[cfg(feature = "dist-client")]
-                                rlib_dep_reader,
                             }),
                             weak_toolchain_key,
                         }

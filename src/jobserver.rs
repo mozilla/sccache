@@ -51,7 +51,7 @@ impl Client {
             (Some(Arc::new(helper)), Some(tx))
         };
 
-        Client { inner, helper, tx }
+        Client { helper, tx, inner }
     }
 
     /// Configures this jobserver to be inherited by the specified command
