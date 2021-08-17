@@ -2818,7 +2818,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
-            parse_dep_info(&deps, "foo/")
+            parse_dep_info(deps, "foo/")
         );
 
         assert_eq!(
@@ -2827,7 +2827,7 @@ bar.rs:
                 "c:/foo/bar/bar.rs",
                 "c:/foo/bar/baz.rs"
             ],
-            parse_dep_info(&deps, "c:/foo/bar/")
+            parse_dep_info(deps, "c:/foo/bar/")
         );
     }
 
@@ -2842,7 +2842,7 @@ c:/foo/bar.rs:
 ";
         assert_eq!(
             pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
-            parse_dep_info(&deps, "c:/bar/")
+            parse_dep_info(deps, "c:/bar/")
         );
     }
 
