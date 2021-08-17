@@ -687,7 +687,7 @@ mod test {
         let mut path_transformer = dist::PathTransformer::default();
         let (command, _, cacheable) = generate_compile_commands(
             &mut path_transformer,
-            &compiler,
+            compiler,
             &parsed_args,
             f.tempdir.path(),
             &[],

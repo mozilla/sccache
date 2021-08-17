@@ -16,10 +16,10 @@ use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
-use crate::compiler::gcc::GCC;
+use crate::compiler::gcc::Gcc;
 use crate::compiler::msvc;
-use crate::compiler::msvc::MSVC;
-use crate::compiler::nvcc::NVCC;
+use crate::compiler::msvc::Msvc;
+use crate::compiler::nvcc::Nvcc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::dist;
 #[cfg(feature = "dist-client")]
@@ -91,7 +91,7 @@ pub enum CompilerKind {
 impl CompilerKind {
     pub fn lang_kind(&self) -> String {
         match self {
-            CompilerKind::C(CCompilerKind::NVCC) => "CUDA",
+            CompilerKind::C(CCompilerKind::Nvcc) => "CUDA",
             CompilerKind::C(_) => "C/C++",
             CompilerKind::Rust => "Rust",
         }
@@ -1084,7 +1084,7 @@ __VERSION__
                     debug!("Found {}", kind);
                     return Box::new(
                         CCompiler::new(
-                            GCC {
+                            Gcc {
                                 gplusplus: kind == "g++",
                             },
                             executable,
@@ -1107,7 +1107,7 @@ __VERSION__
                     return Box::new(prefix.and_then(move |prefix| {
                         trace!("showIncludes prefix: '{}'", prefix);
                         CCompiler::new(
-                            MSVC {
+                            Msvc {
                                 includes_prefix: prefix,
                                 is_clang,
                             },
@@ -1121,7 +1121,7 @@ __VERSION__
                 "nvcc" => {
                     debug!("Found NVCC");
                     return Box::new(
-                        CCompiler::new(NVCC, executable, version, &pool)
+                        CCompiler::new(Nvcc, executable, version, &pool)
                             .map(|c| Box::new(c) as Box<dyn Compiler<T>>),
                     );
                 }
@@ -1181,7 +1181,7 @@ mod test {
             .wait()
             .unwrap()
             .0;
-        assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::Gcc), c.kind());
     }
 
     #[test]
@@ -1221,7 +1221,7 @@ mod test {
             .wait()
             .unwrap()
             .0;
-        assert_eq!(CompilerKind::C(CCompilerKind::MSVC), c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::Msvc), c.kind());
     }
 
     #[test]
@@ -1234,7 +1234,7 @@ mod test {
             .wait()
             .unwrap()
             .0;
-        assert_eq!(CompilerKind::C(CCompilerKind::NVCC), c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::Nvcc), c.kind());
     }
 
     #[test]
@@ -1380,7 +1380,7 @@ LLVM version: 6.0",
             .unwrap()
             .0;
         // digest of an empty file.
-        assert_eq!(CompilerKind::C(CCompilerKind::GCC), c.kind());
+        assert_eq!(CompilerKind::C(CCompilerKind::Gcc), c.kind());
     }
 
     #[test]
