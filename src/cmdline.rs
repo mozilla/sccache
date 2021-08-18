@@ -22,6 +22,7 @@ use which::which_in;
 arg_enum! {
     #[derive(Debug)]
     #[allow(non_camel_case_types)]
+    #[derive(PartialEq)]
     pub enum StatsFormat {
         text,
         json
@@ -29,6 +30,7 @@ arg_enum! {
 }
 
 /// A specific command to run.
+#[derive(PartialEq)]
 pub enum Command {
     /// Show cache statistics and exit.
     ShowStats(StatsFormat),
