@@ -337,7 +337,7 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
                                 .ok()
                                 .map(ServiceAccountInfo::AccountKey)
                         } else if let Some(ref url) = *url {
-                            Some(ServiceAccountInfo::URL(url.clone()))
+                            Some(ServiceAccountInfo::Url(url.clone()))
                         } else {
                             warn!(
                             "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."
@@ -365,7 +365,7 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
             CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
                 debug!("Trying Memcached({})", url);
                 #[cfg(feature = "memcached")]
-                match MemcachedCache::new(&url, pool) {
+                match MemcachedCache::new(url, pool) {
                     Ok(s) => {
                         trace!("Using Memcached: {}", url);
                         return Arc::new(s);
@@ -376,7 +376,7 @@ pub fn storage_from_config(config: &Config, pool: &ThreadPool) -> Arc<dyn Storag
             CacheType::Redis(config::RedisCacheConfig { ref url }) => {
                 debug!("Trying Redis({})", url);
                 #[cfg(feature = "redis")]
-                match RedisCache::new(&url) {
+                match RedisCache::new(url) {
                     Ok(s) => {
                         trace!("Using Redis: {}", url);
                         return Arc::new(s);
