@@ -737,5 +737,5 @@ pub trait Client {
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
     ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
-    fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;
+    fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf>;
 }

@@ -102,7 +102,7 @@ impl Storage for S3Cache {
     }
 
     fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
-        let key = self.normalize_key(&key);
+        let key = self.normalize_key(key);
         let start = Instant::now();
         let data = match entry.finish() {
             Ok(data) => data,

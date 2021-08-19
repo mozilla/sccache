@@ -644,7 +644,7 @@ impl CachedConfig {
         let cached_file_config = CACHED_CONFIG.lock().unwrap();
         let cached_file_config = cached_file_config.as_ref().unwrap();
 
-        f(&cached_file_config)
+        f(cached_file_config)
     }
     pub fn with_mut<F: FnOnce(&mut CachedFileConfig)>(&self, f: F) -> Result<()> {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
@@ -678,7 +678,7 @@ impl CachedConfig {
                 )
             })?
         }
-        try_read_config_file(&file_conf_path)
+        try_read_config_file(file_conf_path)
             .context("Failed to load cached config file")?
             .with_context(|| format!("Failed to load from {}", file_conf_path.display()))
     }

@@ -266,7 +266,7 @@ fn compute_auth_header(
         format!(
             "SharedKey {}:{}",
             creds.azure_account_name(),
-            signature(&string_to_sign, &account_key)
+            signature(&string_to_sign, account_key)
         )
     })
 }
@@ -332,8 +332,8 @@ mod test {
 
         let container_name = "sccache";
         let creds = AzureCredentials::new(
-            &blob_endpoint,
-            &client_name,
+            blob_endpoint,
+            client_name,
             client_key,
             container_name.to_string(),
         );

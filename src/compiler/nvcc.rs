@@ -33,11 +33,11 @@ use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct NVCC;
+pub struct Nvcc;
 
-impl CCompilerImpl for NVCC {
+impl CCompilerImpl for Nvcc {
     fn kind(&self) -> CCompilerKind {
-        CCompilerKind::NVCC
+        CCompilerKind::Nvcc
     }
     fn plusplus(&self) -> bool {
         false
@@ -211,7 +211,7 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        NVCC.parse_arguments(&arguments, ".".as_ref())
+        Nvcc.parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
