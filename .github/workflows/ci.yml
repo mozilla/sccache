@@ -41,17 +41,17 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: 1.43.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: 1.43.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: stable
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: beta
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
