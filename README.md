@@ -240,3 +240,7 @@ Known Caveats
 * Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 
 [More details on Rust caveats](/docs/Rust.md)
+
+### Symbolic links
+
+* Symbolic links to sccache won't work. Use hardlinks: `ln sscache /usr/local/bin/cc`
