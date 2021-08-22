@@ -243,4 +243,4 @@ Known Caveats
 
 ### Symbolic links
 
-* Symbolic links to sccache won't work. Use hardlinks: `ln sscache /usr/local/bin/cc`
+* Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`
