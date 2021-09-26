@@ -616,6 +616,7 @@ pub fn generate_compile_commands(
         if !rewrite_includes_only {
             match parsed_args.language {
                 Language::C => language = "cpp-output".into(),
+                Language::Cuda => language = "cu".into(),
                 _ => language.push_str("-cpp-output"),
             }
         }
