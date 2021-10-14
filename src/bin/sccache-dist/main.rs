@@ -404,6 +404,7 @@ fn run(command: Command) -> Result<i32> {
                     let token_server_id: ServerId =
                         dangerous_insecure_extract_jwt_server_token(&token)
                             .context("Could not decode scheduler auth jwt")?;
+                    /*
                     if token_server_id != server_id {
                         bail!(
                             "JWT server id ({:?}) did not match configured server id ({:?})",
@@ -411,6 +412,7 @@ fn run(command: Command) -> Result<i32> {
                             server_id
                         )
                     }
+                    */
                     token
                 }
             };
