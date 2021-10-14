@@ -432,8 +432,8 @@ fn run(command: Command) -> Result<i32> {
 }
 
 fn init_logging() {
-    if env::var("RUST_LOG").is_ok() {
-        match env_logger::try_init() {
+    if env::var(sccache::LOGGING_ENV).is_ok() {
+        match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
             Ok(_) => (),
             Err(e) => panic!("Failed to initalize logging: {:?}", e),
         }

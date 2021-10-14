@@ -62,7 +62,7 @@ pub mod util;
 
 use std::env;
 
-const LOGGING_ENV: &str = "SCCACHE_LOG";
+pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
     init_logging();
