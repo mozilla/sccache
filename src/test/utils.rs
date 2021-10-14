@@ -209,7 +209,7 @@ impl TestFixture {
         for d in SUBDIRS.iter() {
             let p = tempdir.path().join(d);
             builder.create(&p).unwrap();
-            bins.push(mk_bin(&p, &BIN_NAME).unwrap());
+            bins.push(mk_bin(&p, BIN_NAME).unwrap());
             paths.push(p);
         }
         TestFixture {
@@ -221,12 +221,12 @@ impl TestFixture {
 
     #[allow(dead_code)]
     pub fn touch(&self, path: &str) -> io::Result<PathBuf> {
-        touch(self.tempdir.path(), &path)
+        touch(self.tempdir.path(), path)
     }
 
     #[allow(dead_code)]
     pub fn mk_bin(&self, path: &str) -> io::Result<PathBuf> {
-        mk_bin(self.tempdir.path(), &path)
+        mk_bin(self.tempdir.path(), path)
     }
 }
 

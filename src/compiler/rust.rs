@@ -217,7 +217,7 @@ where
         .context("Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&arguments)
+    cmd.args(arguments)
         .args(&["--emit", "dep-info"])
         .arg("-o")
         .arg(&dep_file)
@@ -510,7 +510,7 @@ where
         child
             .current_dir(&cwd)
             .env_clear()
-            .envs(ref_env(&env))
+            .envs(ref_env(env))
             .args(&["which", "rustc"]);
 
         let lookup = run_input_output(child, None)
@@ -1467,6 +1467,8 @@ where
                                 executable,
                                 host,
                                 sysroot,
+                                #[cfg(feature = "dist-client")]
+                                rlib_dep_reader,
                                 arguments,
                                 inputs,
                                 outputs,
@@ -1476,8 +1478,6 @@ where
                                 dep_info,
                                 cwd,
                                 env_vars,
-                                #[cfg(feature = "dist-client")]
-                                rlib_dep_reader,
                             }),
                             weak_toolchain_key,
                         }
@@ -1616,7 +1616,7 @@ impl Compilation for RustCompilation {
             // probably seen all drives (e.g. on Windows), so let's just transform those rather than
             // trying to do every single path.
             let mut remapped_disks = HashSet::new();
-            for (local_path, dist_path) in get_path_mappings(&path_transformer) {
+            for (local_path, dist_path) in get_path_mappings(path_transformer) {
                 let local_path = local_path.to_str()?;
                 // "The from=to parameter is scanned from right to left, so from may contain '=', but to may not."
                 if local_path.contains('=') {
@@ -2237,7 +2237,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
 
     let mut dep_names = vec![];
 
-    while let Some(line) = lines.next() {
+    for line in &mut lines {
         if line.is_empty() {
             break;
         }
@@ -2751,7 +2751,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["abc.rs", "bar.rs", "baz.rs"],
-            parse_dep_info(&deps, "")
+            parse_dep_info(deps, "")
         );
     }
 
@@ -2763,7 +2763,7 @@ baz.rs:
 
 abc def.rs:
 "#;
-        assert_eq!(pathvec!["abc def.rs", "baz.rs"], parse_dep_info(&deps, ""));
+        assert_eq!(pathvec!["abc def.rs", "baz.rs"], parse_dep_info(deps, ""));
     }
 
     #[cfg(not(windows))]
@@ -2779,12 +2779,12 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
-            parse_dep_info(&deps, "foo/")
+            parse_dep_info(deps, "foo/")
         );
 
         assert_eq!(
             pathvec!["/foo/bar/abc.rs", "/foo/bar/bar.rs", "/foo/bar/baz.rs"],
-            parse_dep_info(&deps, "/foo/bar/")
+            parse_dep_info(deps, "/foo/bar/")
         );
     }
 
@@ -2801,7 +2801,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["/foo/abc.rs", "/foo/bar.rs", "/foo/baz.rs"],
-            parse_dep_info(&deps, "/bar/")
+            parse_dep_info(deps, "/bar/")
         );
     }
 
@@ -2818,7 +2818,7 @@ bar.rs:
 ";
         assert_eq!(
             pathvec!["foo/abc.rs", "foo/bar.rs", "foo/baz.rs"],
-            parse_dep_info(&deps, "foo/")
+            parse_dep_info(deps, "foo/")
         );
 
         assert_eq!(
@@ -2827,7 +2827,7 @@ bar.rs:
                 "c:/foo/bar/bar.rs",
                 "c:/foo/bar/baz.rs"
             ],
-            parse_dep_info(&deps, "c:/foo/bar/")
+            parse_dep_info(deps, "c:/foo/bar/")
         );
     }
 
@@ -2842,7 +2842,7 @@ c:/foo/bar.rs:
 ";
         assert_eq!(
             pathvec!["c:/foo/abc.rs", "c:/foo/bar.rs", "c:/foo/baz.rs"],
-            parse_dep_info(&deps, "c:/bar/")
+            parse_dep_info(deps, "c:/bar/")
         );
     }
 
@@ -2856,7 +2856,7 @@ c:/foo/bar.rs:
 
 
 ";
-        let res = parse_rustc_z_ls(&output);
+        let res = parse_rustc_z_ls(output);
         assert!(res.is_ok());
         let res = res.unwrap();
         assert_eq!(res.len(), 3);
@@ -2895,7 +2895,7 @@ c:/foo/bar.rs:
     fn mock_file_names(creator: &Arc<Mutex<MockCommandCreator>>, filenames: &[&str]) {
         // Mock the `rustc --print=file-names` process output.
         next_command(
-            &creator,
+            creator,
             Ok(MockChild::new(
                 exit_status(0),
                 filenames.iter().join("\n"),
@@ -3020,7 +3020,7 @@ c:/foo/bar.rs:
         F: Fn(&Path) -> Result<()>,
     {
         let oargs = args.iter().map(OsString::from).collect::<Vec<OsString>>();
-        let parsed_args = match parse_arguments(&oargs, &f.tempdir.path()) {
+        let parsed_args = match parse_arguments(&oargs, f.tempdir.path()) {
             CompilerArguments::Ok(parsed_args) => parsed_args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
@@ -3034,7 +3034,7 @@ c:/foo/bar.rs:
             let s = format!("Failed to create {:?}", e);
             f.touch(e.to_str().unwrap()).expect(&s);
         }
-        pre_func(&f.tempdir.path()).expect("Failed to execute pre_func");
+        pre_func(f.tempdir.path()).expect("Failed to execute pre_func");
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),

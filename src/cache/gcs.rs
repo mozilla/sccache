@@ -173,10 +173,10 @@ pub struct GCSCredentialProvider {
     cached_credentials: RefCell<Option<Shared<SFuture<GCSCredential>>>>,
 }
 
-/// ServiceAccountInfo either contains a URL to fetch the oauth token
+/// ServiceAccountInfo either contains a Url to fetch the oauth token
 /// or the service account key
 pub enum ServiceAccountInfo {
-    URL(String),
+    Url(String),
     AccountKey(ServiceAccountKey),
 }
 
@@ -466,7 +466,7 @@ impl GCSCredentialProvider {
                 ServiceAccountInfo::AccountKey(ref sa_key) => {
                     self.request_new_token(sa_key, client)
                 }
-                ServiceAccountInfo::URL(ref url) => self.request_new_token_from_tcauth(url, client),
+                ServiceAccountInfo::Url(ref url) => self.request_new_token_from_tcauth(url, client),
             };
             *future_opt = Some(credentials.shared());
         };
@@ -512,7 +512,7 @@ impl Storage for GCSCache {
     fn get(&self, key: &str) -> SFuture<Cache> {
         Box::new(
             self.bucket
-                .get(&key, &self.credential_provider)
+                .get(key, &self.credential_provider)
                 .then(|result| match result {
                     Ok(data) => {
                         let hit = CacheRead::from(io::Cursor::new(data))?;
@@ -538,7 +538,7 @@ impl Storage for GCSCache {
         };
         let bucket = self.bucket.clone();
         let response = bucket
-            .put(&key, data, &self.credential_provider)
+            .put(key, data, &self.credential_provider)
             .fcontext("failed to put cache entry in GCS");
 
         Box::new(response.map(move |_| start.elapsed()))
@@ -574,7 +574,7 @@ fn test_gcs_credential_provider() {
 
     let credential_provider = GCSCredentialProvider::new(
         RWMode::ReadWrite,
-        ServiceAccountInfo::URL("http://127.0.0.1:3000/".to_string()),
+        ServiceAccountInfo::Url("http://127.0.0.1:3000/".to_string()),
     );
 
     let client = Client::new();
@@ -590,7 +590,7 @@ fn test_gcs_credential_provider() {
                     .timestamp(),
             );
         })
-        .map_err(move |err| panic!(err.to_string()));
+        .map_err(move |err| panic!("{}", err.to_string()));
 
     server.with_graceful_shutdown(cred_fut);
 }
