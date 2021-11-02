@@ -217,7 +217,7 @@ where
         .context("Failed to create temp dir"));
     let dep_file = temp_dir.path().join("deps.d");
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.args(&arguments)
+    cmd.args(arguments)
         .args(&["--emit", "dep-info"])
         .arg("-o")
         .arg(&dep_file)
@@ -510,7 +510,7 @@ where
         child
             .current_dir(&cwd)
             .env_clear()
-            .envs(ref_env(&env))
+            .envs(ref_env(env))
             .args(&["which", "rustc"]);
 
         let lookup = run_input_output(child, None)
@@ -1131,7 +1131,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
                 cannot_cache!(concat!("missing ", stringify!($x)));
             };
         };
-    };
+    }
     // We don't actually save the input value, but there needs to be one.
     req!(input);
     drop(input);
@@ -1616,7 +1616,7 @@ impl Compilation for RustCompilation {
             // probably seen all drives (e.g. on Windows), so let's just transform those rather than
             // trying to do every single path.
             let mut remapped_disks = HashSet::new();
-            for (local_path, dist_path) in get_path_mappings(&path_transformer) {
+            for (local_path, dist_path) in get_path_mappings(path_transformer) {
                 let local_path = local_path.to_str()?;
                 // "The from=to parameter is scanned from right to left, so from may contain '=', but to may not."
                 if local_path.contains('=') {
@@ -2237,7 +2237,7 @@ fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
 
     let mut dep_names = vec![];
 
-    while let Some(line) = lines.next() {
+    for line in &mut lines {
         if line.is_empty() {
             break;
         }

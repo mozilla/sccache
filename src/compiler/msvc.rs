@@ -37,15 +37,15 @@ use crate::errors::*;
 ///
 /// Needs a little bit of state just to persist `includes_prefix`.
 #[derive(Debug, PartialEq, Clone)]
-pub struct MSVC {
+pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
     pub is_clang: bool,
 }
 
-impl CCompilerImpl for MSVC {
+impl CCompilerImpl for Msvc {
     fn kind(&self) -> CCompilerKind {
-        CCompilerKind::MSVC
+        CCompilerKind::Msvc
     }
     fn plusplus(&self) -> bool {
         false
@@ -777,7 +777,7 @@ where
             let f = File::create(cwd.join(depfile))?;
             let mut f = BufWriter::new(f);
 
-            encode_path(&mut f, &objfile)
+            encode_path(&mut f, objfile)
                 .with_context(|| format!("Couldn't encode objfile filename: '{:?}'", objfile))?;
             write!(f, ": ")?;
             encode_path(&mut f, &parsed_args.input)
@@ -900,7 +900,7 @@ fn generate_compile_commands(
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
 
         Some(dist::CompileCommand {
-            executable: path_transformer.as_dist(&executable)?,
+            executable: path_transformer.as_dist(executable)?,
             arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.as_dist(cwd)?,

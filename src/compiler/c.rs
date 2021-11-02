@@ -151,15 +151,15 @@ struct CCompilation<I: CCompilerImpl> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum CCompilerKind {
     /// GCC
-    GCC,
+    Gcc,
     /// clang
     Clang,
     /// Diab
     Diab,
     /// Microsoft Visual C++
-    MSVC,
+    Msvc,
     /// NVIDIA cuda compiler
-    NVCC,
+    Nvcc,
 }
 
 /// An interface to a specific C compiler.
@@ -212,7 +212,7 @@ where
         pool: &ThreadPool,
     ) -> SFuture<CCompiler<I>> {
         Box::new(
-            Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
+            Digest::file(executable.clone(), pool).map(move |digest| CCompiler {
                 executable,
                 executable_digest: {
                     if let Some(version) = version {
@@ -612,7 +612,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 }
             }
 
-            CCompilerKind::GCC => {
+            CCompilerKind::Gcc => {
                 // Various external programs / files which may be needed by gcc
                 add_named_prog(&mut package_builder, "cc1")?;
                 add_named_prog(&mut package_builder, "cc1plus")?;
@@ -620,7 +620,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "liblto_plugin.so")?;
             }
 
-            CCompilerKind::NVCC => {
+            CCompilerKind::Nvcc => {
                 // Various programs called by the nvcc front end.
                 // presumes the underlying host compiler is consistent
                 add_named_file(&mut package_builder, "cudafe++")?;

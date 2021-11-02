@@ -1310,7 +1310,7 @@ mod client {
         fn rewrite_includes_only(&self) -> bool {
             self.rewrite_includes_only
         }
-        fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf> {
+        fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf> {
             match self.tc_cache.get_custom_toolchain(exe) {
                 Some(Ok((_, _, path))) => Some(path),
                 _ => None,

@@ -266,7 +266,7 @@ fn compute_auth_header(
         format!(
             "SharedKey {}:{}",
             creds.azure_account_name(),
-            signature(&string_to_sign, &account_key)
+            signature(&string_to_sign, account_key)
         )
     })
 }

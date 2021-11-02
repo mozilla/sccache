@@ -64,7 +64,7 @@ impl fmt::Display for Bucket {
 
 impl Bucket {
     pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Result<Bucket> {
-        let base_url = base_url(&endpoint, ssl);
+        let base_url = base_url(endpoint, ssl);
         Ok(Bucket {
             name: name.to_owned(),
             base_url,

@@ -30,13 +30,13 @@ use crate::errors::*;
 
 /// A struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct GCC {
+pub struct Gcc {
     pub gplusplus: bool,
 }
 
-impl CCompilerImpl for GCC {
+impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
-        CCompilerKind::GCC
+        CCompilerKind::Gcc
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
@@ -530,7 +530,7 @@ where
             CCompilerKind::Clang => {
                 cmd.arg("-frewrite-includes");
             }
-            CCompilerKind::GCC => {
+            CCompilerKind::Gcc => {
                 cmd.arg("-fdirectives-only");
             }
             _ => {}
@@ -627,7 +627,7 @@ pub fn generate_compile_commands(
             "-o".into(),
             path_transformer.as_dist(out_file)?,
         ];
-        if let CCompilerKind::GCC = kind {
+        if let CCompilerKind::Gcc = kind {
             // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
             //
             // -fdirectives-only
@@ -648,7 +648,7 @@ pub fn generate_compile_commands(
         }
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
-            executable: path_transformer.as_dist(&executable)?,
+            executable: path_transformer.as_dist(executable)?,
             arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.as_dist_abs(cwd)?,
@@ -1325,7 +1325,7 @@ mod test {
             &parsed_args,
             f.tempdir.path(),
             &[],
-            CCompilerKind::GCC,
+            CCompilerKind::Gcc,
             false,
         )
         .unwrap();
