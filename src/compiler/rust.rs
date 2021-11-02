@@ -3063,7 +3063,7 @@ c:/foo/bar.rs:
             .key
     }
 
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unnecessary_unwrap)]
     fn nothing(_path: &Path) -> Result<()> {
         Ok(())
     }
