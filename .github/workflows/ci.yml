@@ -15,7 +15,7 @@ jobs:
             cargo_cmd: fmt -- --check
             os: ubuntu-latest
           - component: clippy
-            cargo_cmd: clippy --locked --all-targets -- -D warnings
+            cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
         uses: actions/checkout@v1
