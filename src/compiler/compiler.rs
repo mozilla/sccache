@@ -699,10 +699,10 @@ pub enum CompilerArguments<T> {
 
 macro_rules! cannot_cache {
     ($why:expr) => {
-        return CompilerArguments::CannotCache($why, None);
+        return CompilerArguments::CannotCache($why, None)
     };
     ($why:expr, $extra_info:expr) => {
-        return CompilerArguments::CannotCache($why, Some($extra_info));
+        return CompilerArguments::CannotCache($why, Some($extra_info))
     };
 }
 
