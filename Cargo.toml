@@ -27,7 +27,7 @@ ar = { version = "0.8", optional = true }
 atty = "0.2.6"
 base64 = "0.13"
 bincode = "1"
-blake3 = "0.3"
+blake3 = "1"
 byteorder = "1.0"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
