@@ -71,7 +71,6 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::StreamExt;
     use std::time::Duration;
 
     trace!("run_server_process");
