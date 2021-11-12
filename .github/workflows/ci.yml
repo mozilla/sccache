@@ -43,9 +43,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-18.04
-            rustc: 1.43.0 # Oldest supported version, keep in sync with README.md
+            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
           - os: ubuntu-18.04
-            rustc: 1.43.0
+            rustc: 1.48.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-18.04
