@@ -164,8 +164,8 @@ impl CommandChild for Child {
     }
 
     async fn wait(self) -> io::Result<ExitStatus> {
-        let Child { inner, token } = self;
-        inner.await.map(|ret| {
+        let Child { mut inner, token } = self;
+        inner.wait().await.map(|ret| {
             drop(token);
             ret
         })

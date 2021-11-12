@@ -30,7 +30,7 @@ base64 = "0.13"
 bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
-bytes = "0.5"
+bytes = "1"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
 counted-array = "0.1"
@@ -42,7 +42,7 @@ futures = "0.3"
 futures-locks = "0.6"
 hmac = { version = "0.10", optional = true }
 http = "0.2"
-hyper = { version = "0.13", optional = true }
+hyper = { version = "0.14", optional = true, features = ["server"] }
 hyperx = { version = "0.13", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
@@ -58,9 +58,9 @@ number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
-redis = { version = "0.17", optional = true, default-features = false, features = ["aio", "tls", "tokio-comp", "tokio-tls-comp"] }
+redis = { version = "0.21", optional = true, default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
 regex = "1"
-reqwest = { version = "0.10", features = ["json", "blocking"], optional = true }
+reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
 retry = "1"
 ring = { version = "0.16", optional = true, features = ["std"] }
 sha-1 = { version = "0.9", optional = true }
@@ -71,10 +71,10 @@ serde_json = "1.0"
 strip-ansi-escapes = "0.1"
 tar = "0.4"
 tempfile = "3"
-tokio = { version = "0.2", features = ["rt-threaded", "blocking", "io-util", "time", "uds", "tcp", "process", "macros"] }
-tokio-serde = "0.6"
-tokio-util = { version = "0.3", features = ["codec"] }
-tower = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time", "net", "process", "macros"] }
+tokio-serde = "0.8"
+tokio-util = { version = "0.6", features = ["codec"] }
+tower = "0.4"
 toml = "0.5"
 untrusted = { version = "0.7", optional = true }
 url = { version = "2", optional = true }
@@ -106,7 +106,7 @@ selenium-rs = "0.1"
 daemonize = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-parity-tokio-ipc = "0.8"
+parity-tokio-ipc = "0.9"
 
 [target.'cfg(windows)'.dependencies.winapi]
 version = "0.3"

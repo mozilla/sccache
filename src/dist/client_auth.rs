@@ -503,10 +503,13 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    let mut runtime = Runtime::new()?;
-    let server = runtime
-        .enter(try_bind)?
-        .serve(make_service!(code_grant_pkce::serve));
+    let runtime = Runtime::new()?;
+    let builder = {
+        let _guard = runtime.enter();
+        try_bind()?
+    };
+    let server = builder.serve(make_service!(code_grant_pkce::serve));
+
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -554,10 +557,12 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let mut runtime = Runtime::new()?;
-    let server = runtime
-        .enter(try_bind)?
-        .serve(make_service!(implicit::serve));
+    let runtime = Runtime::new()?;
+    let builder = {
+        let _guard = runtime.enter();
+        try_bind()?
+    };
+    let server = builder.serve(make_service!(implicit::serve));
 
     let port = server.local_addr().port();
 
