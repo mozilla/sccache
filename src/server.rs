@@ -27,7 +27,7 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
-use bytes::{buf::ext::BufMutExt, Bytes, BytesMut};
+use bytes::{buf::BufMut, Bytes, BytesMut};
 use filetime::FileTime;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
@@ -54,11 +54,11 @@ use std::time::Duration;
 #[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
-use tokio::runtime::Runtime;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
-    time::{self, delay_for, Delay},
+    runtime::Runtime,
+    time::{self, sleep, Sleep},
 };
 use tokio_serde::Framed;
 use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
@@ -402,10 +402,9 @@ impl DistClientContainer {
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
-    let runtime = tokio::runtime::Builder::new()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .threaded_scheduler()
-        .core_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .worker_threads(std::cmp::max(20, 2 * num_cpus::get()))
         .build()?;
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
@@ -449,7 +448,7 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
-        mut runtime: Runtime,
+        runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
@@ -515,7 +514,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         C: Send,
     {
         let SccacheServer {
-            mut runtime,
+            runtime,
             listener,
             rx,
             service,
@@ -525,17 +524,19 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let server = listener.try_for_each(move |socket| {
-            trace!("incoming connection");
-            let conn = service.clone().bind(socket).map_err(|res| {
-                error!("Failed to bind socket: {}", res);
-            });
+        let server = async move {
+            loop {
+                let (socket, _) = listener.accept().await?;
+                trace!("incoming connection");
+                let conn = service.clone().bind(socket).map_err(|res| {
+                    error!("Failed to bind socket: {}", res);
+                });
 
-            // We're not interested if the task panicked; immediately process
-            // another connection
-            let _ = tokio::spawn(conn);
-            async { Ok(()) }
-        });
+                // We're not interested if the task panicked; immediately process
+                // another connection
+                let _ = tokio::spawn(conn);
+            }
+        };
 
         // Right now there's a whole bunch of ways to shut down this server for
         // various purposes. These include:
@@ -557,7 +558,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             ShutdownOrInactive {
                 rx,
                 timeout: if timeout != Duration::new(0, 0) {
-                    Some(delay_for(timeout))
+                    Some(Box::pin(sleep(timeout)))
                 } else {
                     None
                 },
@@ -571,7 +572,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             futures::select! {
                 server = server.fuse() => server,
                 _res = shutdown.fuse() => Ok(()),
-                _res = shutdown_idle.fuse() => Ok(()),
+                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
             }
         })?;
 
@@ -1695,7 +1696,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 
 struct ShutdownOrInactive {
     rx: mpsc::Receiver<ServerMessage>,
-    timeout: Option<Delay>,
+    timeout: Option<Pin<Box<Sleep>>>,
     timeout_dur: Duration,
 }
 
@@ -1710,7 +1711,7 @@ impl Future for ShutdownOrInactive {
                 Poll::Ready(Some(ServerMessage::Shutdown)) => return Poll::Ready(()),
                 Poll::Ready(Some(ServerMessage::Request)) => {
                     if self.timeout_dur != Duration::new(0, 0) {
-                        self.timeout = Some(delay_for(self.timeout_dur));
+                        self.timeout = Some(Box::pin(sleep(self.timeout_dur)));
                     }
                 }
                 // All services have shut down, in theory this isn't possible...
@@ -1719,7 +1720,7 @@ impl Future for ShutdownOrInactive {
         }
         match self.timeout {
             None => Poll::Pending,
-            Some(ref mut timeout) => Pin::new(timeout).poll(cx),
+            Some(ref mut timeout) => timeout.as_mut().poll(cx),
         }
     }
 }

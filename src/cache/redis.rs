@@ -38,7 +38,7 @@ impl RedisCache {
             let _ = parsed.set_password(Some("*****"));
         }
         Ok(RedisCache {
-            display_url: parsed.into_string(),
+            display_url: parsed.to_string(),
             client: Client::open(url)?,
         })
     }

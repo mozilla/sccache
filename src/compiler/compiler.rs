@@ -1382,7 +1382,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
@@ -1492,7 +1492,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
@@ -1598,7 +1598,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = MockStorage::new();
         let storage: Arc<MockStorage> = Arc::new(storage);
@@ -1675,7 +1675,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
-        let mut runtime = single_threaded_runtime();
+        let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
@@ -1785,7 +1785,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
-        let mut runtime = single_threaded_runtime();
+        let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);

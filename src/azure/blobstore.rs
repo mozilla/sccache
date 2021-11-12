@@ -320,7 +320,7 @@ mod test {
             container_name.to_string(),
         );
 
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let container = BlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
 

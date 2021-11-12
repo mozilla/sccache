@@ -41,8 +41,7 @@ impl Client {
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    let mut rt = tokio::runtime::Builder::new()
-                        .basic_scheduler()
+                    let rt = tokio::runtime::Builder::new_current_thread()
                         .build()
                         .unwrap();
                     rt.block_on(async {

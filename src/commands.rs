@@ -77,7 +77,7 @@ fn run_server_process() -> Result<ServerStartup> {
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
-    let mut runtime = Runtime::new()?;
+    let runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
     let _child = process::Command::new(&exe_path)
@@ -88,11 +88,10 @@ fn run_server_process() -> Result<ServerStartup> {
         .spawn()?;
 
     let startup = async move {
-        let mut listener = tokio::net::UnixListener::bind(&socket_path)?;
-        let socket = listener.incoming().next().await;
-        let socket = socket.unwrap(); // incoming() never returns None
+        let listener = tokio::net::UnixListener::bind(&socket_path)?;
+        let (socket, _) = listener.accept().await?;
 
-        read_server_startup_status(socket?).await
+        read_server_startup_status(socket).await
     };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
@@ -155,7 +154,7 @@ fn run_server_process() -> Result<ServerStartup> {
     trace!("run_server_process");
 
     // Create a mini event loop and register our named pipe server
-    let mut runtime = Runtime::new()?;
+    let runtime = Runtime::new()?;
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
 
     // Spawn a server which should come back and connect to us
@@ -661,7 +660,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             use crate::compiler;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let mut runtime = Runtime::new()?;
+            let runtime = Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();
