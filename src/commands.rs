@@ -226,7 +226,9 @@ fn run_server_process() -> Result<ServerStartup> {
 
     let startup = async move {
         let listener = parity_tokio_ipc::Endpoint::new(pipe_name);
-        let socket = listener.incoming()?.next().await;
+        let incoming = listener.incoming()?;
+        futures::pin_mut!(incoming);
+        let socket = incoming.next().await;
         let socket = socket.unwrap(); // incoming() never returns None
 
         read_server_startup_status(socket?).await
