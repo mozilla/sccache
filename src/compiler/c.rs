@@ -45,6 +45,7 @@ where
     executable: PathBuf,
     executable_digest: String,
     compiler: I,
+    version: Option<String>,
 }
 
 /// A generic implementation of the `CompilerHasher` trait for C/C++ compilers.
@@ -165,6 +166,8 @@ pub enum CCompilerKind {
 pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// Return the kind of compiler.
     fn kind(&self) -> CCompilerKind;
+    /// Return the version string of the compiler, if it exists
+    fn version(&self) -> Option<String>;
     /// Return true iff this is g++ or clang++.
     fn plusplus(&self) -> bool;
     /// Determine whether `arguments` are supported by this compiler.
@@ -184,6 +187,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
@@ -215,7 +219,7 @@ where
         Ok(CCompiler {
             executable,
             executable_digest: {
-                if let Some(version) = version {
+                if let Some(ref version) = version {
                     let mut m = Digest::new();
                     m.update(digest.as_bytes());
                     m.update(version.as_bytes());
@@ -225,6 +229,7 @@ where
                 }
             },
             compiler,
+            version,
         })
     }
 }
@@ -295,6 +300,7 @@ where
                 &env_vars,
                 may_dist,
                 rewrite_includes_only,
+                compiler.version(),
             )
             .await;
         let out_pretty = parsed_args.output_pretty().into_owned();

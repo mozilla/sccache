@@ -33,12 +33,17 @@ use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct Nvcc;
+pub struct Nvcc {
+    pub version: Option<String>,
+}
 
 #[async_trait]
 impl CCompilerImpl for Nvcc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Nvcc
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         false
@@ -61,6 +66,7 @@ impl CCompilerImpl for Nvcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -216,7 +222,7 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        Nvcc.parse_arguments(&arguments, ".".as_ref())
+        Nvcc { version: None }.parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {

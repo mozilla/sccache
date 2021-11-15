@@ -35,12 +35,16 @@ use crate::errors::*;
 pub struct Clang {
     /// true iff this is clang++.
     pub clangplusplus: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         self.clangplusplus
@@ -68,6 +72,7 @@ impl CCompilerImpl for Clang {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -81,6 +86,7 @@ impl CCompilerImpl for Clang {
             may_dist,
             self.kind(),
             rewrite_includes_only,
+            version,
         )
         .await
     }
@@ -147,6 +153,7 @@ mod test {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Clang {
             clangplusplus: false,
+            version: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap())
     }

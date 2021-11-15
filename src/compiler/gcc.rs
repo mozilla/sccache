@@ -32,12 +32,16 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Gcc {
     pub gplusplus: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
 impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Gcc
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
@@ -60,6 +64,7 @@ impl CCompilerImpl for Gcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -73,6 +78,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
+            version,
         )
         .await
     }
@@ -507,6 +513,7 @@ pub async fn preprocess<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
+    version: Option<String>,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
@@ -527,6 +534,17 @@ where
     // With -fprofile-generate line number information is important, so don't use -P.
     if !may_dist && !parsed_args.profile_generate {
         cmd.arg("-P");
+        if let (CCompilerKind::Clang, Some(version)) = (kind.clone(), version) {
+            if let Some(parsed_version) = version.split(' ').find(|x| x.contains('.')) {
+                if let Some(major_version) = parsed_version.split('.').next() {
+                    if let Ok(parsed_major_version) = major_version.parse::<usize>() {
+                        if parsed_major_version >= 14 {
+                            cmd.arg("-fminimize-whitespace");
+                        }
+                    }
+                }
+            }
+        }
     }
     if rewrite_includes_only {
         match kind {
