@@ -155,6 +155,79 @@ jobs:
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
 
+  coverage:
+    name: coverage ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-18.04
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+          - os: macOS-10.15
+            rustc: nightly
+# Disable for now Windows as it fails with:
+# found invalid metadata files for crate `vte_generate_state_changes`
+#          - os: windows-2019
+#            rustc: nightly
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v1
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ matrix.rustc }}
+
+      - name: "`grcov` ~ install"
+        uses: actions-rs/install@v0.1
+        with:
+          crate: grcov
+          version: latest
+          use-tool-cache: false
+
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: ${{ steps.vars.outputs.CARGO_FEATURES_OPTION }} --no-fail-fast
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUSTC_WRAPPER: ''
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort'
+          RUSTDOCFLAGS: '-Cpanic=abort'
+
+      - name: Generate coverage data (via `grcov`)
+        id: coverage
+        shell: bash
+        run: |
+          ## Generate coverage data
+          COVERAGE_REPORT_DIR="target/debug"
+          COVERAGE_REPORT_FILE="${COVERAGE_REPORT_DIR}/lcov.info"
+          # GRCOV_IGNORE_OPTION='--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"' ## `grcov` ignores these params when passed as an environment variable (why?)
+          # GRCOV_EXCLUDE_OPTION='--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"' ## `grcov` ignores these params when passed as an environment variable (why?)
+          mkdir -p "${COVERAGE_REPORT_DIR}"
+          # display coverage files
+          grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
+          # generate coverage report
+          grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
+          echo ::set-output name=report::${COVERAGE_REPORT_FILE}
+
+      - name: Upload coverage results (to Codecov.io)
+        uses: codecov/codecov-action@v1
+        with:
+          file: ${{ steps.coverage.outputs.report }}
+          ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          flags: ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
   release:
     name: release
     runs-on: ubuntu-latest
