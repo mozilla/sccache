@@ -48,7 +48,8 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang-13", "clang-14"];
+// const COMPILERS: &[&str] = &["gcc", "clang", "clang-13", "clang-14"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
@@ -70,7 +71,8 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     input: &str,
     output: &str,
 ) -> Vec<OsString> {
-    match compiler {
+    let compiler_prefix = compiler.split('-').next().unwrap();
+    match compiler_prefix {
         "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
@@ -78,6 +80,8 @@ fn compile_cmdline<T: AsRef<OsStr>>(
 }
 
 const INPUT: &str = "test.c";
+const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
+const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
@@ -369,7 +373,69 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
-        test_gcc_clang_no_warnings_from_macro_expansion(compiler, tempdir);
+        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+    }
+
+    if compiler.name == "clang-13" {
+        test_clang_cache_whitespace_normalization(compiler, tempdir, false);
+    } else if compiler.name == "clang-14" {
+        test_clang_cache_whitespace_normalization(compiler, tempdir, true);
+    }
+}
+
+fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("run_sccache_command_test: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
+    zero_stats();
+
+    trace!("compile whitespace");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT_WITH_WHITESPACE, OUTPUT))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    trace!("compile whitespace_alt");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_WITH_WHITESPACE_ALT,
+            OUTPUT,
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    trace!("request stats (expecting cache hit)");
+    if hit {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(1, info.stats.cache_hits.all());
+            assert_eq!(1, info.stats.cache_misses.all());
+        });
+    } else {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(0, info.stats.cache_hits.all());
+            assert_eq!(2, info.stats.cache_misses.all());
+        });
     }
 }
 
