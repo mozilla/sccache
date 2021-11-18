@@ -1186,7 +1186,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     };
 
     // Figure out the gcno filename, if producing gcno files with `-Zprofile`.
-    let gcno = if profile {
+    let gcno = if profile && emit.contains("link") {
         let mut gcno = crate_name.clone();
         if let Some(extra_filename) = extra_filename {
             gcno.push_str(&extra_filename[..]);
