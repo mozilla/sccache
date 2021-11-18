@@ -17,9 +17,9 @@ fn test_rust_cargo() {
     test_rust_cargo_cmd("check", &[]);
     test_rust_cargo_cmd("build", &[]);
 
-    #[cfg(nightly)]
+    #[cfg(feature = "unstable")]
     test_rust_cargo_cmd("check", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
-    #[cfg(nightly)]
+    #[cfg(feature = "unstable")]
     test_rust_cargo_cmd("build", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
 }
 
