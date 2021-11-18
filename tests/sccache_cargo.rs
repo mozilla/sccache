@@ -14,12 +14,17 @@ extern crate log;
 #[test]
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo() {
-    test_rust_cargo_cmd("check");
-    test_rust_cargo_cmd("build");
+    test_rust_cargo_cmd("check", &[]);
+    test_rust_cargo_cmd("build", &[]);
+
+    #[cfg(nightly)]
+    test_rust_cargo_cmd("check", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
+    #[cfg(nightly)]
+    test_rust_cargo_cmd("build", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-fn test_rust_cargo_cmd(cmd: &str) {
+fn test_rust_cargo_cmd(cmd: &str, extra_envs: &[(&str, &std::ffi::OsStr)]) {
     use assert_cmd::prelude::*;
     use chrono::Local;
     use predicates::prelude::*;
@@ -83,13 +88,14 @@ fn test_rust_cargo_cmd(cmd: &str) {
         .assert()
         .success();
     // `cargo clean` first, just to be sure there's no leftover build objects.
-    let envs = vec![
+    let mut envs = vec![
         ("RUSTC_WRAPPER", sccache.as_ref()),
         ("CARGO_TARGET_DIR", cargo_dir.as_ref()),
         // Explicitly disable incremental compilation because sccache is unable
         // to cache it at the time of writing.
         ("CARGO_INCREMENTAL", OsStr::new("0")),
     ];
+    envs.extend_from_slice(extra_envs);
     Command::new(&cargo)
         .args(&["clean"])
         .envs(envs.iter().copied())
