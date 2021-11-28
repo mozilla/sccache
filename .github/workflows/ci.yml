@@ -186,22 +186,14 @@ jobs:
           toolchain: ${{ matrix.rustc }}
 
       - name: "`grcov` ~ install"
-        uses: actions-rs/install@v0.1
-        with:
-          crate: grcov
-          version: latest
-          use-tool-cache: false
+        run: cargo install grcov
 
-      - name: Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: ${{ steps.vars.outputs.CARGO_FEATURES_OPTION }} --no-fail-fast
+      - name: Execute tests
+        run: cargo test --no-fail-fast --locked --all-targets --verbose ${{ matrix.extra_args }}
         env:
           CARGO_INCREMENTAL: '0'
           RUSTC_WRAPPER: ''
           RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort'
-          RUSTDOCFLAGS: '-Cpanic=abort'
 
       - name: Generate coverage data (via `grcov`)
         id: coverage
