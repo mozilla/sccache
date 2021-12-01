@@ -620,14 +620,15 @@ pub fn generate_compile_commands(
                 _ => language.push_str("-cpp-output"),
             }
         }
-        let mut arguments: Vec<String> = vec![
-            "-x".into(),
-            language,
-            parsed_args.compilation_flag.clone().into_string().ok()?,
-            path_transformer.as_dist(&parsed_args.input)?,
-            "-o".into(),
-            path_transformer.as_dist(out_file)?,
-        ];
+        let mut arguments: Vec<String> = vec![];
+        if parsed_args.language != Language::Cuda {
+            arguments.push("-x".into());
+            arguments.push(language);
+        }
+        arguments.push(parsed_args.compilation_flag.clone().into_string().ok()?);
+        arguments.push(path_transformer.as_dist(&parsed_args.input)?);
+        arguments.push("-o".into());
+        arguments.push(path_transformer.as_dist(out_file)?);
         if let CCompilerKind::GCC = kind {
             // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
             //
