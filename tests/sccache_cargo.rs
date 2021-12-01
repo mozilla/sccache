@@ -56,6 +56,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
                 )
             })
             .parse_env("RUST_LOG")
+            .parse_env("SCCACHE_LOG")
             .try_init(),
     );
     let cargo = env!("CARGO");
@@ -78,6 +79,8 @@ fn test_rust_cargo_cmd(cmd: &str) {
     trace!("sccache --start-server");
     sccache_command()
         .arg("--start-server")
+        .env("RUST_LOG", "trace")
+        .env("SCCACHE_LOG", "trace")
         .env("SCCACHE_DIR", &cache_dir)
         .assert()
         .success();

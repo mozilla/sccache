@@ -56,6 +56,8 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // will hang because the internal server process is not detached.
     sccache_command()
         .arg("--start-server")
+        .env("RUST_LOG", "trace")
+        .env("SCCACHE_LOG", "trace")
         .env("SCCACHE_CONF", cfg_path)
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
         .status()
@@ -262,7 +264,9 @@ impl DistSystem {
                 "-e",
                 "SCCACHE_NO_DAEMON=1",
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "RUST_LOG=trace",
+                "-e",
+                "SCCACHE_LOG=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -328,7 +332,9 @@ impl DistSystem {
                 "--name",
                 &server_name,
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "RUST_LOG=trace",
+                "-e",
+                "SCCACHE_LOG=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -396,7 +402,8 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("RUST_LOG", "sccache=trace");
+                env::set_var("RUST_LOG", "trace");
+                env::set_var("SCCACHE_LOG", "trace");
                 env_logger::try_init().unwrap();
                 void::unreachable(server.start().unwrap())
             }
