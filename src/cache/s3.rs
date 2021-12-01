@@ -17,10 +17,8 @@ use crate::simples3::{
     AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
 use directories::UserDirs;
-use futures::future;
-use futures::future::Future;
 use std::io;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
@@ -28,7 +26,7 @@ use crate::errors::*;
 /// A cache that stores entries in Amazon S3.
 pub struct S3Cache {
     /// The S3 bucket.
-    bucket: Rc<Bucket>,
+    bucket: Arc<Bucket>,
     /// Credentials provider.
     provider: AutoRefreshingProvider<ChainProvider>,
     /// Prefix to be used for bucket keys.
@@ -51,7 +49,7 @@ impl S3Cache {
         let provider =
             AutoRefreshingProvider::new(ChainProvider::with_profile_providers(profile_providers));
         let ssl_mode = if use_ssl { Ssl::Yes } else { Ssl::No };
-        let bucket = Rc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
+        let bucket = Arc::new(Bucket::new(bucket, endpoint, ssl_mode)?);
         Ok(S3Cache {
             bucket,
             provider,
@@ -71,11 +69,21 @@ impl S3Cache {
     }
 }
 
+#[async_trait]
 impl Storage for S3Cache {
-    fn get(&self, key: &str) -> SFuture<Cache> {
+    async fn get(&self, key: &str) -> Result<Cache> {
         let key = self.normalize_key(key);
 
-        let result_cb = |result| match result {
+        let credentials = self.provider.credentials().await;
+        let result = match credentials {
+            Ok(creds) => self.bucket.get(&key, Some(&creds)).await,
+            Err(e) => {
+                debug!("Could not load AWS creds: {}", e);
+                self.bucket.get(&key, None).await
+            }
+        };
+
+        match result {
             Ok(data) => {
                 let hit = CacheRead::from(io::Cursor::new(data))?;
                 Ok(Cache::Hit(hit))
@@ -84,53 +92,37 @@ impl Storage for S3Cache {
                 warn!("Got AWS error: {:?}", e);
                 Ok(Cache::Miss)
             }
-        };
-
-        let bucket = self.bucket.clone();
-        let response = self
-            .provider
-            .credentials()
-            .then(move |credentials| match credentials {
-                Ok(creds) => bucket.get(&key, Some(&creds)),
-                Err(e) => {
-                    debug!("Could not load AWS creds: {}", e);
-                    bucket.get(&key, None)
-                }
-            })
-            .then(result_cb);
-        Box::new(response)
+        }
     }
 
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
-        let key = self.normalize_key(&key);
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let key = self.normalize_key(key);
         let start = Instant::now();
-        let data = match entry.finish() {
-            Ok(data) => data,
-            Err(e) => return f_err(e),
-        };
+        let data = entry.finish()?;
+
         let credentials = self
             .provider
             .credentials()
-            .fcontext("failed to get AWS credentials");
+            .await
+            .context("failed to get AWS credentials")?;
 
         let bucket = self.bucket.clone();
-        let response = credentials.and_then(move |credentials| {
-            bucket
-                .put(&key, data, &credentials)
-                .fcontext("failed to put cache entry in s3")
-        });
+        let _ = bucket
+            .put(&key, data, &credentials)
+            .await
+            .context("failed to put cache entry in s3")?;
 
-        Box::new(response.map(move |_| start.elapsed()))
+        Ok(start.elapsed())
     }
 
     fn location(&self) -> String {
         format!("S3, bucket: {}", self.bucket)
     }
 
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        Box::new(future::ok(None))
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
     }
 }

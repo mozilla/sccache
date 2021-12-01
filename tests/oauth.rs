@@ -94,7 +94,7 @@ impl DriverExt for WebDriver {
         let start = Instant::now();
         while start.elapsed() < BROWSER_MAX_WAIT {
             match self.get_current_url() {
-                Ok(ref url) if condition(&url) => return Ok(()),
+                Ok(ref url) if condition(url) => return Ok(()),
                 Ok(_) | Err(_) => thread::sleep(BROWSER_RETRY_WAIT),
             }
         }

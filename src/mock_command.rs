@@ -47,7 +47,6 @@
 
 use crate::errors::*;
 use crate::jobserver::{Acquired, Client};
-use futures::future::{self, Future};
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -55,17 +54,18 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_process::{self, ChildStderr, ChildStdin, ChildStdout, CommandExt};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
 /// A trait that provides a subset of the methods of `std::process::Child`.
+#[async_trait]
 pub trait CommandChild {
     /// The type of the process' standard input.
-    type I: AsyncWrite + Sync + Send + 'static;
+    type I: AsyncWrite + Unpin + Sync + Send + 'static;
     /// The type of the process' standard output.
-    type O: AsyncRead + Sync + Send + 'static;
+    type O: AsyncRead + Unpin + Sync + Send + 'static;
     /// The type of the process' standard error.
-    type E: AsyncRead + Sync + Send + 'static;
+    type E: AsyncRead + Unpin + Sync + Send + 'static;
 
     /// Take the stdin object from the process, if available.
     fn take_stdin(&mut self) -> Option<Self::I>;
@@ -74,15 +74,16 @@ pub trait CommandChild {
     /// Take the stderr object from the process, if available.
     fn take_stderr(&mut self) -> Option<Self::E>;
     /// Wait for the process to complete and return its exit status.
-    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>>;
+    async fn wait(self) -> io::Result<ExitStatus>;
     /// Wait for the process to complete and return its output.
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>>;
+    async fn wait_with_output(self) -> io::Result<Output>;
 }
 
 /// A trait that provides a subset of the methods of `std::process::Command`.
-pub trait RunCommand: fmt::Debug {
+#[async_trait]
+pub trait RunCommand: fmt::Debug + Send {
     /// The type returned by `spawn`.
-    type C: CommandChild + 'static;
+    type C: CommandChild + Send + 'static;
 
     /// Append `arg` to the process commandline.
     fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self;
@@ -112,7 +113,7 @@ pub trait RunCommand: fmt::Debug {
     /// Set the process' stderr from `cfg`.
     fn stderr(&mut self, cfg: Stdio) -> &mut Self;
     /// Execute the process and return a process object.
-    fn spawn(&mut self) -> SFuture<Self::C>;
+    async fn spawn(&mut self) -> Result<Self::C>;
 }
 
 /// A trait that provides a means to create objects implementing `RunCommand`.
@@ -132,7 +133,7 @@ pub trait CommandCreator {
 }
 
 /// A trait for simplifying the normal case while still allowing the mock case requiring mutability.
-pub trait CommandCreatorSync: Clone + 'static {
+pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
     type Cmd: RunCommand;
 
     fn new(client: &Client) -> Self;
@@ -141,40 +142,41 @@ pub trait CommandCreatorSync: Clone + 'static {
 }
 
 pub struct Child {
-    inner: tokio_process::Child,
+    inner: tokio::process::Child,
     token: Acquired,
 }
 
 /// Trivial implementation of `CommandChild` for `std::process::Child`.
+#[async_trait]
 impl CommandChild for Child {
     type I = ChildStdin;
     type O = ChildStdout;
     type E = ChildStderr;
 
     fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.inner.stdin().take()
+        self.inner.stdin.take()
     }
     fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.inner.stdout().take()
+        self.inner.stdout.take()
     }
     fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.inner.stderr().take()
+        self.inner.stderr.take()
     }
 
-    fn wait(self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
-        let Child { inner, token } = self;
-        Box::new(inner.map(|ret| {
+    async fn wait(self) -> io::Result<ExitStatus> {
+        let Child { mut inner, token } = self;
+        inner.wait().await.map(|ret| {
             drop(token);
             ret
-        }))
+        })
     }
 
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
+    async fn wait_with_output(self) -> io::Result<Output> {
         let Child { inner, token } = self;
-        Box::new(inner.wait_with_output().map(|ret| {
+        inner.wait_with_output().await.map(|ret| {
             drop(token);
             ret
-        }))
+        })
     }
 }
 
@@ -197,6 +199,7 @@ impl AsyncCommand {
 }
 
 /// Trivial implementation of `RunCommand` for `std::process::Command`.
+#[async_trait]
 impl RunCommand for AsyncCommand {
     type C = Child;
 
@@ -259,21 +262,23 @@ impl RunCommand for AsyncCommand {
         self.inner().stderr(cfg);
         self
     }
-    fn spawn(&mut self) -> SFuture<Child> {
+    async fn spawn(&mut self) -> Result<Child> {
         let mut inner = self.inner.take().unwrap();
         inner.env_remove("MAKEFLAGS");
         inner.env_remove("MFLAGS");
         inner.env_remove("CARGO_MAKEFLAGS");
         self.jobserver.configure(&mut inner);
-        Box::new(self.jobserver.acquire().and_then(move |token| {
-            let child = inner
-                .spawn_async()
-                .with_context(|| format!("failed to spawn {:?}", inner))?;
-            Ok(Child {
-                inner: child,
-                token,
-            })
-        }))
+
+        let token = self.jobserver.acquire().await?;
+        let mut inner = tokio::process::Command::from(inner);
+        let child = inner
+            .spawn()
+            .with_context(|| format!("failed to spawn {:?}", inner))?;
+
+        Ok(Child {
+            inner: child,
+            token,
+        })
     }
 }
 
@@ -377,6 +382,7 @@ impl MockChild {
     }
 }
 
+#[async_trait]
 impl CommandChild for MockChild {
     type I = io::Cursor<Vec<u8>>;
     type O = io::Cursor<Vec<u8>>;
@@ -392,23 +398,23 @@ impl CommandChild for MockChild {
         self.stderr.take()
     }
 
-    fn wait(mut self) -> Box<dyn Future<Item = ExitStatus, Error = io::Error>> {
-        Box::new(future::result(self.wait_result.take().unwrap()))
+    async fn wait(mut self) -> io::Result<ExitStatus> {
+        self.wait_result.take().unwrap()
     }
 
-    fn wait_with_output(self) -> Box<dyn Future<Item = Output, Error = io::Error>> {
+    async fn wait_with_output(self) -> io::Result<Output> {
         let MockChild {
             stdout,
             stderr,
             wait_result,
             ..
         } = self;
-        let result = wait_result.unwrap().map(|status| Output {
+
+        wait_result.unwrap().map(|status| Output {
             status,
             stdout: stdout.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
             stderr: stderr.map(|c| c.into_inner()).unwrap_or_else(Vec::new),
-        });
-        Box::new(future::result(result))
+        })
     }
 }
 
@@ -434,6 +440,7 @@ pub struct MockCommand {
     pub args: Vec<OsString>,
 }
 
+#[async_trait]
 impl RunCommand for MockCommand {
     type C = MockChild;
 
@@ -479,10 +486,10 @@ impl RunCommand for MockCommand {
     fn stderr(&mut self, _cfg: Stdio) -> &mut MockCommand {
         self
     }
-    fn spawn(&mut self) -> SFuture<MockChild> {
+    async fn spawn(&mut self) -> Result<MockChild> {
         match self.child.take().unwrap() {
-            ChildOrCall::Child(c) => Box::new(future::result(c)),
-            ChildOrCall::Call(f) => Box::new(future::result(f(&self.args))),
+            ChildOrCall::Child(c) => c,
+            ChildOrCall::Call(f) => f(&self.args),
         }
     }
 }
@@ -532,7 +539,7 @@ impl CommandCreator for MockCommandCreator {
 }
 
 /// To simplify life for using a `CommandCreator` across multiple threads.
-impl<T: CommandCreator + 'static> CommandCreatorSync for Arc<Mutex<T>> {
+impl<T: CommandCreator + 'static + Send> CommandCreatorSync for Arc<Mutex<T>> {
     type Cmd = T::Cmd;
 
     fn new(client: &Client) -> Arc<Mutex<T>> {
@@ -549,7 +556,6 @@ mod test {
     use super::*;
     use crate::jobserver::Client;
     use crate::test::utils::*;
-    use futures::Future;
     use std::ffi::OsStr;
     use std::io;
     use std::process::{ExitStatus, Output};

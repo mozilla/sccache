@@ -13,14 +13,15 @@
 // limitations under the License.
 
 #![deny(rust_2018_idioms)]
+#![allow(clippy::type_complexity, clippy::new_without_default)]
 #![recursion_limit = "256"]
 
+#[macro_use]
+extern crate async_trait;
 #[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate counted_array;
-#[macro_use]
-extern crate futures;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
 #[macro_use]

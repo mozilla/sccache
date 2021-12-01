@@ -24,11 +24,13 @@ required-features = ["dist-server"]
 [dependencies]
 anyhow = "1.0"
 ar = { version = "0.8", optional = true }
+async-trait = "0.1"
 atty = "0.2.6"
 base64 = "0.13"
 bincode = "1"
 blake3 = "0.3"
 byteorder = "1.0"
+bytes = "1"
 chrono = { version = "0.4", optional = true }
 clap = "2.23.0"
 counted-array = "0.1"
@@ -36,12 +38,12 @@ directories = "3"
 env_logger = "0.8"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
-futures = "0.1.11"
-futures_03 = { package = "futures", version = "0.3", features = ["compat", "thread-pool"] }
+futures = "0.3"
+futures-locks = "0.6"
 hmac = { version = "0.10", optional = true }
-http = "0.1"
-hyper = { version = "0.12", optional = true }
-hyperx = { version = "0.12", optional = true }
+http = "0.2"
+hyper = { version = "0.14", optional = true, features = ["server"] }
+hyperx = { version = "0.13", optional = true }
 jobserver = "0.1"
 jsonwebtoken = { version = "7", optional = true }
 lazy_static = "1.0.0"
@@ -56,9 +58,9 @@ number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.7"
-redis = { version = "0.17", optional = true }
+redis = { version = "0.21", optional = true, default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
 regex = "1"
-reqwest = { version = "0.9.11", optional = true }
+reqwest = { version = "0.11", features = ["json", "blocking"], optional = true }
 retry = "1"
 ring = { version = "0.16", optional = true, features = ["std"] }
 sha-1 = { version = "0.9", optional = true }
@@ -69,13 +71,10 @@ serde_json = "1.0"
 strip-ansi-escapes = "0.1"
 tar = "0.4"
 tempfile = "3"
-tokio-compat = "0.1"
-tokio-io = "0.1"
-tokio-process = "0.2"
-tokio-serde-bincode = "0.1"
-tower = "0.1"
-tokio-tcp = "0.1"
-tokio-timer = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time", "net", "process", "macros"] }
+tokio-serde = "0.8"
+tokio-util = { version = "0.6", features = ["codec"] }
+tower = "0.4"
 toml = "0.5"
 untrusted = { version = "0.7", optional = true }
 url = { version = "2", optional = true }
@@ -105,11 +104,9 @@ selenium-rs = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.4"
-tokio-uds = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-tokio-named-pipes = "0.1"
-tokio-reactor = "0.1"
+parity-tokio-ipc = "0.9"
 
 [target.'cfg(windows)'.dependencies.winapi]
 version = "0.3"
@@ -122,7 +119,7 @@ features = [
 [features]
 default = ["all"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
-azure = ["chrono", "hyper", "hyperx", "url", "hmac", "md-5", "sha2"]
+azure = ["chrono", "hyper", "hyperx", "reqwest", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
 gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "untrusted", "url"]

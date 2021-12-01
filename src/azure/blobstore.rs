@@ -14,14 +14,11 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use futures::{Future, Stream};
 use hmac::{Hmac, Mac, NewMac};
-use hyper::header::HeaderValue;
-use hyper::Method;
 use hyperx::header;
 use md5::{Digest, Md5};
-use reqwest::r#async::{Client, Request};
 use reqwest::Url;
+use reqwest::{header::HeaderValue, Client, Method, Request};
 use sha2::Sha256;
 use std::fmt;
 use std::str::FromStr;
@@ -72,7 +69,7 @@ impl BlobContainer {
         })
     }
 
-    pub fn get(&self, key: &str, creds: &AzureCredentials) -> SFuture<Vec<u8>> {
+    pub async fn get(&self, key: &str, creds: &AzureCredentials) -> Result<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let dt = chrono::Utc::now();
@@ -90,10 +87,7 @@ impl BlobContainer {
             creds,
         );
 
-        let uri_copy = uri.clone();
-        let uri_second_copy = uri.clone();
-
-        let mut request = Request::new(Method::GET, uri);
+        let mut request = Request::new(Method::GET, uri.clone());
         request.headers_mut().insert(
             "x-ms-date",
             HeaderValue::from_str(&date).expect("Date is an invalid header value"),
@@ -108,46 +102,34 @@ impl BlobContainer {
             );
         }
 
-        Box::new(
-            self.client
-                .execute(request)
-                .fwith_context(move || format!("failed GET: {}", uri_copy))
-                .and_then(|res| {
-                    if res.status().is_success() {
-                        let content_length = res
-                            .headers()
-                            .get_hyperx::<header::ContentLength>()
-                            .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), uri_second_copy);
-                            }
-                        }
-                        Ok(bytes)
-                    })
-                }),
-        )
+        let res = self
+            .client
+            .execute(request)
+            .await
+            .with_context(|| format!("failed GET: {}", &uri))?;
+
+        let (bytes, content_length) = if res.status().is_success() {
+            let content_length = res.content_length();
+            (res.bytes().await?, content_length)
+        } else {
+            return Err(BadHttpStatusError(res.status()).into());
+        };
+
+        if let Some(len) = content_length {
+            if len != bytes.len() as u64 {
+                bail!(format!(
+                    "Bad HTTP body size read: {}, expected {}",
+                    bytes.len(),
+                    len
+                ));
+            } else {
+                info!("Read {} bytes from {}", bytes.len(), &uri);
+            }
+        }
+        Ok(bytes.into_iter().collect())
     }
 
-    pub fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> SFuture<()> {
+    pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let dt = chrono::Utc::now();
@@ -206,7 +188,7 @@ impl BlobContainer {
 
         *request.body_mut() = Some(content.into());
 
-        Box::new(self.client.execute(request).then(|result| match result {
+        match self.client.execute(request).await {
             Ok(res) => {
                 if res.status().is_success() {
                     trace!("PUT succeeded");
@@ -220,7 +202,7 @@ impl BlobContainer {
                 trace!("PUT failed with error: {:?}", e);
                 Err(e.into())
             }
-        }))
+        }
     }
 }
 
@@ -266,7 +248,7 @@ fn compute_auth_header(
         format!(
             "SharedKey {}:{}",
             creds.azure_account_name(),
-            signature(&string_to_sign, &account_key)
+            signature(&string_to_sign, account_key)
         )
     })
 }
@@ -285,7 +267,7 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio_compat::runtime::current_thread::Runtime;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn test_signing() {
@@ -332,13 +314,13 @@ mod test {
 
         let container_name = "sccache";
         let creds = AzureCredentials::new(
-            &blob_endpoint,
-            &client_name,
+            blob_endpoint,
+            client_name,
             client_key,
             container_name.to_string(),
         );
 
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let container = BlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
 

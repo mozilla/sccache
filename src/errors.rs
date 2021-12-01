@@ -13,10 +13,6 @@
 // limitations under the License.
 
 pub use anyhow::{anyhow, bail, Context, Error};
-use futures::future;
-use futures::Future;
-use std::boxed::Box;
-use std::fmt::Display;
 use std::process;
 
 // We use `anyhow` for error handling.
@@ -25,7 +21,6 @@ use std::process;
 // - The error types below (`BadHttpStatusError`, etc.) are internal ones that
 //   need to be checked at points other than the outermost error-checking
 //   layer.
-// - There are some combinators below for working with futures.
 
 #[cfg(feature = "hyper")]
 #[derive(Debug)]
@@ -64,73 +59,3 @@ impl std::fmt::Display for ProcessError {
 }
 
 pub type Result<T> = anyhow::Result<T>;
-
-pub type SFuture<T> = Box<dyn Future<Item = T, Error = Error>>;
-pub type SFutureSend<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
-
-pub trait FutureContext<T> {
-    fn fcontext<C>(self, context: C) -> SFuture<T>
-    where
-        C: Display + Send + Sync + 'static;
-
-    fn fwith_context<C, CB>(self, callback: CB) -> SFuture<T>
-    where
-        CB: FnOnce() -> C + 'static,
-        C: Display + Send + Sync + 'static;
-}
-
-impl<F> FutureContext<F::Item> for F
-where
-    F: Future + 'static,
-    F::Error: Into<Error> + Send + Sync,
-{
-    fn fcontext<C>(self, context: C) -> SFuture<F::Item>
-    where
-        C: Display + Send + Sync + 'static,
-    {
-        Box::new(self.then(|r| r.map_err(F::Error::into).context(context)))
-    }
-
-    fn fwith_context<C, CB>(self, callback: CB) -> SFuture<F::Item>
-    where
-        CB: FnOnce() -> C + 'static,
-        C: Display + Send + Sync + 'static,
-    {
-        Box::new(self.then(|r| r.map_err(F::Error::into).context(callback())))
-    }
-}
-
-/// Like `try`, but returns an SFuture instead of a Result.
-macro_rules! ftry {
-    ($e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e.into())) as SFuture<_>,
-        }
-    };
-}
-
-#[cfg(feature = "dist-client")]
-macro_rules! ftry_send {
-    ($e:expr) => {
-        match $e {
-            Ok(v) => v,
-            Err(e) => return Box::new($crate::futures::future::err(e)) as SFutureSend<_>,
-        }
-    };
-}
-
-pub fn f_ok<T>(t: T) -> SFuture<T>
-where
-    T: 'static,
-{
-    Box::new(future::ok(t))
-}
-
-pub fn f_err<T, E>(e: E) -> SFuture<T>
-where
-    T: 'static,
-    E: Into<Error>,
-{
-    Box::new(future::err(e.into()))
-}

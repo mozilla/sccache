@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// For tokio_io::codec::length_delimited::Framed;
-#![allow(deprecated)]
-
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
@@ -30,39 +27,41 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
+use bytes::{buf::BufMut, Bytes, BytesMut};
 use filetime::FileTime;
-use futures::sync::mpsc;
-use futures::{future, stream, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
-use futures_03::compat::Compat;
-use futures_03::executor::ThreadPool;
+use futures::channel::mpsc;
+use futures::future::FutureExt;
+use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
+use futures_locks::RwLock;
 use number_prefix::NumberPrefix;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::metadata;
+use std::future::Future;
 use std::io::{self, Write};
+use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
-use std::rc::Rc;
 use std::sync::Arc;
-#[cfg(feature = "dist-client")]
 use std::sync::Mutex;
-use std::task::{Context, Waker};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+#[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
-use tokio_compat::runtime::current_thread::Runtime;
-use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_serde_bincode::{ReadBincode, WriteBincode};
-use tokio_tcp::TcpListener;
-use tokio_timer::{Delay, Timeout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpListener,
+    runtime::Runtime,
+    time::{self, sleep, Sleep},
+};
+use tokio_serde::Framed;
+use tokio_util::codec::{length_delimited, LengthDelimitedCodec};
 use tower::Service;
 
 use crate::errors::*;
@@ -144,7 +143,7 @@ pub struct DistClientContainer {
 #[cfg(feature = "dist-client")]
 struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
-    pool: ThreadPool,
+    pool: tokio::runtime::Handle,
 
     // From the static dist configuration
     scheduler_url: Option<config::HTTPUrl>,
@@ -169,7 +168,7 @@ enum DistClientState {
 #[cfg(not(feature = "dist-client"))]
 impl DistClientContainer {
     #[cfg(not(feature = "dist-client"))]
-    fn new(config: &Config, _: &ThreadPool) -> Self {
+    fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!("Scheduler address configured but dist feature disabled, disabling distributed sccache")
         }
@@ -182,7 +181,7 @@ impl DistClientContainer {
 
     pub fn reset_state(&self) {}
 
-    pub fn get_status(&self) -> DistInfo {
+    pub async fn get_status(&self) -> DistInfo {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
@@ -193,7 +192,7 @@ impl DistClientContainer {
 
 #[cfg(feature = "dist-client")]
 impl DistClientContainer {
-    fn new(config: &Config, pool: &ThreadPool) -> Self {
+    fn new(config: &Config, pool: &tokio::runtime::Handle) -> Self {
         let config = DistClientConfig {
             pool: pool.clone(),
             scheduler_url: config.dist.scheduler_url.clone(),
@@ -231,28 +230,41 @@ impl DistClientContainer {
         }
     }
 
-    pub fn get_status(&self) -> DistInfo {
+    pub fn get_status(&self) -> impl Future<Output = DistInfo> {
+        // This function can't be wholly async because we can't hold mutex guard
+        // across the yield point - instead, either return an immediately ready
+        // future or perform async query with the client cloned beforehand.
         let mut guard = self.state.lock();
         let state = guard.as_mut().unwrap();
         let state: &mut DistClientState = &mut **state;
-        match state {
-            DistClientState::Disabled => DistInfo::Disabled("disabled".to_string()),
-            DistClientState::FailWithMessage(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, auth not configured".to_string(),
-            ),
-            DistClientState::RetryCreateAt(cfg, _) => DistInfo::NotConnected(
-                cfg.scheduler_url.clone(),
-                "enabled, not connected, will retry".to_string(),
-            ),
-            DistClientState::Some(cfg, client) => match client.do_get_status().wait() {
-                Ok(res) => DistInfo::SchedulerStatus(cfg.scheduler_url.clone(), res),
-                Err(_) => DistInfo::NotConnected(
+        let (client, scheduler_url) = match state {
+            DistClientState::Disabled => {
+                return Either::Left(future::ready(DistInfo::Disabled("disabled".to_string())))
+            }
+            DistClientState::FailWithMessage(cfg, _) => {
+                return Either::Left(future::ready(DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
+                    "enabled, auth not configured".to_string(),
+                )))
+            }
+            DistClientState::RetryCreateAt(cfg, _) => {
+                return Either::Left(future::ready(DistInfo::NotConnected(
+                    cfg.scheduler_url.clone(),
+                    "enabled, not connected, will retry".to_string(),
+                )))
+            }
+            DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
+        };
+
+        Either::Right(Box::pin(async move {
+            match client.do_get_status().await {
+                Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
+                Err(_) => DistInfo::NotConnected(
+                    scheduler_url.clone(),
                     "could not communicate with scheduler".to_string(),
                 ),
-            },
-        }
+            }
+        }))
     }
 
     fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
@@ -351,7 +363,7 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                match dist_client.do_get_status().wait() {
+                match config.pool.block_on(dist_client.do_get_status()) {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -390,27 +402,22 @@ impl DistClientContainer {
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
     let client = unsafe { Client::new() };
-    let runtime = Runtime::new()?;
-    let pool = ThreadPool::builder()
-        .pool_size(std::cmp::max(20, 2 * num_cpus::get()))
-        .create()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .build()?;
+    let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
     let storage = storage_from_config(config, &pool);
-    let res = SccacheServer::<ProcessCommandCreator>::new(
-        port,
-        pool,
-        runtime,
-        client,
-        dist_client,
-        storage,
-    );
+    let res =
+        SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
             let port = srv.port();
             info!("server started, listening on port {}", port);
             notify_server_startup(&notify, ServerStartup::Ok { port })?;
-            srv.run(future::empty::<(), ()>())?;
+            srv.run(future::pending::<()>())?;
             Ok(())
         }
         Err(e) => {
@@ -441,19 +448,19 @@ pub struct SccacheServer<C: CommandCreatorSync> {
 impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn new(
         port: u16,
-        pool: ThreadPool,
         runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
     ) -> Result<SccacheServer<C>> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
-        let listener = TcpListener::bind(&SocketAddr::V4(addr))?;
+        let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
 
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
         let (wait, info) = WaitUntilZero::new();
+        let pool = runtime.handle().clone();
         let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 
         Ok(SccacheServer {
@@ -480,8 +487,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns a reference to a thread pool to run work on
     #[allow(dead_code)]
-    pub fn pool(&self) -> &ThreadPool {
-        &self.service.pool
+    pub fn pool(&self) -> &tokio::runtime::Handle {
+        &self.service.rt
     }
 
     /// Returns a reference to the command creator this server will use
@@ -504,13 +511,10 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     pub fn run<F>(self, shutdown: F) -> io::Result<()>
     where
         F: Future,
+        C: Send,
     {
-        self._run(Box::new(shutdown.then(|_| Ok(()))))
-    }
-
-    fn _run<'a>(self, shutdown: Box<dyn Future<Item = (), Error = ()> + 'a>) -> io::Result<()> {
         let SccacheServer {
-            mut runtime,
+            runtime,
             listener,
             rx,
             service,
@@ -520,15 +524,19 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         // Create our "server future" which will simply handle all incoming
         // connections in separate tasks.
-        let server = listener.incoming().for_each(move |socket| {
-            trace!("incoming connection");
-            tokio_compat::runtime::current_thread::TaskExecutor::current()
-                .spawn_local(Box::new(service.clone().bind(socket).map_err(|err| {
-                    error!("{}", err);
-                })))
-                .unwrap();
-            Ok(())
-        });
+        let server = async move {
+            loop {
+                let (socket, _) = listener.accept().await?;
+                trace!("incoming connection");
+                let conn = service.clone().bind(socket).map_err(|res| {
+                    error!("Failed to bind socket: {}", res);
+                });
+
+                // We're not interested if the task panicked; immediately process
+                // another connection
+                let _ = tokio::spawn(conn);
+            }
+        };
 
         // Right now there's a whole bunch of ways to shut down this server for
         // various purposes. These include:
@@ -542,39 +550,37 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // inactivity, and this is then select'd with the `shutdown` future
         // passed to this function.
 
-        let shutdown = shutdown.map(|a| {
+        let shutdown = shutdown.map(|_| {
             info!("shutting down due to explicit signal");
-            a
         });
 
-        let mut futures = vec![
-            Box::new(server) as Box<dyn Future<Item = _, Error = _>>,
-            Box::new(
-                shutdown
-                    .map_err(|()| io::Error::new(io::ErrorKind::Other, "shutdown signal failed")),
-            ),
-        ];
-
-        let shutdown_idle = ShutdownOrInactive {
-            rx,
-            timeout: if timeout != Duration::new(0, 0) {
-                Some(Delay::new(Instant::now() + timeout))
-            } else {
-                None
-            },
-            timeout_dur: timeout,
-        };
-        futures.push(Box::new(shutdown_idle.map(|a| {
+        let shutdown_idle = async {
+            ShutdownOrInactive {
+                rx,
+                timeout: if timeout != Duration::new(0, 0) {
+                    Some(Box::pin(sleep(timeout)))
+                } else {
+                    None
+                },
+                timeout_dur: timeout,
+            }
+            .await;
             info!("shutting down due to being idle or request");
-            a
-        })));
+        };
 
-        let server = future::select_all(futures);
-        runtime.block_on(server).map_err(|p| p.0)?;
+        runtime.block_on(async {
+            futures::select! {
+                server = server.fuse() => server,
+                _res = shutdown.fuse() => Ok(()),
+                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
+            }
+        })?;
 
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
         info!(
-            "moving into the shutdown phase now, waiting at most 10 seconds \
-             for all client requests to complete"
+            "moving into the shutdown phase now, waiting at most {} seconds \
+             for all client requests to complete",
+            SHUTDOWN_TIMEOUT.as_secs()
         );
 
         // Once our server has shut down either due to inactivity or a manual
@@ -584,15 +590,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         //
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
-        runtime
-            .block_on(Timeout::new(Compat::new(wait), Duration::new(30, 0)))
-            .map_err(|e| {
-                if e.is_inner() {
-                    e.into_inner().unwrap()
-                } else {
-                    io::Error::new(io::ErrorKind::Other, e)
-                }
-            })?;
+        runtime.block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })?;
 
         info!("ok, fully shutting down now");
 
@@ -600,10 +598,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     }
 }
 
+/// Maps a compiler proxy path to a compiler proxy and it's last modification time
+type CompilerProxyMap<C> = HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>;
 type CompilerMap<C> = HashMap<PathBuf, Option<CompilerCacheEntry<C>>>;
 
 /// entry of the compiler cache
-struct CompilerCacheEntry<C: CommandCreatorSync> {
+struct CompilerCacheEntry<C> {
     /// compiler argument trait obj
     pub compiler: Box<dyn Compiler<C>>,
     /// modification time of the compilers executable file
@@ -612,10 +612,7 @@ struct CompilerCacheEntry<C: CommandCreatorSync> {
     pub dist_info: Option<(PathBuf, FileTime)>,
 }
 
-impl<C> CompilerCacheEntry<C>
-where
-    C: CommandCreatorSync,
-{
+impl<C> CompilerCacheEntry<C> {
     fn new(
         compiler: Box<dyn Compiler<C>>,
         mtime: FileTime,
@@ -630,28 +627,32 @@ where
 }
 /// Service implementation for sccache
 #[derive(Clone)]
-struct SccacheService<C: CommandCreatorSync> {
+struct SccacheService<C>
+where
+    C: Send,
+{
     /// Server statistics.
-    stats: Rc<RefCell<ServerStats>>,
+    stats: Arc<RwLock<ServerStats>>,
 
     /// Distributed sccache client
-    dist_client: Rc<DistClientContainer>,
+    dist_client: Arc<DistClientContainer>,
 
     /// Cache storage.
     storage: Arc<dyn Storage>,
 
     /// A cache of known compiler info.
-    compilers: Rc<RefCell<CompilerMap<C>>>,
+    compilers: Arc<RwLock<CompilerMap<C>>>,
 
     /// map the cwd with compiler proxy path to a proxy resolver, which
     /// will dynamically resolve the input compiler for the current context
     /// (usually file or current working directory)
     /// the associated `FileTime` is the modification time of
     /// the compiler proxy, in order to track updates of the proxy itself
-    compiler_proxies: Rc<RefCell<HashMap<PathBuf, (Box<dyn CompilerProxy<C>>, FileTime)>>>,
+    compiler_proxies: Arc<RwLock<CompilerProxyMap<C>>>,
 
-    /// Thread pool to execute work in
-    pool: ThreadPool,
+    /// Task pool for blocking (used mostly for disk I/O-bound tasks) and
+    // non-blocking tasks
+    rt: tokio::runtime::Handle,
 
     /// An object for creating commands.
     ///
@@ -685,13 +686,13 @@ pub enum ServerMessage {
     Shutdown,
 }
 
-impl<C> Service<SccacheRequest> for SccacheService<C>
+impl<C> Service<SccacheRequest> for Arc<SccacheService<C>>
 where
-    C: CommandCreatorSync + 'static,
+    C: CommandCreatorSync + Send + Sync + 'static,
 {
     type Response = SccacheResponse;
     type Error = Error;
-    type Future = SFuture<Self::Response>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response>> + Send + 'static>>;
 
     fn call(&mut self, req: SccacheRequest) -> Self::Future {
         trace!("handle_client");
@@ -701,75 +702,91 @@ where
         // that every message is received.
         drop(self.tx.clone().start_send(ServerMessage::Request));
 
-        let res: SFuture<Response> = match req.into_inner() {
-            Request::Compile(compile) => {
-                debug!("handle_client: compile");
-                self.stats.borrow_mut().compile_requests += 1;
-                return self.handle_compile(compile);
+        let me = self.clone();
+        Box::pin(async move {
+            match req.into_inner() {
+                Request::Compile(compile) => {
+                    debug!("handle_client: compile");
+                    me.stats.write().await.compile_requests += 1;
+                    me.handle_compile(compile).await
+                }
+                Request::GetStats => {
+                    debug!("handle_client: get_stats");
+                    me.get_info()
+                        .await
+                        .map(|i| Response::Stats(Box::new(i)))
+                        .map(Message::WithoutBody)
+                }
+                Request::DistStatus => {
+                    debug!("handle_client: dist_status");
+                    me.get_dist_status()
+                        .await
+                        .map(Response::DistStatus)
+                        .map(Message::WithoutBody)
+                }
+                Request::ZeroStats => {
+                    debug!("handle_client: zero_stats");
+                    me.zero_stats().await;
+                    me.get_info()
+                        .await
+                        .map(|i| Response::Stats(Box::new(i)))
+                        .map(Message::WithoutBody)
+                }
+                Request::Shutdown => {
+                    debug!("handle_client: shutdown");
+                    let mut tx = me.tx.clone();
+                    future::try_join(
+                        async {
+                            let _ = tx.send(ServerMessage::Shutdown).await;
+                            Ok(())
+                        },
+                        me.get_info(),
+                    )
+                    .await
+                    .map(move |(_, info)| {
+                        Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
+                    })
+                }
             }
-            Request::GetStats => {
-                debug!("handle_client: get_stats");
-                Box::new(self.get_info().map(|i| Response::Stats(Box::new(i))))
-            }
-            Request::DistStatus => {
-                debug!("handle_client: dist_status");
-                Box::new(self.get_dist_status().map(Response::DistStatus))
-            }
-            Request::ZeroStats => {
-                debug!("handle_client: zero_stats");
-                self.zero_stats();
-                Box::new(self.get_info().map(|i| Response::Stats(Box::new(i))))
-            }
-            Request::Shutdown => {
-                debug!("handle_client: shutdown");
-                let future = self
-                    .tx
-                    .clone()
-                    .send(ServerMessage::Shutdown)
-                    .then(|_| Ok(()));
-                let info_future = self.get_info();
-                return Box::new(future.join(info_future).map(move |(_, info)| {
-                    Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
-                }));
-            }
-        };
-
-        Box::new(res.map(Message::WithoutBody))
+        })
     }
 
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        Ok(Async::Ready(()))
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 
+use futures::future::Either;
+use futures::TryStreamExt;
+
 impl<C> SccacheService<C>
 where
-    C: CommandCreatorSync,
+    C: CommandCreatorSync + Clone + Send + Sync + 'static,
 {
     pub fn new(
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
         client: &Client,
-        pool: ThreadPool,
+        rt: tokio::runtime::Handle,
         tx: mpsc::Sender<ServerMessage>,
         info: ActiveInfo,
     ) -> SccacheService<C> {
         SccacheService {
-            stats: Rc::new(RefCell::new(ServerStats::default())),
-            dist_client: Rc::new(dist_client),
+            stats: Arc::new(RwLock::new(ServerStats::default())),
+            dist_client: Arc::new(dist_client),
             storage,
-            compilers: Rc::new(RefCell::new(HashMap::new())),
-            compiler_proxies: Rc::new(RefCell::new(HashMap::new())),
-            pool,
+            compilers: Arc::new(RwLock::new(HashMap::new())),
+            compiler_proxies: Arc::new(RwLock::new(HashMap::new())),
+            rt,
             creator: C::new(client),
             tx,
             info,
         }
     }
 
-    fn bind<T>(mut self, socket: T) -> impl Future<Item = (), Error = Error>
+    fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
     where
-        T: AsyncRead + AsyncWrite + 'static,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
         if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
@@ -782,61 +799,56 @@ where
         let io = builder.new_framed(socket);
 
         let (sink, stream) = SccacheTransport {
-            inner: WriteBincode::new(ReadBincode::new(io)),
+            inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
         }
         .split();
-        let sink = sink.sink_from_err::<Error>();
+        let sink = sink.sink_err_into::<Error>();
 
+        let me = Arc::new(self);
         stream
-            .from_err::<Error>()
-            .and_then(move |input| self.call(input))
-            .and_then(|message| {
-                let f: Box<dyn Stream<Item = _, Error = _>> = match message {
-                    Message::WithoutBody(message) => Box::new(stream::once(Ok(Frame::Message {
-                        message,
-                        body: false,
-                    }))),
-                    Message::WithBody(message, body) => Box::new(
-                        stream::once(Ok(Frame::Message {
-                            message,
-                            body: true,
-                        }))
-                        .chain(Compat::new(body).map(|chunk| Frame::Body { chunk: Some(chunk) }))
-                        .chain(stream::once(Ok(Frame::Body { chunk: None }))),
-                    ),
+            .err_into::<Error>()
+            .and_then(move |input| me.clone().call(input))
+            .and_then(move |message| async move {
+                let fut = match message {
+                    Message::WithoutBody(message) => {
+                        let stream = stream::once(async move { Ok(Frame::Message { message }) });
+                        Either::Left(stream)
+                    }
+                    Message::WithBody(message, body) => {
+                        let stream = stream::once(async move { Ok(Frame::Message { message }) })
+                            .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
+                            .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
+                        Either::Right(stream)
+                    }
                 };
-                Ok(f.from_err::<Error>())
+                Ok(Box::pin(fut))
             })
-            .flatten()
+            .try_flatten()
             .forward(sink)
-            .map(|_| ())
     }
 
     /// Get dist status.
-    fn get_dist_status(&self) -> SFuture<DistInfo> {
-        f_ok(self.dist_client.get_status())
+    async fn get_dist_status(&self) -> Result<DistInfo> {
+        Ok(self.dist_client.get_status().await)
     }
 
     /// Get info and stats about the cache.
-    fn get_info(&self) -> SFuture<ServerInfo> {
-        let stats = self.stats.borrow().clone();
+    async fn get_info(&self) -> Result<ServerInfo> {
+        let stats = self.stats.read().await.clone();
         let cache_location = self.storage.location();
-        Box::new(
-            self.storage
-                .current_size()
-                .join(self.storage.max_size())
-                .map(move |(cache_size, max_cache_size)| ServerInfo {
-                    stats,
-                    cache_location,
-                    cache_size,
-                    max_cache_size,
-                }),
+        futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
+            move |(cache_size, max_cache_size)| ServerInfo {
+                stats,
+                cache_location,
+                cache_size,
+                max_cache_size,
+            },
         )
     }
 
     /// Zero stats about the cache.
-    fn zero_stats(&self) {
-        *self.stats.borrow_mut() = ServerStats::default();
+    async fn zero_stats(&self) {
+        *self.stats.write().await = ServerStats::default();
     }
 
     /// Handle a compile request from a client.
@@ -844,196 +856,175 @@ where
     /// This will handle a compile request entirely, generating a response with
     /// the inital information and an optional body which will eventually
     /// contain the results of the compilation.
-    fn handle_compile(&self, compile: Compile) -> SFuture<SccacheResponse> {
+    async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
         let exe = compile.exe;
         let cmd = compile.args;
         let cwd: PathBuf = compile.cwd.into();
         let env_vars = compile.env_vars;
         let me = self.clone();
 
-        Box::new(
-            self.compiler_info(exe.into(), cwd.clone(), &env_vars)
-                .map(move |info| me.check_compiler(info, cmd, cwd, env_vars)),
-        )
+        let info = self.compiler_info(exe.into(), cwd.clone(), &env_vars).await;
+        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
-    fn compiler_info(
+    async fn compiler_info(
         &self,
         path: PathBuf,
         cwd: PathBuf,
         env: &[(OsString, OsString)],
-    ) -> SFuture<Result<Box<dyn Compiler<C>>>> {
+    ) -> Result<Box<dyn Compiler<C>>> {
         trace!("compiler_info");
 
         let me = self.clone();
         let me1 = self.clone();
-
         // lookup if compiler proxy exists for the current compiler path
 
         let path2 = path.clone();
         let path1 = path.clone();
         let env = env.to_vec();
 
-        let resolve_w_proxy = {
-            let compiler_proxies_borrow = self.compiler_proxies.borrow();
+        let resolved_with_proxy = {
+            let compiler_proxies_borrow = self.compiler_proxies.read().await;
+            // Create an owned future - compiler proxy is not Send so we can't
+            // really await while borrowing the proxy since rustc is too conservative
+            let resolve_proxied_executable =
+                compiler_proxies_borrow
+                    .get(&path)
+                    .map(|(compiler_proxy, _filetime)| {
+                        compiler_proxy.resolve_proxied_executable(
+                            self.creator.clone(),
+                            cwd.clone(),
+                            env.as_slice(),
+                        )
+                    });
 
-            if let Some((compiler_proxy, _filetime)) = compiler_proxies_borrow.get(&path) {
-                let fut = compiler_proxy.resolve_proxied_executable(
-                    self.creator.clone(),
-                    cwd.clone(),
-                    env.as_slice(),
-                );
-                Box::new(fut.then(|res: Result<_>| Ok(res.ok())))
-            } else {
-                f_ok(None)
+            match resolve_proxied_executable {
+                Some(fut) => fut.await.ok(),
+                None => None,
             }
         };
 
         // use the supplied compiler path as fallback, lookup its modification time too
-        let w_fallback = resolve_w_proxy.then(move |res: Result<Option<(PathBuf, FileTime)>>| {
-            let opt = match res {
-                Ok(Some(x)) => Some(x), // TODO resolve the path right away
-                _ => {
-                    // fallback to using the path directly
-                    metadata(&path2)
+        let (resolved_compiler_path, mtime) = match resolved_with_proxy {
+            Some(x) => x, // TODO resolve the path right away
+            _ => {
+                // fallback to using the path directly
+                metadata(&path2)
+                    .map(|attr| FileTime::from_last_modification_time(&attr))
+                    .ok()
+                    .map(move |filetime| (path2, filetime))
+                    .expect("Must contain sane data, otherwise mtime is not avail")
+            }
+        };
+
+        let dist_info = match me1.dist_client.get_client() {
+            Ok(Some(ref client)) => {
+                if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
+                    match metadata(&archive)
                         .map(|attr| FileTime::from_last_modification_time(&attr))
-                        .ok()
-                        .map(move |filetime| (path2, filetime))
-                }
-            };
-            f_ok(opt)
-        });
-
-        let lookup_compiler = w_fallback.and_then(move |opt: Option<(PathBuf, FileTime)>| {
-            let (resolved_compiler_path, mtime) =
-                opt.expect("Must contain sane data, otherwise mtime is not avail");
-
-            let dist_info = match me1.dist_client.get_client() {
-                Ok(Some(ref client)) => {
-                    if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
-                        match metadata(&archive)
-                            .map(|attr| FileTime::from_last_modification_time(&attr))
-                        {
-                            Ok(mtime) => Some((archive, mtime)),
-                            _ => None,
-                        }
-                    } else {
-                        None
+                    {
+                        Ok(mtime) => Some((archive, mtime)),
+                        _ => None,
                     }
+                } else {
+                    None
                 }
-                _ => None,
-            };
+            }
+            _ => None,
+        };
 
-            let opt = match me1.compilers.borrow().get(&resolved_compiler_path) {
-                // It's a hit only if the mtime and dist archive data matches.
-                Some(&Some(ref entry)) => {
-                    if entry.mtime == mtime && entry.dist_info == dist_info {
-                        Some(entry.compiler.clone())
-                    } else {
-                        None
-                    }
+        let opt = match me1.compilers.read().await.get(&resolved_compiler_path) {
+            // It's a hit only if the mtime and dist archive data matches.
+            Some(&Some(ref entry)) => {
+                if entry.mtime == mtime && entry.dist_info == dist_info {
+                    Some(entry.compiler.box_clone())
+                } else {
+                    None
                 }
-                _ => None,
-            };
-            f_ok((resolved_compiler_path, mtime, opt, dist_info))
-        });
+            }
+            _ => None,
+        };
 
-        let obtain = lookup_compiler.and_then(
-            move |(resolved_compiler_path, mtime, opt, dist_info): (
-                PathBuf,
-                FileTime,
-                Option<Box<dyn Compiler<C>>>,
-                Option<(PathBuf, FileTime)>,
-            )| {
-                match opt {
-                    Some(info) => {
-                        trace!("compiler_info cache hit");
-                        f_ok(Ok(info))
+        match opt {
+            Some(info) => {
+                trace!("compiler_info cache hit");
+                Ok(info)
+            }
+            None => {
+                trace!("compiler_info cache miss");
+                // Check the compiler type and return the result when
+                // finished. This generally involves invoking the compiler,
+                // so do it asynchronously.
+
+                // the compiler path might be compiler proxy, so it is important to use
+                // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
+                let info = get_compiler_info::<C>(
+                    me.creator.clone(),
+                    &path1,
+                    &cwd,
+                    env.as_slice(),
+                    &me.rt,
+                    dist_info.clone().map(|(p, _)| p),
+                )
+                .await;
+
+                let (c, proxy) = match info {
+                    Ok((c, proxy)) => (c.clone(), proxy.clone()),
+                    Err(err) => {
+                        trace!("Inserting PLAIN cache map info for {:?}", &path);
+                        me.compilers.write().await.insert(path, None);
+
+                        return Err(err);
                     }
-                    None => {
-                        trace!("compiler_info cache miss");
-                        // Check the compiler type and return the result when
-                        // finished. This generally involves invoking the compiler,
-                        // so do it asynchronously.
+                };
 
-                        // the compiler path might be compiler proxy, so it is important to use
-                        // `path` (or its clone `path1`) to resolve using that one, not using `resolved_compiler_path`
-                        let x = get_compiler_info::<C>(
-                            me.creator.clone(),
-                            &path1,
-                            &cwd,
-                            env.as_slice(),
-                            &me.pool,
-                            dist_info.clone().map(|(p, _)| p),
-                        );
-
-                        Box::new(x.then(
-                            move |info: Result<(
-                                Box<dyn Compiler<C>>,
-                                Option<Box<dyn CompilerProxy<C>>>,
-                            )>| {
-                                match info {
-                                    Ok((ref c, ref proxy)) => {
-                                        // register the proxy for this compiler, so it will be used directly from now on
-                                        // and the true/resolved compiler will create table hits in the hash map
-                                        // based on the resolved path
-                                        if let Some(proxy) = proxy {
-                                            trace!(
-                                                "Inserting new path proxy {:?} @ {:?} -> {:?}",
-                                                &path,
-                                                &cwd,
-                                                resolved_compiler_path
-                                            );
-                                            let proxy: Box<dyn CompilerProxy<C>> =
-                                                proxy.box_clone();
-                                            me.compiler_proxies
-                                                .borrow_mut()
-                                                .insert(path, (proxy, mtime));
-                                        }
-                                        // TODO add some safety checks in case a proxy exists, that the initial `path` is not
-                                        // TODO the same as the resolved compiler binary
-
-                                        // cache
-                                        let map_info =
-                                            CompilerCacheEntry::new(c.clone(), mtime, dist_info);
-                                        trace!(
-                                            "Inserting POSSIBLY PROXIED cache map info for {:?}",
-                                            &resolved_compiler_path
-                                        );
-                                        me.compilers
-                                            .borrow_mut()
-                                            .insert(resolved_compiler_path, Some(map_info));
-                                    }
-                                    Err(_) => {
-                                        trace!("Inserting PLAIN cache map info for {:?}", &path);
-                                        me.compilers.borrow_mut().insert(path, None);
-                                    }
-                                }
-                                // drop the proxy information, response is compiler only
-                                let r: Result<Box<dyn Compiler<C>>> = info.map(|info| info.0);
-                                f_ok(r)
-                            },
-                        ))
-                    }
+                // register the proxy for this compiler, so it will be used directly from now on
+                // and the true/resolved compiler will create table hits in the hash map
+                // based on the resolved path
+                if let Some(proxy) = proxy {
+                    trace!(
+                        "Inserting new path proxy {:?} @ {:?} -> {:?}",
+                        &path,
+                        &cwd,
+                        resolved_compiler_path
+                    );
+                    me.compiler_proxies
+                        .write()
+                        .await
+                        .insert(path, (proxy, mtime));
                 }
-            },
-        );
+                // TODO add some safety checks in case a proxy exists, that the initial `path` is not
+                // TODO the same as the resolved compiler binary
 
-        Box::new(obtain)
+                // cache
+                let map_info = CompilerCacheEntry::new(c.clone(), mtime, dist_info);
+                trace!(
+                    "Inserting POSSIBLY PROXIED cache map info for {:?}",
+                    &resolved_compiler_path
+                );
+                me.compilers
+                    .write()
+                    .await
+                    .insert(resolved_compiler_path, Some(map_info));
+
+                // drop the proxy information, response is compiler only
+                Ok(c)
+            }
+        }
     }
 
     /// Check that we can handle and cache `cmd` when run with `compiler`.
     /// If so, run `start_compile_task` to execute it.
-    fn check_compiler(
+    async fn check_compiler(
         &self,
         compiler: Result<Box<dyn Compiler<C>>>,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
     ) -> SccacheResponse {
-        let mut stats = self.stats.borrow_mut();
+        let mut stats = self.stats.write().await;
         match compiler {
             Err(e) => {
                 debug!("check_compiler: Unsupported compiler: {}", e.to_string());
@@ -1089,7 +1080,7 @@ where
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
-        tx: mpsc::Sender<Result<Response>>,
+        mut tx: mpsc::Sender<Result<Response>>,
     ) {
         let force_recache = env_vars
             .iter()
@@ -1101,27 +1092,39 @@ where
         };
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let result = hasher.get_cached_or_compile(
-            self.dist_client.get_client(),
-            self.creator.clone(),
-            self.storage.clone(),
-            arguments,
-            cwd,
-            env_vars,
-            cache_control,
-            self.pool.clone(),
-        );
         let me = self.clone();
         let kind = compiler.kind();
-        let task = result.then(move |result| {
+        let dist_client = self.dist_client.get_client();
+        let creator = self.creator.clone();
+        let storage = self.storage.clone();
+        let pool = self.rt.clone();
+
+        let task = async move {
+            let result = match dist_client {
+                Ok(client) => {
+                    hasher
+                        .get_cached_or_compile(
+                            client,
+                            creator,
+                            storage,
+                            arguments,
+                            cwd,
+                            env_vars,
+                            cache_control,
+                            pool,
+                        )
+                        .await
+                }
+                Err(e) => Err(e),
+            };
             let mut cache_write = None;
-            let mut stats = me.stats.borrow_mut();
             let mut res = CompileFinished {
                 color_mode,
                 ..Default::default()
             };
             match result {
                 Ok((compiled, out)) => {
+                    let mut stats = me.stats.write().await;
                     match compiled {
                         CompileResult::Error => {
                             stats.cache_errors.increment(&kind);
@@ -1179,6 +1182,7 @@ where
                     res.stderr = stderr;
                 }
                 Err(err) => {
+                    let mut stats = me.stats.write().await;
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
                             debug!("Compilation failed: {:?}", output);
@@ -1219,37 +1223,43 @@ where
                     }
                 }
             };
-            let send = tx.send(Ok(Response::CompileFinished(res)));
+            let send = tx
+                .send(Ok(Response::CompileFinished(res)))
+                .map_err(|e| anyhow!("send on finish failed").context(e));
 
             let me = me.clone();
-            let cache_write = cache_write.then(move |result| {
-                match result {
-                    Err(e) => {
-                        debug!("Error executing cache write: {}", e);
-                        me.stats.borrow_mut().cache_write_errors += 1;
+            let cache_write = async move {
+                if let Some(cache_write) = cache_write {
+                    match cache_write.await {
+                        Err(e) => {
+                            debug!("Error executing cache write: {}", e);
+                            me.stats.write().await.cache_write_errors += 1;
+                        }
+                        //TODO: save cache stats!
+                        Ok(info) => {
+                            debug!(
+                                "[{}]: Cache write finished in {}",
+                                info.object_file_pretty,
+                                util::fmt_duration_as_secs(&info.duration)
+                            );
+                            let mut stats = me.stats.write().await;
+                            stats.cache_writes += 1;
+                            stats.cache_write_duration += info.duration;
+                        }
                     }
-                    //TODO: save cache stats!
-                    Ok(Some(info)) => {
-                        debug!(
-                            "[{}]: Cache write finished in {}",
-                            info.object_file_pretty,
-                            util::fmt_duration_as_secs(&info.duration)
-                        );
-                        me.stats.borrow_mut().cache_writes += 1;
-                        me.stats.borrow_mut().cache_write_duration += info.duration;
-                    }
-
-                    Ok(None) => {}
                 }
                 Ok(())
-            });
+            };
 
-            send.join(cache_write).then(|_| Ok(()))
+            futures::future::try_join(send, cache_write).await?;
+
+            Ok::<_, Error>(())
+        };
+
+        self.rt.spawn(async move {
+            task.await
+                .unwrap_or_else(|e| warn!("Failed to execute task: {:?}", e));
         });
-
-        tokio_compat::runtime::current_thread::TaskExecutor::current()
-            .spawn_local(Box::new(task))
-            .unwrap();
     }
 }
 
@@ -1555,7 +1565,7 @@ impl ServerInfo {
 
 enum Frame<R, R1> {
     Body { chunk: Option<R1> },
-    Message { message: R, body: bool },
+    Message { message: R },
 }
 
 struct Body<R> {
@@ -1569,16 +1579,13 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> futures_03::Stream for Body<R> {
+impl<R> futures::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.receiver).poll().unwrap() {
-            Async::Ready(item) => std::task::Poll::Ready(item),
-            Async::NotReady => std::task::Poll::Pending,
-        }
+        Pin::new(&mut self.receiver).poll_next(cx)
     }
 }
 
@@ -1593,6 +1600,32 @@ impl<R, B> Message<R, B> {
             Message::WithBody(r, _) => r,
             Message::WithoutBody(r) => r,
         }
+    }
+}
+
+struct BincodeCodec;
+impl<T> tokio_serde::Serializer<T> for BincodeCodec
+where
+    T: serde::Serialize,
+{
+    type Error = Error;
+
+    fn serialize(self: Pin<&mut Self>, item: &T) -> std::result::Result<Bytes, Self::Error> {
+        let mut bytes = BytesMut::new();
+        bincode::serialize_into((&mut bytes).writer(), item)?;
+        Ok(bytes.freeze())
+    }
+}
+
+impl<T> tokio_serde::Deserializer<T> for BincodeCodec
+where
+    T: serde::de::DeserializeOwned,
+{
+    type Error = Error;
+
+    fn deserialize(self: Pin<&mut Self>, buf: &BytesMut) -> std::result::Result<T, Self::Error> {
+        let ret = bincode::deserialize(buf)?;
+        Ok(ret)
     }
 }
 
@@ -1611,84 +1644,83 @@ impl<R, B> Message<R, B> {
 ///   `Sink` implementation to switch from `BytesMut` to `Response` meaning that
 ///   all `Response` types pushed in will be converted to `BytesMut` and pushed
 ///   below.
-struct SccacheTransport<I: AsyncRead + AsyncWrite> {
-    inner: WriteBincode<ReadBincode<Framed<I>, Request>, Response>,
+struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+    inner: Framed<
+        futures::stream::ErrInto<
+            futures::sink::SinkErrInto<
+                tokio_util::codec::Framed<I, LengthDelimitedCodec>,
+                Bytes,
+                Error,
+            >,
+            Error,
+        >,
+        Request,
+        Response,
+        BincodeCodec,
+    >,
 }
 
-impl<I: AsyncRead + AsyncWrite> Stream for SccacheTransport<I> {
-    type Item = Message<Request, Body<()>>;
-    type Error = io::Error;
+impl<I: AsyncRead + AsyncWrite + Unpin> Stream for SccacheTransport<I> {
+    type Item = Result<Message<Request, Body<()>>>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
-        let msg = try_ready!(self.inner.poll().map_err(|e| {
-            error!("SccacheTransport::poll failed: {}", e);
-            io::Error::new(io::ErrorKind::Other, e)
-        }));
-        Ok(msg.map(Message::WithoutBody).into())
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner)
+            .poll_next(cx)
+            .map(|r| r.map(|s| s.map(Message::WithoutBody)))
     }
 }
 
-impl<I: AsyncRead + AsyncWrite> Sink for SccacheTransport<I> {
-    type SinkItem = Frame<Response, Response>;
-    type SinkError = io::Error;
+impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for SccacheTransport<I> {
+    type Error = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.inner).poll_ready(cx)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: Frame<Response, Response>) -> Result<()> {
         match item {
-            Frame::Message { message, body } => match self.inner.start_send(message)? {
-                AsyncSink::Ready => Ok(AsyncSink::Ready),
-                AsyncSink::NotReady(message) => {
-                    Ok(AsyncSink::NotReady(Frame::Message { message, body }))
-                }
-            },
-            Frame::Body { chunk: Some(chunk) } => match self.inner.start_send(chunk)? {
-                AsyncSink::Ready => Ok(AsyncSink::Ready),
-                AsyncSink::NotReady(chunk) => {
-                    Ok(AsyncSink::NotReady(Frame::Body { chunk: Some(chunk) }))
-                }
-            },
-            Frame::Body { chunk: None } => Ok(AsyncSink::Ready),
+            Frame::Message { message } => Pin::new(&mut self.inner).start_send(message),
+            Frame::Body { chunk: Some(chunk) } => Pin::new(&mut self.inner).start_send(chunk),
+            Frame::Body { chunk: None } => Ok(()),
         }
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        self.inner.poll_complete()
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn close(&mut self) -> Poll<(), io::Error> {
-        self.inner.close()
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
     }
 }
 
 struct ShutdownOrInactive {
     rx: mpsc::Receiver<ServerMessage>,
-    timeout: Option<Delay>,
+    timeout: Option<Pin<Box<Sleep>>>,
     timeout_dur: Duration,
 }
 
 impl Future for ShutdownOrInactive {
-    type Item = ();
-    type Error = io::Error;
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<(), io::Error> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         loop {
-            match self.rx.poll().unwrap() {
-                Async::NotReady => break,
+            match Pin::new(&mut self.rx).poll_next(cx) {
+                Poll::Pending => break,
                 // Shutdown received!
-                Async::Ready(Some(ServerMessage::Shutdown)) => return Ok(().into()),
-                Async::Ready(Some(ServerMessage::Request)) => {
+                Poll::Ready(Some(ServerMessage::Shutdown)) => return Poll::Ready(()),
+                Poll::Ready(Some(ServerMessage::Request)) => {
                     if self.timeout_dur != Duration::new(0, 0) {
-                        self.timeout = Some(Delay::new(Instant::now() + self.timeout_dur));
+                        self.timeout = Some(Box::pin(sleep(self.timeout_dur)));
                     }
                 }
                 // All services have shut down, in theory this isn't possible...
-                Async::Ready(None) => return Ok(().into()),
+                Poll::Ready(None) => return Poll::Ready(()),
             }
         }
         match self.timeout {
-            None => Ok(Async::NotReady),
-            Some(ref mut timeout) => timeout
-                .poll()
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err)),
+            None => Poll::Pending,
+            Some(ref mut timeout) => timeout.as_mut().poll(cx),
         }
     }
 }
@@ -1696,60 +1728,66 @@ impl Future for ShutdownOrInactive {
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
 struct WaitUntilZero {
-    info: Rc<RefCell<Info>>,
+    info: std::sync::Weak<Mutex<Info>>,
 }
 
+#[derive(Clone)]
 struct ActiveInfo {
-    info: Rc<RefCell<Info>>,
+    info: Arc<Mutex<Info>>,
 }
 
 struct Info {
-    active: usize,
     waker: Option<Waker>,
 }
 
-impl WaitUntilZero {
-    fn new() -> (WaitUntilZero, ActiveInfo) {
-        let info = Rc::new(RefCell::new(Info {
-            active: 1,
-            waker: None,
-        }));
-
-        (WaitUntilZero { info: info.clone() }, ActiveInfo { info })
-    }
-}
-
-impl Clone for ActiveInfo {
-    fn clone(&self) -> ActiveInfo {
-        self.info.borrow_mut().active += 1;
-        ActiveInfo {
-            info: self.info.clone(),
+impl Drop for Info {
+    fn drop(&mut self) {
+        if let Some(waker) = self.waker.as_ref() {
+            waker.wake_by_ref();
         }
     }
 }
 
-impl Drop for ActiveInfo {
-    fn drop(&mut self) {
-        let mut info = self.info.borrow_mut();
-        info.active -= 1;
-        if info.active == 0 {
-            if let Some(waker) = info.waker.take() {
-                waker.wake();
+impl WaitUntilZero {
+    #[rustfmt::skip]
+    fn new() -> (WaitUntilZero, ActiveInfo) {
+        let info = Arc::new(Mutex::new(Info { waker: None }));
+
+        (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
+    }
+}
+
+impl std::future::Future for WaitUntilZero {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
+        match self.info.upgrade() {
+            None => std::task::Poll::Ready(()),
+            Some(arc) => {
+                let mut info = arc.lock().expect("we can't panic when holding lock");
+                info.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
             }
         }
     }
 }
 
-impl std::future::Future for WaitUntilZero {
-    type Output = io::Result<()>;
+#[test]
+fn waits_until_zero() {
+    let (wait, _active) = WaitUntilZero::new();
+    assert_eq!(wait.now_or_never(), None);
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
-        let mut info = self.info.borrow_mut();
-        if info.active == 0 {
-            std::task::Poll::Ready(Ok(()))
-        } else {
-            info.waker = Some(cx.waker().clone());
-            std::task::Poll::Pending
-        }
-    }
+    let (wait, active) = WaitUntilZero::new();
+    let _active2 = active.clone();
+    drop(active);
+    assert_eq!(wait.now_or_never(), None);
+
+    let (wait, _) = WaitUntilZero::new();
+    assert_eq!(wait.now_or_never(), Some(()));
+
+    let (wait, active) = WaitUntilZero::new();
+    let active2 = active.clone();
+    drop(active);
+    drop(active2);
+    assert_eq!(wait.now_or_never(), Some(()));
 }

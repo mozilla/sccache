@@ -15,111 +15,90 @@
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
-use futures_03::prelude::*;
 use redis::aio::Connection;
 use redis::{cmd, Client, InfoDict};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
+use url::Url;
 
 /// A cache that stores entries in a Redis.
 #[derive(Clone)]
 pub struct RedisCache {
-    url: String,
+    display_url: String, // for display only: password (if any) will be masked
     client: Client,
 }
 
 impl RedisCache {
     /// Create a new `RedisCache`.
     pub fn new(url: &str) -> Result<RedisCache> {
+        let mut parsed = Url::parse(url)?;
+        // If the URL has a password set, mask it when displaying.
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("*****"));
+        }
         Ok(RedisCache {
-            url: url.to_owned(),
+            display_url: parsed.to_string(),
             client: Client::open(url)?,
         })
     }
 
     /// Returns a connection with configured read and write timeouts.
-    async fn connect(self) -> Result<Connection> {
+    async fn connect(&self) -> Result<Connection> {
         Ok(self.client.get_async_connection().await?)
     }
 }
 
+#[async_trait]
 impl Storage for RedisCache {
     /// Open a connection and query for a key.
-    fn get(&self, key: &str) -> SFuture<Cache> {
-        let key = key.to_owned();
-        let me = self.clone();
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
-                let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
-                if d.is_empty() {
-                    Ok(Cache::Miss)
-                } else {
-                    CacheRead::from(Cursor::new(d)).map(Cache::Hit)
-                }
-            })
-            .compat(),
-        )
+    async fn get(&self, key: &str) -> Result<Cache> {
+        let mut c = self.connect().await?;
+        let d: Vec<u8> = cmd("GET").arg(key).query_async(&mut c).await?;
+        if d.is_empty() {
+            Ok(Cache::Miss)
+        } else {
+            CacheRead::from(Cursor::new(d)).map(Cache::Hit)
+        }
     }
 
     /// Open a connection and store a object in the cache.
-    fn put(&self, key: &str, entry: CacheWrite) -> SFuture<Duration> {
-        let key = key.to_owned();
-        let me = self.clone();
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let start = Instant::now();
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
-                let d = entry.finish()?;
-                cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
-                Ok(start.elapsed())
-            })
-            .compat(),
-        )
+        let mut c = self.connect().await?;
+        let d = entry.finish()?;
+        cmd("SET").arg(key).arg(d).query_async(&mut c).await?;
+        Ok(start.elapsed())
     }
 
     /// Returns the cache location.
     fn location(&self) -> String {
-        format!("Redis: {}", self.url)
+        format!("Redis: {}", self.display_url)
     }
 
     /// Returns the current cache size. This value is aquired via
     /// the Redis INFO command (used_memory).
-    fn current_size(&self) -> SFuture<Option<u64>> {
-        let me = self.clone(); // TODO Remove clone
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
-                let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
-                Ok(v.get("used_memory"))
-            })
-            .compat(),
-        )
+    async fn current_size(&self) -> Result<Option<u64>> {
+        let mut c = self.connect().await?;
+        let v: InfoDict = cmd("INFO").query_async(&mut c).await?;
+        Ok(v.get("used_memory"))
     }
 
     /// Returns the maximum cache size. This value is read via
     /// the Redis CONFIG command (maxmemory). If the server has no
     /// configured limit, the result is None.
-    fn max_size(&self) -> SFuture<Option<u64>> {
-        let me = self.clone(); // TODO Remove clone
-        Box::new(
-            Box::pin(async move {
-                let mut c = me.connect().await?;
-                let result: redis::RedisResult<HashMap<String, usize>> = cmd("CONFIG")
-                    .arg("GET")
-                    .arg("maxmemory")
-                    .query_async(&mut c)
-                    .await;
-                match result {
-                    Ok(h) => {
-                        Ok(h.get("maxmemory")
-                            .and_then(|&s| if s != 0 { Some(s as u64) } else { None }))
-                    }
-                    Err(_) => Ok(None),
-                }
-            })
-            .compat(),
-        )
+    async fn max_size(&self) -> Result<Option<u64>> {
+        let mut c = self.connect().await?;
+        let result: redis::RedisResult<HashMap<String, usize>> = cmd("CONFIG")
+            .arg("GET")
+            .arg("maxmemory")
+            .query_async(&mut c)
+            .await;
+        match result {
+            Ok(h) => Ok(h
+                .get("maxmemory")
+                .and_then(|&s| if s != 0 { Some(s as u64) } else { None })),
+            Err(_) => Ok(None),
+        }
     }
 }

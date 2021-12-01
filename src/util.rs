@@ -15,10 +15,6 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
-use futures::{future, Future};
-use futures_03::executor::ThreadPool;
-use futures_03::future::TryFutureExt;
-use futures_03::task;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -30,20 +26,6 @@ use std::time;
 use std::time::Duration;
 
 use crate::errors::*;
-
-pub trait SpawnExt: task::SpawnExt {
-    fn spawn_fn<F, T>(&self, f: F) -> SFuture<T>
-    where
-        F: FnOnce() -> Result<T> + std::marker::Send + 'static,
-        T: std::marker::Send + 'static,
-    {
-        self.spawn_with_handle(async move { f() })
-            .map(|f| Box::new(f.compat()) as _)
-            .unwrap_or_else(f_err)
-    }
-}
-
-impl<S: task::SpawnExt + ?Sized> SpawnExt for S {}
 
 #[derive(Clone)]
 pub struct Digest {
@@ -59,11 +41,11 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn file<T>(path: T, pool: &ThreadPool) -> SFuture<String>
+    pub async fn file<T>(path: T, pool: &tokio::runtime::Handle) -> Result<String>
     where
         T: AsRef<Path>,
     {
-        Self::reader(path.as_ref().to_owned(), pool)
+        Self::reader(path.as_ref().to_owned(), pool).await
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
@@ -84,12 +66,13 @@ impl Digest {
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
     /// the actual hash computation on a background thread in `pool`.
-    pub fn reader(path: PathBuf, pool: &ThreadPool) -> SFuture<String> {
-        Box::new(pool.spawn_fn(move || -> Result<_> {
+    pub async fn reader(path: PathBuf, pool: &tokio::runtime::Handle) -> Result<String> {
+        pool.spawn_blocking(move || {
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
             Digest::reader_sync(reader)
-        }))
+        })
+        .await?
     }
 
     pub fn update(&mut self, bytes: &[u8]) {
@@ -125,26 +108,17 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// Calculate the digest of each file in `files` on background threads in
 /// `pool`.
-pub fn hash_all(files: &[PathBuf], pool: &ThreadPool) -> SFuture<Vec<String>> {
+pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Result<Vec<String>> {
     let start = time::Instant::now();
     let count = files.len();
-    let pool = pool.clone();
-    Box::new(
-        future::join_all(
-            files
-                .iter()
-                .map(move |f| Digest::file(f, &pool))
-                .collect::<Vec<_>>(),
-        )
-        .map(move |hashes| {
-            trace!(
-                "Hashed {} files in {}",
-                count,
-                fmt_duration_as_secs(&start.elapsed())
-            );
-            hashes
-        }),
-    )
+    let iter = files.iter().map(move |f| Digest::file(f, pool));
+    let hashes = futures::future::try_join_all(iter).await?;
+    trace!(
+        "Hashed {} files in {}",
+        count,
+        fmt_duration_as_secs(&start.elapsed())
+    );
+    Ok(hashes)
 }
 
 /// Format `duration` as seconds with a fractional component.
@@ -156,48 +130,69 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
 ///
 /// This was lifted from `std::process::Child::wait_with_output` and modified
 /// to also write to stdin.
-fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> SFuture<process::Output>
+async fn wait_with_input_output<T>(mut child: T, input: Option<Vec<u8>>) -> Result<process::Output>
 where
     T: CommandChild + 'static,
 {
-    use tokio_io::io::{read_to_end, write_all};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let stdin = input.and_then(|i| {
-        child
-            .take_stdin()
-            .map(|stdin| write_all(stdin, i).fcontext("failed to write stdin"))
+        child.take_stdin().map(|mut stdin| async move {
+            stdin.write_all(&i).await.context("failed to write stdin")
+        })
     });
-    let stdout = child
-        .take_stdout()
-        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stdout"));
-    let stderr = child
-        .take_stderr()
-        .map(|io| read_to_end(io, Vec::new()).fcontext("failed to read stderr"));
+    let stdout = child.take_stdout();
+    let stdout = async move {
+        match stdout {
+            Some(mut stdout) => {
+                let mut buf = Vec::new();
+                stdout
+                    .read_to_end(&mut buf)
+                    .await
+                    .context("failed to read stdout")?;
+                Result::Ok(Some(buf))
+            }
+            None => Ok(None),
+        }
+    };
+
+    let stderr = child.take_stderr();
+    let stderr = async move {
+        match stderr {
+            Some(mut stderr) => {
+                let mut buf = Vec::new();
+                stderr
+                    .read_to_end(&mut buf)
+                    .await
+                    .context("failed to read stderr")?;
+                Result::Ok(Some(buf))
+            }
+            None => Ok(None),
+        }
+    };
 
     // Finish writing stdin before waiting, because waiting drops stdin.
-    let status = Future::and_then(stdin, |io| {
-        drop(io);
-        child.wait().fcontext("failed to wait for child")
-    });
-
-    Box::new(status.join3(stdout, stderr).map(|(status, out, err)| {
-        let stdout = out.map(|p| p.1);
-        let stderr = err.map(|p| p.1);
-        process::Output {
-            status,
-            stdout: stdout.unwrap_or_default(),
-            stderr: stderr.unwrap_or_default(),
+    let status = async move {
+        if let Some(stdin) = stdin {
+            let _ = stdin.await;
         }
-    }))
+
+        child.wait().await.context("failed to wait for child")
+    };
+
+    let (status, stdout, stderr) = futures::future::try_join3(status, stdout, stderr).await?;
+
+    Ok(process::Output {
+        status,
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
+    })
 }
 
 /// Run `command`, writing `input` to its stdin if it is `Some` and return the exit status and output.
 ///
 /// If the command returns a non-successful exit status, an error of `SccacheError::ProcessError`
 /// will be returned containing the process output.
-pub fn run_input_output<C>(
-    mut command: C,
-    input: Option<Vec<u8>>,
-) -> impl Future<Item = process::Output, Error = Error>
+pub async fn run_input_output<C>(mut command: C, input: Option<Vec<u8>>) -> Result<process::Output>
 where
     C: RunCommand,
 {
@@ -210,17 +205,18 @@ where
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn();
+        .spawn()
+        .await?;
 
-    child.and_then(|child| {
-        wait_with_input_output(child, input).and_then(|output| {
+    wait_with_input_output(child, input)
+        .await
+        .and_then(|output| {
             if output.status.success() {
-                f_ok(output)
+                Ok(output)
             } else {
-                f_err(ProcessError(output))
+                Err(ProcessError(output).into())
             }
         })
-    })
 }
 
 /// Write `data` to `writer` with bincode serialization, prefixed by a `u32` length.
@@ -364,7 +360,7 @@ pub use self::http_extension::{HeadersExt, RequestExt};
 
 #[cfg(feature = "hyperx")]
 mod http_extension {
-    use http::header::HeaderValue;
+    use reqwest::header::{HeaderMap, HeaderValue};
     use std::fmt;
 
     pub trait HeadersExt {
@@ -377,14 +373,14 @@ mod http_extension {
             H: hyperx::header::Header;
     }
 
-    impl HeadersExt for http::HeaderMap {
+    impl HeadersExt for HeaderMap {
         fn set<H>(&mut self, header: H)
         where
             H: hyperx::header::Header + fmt::Display,
         {
             self.insert(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
             );
         }
 
@@ -404,40 +400,25 @@ mod http_extension {
     }
 
     impl RequestExt for http::request::Builder {
-        fn set_header<H>(mut self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
-            );
-            self
-        }
-    }
-
-    impl RequestExt for http::response::Builder {
-        fn set_header<H>(mut self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
-            );
-            self
-        }
-    }
-
-    #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::r#async::RequestBuilder {
         fn set_header<H>(self, header: H) -> Self
         where
             H: hyperx::header::Header + fmt::Display,
         {
             self.header(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
+            )
+        }
+    }
+
+    impl RequestExt for http::response::Builder {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
             )
         }
     }
@@ -450,9 +431,36 @@ mod http_extension {
         {
             self.header(
                 H::header_name(),
-                HeaderValue::from_shared(header.to_string().into()).unwrap(),
+                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
             )
         }
+    }
+
+    #[cfg(feature = "reqwest")]
+    impl RequestExt for ::reqwest::blocking::RequestBuilder {
+        fn set_header<H>(self, header: H) -> Self
+        where
+            H: hyperx::header::Header + fmt::Display,
+        {
+            self.header(
+                H::header_name(),
+                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
+            )
+        }
+    }
+}
+
+pub trait DateTimeExt {
+    fn to_rfc7231(&self) -> String;
+}
+
+#[cfg(feature = "azure")]
+impl<Tz: chrono::TimeZone> DateTimeExt for chrono::DateTime<Tz>
+where
+    Tz::Offset: core::fmt::Display,
+{
+    fn to_rfc7231(&self) -> String {
+        self.naive_utc().format("%a, %d %b %Y %T GMT").to_string()
     }
 }
 
@@ -574,5 +582,16 @@ mod tests {
         assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
         assert_eq!(a.split_prefix("foo2"), None);
         assert_eq!(a.split_prefix("b"), None);
+    }
+
+    #[cfg(feature = "azure")]
+    #[test]
+    fn rfc7231_format() {
+        use crate::util::DateTimeExt;
+        use chrono::{DateTime, NaiveDateTime, Utc};
+
+        let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc);
+
+        assert_eq!(time.to_rfc7231(), "Thu, 01 Jan 1970 00:00:00 GMT");
     }
 }

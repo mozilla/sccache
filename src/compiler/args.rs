@@ -859,7 +859,7 @@ mod tests {
         // Try again with an even number of items
         let data = &data[..6];
         for item in data {
-            assert_eq!(bsearch(item.0, &data, |i, k| i.0.cmp(k)), Some(item));
+            assert_eq!(bsearch(item.0, data, |i, k| i.0.cmp(k)), Some(item));
         }
 
         // Once more, with prefix matches
@@ -887,7 +887,7 @@ mod tests {
         let data = &data[..6];
         for item in data {
             assert_eq!(
-                bsearch(item.0, &data, |i, k| if k.starts_with(i.0) {
+                bsearch(item.0, data, |i, k| if k.starts_with(i.0) {
                     Ordering::Equal
                 } else {
                     i.0.cmp(k)
@@ -979,8 +979,8 @@ mod tests {
                 CanBeSeparated('=')
             )),
         ];
-        match diff_with(iter, expected, |ref a, ref b| {
-            assert_eq!(a.as_ref().unwrap(), *b);
+        match diff_with(iter, expected, |a, b| {
+            assert_eq!(a.as_ref().unwrap(), b);
             true
         }) {
             None => {}

@@ -14,16 +14,22 @@ extern crate log;
 #[test]
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn test_rust_cargo() {
-    test_rust_cargo_cmd("check");
-    test_rust_cargo_cmd("build");
+    test_rust_cargo_cmd("check", &[]);
+    test_rust_cargo_cmd("build", &[]);
+
+    #[cfg(feature = "unstable")]
+    test_rust_cargo_cmd("check", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
+    #[cfg(feature = "unstable")]
+    test_rust_cargo_cmd("build", &[("RUSTFLAGS", std::ffi::OsStr::new("-Zprofile"))]);
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-fn test_rust_cargo_cmd(cmd: &str) {
+fn test_rust_cargo_cmd(cmd: &str, extra_envs: &[(&str, &std::ffi::OsStr)]) {
     use assert_cmd::prelude::*;
     use chrono::Local;
     use predicates::prelude::*;
     use std::env;
+    use std::ffi::OsStr;
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -85,10 +91,14 @@ fn test_rust_cargo_cmd(cmd: &str) {
         .assert()
         .success();
     // `cargo clean` first, just to be sure there's no leftover build objects.
-    let envs = vec![
-        ("RUSTC_WRAPPER", &sccache),
-        ("CARGO_TARGET_DIR", &cargo_dir),
+    let mut envs = vec![
+        ("RUSTC_WRAPPER", sccache.as_ref()),
+        ("CARGO_TARGET_DIR", cargo_dir.as_ref()),
+        // Explicitly disable incremental compilation because sccache is unable
+        // to cache it at the time of writing.
+        ("CARGO_INCREMENTAL", OsStr::new("0")),
     ];
+    envs.extend_from_slice(extra_envs);
     Command::new(&cargo)
         .args(&["clean"])
         .envs(envs.iter().copied())
@@ -118,14 +128,13 @@ fn test_rust_cargo_cmd(cmd: &str) {
         .stderr(predicates::str::contains("\x1b[").from_utf8())
         .success();
     // Now get the stats and ensure that we had a cache hit for the second build.
-    // Ideally we'd check the stats more usefully here--the test crate has one dependency (itoa)
-    // so there are two separate compilations, but cargo will build the test crate with
-    // incremental compilation enabled, so sccache will not cache it.
+    // The test crate has one dependency (itoa) so there are two separate
+    // compilations.
     trace!("sccache --show-stats");
     sccache_command()
         .args(&["--show-stats", "--stats-format=json"])
         .assert()
-        .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())
+        .stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":2}}"#).from_utf8())
         .success();
     stop();
 }
