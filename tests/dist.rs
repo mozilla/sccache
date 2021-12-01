@@ -11,12 +11,13 @@ use crate::harness::{
 };
 use assert_cmd::prelude::*;
 use sccache::config::HTTPUrl;
+use sccache::config::DistToolchainConfig::PathOverride;
 use sccache::dist::{
     AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
     ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
 };
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sccache::errors::*;
 
@@ -36,12 +37,33 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     sccache_command()
         .args(&[
             std::env::var("CC").unwrap_or("gcc".to_string()).as_str(),
-            "-c",
             "-DSCCACHE_TEST_DEFINE",
         ])
-        .arg(tmpdir.join(source_file))
-        .arg("-o")
-        .arg(tmpdir.join(obj_file))
+        .args(&["-c", tmpdir.join(source_file).to_str().unwrap()])
+        .args(&["-o", tmpdir.join(obj_file).to_str().unwrap()])
+        .envs(envs)
+        .assert()
+        .success();
+}
+
+fn basic_compile_nvcc(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
+    let envs: Vec<(_, &OsStr)> = vec![
+        ("RUST_BACKTRACE", "1".as_ref()),
+        ("RUST_LOG", "trace".as_ref()),
+        ("SCCACHE_LOG", "trace".as_ref()),
+        ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
+        ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
+    ];
+    let source_file = "x.cu";
+    let obj_file = "x.o";
+    write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
+    sccache_command()
+        .args(&[
+            std::env::var("NVCC").unwrap_or("nvcc".to_string()).as_str(),
+            "-DSCCACHE_TEST_DEFINE",
+        ])
+        .args(&["-c", tmpdir.join(source_file).to_str().unwrap()])
+        .args(&["-o", tmpdir.join(obj_file).to_str().unwrap()])
         .envs(envs)
         .assert()
         .success();
@@ -90,6 +112,43 @@ fn test_dist_basic() {
     });
 }
 
+#[test]
+#[cfg_attr(not(feature = "dist-tests"), ignore)]
+fn test_dist_basic_nvcc() {
+    let tmpdir = tempfile::Builder::new()
+        .prefix("sccache_dist_test")
+        .tempdir()
+        .unwrap();
+    let tmpdir = tmpdir.path();
+    let sccache_dist = harness::sccache_dist_path();
+
+    let mut system = harness::DistSystem::new(&sccache_dist, tmpdir);
+    system.add_scheduler();
+    system.add_server();
+
+    let mut sccache_cfg = dist_test_sccache_client_cfg(tmpdir, system.scheduler_url());
+    sccache_cfg.dist.toolchains.push(PathOverride {
+        archive: PathBuf::from("/tmp/gcc-nvcc-toolchain.tgz"),
+        compiler_executable: PathBuf::from("/usr/local/cuda/bin/nvcc"),
+        archive_compiler_executable: String::from("/usr/local/cuda/bin/nvcc"),
+    });
+    let sccache_cfg_path = tmpdir.join("sccache-cfg.json");
+    write_json_cfg(tmpdir, "sccache-cfg.json", &sccache_cfg);
+    let sccache_cached_cfg_path = tmpdir.join("sccache-cached-cfg");
+
+    stop_local_daemon();
+    start_local_daemon(&sccache_cfg_path, &sccache_cached_cfg_path);
+    basic_compile_nvcc(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
+
+    get_stats(|info| {
+        assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
+        assert_eq!(0, info.stats.dist_errors);
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+}
 #[test]
 #[cfg_attr(not(feature = "dist-tests"), ignore)]
 fn test_dist_restartedserver() {
