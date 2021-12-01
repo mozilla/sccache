@@ -167,8 +167,10 @@ impl CCompilerImpl for Nvcc {
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
 
+    take_arg!("--Werror", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--compiler-bindir", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("--extended-lambda", PreprocessorArgumentFlag),
@@ -182,14 +184,18 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("--std", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
 
+    take_arg!("-M", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
+    take_arg!("-Xfatbin", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xlinker", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-ccbin", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
