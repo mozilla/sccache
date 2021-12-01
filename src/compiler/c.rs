@@ -621,12 +621,59 @@ impl pkg::ToolchainPackager for CToolchainPackager {
             }
 
             CCompilerKind::NVCC => {
-                // Various programs called by the nvcc front end.
-                // presumes the underlying host compiler is consistent
-                add_named_file(&mut package_builder, "cudafe++")?;
-                add_named_file(&mut package_builder, "fatbinary")?;
-                add_named_prog(&mut package_builder, "nvlink")?;
-                add_named_prog(&mut package_builder, "ptxas")?;
+
+                if Path::new("/bin/sh").is_file() {
+                    package_builder.add_executable_and_deps("/bin/sh".into())?;
+                }
+
+                if Path::new("/usr/bin/sh").is_file() {
+                    package_builder.add_executable_and_deps("/usr/bin/sh".into())?;
+                }
+
+                if Path::new("/usr/include/stdc-predef.h").is_file() {
+                    package_builder.add_file("/usr/include/stdc-predef.h".into())?;
+                }
+
+                let bin = self.executable.as_path().parent().unwrap();
+                let ctk = bin.parent().unwrap();
+                if ctk.join("version.json").is_file() {
+                    package_builder.add_file(ctk.join("version.json"))?;
+                }
+                if ctk.join("libnvvp").is_dir() {
+                    package_builder.add_dir(ctk.join("libnvvp"))?;
+                    package_builder.add_executable_and_deps(ctk.join("libnvvp/nvvp"))?;
+                }
+                if ctk.join("targets/x86_64-linux/include").is_dir() {
+                    package_builder.add_dir(ctk.join("targets/x86_64-linux/include"))?;
+                    package_builder.add_dir_contents(ctk.join("targets/x86_64-linux/include").as_path())?;
+                }
+
+                if bin.is_dir() {
+                    package_builder.add_dir(bin.to_path_buf())?;
+                    if bin.join("crt").is_dir() {
+                        package_builder.add_dir(bin.join("crt"))?;
+                        package_builder.add_dir_contents(bin.join("crt").as_path())?;
+                    }
+                    package_builder.add_file(bin.join("nvcc.profile"))?;
+                    package_builder.add_executable_and_deps(bin.join("nvcc"))?;
+                    package_builder.add_executable_and_deps(bin.join("ptxas"))?;
+                    package_builder.add_executable_and_deps(bin.join("fatbinary"))?;
+                    package_builder.add_executable_and_deps(bin.join("cudafe++"))?;
+                }
+
+                let nvvm = ctk.join("nvvm");
+                if nvvm.join("bin").is_dir() {
+                    package_builder.add_dir(nvvm.join("bin"))?;
+                    package_builder.add_executable_and_deps(nvvm.join("bin/cicc"))?;
+                }
+                if nvvm.join("include").is_dir() {
+                    package_builder.add_dir(nvvm.join("include"))?;
+                    package_builder.add_dir_contents(nvvm.join("include").as_path())?;
+                }
+                if nvvm.join("libdevice").is_dir() {
+                    package_builder.add_dir(nvvm.join("libdevice"))?;
+                    package_builder.add_dir_contents(nvvm.join("libdevice").as_path())?;
+                }
             }
 
             _ => unreachable!(),
