@@ -180,7 +180,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &ParsedArguments,
+        parsed_args: &mut ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -281,7 +281,7 @@ where
     ) -> SFuture<HashResult> {
         let me = *self;
         let CCompilerHasher {
-            parsed_args,
+            mut parsed_args,
             executable,
             executable_digest,
             compiler,
@@ -289,7 +289,7 @@ where
         let result = compiler.preprocess(
             creator,
             &executable,
-            &parsed_args,
+            &mut parsed_args,
             &cwd,
             &env_vars,
             may_dist,

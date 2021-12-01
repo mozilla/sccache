@@ -61,7 +61,7 @@ impl CCompilerImpl for Clang {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &ParsedArguments,
+        parsed_args: &mut ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,

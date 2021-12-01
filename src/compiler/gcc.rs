@@ -53,7 +53,7 @@ impl CCompilerImpl for GCC {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &ParsedArguments,
+        parsed_args: &mut ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -498,7 +498,7 @@ where
 pub fn preprocess<T>(
     creator: &T,
     executable: &Path,
-    parsed_args: &ParsedArguments,
+    parsed_args: &mut ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     may_dist: bool,

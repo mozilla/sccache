@@ -54,7 +54,7 @@ impl CCompilerImpl for NVCC {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &ParsedArguments,
+        parsed_args: &mut ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -131,8 +131,10 @@ impl CCompilerImpl for NVCC {
         if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
+            parsed_args.input.set_extension("cup");
             Box::new(first.join(second).map(|(f, s)| s))
         } else {
+            parsed_args.input.set_extension("cup");
             Box::new(run_input_output(cmd, None))
         }
     }
