@@ -170,7 +170,7 @@ jobs:
             extra_args: --features=unstable
           - os: macOS-10.15
             rustc: nightly
-# Disable for now Windows as it fails with:
+# Disable on Windows for now as it fails with:
 # found invalid metadata files for crate `vte_generate_state_changes`
 #          - os: windows-2019
 #            rustc: nightly
