@@ -179,7 +179,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &mut ParsedArguments,
+        parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -432,9 +432,14 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
             compiler,
             ..
         } = *self;
-        trace!("Dist inputs: {:?}", parsed_args.input);
 
-        let input_path = cwd.join(&parsed_args.input);
+        let mut input_path = cwd.join(&parsed_args.input);
+        if parsed_args.language == Language::Cuda {
+            input_path.set_extension("cup");
+        }
+
+        trace!("Dist inputs: {:?}", input_path);
+
         let inputs_packager = Box::new(CInputsPackager {
             input_path,
             preprocessed_input,

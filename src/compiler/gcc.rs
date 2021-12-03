@@ -55,7 +55,7 @@ impl CCompilerImpl for Gcc {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &mut ParsedArguments,
+        parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -501,7 +501,7 @@ where
 pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
-    parsed_args: &mut ParsedArguments,
+    parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
@@ -629,7 +629,13 @@ pub fn generate_compile_commands(
             arguments.push(language);
         }
         arguments.push(parsed_args.compilation_flag.clone().into_string().ok()?);
-        arguments.push(path_transformer.as_dist(&parsed_args.input)?);
+        if parsed_args.language == Language::Cuda {
+            let mut input: PathBuf = parsed_args.input.clone().into();
+            input.set_extension("cup");
+            arguments.push(path_transformer.as_dist(&input)?);
+        } else {
+            arguments.push(path_transformer.as_dist(&parsed_args.input)?);
+        }
         arguments.push("-o".into());
         arguments.push(path_transformer.as_dist(out_file)?);
         if let CCompilerKind::Gcc = kind {

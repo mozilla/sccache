@@ -56,7 +56,7 @@ impl CCompilerImpl for Nvcc {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &mut ParsedArguments,
+        parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -133,11 +133,9 @@ impl CCompilerImpl for Nvcc {
         if !parsed_args.dependency_args.is_empty() {
             let first = run_input_output(dep_before_preprocessor(), None);
             let second = run_input_output(cmd, None);
-            parsed_args.input.set_extension("cup");
             let (_f, s) = futures::future::try_join(first, second).await?;
             Ok(s)
         } else {
-            parsed_args.input.set_extension("cup");
             run_input_output(cmd, None).await
         }
     }

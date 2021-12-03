@@ -55,7 +55,7 @@ impl CCompilerImpl for Diab {
         &self,
         creator: &T,
         executable: &Path,
-        parsed_args: &mut ParsedArguments,
+        parsed_args: &ParsedArguments,
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
@@ -289,7 +289,7 @@ where
 pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
-    parsed_args: &mut ParsedArguments,
+    parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     _may_dist: bool,
