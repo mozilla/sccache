@@ -100,7 +100,7 @@ cc = "1.0"
 chrono = "0.4"
 itertools = "0.10"
 predicates = "1"
-selenium-rs = "0.1"
+thirtyfour_sync = "0.27"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.4"
