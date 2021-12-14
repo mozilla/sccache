@@ -103,7 +103,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
-    let out_file = tempdir.join("test.o");
+    let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
