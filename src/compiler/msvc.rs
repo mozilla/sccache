@@ -644,7 +644,11 @@ pub fn parse_arguments(
             outputs.insert("obj", Path::new(&input).with_extension("obj"));
         }
         Some(o) => {
-            outputs.insert("obj", o);
+            if o.extension().is_none() && compilation {
+                outputs.insert("obj", o.with_extension("obj"));
+            } else {
+                outputs.insert("obj", o);
+            }
         }
     }
     // -Fd is not taken into account unless -Zi or -ZI are given
