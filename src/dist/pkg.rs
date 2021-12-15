@@ -162,11 +162,13 @@ mod toolchain_imp {
         pub fn into_compressed_tar<W: Write + Send + 'static>(self, writer: W) -> Result<()> {
             use gzp::{
                 deflate::Gzip,
-                par::compress::{ParCompress, ParCompressBuilder},
+                par::compress::{Compression, ParCompress, ParCompressBuilder},
             };
 
             let ToolchainPackageBuilder { dir_set, file_set } = self;
-            let par: ParCompress<Gzip> = ParCompressBuilder::new().from_writer(writer);
+            let par: ParCompress<Gzip> = ParCompressBuilder::new()
+                .compression_level(Compression::default())
+                .from_writer(writer);
             let mut builder = tar::Builder::new(par);
 
             for (tar_path, dir_path) in dir_set.into_iter() {
