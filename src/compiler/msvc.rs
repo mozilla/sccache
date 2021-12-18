@@ -254,6 +254,7 @@ macro_rules! msvc_args {
 // https://docs.microsoft.com/en-us/cpp/build/reference/compiler-options-listed-alphabetically?view=vs-2019
 msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("?", SuppressCompilation),
+    msvc_flag!("Brepro", PassThrough),
     msvc_flag!("C", PassThrough), // Ignored unless a preprocess-only flag is specified.
     msvc_take_arg!("D", OsString, CanBeSeparated, PreprocessorArgument),
     msvc_flag!("E", SuppressCompilation),
@@ -1220,6 +1221,7 @@ mod test {
     #[test]
     fn test_parse_arguments_passthrough() {
         let args = ovec![
+            "-Brepro",
             "-Oy",
             "-Gw",
             "-EHa",
@@ -1244,7 +1246,7 @@ mod test {
         assert!(!common_args.is_empty());
         assert_eq!(
             common_args,
-            ovec!("-Oy", "-Gw", "-EHa", "-Fmdictionary-map")
+            ovec!("-Brepro", "-Oy", "-Gw", "-EHa", "-Fmdictionary-map")
         );
     }
 
