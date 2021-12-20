@@ -398,6 +398,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("guard:cf", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("homeparams", PassThrough),
     msvc_flag!("hotpatch", PassThrough),
+    msvc_take_arg!("imsvc", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_flag!("kernel", PassThrough),
     msvc_flag!("kernel-", PassThrough),
     msvc_flag!("nologo", PassThrough),
@@ -1112,7 +1113,16 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let args = ovec!["-c", "foo.c", "-FI", "file", "-Fofoo.obj", "/showIncludes"];
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-FI",
+            "file",
+            "-imsvc",
+            "/a/b/c",
+            "-Fofoo.obj",
+            "/showIncludes"
+        ];
         let ParsedArguments {
             input,
             language,
@@ -1129,7 +1139,7 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
-        assert_eq!(preprocessor_args, ovec!["-FIfile"]);
+        assert_eq!(preprocessor_args, ovec!["-FIfile", "-imsvc/a/b/c"]);
         assert_eq!(dependency_args, ovec!["/showIncludes"]);
         assert!(common_args.is_empty());
         assert!(msvc_show_includes);
