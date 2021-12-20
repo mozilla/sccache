@@ -1088,6 +1088,34 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_clang_ivfsoverlay() {
+        let args = ovec![
+            "-Fodictionary.obj",
+            "-c",
+            "-Xclang",
+            "-ivfsoverlay",
+            "-Xclang",
+            "/a/x.yaml",
+            "dictionary.c"
+        ];
+        let ParsedArguments {
+            dependency_args,
+            preprocessor_args,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(dependency_args.is_empty());
+        assert!(common_args.is_empty());
+        assert_eq!(
+            preprocessor_args,
+            ovec!("-Xclang", "-ivfsoverlay", "-Xclang", "/a/x.yaml")
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_extra() {
         let args = ovec!["-c", "foo.c", "-foo", "-Fofoo.obj", "-bar"];
         let ParsedArguments {

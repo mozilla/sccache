@@ -125,6 +125,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-ivfsoverlay", PathBuf, CanBeConcatenated('='), PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
@@ -359,6 +360,24 @@ mod test {
                 "check-ipc"
             ],
             a.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_ivfsoverlay() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-ivfsoverlay",
+            "-Xclang",
+            "/a/x.yaml"
+        );
+        assert_eq!(
+            ovec!["-Xclang", "-ivfsoverlay", "-Xclang", "/a/x.yaml"],
+            a.preprocessor_args
         );
     }
 
