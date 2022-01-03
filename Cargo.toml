@@ -90,6 +90,12 @@ syslog = { version = "6", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
+aws-config = { version = "0.3", optional = true }
+aws-sdk-s3 = { version = "0.3", optional = true }
+aws-types = { version = "0.3", optional = true }
+aws-smithy-client = { version = "0.33", features = ["rustls"], optional = true }
+aws-sig-auth = { version = "0.3", optional = true }
+
 [dev-dependencies]
 assert_cmd = "=2.0.5"
 cc = "1.0"
@@ -120,8 +126,7 @@ features = [
 default = ["all"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "reqwest", "url", "hmac", "md-5", "sha2"]
-s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
-simple-s3 = []
+s3 = ["aws-config", "aws-sdk-s3", "aws-types", "aws-smithy-client", "aws-sig-auth"]
 gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "url"]
 memcached = ["memcached-rs"]
 native-zlib = []
