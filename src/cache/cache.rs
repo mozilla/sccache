@@ -406,9 +406,15 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 }
             }
             CacheType::S3(ref c) => {
-                debug!("Trying S3Cache({}, {})", c.bucket, c.endpoint);
+                debug!("Trying S3Cache({:?})", c);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&c.bucket, &c.endpoint, c.use_ssl, &c.key_prefix) {
+                match pool.block_on(S3Cache::new(
+                    &c.bucket,
+                    c.region.as_deref(),
+                    &c.key_prefix,
+                    c.no_credentials,
+                    c.endpoint.as_deref(),
+                )) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);

@@ -201,9 +201,10 @@ pub struct RedisCacheConfig {
 #[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
-    pub endpoint: String,
-    pub use_ssl: bool,
+    pub region: Option<String>,
     pub key_prefix: String,
+    pub no_credentials: bool,
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -451,19 +452,9 @@ pub struct EnvConfig {
 
 fn config_from_env() -> EnvConfig {
     let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
-        let endpoint = match env::var("SCCACHE_ENDPOINT") {
-            Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-            _ => match env::var("SCCACHE_REGION") {
-                Ok(ref region) if region != "us-east-1" => {
-                    format!("{}.s3-{}.amazonaws.com", bucket, region)
-                }
-                _ => format!("{}.s3.amazonaws.com", bucket),
-            },
-        };
-        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
-            .ok()
-            .filter(|value| value != "off")
-            .is_some();
+        let region = env::var("SCCACHE_REGION").ok();
+        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
+        let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
             .as_ref()
@@ -474,9 +465,10 @@ fn config_from_env() -> EnvConfig {
 
         S3CacheConfig {
             bucket,
-            endpoint,
-            use_ssl,
+            region,
+            no_credentials,
             key_prefix,
+            endpoint,
         }
     });
 
@@ -980,9 +972,10 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 
 [cache.s3]
 bucket = "name"
+region = "us-east-2"
 endpoint = "s3-us-east-1.amazonaws.com"
-use_ssl = true
 key_prefix = "s3prefix"
+no_credentials = true
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1011,9 +1004,10 @@ key_prefix = "s3prefix"
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
-                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
-                    use_ssl: true,
-                    key_prefix: "s3prefix".into()
+                    region: Some("us-east-2".to_owned()),
+                    endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
+                    key_prefix: "s3prefix".into(),
+                    no_credentials: true,
                 }),
             },
             dist: DistConfig {
