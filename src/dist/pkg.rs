@@ -169,8 +169,20 @@ mod toolchain_imp {
                 builder.append_dir(tar_path, dir_path)?
             }
             for (tar_path, file_path) in file_set.into_iter() {
-                let file = &mut fs::File::open(file_path)?;
-                builder.append_file(tar_path, file)?
+                let file = &mut fs::File::open(&file_path)?;
+                builder.append_file(&tar_path, file)?;
+                // Should have no need to package clang-cl.exe since the dist
+                // server must a Linux environemnt.
+                if file_path.file_name().unwrap_or_default() == "clang" {
+                    let mut header = tar::Header::new_gnu();
+                    header.set_entry_type(tar::EntryType::Symlink);
+                    header.set_size(0);
+                    builder.append_link(
+                        &mut header,
+                        tar_path.with_file_name("clang-cl"),
+                        "clang",
+                    )?;
+                }
             }
             builder.finish().map_err(Into::into)
         }

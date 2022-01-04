@@ -190,10 +190,9 @@ sufficient to run the compiler without relying on any external files. If you hav
 compatible with icecream (created with `icecc-create-env`, like
 [these ones](https://github.com/jyavenard/mozilla-icecream) for macOS), they should also work
 with sccache. To create a Windows toolchain, it is recommended that you download the [Clang
-binaries for Ubuntu 16.04](http://releases.llvm.org/download.html) and extract them,
-package up the toolchain using the extracted `bin/clang` file (requires
-[PR #321](https://github.com/mozilla/sccache/pull/321)) and then insert `bin/clang-cl` at
-the appropriate path as a symlink to the `bin/clang` binary.
+binaries for Ubuntu](https://github.com/llvm/llvm-project/releases) and extract them,
+package up the toolchain using the extracted `bin/clang` file (`bin/clang-cl` would be created
+as a symlink to `bin/clang` during packaging.)
 
 Considerations when distributing from macOS
 -------------------------------------------
