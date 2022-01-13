@@ -111,10 +111,17 @@ impl ParsedArguments {
 impl Language {
     pub fn from_file_name(file: &Path) -> Option<Self> {
         match file.extension().and_then(|e| e.to_str()) {
+            // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
             Some("c") => Some(Language::C),
-            Some("C") | Some("cc") | Some("cpp") | Some("cxx") => Some(Language::Cxx),
+            // TODO i
+            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx") | Some("c++") => Some(Language::Cxx),
+            // TODO ii
+            // TODO H hh hp hpp HPP hxx h++
+            // TODO tcc
             Some("m") => Some(Language::ObjectiveC),
-            Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mi
+            Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mii
             Some("cu") => Some(Language::Cuda),
             e => {
                 trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
