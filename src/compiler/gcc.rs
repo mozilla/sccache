@@ -128,6 +128,7 @@ ArgData! { pub
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
     XClang(OsString),
     Arch(OsString),
+    RandomSeed(OsString),
 }
 
 use self::ArgData::*;
@@ -173,6 +174,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-fprofile-arcs", ProfileGenerate),
     flag!("-fprofile-generate", ProfileGenerate),
     take_arg!("-fprofile-use", OsString, Concatenated, TooHard),
+    take_arg!("-frandom-seed", OsString, Concatenated('='), RandomSeed),
     flag!("-frepo", TooHardFlag),
     flag!("-fsyntax-only", TooHardFlag),
     flag!("-ftest-coverage", TestCoverage),
@@ -323,6 +325,12 @@ where
                 seen_arch = Some(arch.clone());
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
+            Some(RandomSeed(value)) => {
+                let random_seed = value.to_str().unwrap_or("");
+                trace!("ignoring argument -frandom-seed={}", random_seed);
+                continue;
+                // later, we set random-seed to output_file
+            }
             None => match arg {
                 Argument::Raw(ref val) => {
                     if input_arg.is_some() {
@@ -343,6 +351,7 @@ where
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
             | Some(Arch(_))
+            | Some(RandomSeed(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
@@ -384,6 +393,7 @@ where
             | Some(Coverage)
             | Some(DoCompilation)
             | Some(Language(_))
+            | Some(RandomSeed(_))
             | Some(Output(_))
             | Some(TooHardFlag)
             | Some(XClang(_))
@@ -479,6 +489,15 @@ where
         dependency_args.push(dep_flag);
         dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
     }
+
+    // normalize -frandom-seed
+    // to "produce reproducibly identical object files".
+    // random-seed should be "different in every compiled file".
+    // https://gcc.gnu.org/onlinedocs/gcc/Developer-Options.html
+    let random_seed = output.clone().into_os_string().into_string().unwrap();
+    common_args.push(format!("-frandom-seed={}", random_seed).into());
+    trace!("adding argument -frandom-seed={}", random_seed);
+
     outputs.insert("obj", output);
 
     CompilerArguments::Ok(ParsedArguments {
