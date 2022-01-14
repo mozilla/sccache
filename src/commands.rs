@@ -490,9 +490,9 @@ where
                                     "sccache: warning: error reading compile response from server \
                                      compiling locally instead"
                                 );
-                            }
-                            else {
-                                return Err(e).context("error reading compile response from server");
+                            } else {
+                                return Err(e)
+                                    .context("error reading compile response from server");
                             }
                         }
                     }
