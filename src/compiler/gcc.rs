@@ -20,6 +20,7 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use log::Level::Trace;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
@@ -521,12 +522,20 @@ where
     };
     let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language).arg("-E");
+
+    let keep_linemarkers = match env::var("SCCACHE_KEEP_LINEMARKERS") {
+        Ok(val) => val == "1",
+        Err(_) => false,
+    };
     // When performing distributed compilation, line number info is important for error
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so don't use -P.
-    if !may_dist && !parsed_args.profile_generate {
+    if !may_dist && !parsed_args.profile_generate && !keep_linemarkers {
+        trace!("adding argument -P to remove linemarkers");
         cmd.arg("-P");
+        // "Inhibit generation of linemarkers in the output from the preprocessor."
+        // https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html
     }
     if rewrite_includes_only {
         match kind {
