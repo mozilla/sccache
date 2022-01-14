@@ -803,4 +803,48 @@ mod test {
             hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false)
         );
     }
+
+    #[test]
+    fn test_language_from_file_name() {
+        fn t(extension: &str, expected: Language) {
+            let path_str = format!("input.{}", extension);
+            let path = Path::new(&path_str);
+            let actual = Language::from_file_name(path);
+            assert_eq!(actual, Some(expected));
+        }
+
+        t("c", Language::C);
+
+        t("C", Language::Cxx);
+        t("cc", Language::Cxx);
+        t("cp", Language::Cxx);
+        t("cpp", Language::Cxx);
+        t("CPP", Language::Cxx);
+        t("cxx", Language::Cxx);
+        t("c++", Language::Cxx);
+
+        t("m", Language::ObjectiveC);
+
+        t("M", Language::ObjectiveCxx);
+        t("mm", Language::ObjectiveCxx);
+
+        t("cu", Language::Cuda);
+    }
+
+    #[test]
+    fn test_language_from_file_name_none() {
+        fn t(extension: &str) {
+            let path_str = format!("input.{}", extension);
+            let path = Path::new(&path_str);
+            let actual = Language::from_file_name(path);
+            let expected = None;
+            assert_eq!(actual, expected);
+        }
+
+        // gcc parses file-extensions as case-sensitive
+        t("Cp");
+        t("Cpp");
+        t("Mm");
+        t("Cu");
+    }
 }
