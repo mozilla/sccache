@@ -114,7 +114,8 @@ impl Language {
             // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
             Some("c") => Some(Language::C),
             // TODO i
-            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx") | Some("c++") => Some(Language::Cxx),
+            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
+            | Some("c++") => Some(Language::Cxx),
             // TODO ii
             // TODO H hh hp hpp HPP hxx h++
             // TODO tcc
