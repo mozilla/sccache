@@ -54,9 +54,9 @@ fn get_port() -> u16 {
 }
 
 /// Check if ignoring all response errors
-fn ignore_all_server_errors() -> bool {
+fn ignore_all_server_io_errors() -> bool {
     let ignore;
-    match env::var("SCCACHE_IGNORE_RESPONSE_ERROR") {
+    match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
         Ok(val) => ignore = val,
         Err(_e) => ignore = "none".to_string(),
     }
@@ -474,18 +474,7 @@ where
                 Ok(Response::CompileFinished(result)) => {
                     return handle_compile_finished(result, stdout, stderr)
                 }
-                Ok(_) => {
-                    if ignore_all_server_errors() {
-                        eprintln!(
-                            "sccache: warning: unexpected response from server \
-                             compiling locally instead"
-                        );
-                    }
-                    else {
-                        bail!("unexpected response from server")
-                    }
-
-                }
+                Ok(_) => bail!("unexpected response from server"),
                 Err(e) => {
                     match e.downcast_ref::<io::Error>() {
                         Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -496,7 +485,7 @@ where
                         }
                         _ => {
                             //TODO: something better here?
-                            if ignore_all_server_errors() {
+                            if ignore_all_server_io_errors() {
                                 eprintln!(
                                     "sccache: warning: error reading compile response from server \
                                      compiling locally instead"
@@ -512,15 +501,7 @@ where
         }
         CompileResponse::UnsupportedCompiler(s) => {
             debug!("Server sent UnsupportedCompiler: {:?}", s);
-            if ignore_all_server_errors() {
-                eprintln!(
-                    "sccache: warning: Compiler not supported: {:?} \
-                     compiling locally instead", s
-                );
-            }
-            else {
-                bail!("Compiler not supported: {:?}", s);
-            }
+            bail!("Compiler not supported: {:?}", s);
         }
         CompileResponse::UnhandledCompile => {
             debug!("Server sent UnhandledCompile");

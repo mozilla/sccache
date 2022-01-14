@@ -123,6 +123,8 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 endif()
 ```
 
+Sometime, Sccache server might not return response due to intermittent connection issue. By default, sccache would stop the building with the exception of `error reading compile response from server`. If the CI system needs high stability, We could set `SCCACHE_IGNORE_SERVER_IO_ERROR=1`, thus, sccache would continute to compile the code locally with the commandline.
+
 ---
 
 Build Requirements
