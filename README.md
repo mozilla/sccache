@@ -73,7 +73,7 @@ sccache gcc -o foo.o -c foo.c
 
 If you want to use sccache for caching Rust builds you can define `build.rustc-wrapper` in the
 [cargo configuration file](https://doc.rust-lang.org/cargo/reference/config.html).  For example, you can set it globally
-in `$HOME/.cargo/config` by adding:
+in `$HOME/.cargo/config.toml` by adding:
 
 ```toml
 [build]
@@ -157,7 +157,7 @@ Build with `cargo` and use `otool -L` to check that the resulting binary does no
 
 On Windows, the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
-It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
+It is possible to statically link against the CRT using a `.cargo/config.toml` file with the following contents.
 
 ```toml
 [target.x86_64-pc-windows-msvc]
