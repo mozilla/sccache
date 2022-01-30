@@ -197,8 +197,8 @@ lazy_static! {
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
 
-/// Get absolute paths for all source files listed in rustc's dep-info output.
-async fn get_source_files<T>(
+/// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
+async fn get_source_files_and_env_deps<T>(
     creator: &T,
     crate_name: &str,
     executable: &Path,
@@ -206,7 +206,7 @@ async fn get_source_files<T>(
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
-) -> Result<Vec<PathBuf>>
+) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
 where
     T: CommandCreatorSync,
 {
@@ -238,22 +238,23 @@ where
         })
         .await?;
 
-    parsed.map(move |files| {
+    parsed.map(move |(files, env_deps)| {
         trace!(
-            "[{}]: got {} source files from dep-info in {}",
+            "[{}]: got {} source files and {} env-deps from dep-info in {}",
             crate_name,
             files.len(),
+            env_deps.len(),
             fmt_duration_as_secs(&start.elapsed())
         );
         // Just to make sure we capture temp_dir.
         drop(temp_dir);
-        files
+        (files, env_deps)
     })
 }
 
 /// Parse dependency info from `file` and return a Vec of files mentioned.
 /// Treat paths as relative to `cwd`.
-fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<Vec<PathBuf>>
+fn parse_dep_file<T, U>(file: T, cwd: U) -> Result<(Vec<PathBuf>, Vec<(OsString, OsString)>)>
 where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -261,7 +262,7 @@ where
     let mut f = fs::File::open(file)?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
-    Ok(parse_dep_info(&deps, cwd))
+    Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps)))
 }
 
 fn parse_dep_info<T>(dep_info: &str, cwd: T) -> Vec<PathBuf>
@@ -313,6 +314,20 @@ where
     let mut deps = deps.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
     deps.sort();
     deps
+}
+
+fn parse_env_dep_info(dep_info: &str) -> Vec<(OsString, OsString)> {
+    let mut env_deps = Vec::new();
+    for line in dep_info.lines() {
+        if let Some(env_dep) = line.strip_prefix("# env-dep:") {
+            let mut split = env_dep.splitn(2, '=');
+            match (split.next(), split.next()) {
+                (Some(var), Some(val)) => env_deps.push((var.into(), val.into())),
+                _ => env_deps.push((env_dep.into(), "".into())),
+            }
+        }
+    }
+    env_deps
 }
 
 /// Run `rustc --print file-names` to get the outputs of compilation.
@@ -1299,8 +1314,8 @@ where
             .collect::<Vec<_>>();
         // Find all the source files and hash them
         let source_hashes_pool = pool.clone();
-        let source_files_and_hashes = async {
-            let source_files = get_source_files(
+        let source_files_and_hashes_and_env_deps = async {
+            let (source_files, env_deps) = get_source_files_and_env_deps(
                 creator,
                 &crate_name,
                 &executable,
@@ -1311,7 +1326,7 @@ where
             )
             .await?;
             let source_hashes = hash_all(&source_files, &source_hashes_pool).await?;
-            Ok((source_files, source_hashes))
+            Ok((source_files, source_hashes, env_deps))
         };
 
         // Hash the contents of the externs listed on the commandline.
@@ -1323,8 +1338,11 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all(&abs_staticlibs, pool);
 
-        let ((source_files, source_hashes), extern_hashes, staticlib_hashes) =
-            futures::try_join!(source_files_and_hashes, extern_hashes, staticlib_hashes)?;
+        let ((source_files, source_hashes, mut env_deps), extern_hashes, staticlib_hashes) = futures::try_join!(
+            source_files_and_hashes_and_env_deps,
+            extern_hashes,
+            staticlib_hashes
+        )?;
         // If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
         let mut m = Digest::new();
         // Hash inputs:
@@ -1374,12 +1392,15 @@ where
         {
             m.update(h.as_bytes());
         }
-        // 7. Environment variables. Ideally we'd use anything referenced
-        // via env! in the program, but we don't have a way to determine that
-        // currently, and hashing all environment variables is too much, so
-        // we'll just hash the CARGO_ env vars and hope that's sufficient.
-        // Upstream Rust issue tracking getting information about env! usage:
-        // https://github.com/rust-lang/rust/issues/40364
+        // 7. Environment variables: Hash all environment variables listed in the rustc dep-info
+        //    output. Additionally also has all environment variables starting with `CARGO_`,
+        //    since those are not listed in dep-info but affect cacheability.
+        env_deps.sort();
+        for &(ref var, ref val) in env_deps.iter() {
+            var.hash(&mut HashToDigest { digest: &mut m });
+            m.update(b"=");
+            val.hash(&mut HashToDigest { digest: &mut m });
+        }
         let mut env_vars: Vec<_> = env_vars
             .iter()
             // Filter out RUSTC_COLOR since we control color usage with command line flags.

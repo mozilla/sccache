@@ -5,7 +5,7 @@ sccache includes support for caching Rust compilation. This includes many caveat
 * `--out-dir` is required.
 * `-o file` is not supported.
 * Compilation from stdin is not supported, a source file must be provided.
-* Values from `env!` will not be tracked in caching.
+* Values from `env!` require Rust >= 1.46 to be tracked in caching.
 * Procedural macros that read files from the filesystem may not be cached properly
 * Target specs aren't hashed (e.g. custom target specs)
 
