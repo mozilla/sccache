@@ -60,8 +60,15 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
     target_os = "freebsd"
 ))]
 fn main() {
-    init_logging();
+    use tokio::select;
+    use tokio::signal::unix::{signal, SignalKind};
 
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+
+    init_logging();
+    
+    
     let command = match cmdline::try_parse_from(env::args()) {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
@@ -75,18 +82,31 @@ fn main() {
             }
         },
     };
-
-    std::process::exit(match run(command) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sccache-dist: error: {}", e);
-
-            for e in e.chain().skip(1) {
-                eprintln!("sccache-dist: caused by: {}", e);
+    
+    let run_fut = async move {
+        match run(cmd).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("sccache-dist: error: {}", e);
+                for e in e.chain().skip(1) {
+                    eprintln!("sccache-dist: caused by: {}", e);
+                }
+                2
             }
-            2
         }
-    });
+    };
+        
+    // Whenever `docker` or `systemd` stop the service, the signals
+    // have to be processed and the app has to perform a graceful stop.
+    select! {
+        _ = sigint.recv() => {},
+        _ = sigterm.recv() => {},
+        res = run_fut => {
+            std::process::exit(res);
+        },
+    }
+
+    Ok(())
 }
 
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
