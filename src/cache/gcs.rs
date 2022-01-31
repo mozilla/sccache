@@ -440,6 +440,8 @@ impl GCSCredentialProvider {
 pub struct GCSCache {
     /// The GCS bucket
     bucket: Arc<Bucket>,
+    /// The key prefix
+    key_prefix: String,
     /// Credential provider for GCS
     credential_provider: Option<GCSCredentialProvider>,
     /// Read-only or not
@@ -450,21 +452,28 @@ impl GCSCache {
     /// Create a new `GCSCache` storing data in `bucket`
     pub fn new(
         bucket: String,
+        key_prefix: String,
         credential_provider: Option<GCSCredentialProvider>,
         rw_mode: RWMode,
     ) -> Result<GCSCache> {
         Ok(GCSCache {
             bucket: Arc::new(Bucket::new(bucket)?),
+            key_prefix,
             rw_mode,
             credential_provider,
         })
+    }
+
+    fn normalize_key(&self, key: &str) -> String {
+        format!("{}/{}", &self.key_prefix, key)
     }
 }
 
 #[async_trait]
 impl Storage for GCSCache {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.bucket.get(key, &self.credential_provider).await {
+        let key = self.normalize_key(key);
+        match self.bucket.get(&key, &self.credential_provider).await {
             Ok(data) => {
                 let hit = CacheRead::from(io::Cursor::new(data))?;
                 Ok(Cache::Hit(hit))
@@ -485,8 +494,9 @@ impl Storage for GCSCache {
         let data = entry.finish()?;
 
         let bucket = self.bucket.clone();
+        let key = self.normalize_key(key);
         let _ = bucket
-            .put(key, data, &self.credential_provider)
+            .put(&key, data, &self.credential_provider)
             .await
             .context("failed to put cache entry in GCS")?;
 
@@ -494,7 +504,10 @@ impl Storage for GCSCache {
     }
 
     fn location(&self) -> String {
-        format!("GCS, bucket: {}", self.bucket)
+        format!(
+            "GCS, bucket: {}, key_prefix: {}",
+            self.bucket, self.key_prefix,
+        )
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {

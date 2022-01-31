@@ -176,6 +176,7 @@ pub enum GCSCacheRWMode {
 #[serde(deny_unknown_fields)]
 pub struct GCSCacheConfig {
     pub bucket: String,
+    pub key_prefix: String,
     pub cred_path: Option<PathBuf>,
     pub url: Option<String>,
     pub rw_mode: GCSCacheRWMode,
@@ -485,6 +486,13 @@ fn config_from_env() -> EnvConfig {
         .map(|url| MemcachedCacheConfig { url });
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
+        let key_prefix = env::var("SCCACHE_GCS_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
         let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
         let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
@@ -510,6 +518,7 @@ fn config_from_env() -> EnvConfig {
         };
         GCSCacheConfig {
             bucket,
+            key_prefix,
             cred_path,
             url,
             rw_mode,
