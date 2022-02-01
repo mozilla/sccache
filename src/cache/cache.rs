@@ -309,13 +309,14 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             }
             CacheType::GCS(config::GCSCacheConfig {
                 ref bucket,
+                ref key_prefix,
                 ref cred_path,
                 ref url,
                 rw_mode,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {:?}, {:?}, {:?})",
-                    bucket, cred_path, url, rw_mode
+                    "Trying GCS bucket({}, {}, {:?}, {:?}, {:?})",
+                    bucket, key_prefix, cred_path, url, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
@@ -359,7 +360,12 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                     let gcs_cred_provider = service_account_info_opt
                         .map(|info| GCSCredentialProvider::new(gcs_read_write_mode, info));
 
-                    match GCSCache::new(bucket.to_owned(), gcs_cred_provider, gcs_read_write_mode) {
+                    match GCSCache::new(
+                        bucket.to_owned(),
+                        key_prefix.to_owned(),
+                        gcs_cred_provider,
+                        gcs_read_write_mode,
+                    ) {
                         Ok(s) => {
                             trace!("Using GCSCache");
                             return Arc::new(s);
