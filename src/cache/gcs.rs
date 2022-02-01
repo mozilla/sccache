@@ -465,7 +465,11 @@ impl GCSCache {
     }
 
     fn normalize_key(&self, key: &str) -> String {
-        format!("{}/{}", &self.key_prefix, key)
+        if self.key_prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", &self.key_prefix, key)
+        }
     }
 }
 
@@ -506,7 +510,12 @@ impl Storage for GCSCache {
     fn location(&self) -> String {
         format!(
             "GCS, bucket: {}, key_prefix: {}",
-            self.bucket, self.key_prefix,
+            self.bucket,
+            if self.key_prefix.is_empty() {
+                "(none)"
+            } else {
+                &self.key_prefix
+            },
         )
     }
 
@@ -559,4 +568,52 @@ async fn test_gcs_credential_provider() {
         .map_err(move |err| panic!("{}", err.to_string()));
 
     let _ = server.with_graceful_shutdown(cred_fut.map(drop)).await;
+}
+
+#[test]
+fn normalize_key() {
+    let cache = GCSCache::new(
+        String::from("bucket"),
+        String::from(""),
+        None,
+        RWMode::ReadOnly,
+    )
+    .unwrap();
+    assert_eq!(cache.normalize_key("key"), String::from("key"));
+
+    let cache = GCSCache::new(
+        String::from("bucket"),
+        String::from("prefix"),
+        None,
+        RWMode::ReadOnly,
+    )
+    .unwrap();
+    assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
+}
+
+#[test]
+fn location() {
+    let cache = GCSCache::new(
+        String::from("bucket"),
+        String::from(""),
+        None,
+        RWMode::ReadOnly,
+    )
+    .unwrap();
+    assert_eq!(
+        cache.location(),
+        String::from("GCS, bucket: Bucket(name=bucket), key_prefix: (none)")
+    );
+
+    let cache = GCSCache::new(
+        String::from("bucket"),
+        String::from("prefix"),
+        None,
+        RWMode::ReadOnly,
+    )
+    .unwrap();
+    assert_eq!(
+        cache.location(),
+        String::from("GCS, bucket: Bucket(name=bucket), key_prefix: prefix")
+    );
 }
