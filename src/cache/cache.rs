@@ -311,12 +311,13 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 ref bucket,
                 ref key_prefix,
                 ref cred_path,
-                ref url,
+                ref deprecated_url,
+                ref oauth_url,
                 rw_mode,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {}, {:?}, {:?}, {:?})",
-                    bucket, key_prefix, cred_path, url, rw_mode
+                    "Trying GCS bucket({}, {}, {:?}, {:?}, {:?}, {:?})",
+                    bucket, key_prefix, cred_path, deprecated_url, oauth_url, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
@@ -343,8 +344,10 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                             service_account_key_res
                                 .ok()
                                 .map(ServiceAccountInfo::AccountKey)
-                        } else if let Some(ref url) = *url {
-                            Some(ServiceAccountInfo::Url(url.clone()))
+                        } else if let Some(ref url) = *deprecated_url {
+                            Some(ServiceAccountInfo::DeprecatedUrl(url.clone()))
+                        } else if let Some(ref url) = *oauth_url {
+                            Some(ServiceAccountInfo::OAuthUrl(url.clone()))
                         } else {
                             warn!(
                             "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."

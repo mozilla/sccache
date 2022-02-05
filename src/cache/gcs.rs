@@ -166,7 +166,8 @@ pub struct GCSCredentialProvider {
 /// ServiceAccountInfo either contains a URL to fetch the oauth token
 /// or the service account key
 pub enum ServiceAccountInfo {
-    Url(String),
+    DeprecatedUrl(String),
+    OAuthUrl(String),
     AccountKey(ServiceAccountKey),
 }
 
@@ -248,11 +249,18 @@ struct TokenMsg {
 
 /// AuthResponse represents the json response body from taskcluster-auth.gcsCredentials endpoint
 #[derive(Deserialize)]
-struct AuthResponse {
+struct DeprecatedAuthResponse {
     #[serde(rename = "accessToken")]
     access_token: String,
     #[serde(rename = "expireTime")]
     expire_time: String,
+}
+
+/// AuthResponse represents the json response body from taskcluster-auth.gcsCredentials endpoint
+#[derive(Deserialize)]
+struct OAuthResponse {
+    access_token: String,
+    expires_in: i64,
 }
 
 /// RWMode describes whether or not to attempt cache writes.
@@ -399,10 +407,33 @@ impl GCSCredentialProvider {
         let res = client.get(url).send().await?;
 
         if res.status().is_success() {
-            let resp = res.json::<AuthResponse>().await?;
+            let resp = res.json::<DeprecatedAuthResponse>().await?;
             Ok(GCSCredential {
                 token: resp.access_token,
                 expiration_time: resp.expire_time.parse()?,
+            })
+        } else {
+            Err(BadHttpStatusError(res.status()).into())
+        }
+    }
+
+    async fn request_new_token_from_oauth(
+        &self,
+        url: &str,
+        client: &Client,
+    ) -> Result<GCSCredential> {
+        let res = client
+            .get(url)
+            .header("Metadata-Flavor", "Google")
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let resp = res.json::<OAuthResponse>().await?;
+            Ok(GCSCredential {
+                token: resp.access_token,
+                expiration_time: chrono::offset::Utc::now()
+                    + chrono::Duration::seconds(resp.expires_in),
             })
         } else {
             Err(BadHttpStatusError(res.status()).into())
@@ -423,8 +454,11 @@ impl GCSCredentialProvider {
                     ServiceAccountInfo::AccountKey(ref sa_key) => {
                         self.request_new_token(sa_key, client).await
                     }
-                    ServiceAccountInfo::Url(ref url) => {
+                    ServiceAccountInfo::DeprecatedUrl(ref url) => {
                         self.request_new_token_from_tcauth(url, client).await
+                    }
+                    ServiceAccountInfo::OAuthUrl(ref url) => {
+                        self.request_new_token_from_oauth(url, client).await
                     }
                 }?;
 
@@ -549,7 +583,7 @@ async fn test_gcs_credential_provider() {
 
     let credential_provider = GCSCredentialProvider::new(
         RWMode::ReadWrite,
-        ServiceAccountInfo::Url("http://127.0.0.1:3000/".to_string()),
+        ServiceAccountInfo::DeprecatedUrl("http://127.0.0.1:3000/".to_string()),
     );
 
     let client = Client::new();
@@ -616,4 +650,39 @@ fn location() {
         cache.location(),
         String::from("GCS, bucket: Bucket(name=bucket), key_prefix: prefix")
     );
+}
+
+#[tokio::test]
+async fn test_gcs_oauth_provider() {
+    use futures::{FutureExt, TryFutureExt};
+    use std::convert::Infallible;
+
+    const EXPIRE_TIME: i64 = 600;
+    let addr = ([127, 0, 0, 1], 3001).into();
+    let make_service = hyper::service::make_service_fn(|_socket| async {
+        Ok::<_, Infallible>(hyper::service::service_fn(|_request| async {
+            let token = serde_json::json!({
+                "access_token": "1234567890",
+                "expires_in": EXPIRE_TIME,
+            });
+            Ok::<_, Infallible>(hyper::Response::new(hyper::Body::from(token.to_string())))
+        }))
+    });
+
+    let server = hyper::Server::bind(&addr).serve(make_service);
+
+    let credential_provider = GCSCredentialProvider::new(
+        RWMode::ReadWrite,
+        ServiceAccountInfo::OAuthUrl("http://127.0.0.1:3001/".to_string()),
+    );
+
+    let client = Client::new();
+    let cred_fut = credential_provider
+        .credentials(&client)
+        .map_ok(move |credential| {
+            assert_eq!(credential.token, "1234567890");
+        })
+        .map_err(move |err| panic!("{}", err.to_string()));
+
+    let _ = server.with_graceful_shutdown(cred_fut.map(drop)).await;
 }
