@@ -31,7 +31,10 @@ impl AzureBlobCache {
     pub fn new() -> Result<AzureBlobCache> {
         let credentials = match EnvironmentProvider.provide_credentials() {
             Ok(creds) => creds,
-            Err(_) => bail!("Could not find Azure credentials in the environment"),
+            Err(err) => bail!(
+                "Could not find Azure credentials in the environment: {}",
+                err
+            ),
         };
 
         let container = match BlobContainer::new(
