@@ -77,7 +77,7 @@ const MOZ_USERINFO_ENDPOINT: &str = "https://auth.mozilla.auth0.com/userinfo";
 // Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
 pub struct MozillaCheck {
     auth_cache: Mutex<HashMap<String, Instant>>, // token, token_expiry
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     required_groups: Vec<String>,
 }
 
@@ -96,7 +96,7 @@ impl MozillaCheck {
     pub fn new(required_groups: Vec<String>) -> Self {
         Self {
             auth_cache: Mutex::new(HashMap::new()),
-            client: reqwest::Client::new(),
+            client: reqwest::blocking::Client::new(),
             required_groups,
         }
     }
@@ -145,22 +145,18 @@ impl MozillaCheck {
         let header = hyperx::header::Authorization(hyperx::header::Bearer {
             token: token.to_owned(),
         });
-        let mut res = self
+        let res = self
             .client
             .get(url.clone())
             .set_header(header)
             .send()
             .context("Failed to make request to mozilla userinfo")?;
+        let status = res.status();
         let res_text = res
             .text()
             .context("Failed to interpret response from mozilla userinfo as string")?;
-        if !res.status().is_success() {
-            bail!(
-                "JWT forwarded to {} returned {}: {}",
-                url,
-                res.status(),
-                res_text
-            )
+        if !status.is_success() {
+            bail!("JWT forwarded to {} returned {}: {}", url, status, res_text)
         }
 
         // The API didn't return a HTTP error code, let's check the response
@@ -241,7 +237,7 @@ fn test_auth_verify_check_mozilla_profile() {
 // Don't check a token is valid (it may not even be a JWT) just forward it to
 // an API and check for success
 pub struct ProxyTokenCheck {
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>>,
     url: String,
 }
@@ -265,7 +261,7 @@ impl ProxyTokenCheck {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::blocking::Client::new(),
             maybe_auth_cache,
             url,
         }
@@ -330,7 +326,7 @@ impl ClientAuthCheck for ValidJWTCheck {
 
 impl ValidJWTCheck {
     pub fn new(audience: String, issuer: String, jwks_url: &str) -> Result<Self> {
-        let mut res = reqwest::get(jwks_url).context("Failed to make request to JWKs url")?;
+        let res = reqwest::blocking::get(jwks_url).context("Failed to make request to JWKs url")?;
         if !res.status().is_success() {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }

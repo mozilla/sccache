@@ -1,21 +1,16 @@
-use futures::future;
-use futures::prelude::*;
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 use http::StatusCode;
-use hyper::body::Payload;
 use hyper::server::conn::AddrIncoming;
-use hyper::service::Service;
-use hyper::{Body, Request, Response, Server};
+use hyper::{Body, Response, Server};
 use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::io;
-use std::marker::PhantomData;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::Duration;
-use tokio_compat::runtime::current_thread::Runtime;
+use tokio::runtime::Runtime;
 use url::Url;
 use uuid::Uuid;
 
@@ -28,43 +23,6 @@ pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
 // If token is valid for under this amount of time, print a warning
 const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(2 * 24 * 60 * 60);
 const MIN_TOKEN_VALIDITY_WARNING: &str = "two days";
-
-trait ServeFn:
-    Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
-    + Copy
-    + Send
-    + 'static
-{
-}
-impl<T> ServeFn for T where
-    T: Fn(Request<Body>) -> Box<dyn Future<Item = Response<Body>, Error = hyper::Error> + Send>
-        + Copy
-        + Send
-        + 'static
-{
-}
-
-fn serve_sfuture(serve: fn(Request<Body>) -> SFutureSend<Response<Body>>) -> impl ServeFn {
-    move |req: Request<Body>| {
-        let uri = req.uri().to_owned();
-        Box::new(serve(req).or_else(move |e| {
-            // `{:?}` prints the full cause chain and backtrace.
-            let body = format!("{:?}", e);
-            eprintln!(
-                "sccache: Error during a request to {} on the client auth web server\n{}",
-                uri, body
-            );
-            let len = body.len();
-            let mut builder = Response::builder();
-            builder.status(StatusCode::INTERNAL_SERVER_ERROR);
-            Ok(builder
-                .set_header(ContentType::text())
-                .set_header(ContentLength(len as u64))
-                .body(body.into())
-                .unwrap())
-        })) as Box<dyn Future<Item = _, Error = _> + Send>
-    }
-}
 
 fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
     // Url::parse operates on absolute URLs, so ensure there's a prefix
@@ -128,8 +86,7 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
-    use futures::sync::oneshot;
+    use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::{rngs::OsRng, RngCore};
     use sha2::{Digest, Sha256};
@@ -241,19 +198,19 @@ mod code_grant_pkce {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> SFutureSend<Response<Body>> {
+    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
         let response = match (req.method(), req.uri().path()) {
             (&Method::GET, "/") => html_response(REDIRECT_WITH_AUTH_JSON),
-            (&Method::GET, "/auth_detail.json") => ftry_send!(json_response(&state.auth_url)),
+            (&Method::GET, "/auth_detail.json") => json_response(&state.auth_url)?,
             (&Method::GET, "/redirect") => {
-                let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
-                let (code, auth_state) = ftry_send!(handle_code_response(query_pairs)
-                    .context("Failed to handle response from redirect"));
+                let query_pairs = query_pairs(&req.uri().to_string())?;
+                let (code, auth_state) = handle_code_response(query_pairs)
+                    .context("Failed to handle response from redirect")?;
                 if auth_state != state.auth_state_value {
-                    return ftry_send!(Err(anyhow!("Mismatched auth states after redirect")));
+                    return Err(anyhow!("Mismatched auth states after redirect"));
                 }
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.code_tx.send(code).unwrap();
@@ -264,12 +221,11 @@ mod code_grant_pkce {
                 warn!("Route not found");
                 Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .body("".into())
-                    .unwrap()
+                    .body("".into())?
             }
         };
 
-        Box::new(future::ok(response))
+        Ok(response)
     }
 
     pub fn code_to_token(
@@ -286,8 +242,8 @@ mod code_grant_pkce {
             grant_type: GRANT_TYPE_PARAM_VALUE,
             redirect_uri,
         };
-        let client = reqwest::Client::new();
-        let mut res = client.post(token_url).json(&token_request).send()?;
+        let client = reqwest::blocking::Client::new();
+        let res = client.post(token_url).json(&token_request).send()?;
         if !res.status().is_success() {
             bail!(
                 "Sending code to {} failed, HTTP error: {}",
@@ -319,8 +275,7 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::future;
-    use futures::sync::oneshot;
+    use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use std::collections::HashMap;
     use std::sync::mpsc;
@@ -420,21 +375,20 @@ mod implicit {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> SFutureSend<Response<Body>> {
+    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
         let response = match (req.method(), req.uri().path()) {
             (&Method::GET, "/") => html_response(REDIRECT_WITH_AUTH_JSON),
-            (&Method::GET, "/auth_detail.json") => ftry_send!(json_response(&state.auth_url)),
+            (&Method::GET, "/auth_detail.json") => json_response(&state.auth_url)?,
             (&Method::GET, "/redirect") => html_response(SAVE_AUTH_AFTER_REDIRECT),
             (&Method::POST, "/save_auth") => {
-                let query_pairs = ftry_send!(query_pairs(&req.uri().to_string()));
-                let (token, expires_at, auth_state) = ftry_send!(
-                    handle_response(query_pairs).context("Failed to save auth after redirect")
-                );
+                let query_pairs = query_pairs(&req.uri().to_string())?;
+                let (token, expires_at, auth_state) =
+                    handle_response(query_pairs).context("Failed to save auth after redirect")?;
                 if auth_state != state.auth_state_value {
-                    return ftry_send!(Err(anyhow!("Mismatched auth states after redirect")));
+                    return Err(anyhow!("Mismatched auth states after redirect"));
                 }
                 if expires_at - Instant::now() < MIN_TOKEN_VALIDITY {
                     warn!(
@@ -449,7 +403,7 @@ mod implicit {
                 // Deliberately in reverse order for a 'happens-before' relationship
                 state.token_tx.send(token).unwrap();
                 state.shutdown_tx.take().unwrap().send(()).unwrap();
-                ftry_send!(json_response(&""))
+                json_response(&"")?
             }
             _ => {
                 warn!("Route not found");
@@ -460,58 +414,51 @@ mod implicit {
             }
         };
 
-        Box::new(future::ok(response))
+        Ok(response)
     }
 }
 
-fn service_fn<F, R, S>(f: F) -> ServiceFn<F, R>
+// Typing out a hyper service is a major pain, so let's focus on our simple
+// `fn(Request<Body>) -> Response<Body>` handler functions; to reduce repetition
+// we create a relevant service using hyper's own helper factory functions.
+macro_rules! make_service {
+    ($serve_fn: expr) => {{
+        use core::convert::Infallible;
+        use hyper::server::conn::AddrStream;
+        use hyper::service::{make_service_fn, service_fn};
+        use hyper::{Body, Request};
+
+        make_service_fn(|_socket: &AddrStream| async {
+            Ok::<_, Infallible>(service_fn(|req: Request<Body>| async move {
+                let uri = req.uri().clone();
+                $serve_fn(req).or_else(|e| error_code_response(uri, e))
+            }))
+        })
+    }};
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn error_code_response<E>(uri: hyper::Uri, e: E) -> hyper::Result<Response<Body>>
 where
-    F: Fn(Request<R>) -> S,
-    S: IntoFuture,
+    E: std::fmt::Debug,
 {
-    ServiceFn {
-        f,
-        _req: PhantomData,
-    }
+    let body = format!("{:?}", e);
+    eprintln!(
+        "sccache: Error during a request to {} on the client auth web server\n{}",
+        uri, body
+    );
+    let len = body.len();
+    let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
+    let res = builder
+        .set_header(ContentType::text())
+        .set_header(ContentLength(len as u64))
+        .body(body.into())
+        .unwrap();
+    Ok::<Response<Body>, hyper::Error>(res)
 }
 
-struct ServiceFn<F, R> {
-    f: F,
-    _req: PhantomData<fn(R)>,
-}
-
-impl<F, ReqBody, Ret, ResBody> Service for ServiceFn<F, ReqBody>
-where
-    F: Fn(Request<ReqBody>) -> Ret,
-    ReqBody: Payload,
-    Ret: IntoFuture<Item = Response<ResBody>>,
-    Ret::Error: Into<Box<dyn StdError + Send + Sync>>,
-    ResBody: Payload,
-{
-    type ReqBody = ReqBody;
-    type ResBody = ResBody;
-    type Error = Ret::Error;
-    type Future = Ret::Future;
-
-    fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
-        (self.f)(req).into_future()
-    }
-}
-
-impl<F, R> IntoFuture for ServiceFn<F, R> {
-    type Future = future::FutureResult<Self::Item, Self::Error>;
-    type Item = Self;
-    type Error = hyper::Error;
-
-    fn into_future(self) -> Self::Future {
-        future::ok(self)
-    }
-}
-
-fn try_serve<T>(serve: T) -> Result<Server<AddrIncoming, impl Fn() -> ServiceFn<T, Body>>>
-where
-    T: ServeFn,
-{
+/// Try to bind a TCP stream to any of the available port out of [`VALID_PORTS`].
+fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
     // Try all the valid ports
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port)
@@ -533,9 +480,8 @@ where
             }
         }
 
-        let new_service = move || service_fn(serve);
         match Server::try_bind(&addr) {
-            Ok(s) => return Ok(s.serve(new_service)),
+            Ok(s) => return Ok(s),
             Err(ref err)
                 if err
                     .source()
@@ -557,7 +503,13 @@ pub fn get_token_oauth2_code_grant_pkce(
     mut auth_url: Url,
     token_url: &str,
 ) -> Result<String> {
-    let server = try_serve(serve_sfuture(code_grant_pkce::serve))?;
+    let runtime = Runtime::new()?;
+    let builder = {
+        let _guard = runtime.enter();
+        try_bind()?
+    };
+    let server = builder.serve(make_service!(code_grant_pkce::serve));
+
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -585,15 +537,15 @@ pub fn get_token_oauth2_code_grant_pkce(
         shutdown_tx: Some(shutdown_tx),
     };
     *code_grant_pkce::STATE.lock().unwrap() = Some(state);
-    let shutdown_signal = shutdown_rx.map_err(|e| {
-        warn!(
-            "Something went wrong while waiting for auth server shutdown: {}",
-            e
-        )
-    });
 
-    let mut runtime = Runtime::new()?;
-    runtime.block_on(server.with_graceful_shutdown(shutdown_signal))?;
+    runtime.block_on(server.with_graceful_shutdown(async move {
+        if let Err(e) = shutdown_rx.await {
+            warn!(
+                "Something went wrong while waiting for auth server shutdown: {}",
+                e
+            )
+        }
+    }))?;
 
     info!("Server finished, using code to request token");
     let code = code_rx
@@ -605,7 +557,13 @@ pub fn get_token_oauth2_code_grant_pkce(
 
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
-    let server = try_serve(serve_sfuture(implicit::serve))?;
+    let runtime = Runtime::new()?;
+    let builder = {
+        let _guard = runtime.enter();
+        try_bind()?
+    };
+    let server = builder.serve(make_service!(implicit::serve));
+
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
@@ -626,15 +584,15 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
         shutdown_tx: Some(shutdown_tx),
     };
     *implicit::STATE.lock().unwrap() = Some(state);
-    let shutdown_signal = shutdown_rx.map_err(|e| {
-        warn!(
-            "Something went wrong while waiting for auth server shutdown: {}",
-            e
-        )
-    });
 
-    let mut runtime = Runtime::new()?;
-    runtime.block_on(server.with_graceful_shutdown(shutdown_signal))?;
+    runtime.block_on(server.with_graceful_shutdown(async move {
+        if let Err(e) = shutdown_rx.await {
+            warn!(
+                "Something went wrong while waiting for auth server shutdown: {}",
+                e
+            )
+        }
+    }))?;
 
     info!("Server finished, returning token");
     Ok(token_rx

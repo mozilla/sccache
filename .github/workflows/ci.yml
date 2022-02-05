@@ -15,7 +15,7 @@ jobs:
             cargo_cmd: fmt -- --check
             os: ubuntu-latest
           - component: clippy
-            cargo_cmd: clippy --locked --all-targets -- -D warnings -A clippy::unknown-clippy-lints -A clippy::type_complexity -A clippy::new-without-default
+            cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
         uses: actions/checkout@v1
@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
-          toolchain: 1.50.0
+          toolchain: 1.54.0
 
       - name: clippy version
         run: cargo clippy --version
@@ -39,24 +39,32 @@ jobs:
     continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-16.04
-            rustc: 1.43.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-16.04
-            rustc: 1.43.0
+          - os: ubuntu-18.04
+            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
+          - os: ubuntu-18.04
+            rustc: 1.48.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: stable
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: beta
-          - os: ubuntu-16.04
+          - os: ubuntu-18.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
           - os: macOS-10.15
           - os: windows-2019
+            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
+          - os: windows-2019
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+          - os: windows-2019
+            rustc: beta
     env:
       RUST_BACKTRACE: 1
     steps:
@@ -79,6 +87,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-20.04
@@ -152,6 +161,71 @@ jobs:
           name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
+
+  coverage:
+    name: coverage ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-18.04
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+          - os: macOS-10.15
+            rustc: nightly
+# Disable on Windows for now as it fails with:
+# found invalid metadata files for crate `vte_generate_state_changes`
+#          - os: windows-2019
+#            rustc: nightly
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v1
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: ${{ matrix.rustc }}
+
+      - name: "`grcov` ~ install"
+        run: cargo install grcov
+
+      - name: Execute tests
+        run: cargo test --no-fail-fast --locked --all-targets --verbose ${{ matrix.extra_args }}
+        env:
+          CARGO_INCREMENTAL: '0'
+          RUSTC_WRAPPER: ''
+          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort'
+
+      - name: Generate coverage data (via `grcov`)
+        id: coverage
+        shell: bash
+        run: |
+          ## Generate coverage data
+          COVERAGE_REPORT_DIR="target/debug"
+          COVERAGE_REPORT_FILE="${COVERAGE_REPORT_DIR}/lcov.info"
+          # GRCOV_IGNORE_OPTION='--ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*"' ## `grcov` ignores these params when passed as an environment variable (why?)
+          # GRCOV_EXCLUDE_OPTION='--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"' ## `grcov` ignores these params when passed as an environment variable (why?)
+          mkdir -p "${COVERAGE_REPORT_DIR}"
+          # display coverage files
+          grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
+          # generate coverage report
+          grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
+          echo ::set-output name=report::${COVERAGE_REPORT_FILE}
+
+      - name: Upload coverage results (to Codecov.io)
+        uses: codecov/codecov-action@v2
+        with:
+          file: ${{ steps.coverage.outputs.report }}
+          ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          flags: ${{ steps.vars.outputs.CODECOV_FLAGS }}
+          name: codecov-umbrella
+          fail_ci_if_error: false
 
   release:
     name: release

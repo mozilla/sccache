@@ -21,9 +21,9 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use futures::future::{self, Future};
 use std::ffi::OsString;
 use std::fs::File;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -37,6 +37,7 @@ pub struct Clang {
     pub clangplusplus: bool,
 }
 
+#[async_trait]
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
@@ -57,7 +58,8 @@ impl CCompilerImpl for Clang {
         )
     }
 
-    fn preprocess<T>(
+    #[allow(clippy::too_many_arguments)]
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -66,7 +68,7 @@ impl CCompilerImpl for Clang {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -80,6 +82,7 @@ impl CCompilerImpl for Clang {
             self.kind(),
             rewrite_includes_only,
         )
+        .await
     }
 
     fn generate_compile_commands(
@@ -136,8 +139,8 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
     use std::collections::HashMap;
+    use std::future::Future;
     use std::path::PathBuf;
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {

@@ -13,14 +13,15 @@
 // limitations under the License.
 
 #![deny(rust_2018_idioms)]
+#![allow(clippy::type_complexity, clippy::new_without_default)]
 #![recursion_limit = "256"]
 
+#[macro_use]
+extern crate async_trait;
 #[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate counted_array;
-#[macro_use]
-extern crate futures;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
 #[macro_use]
@@ -93,7 +94,7 @@ fn init_logging() {
     if env::var(LOGGING_ENV).is_ok() {
         match env_logger::Builder::from_env(LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
+            Err(e) => panic!("Failed to initalize logging: {:?}", e),
         }
     }
 }

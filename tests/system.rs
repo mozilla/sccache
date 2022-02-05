@@ -103,7 +103,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     // Compile a source file.
     copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
 
-    let out_file = tempdir.join("test.o");
+    let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
@@ -150,7 +150,7 @@ fn test_noncacheable_stats(compiler: Compiler, tempdir: &Path) {
     copy_to_tempdir(&[INPUT], tempdir);
 
     trace!("compile");
-    Command::new(assert_cmd::cargo::cargo_bin("sccache"))
+    sccache_command()
         .arg(&exe)
         .arg("-E")
         .arg(INPUT)
@@ -234,7 +234,7 @@ fn test_gcc_fprofile_generate_source_changes(compiler: Compiler, tempdir: &Path)
     zero_stats();
     const SRC: &str = "source.c";
     write_source(
-        &tempdir,
+        tempdir,
         SRC,
         "/*line 1*/
 #ifndef UNDEFINED
@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     // modulo line numbers. This should not be a cache hit because line numbers are important
     // with -fprofile-generate.
     write_source(
-        &tempdir,
+        tempdir,
         SRC,
         "/*line 1*/
 #ifndef UNDEFINED

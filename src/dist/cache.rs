@@ -497,7 +497,7 @@ impl TcCache {
 
     #[cfg(feature = "dist-client")]
     fn insert_file(&mut self, path: &Path) -> Result<Toolchain> {
-        let archive_id = path_key(&path)?;
+        let archive_id = path_key(path)?;
         self.inner
             .insert_file(make_lru_key_path(&archive_id), path)?;
         Ok(Toolchain { archive_id })

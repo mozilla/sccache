@@ -19,8 +19,7 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
-use futures::sync::oneshot::{self, Sender};
-use futures_03::executor::ThreadPool;
+use futures::channel::oneshot::{self, Sender};
 use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
@@ -32,7 +31,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::u64;
-use tokio_compat::runtime::current_thread::Runtime;
+use tokio::runtime::Runtime;
 
 /// Options for running the server in tests.
 #[derive(Default)]
@@ -75,13 +74,12 @@ where
     let (tx, rx) = mpsc::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = thread::spawn(move || {
-        let pool = ThreadPool::sized(1);
-        let dist_client = DistClientContainer::new_disabled();
-        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, &pool));
-
         let runtime = Runtime::new().unwrap();
+        let dist_client = DistClientContainer::new_disabled();
+        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, runtime.handle()));
+
         let client = unsafe { Client::new() };
-        let srv = SccacheServer::new(0, pool, runtime, client, dist_client, storage).unwrap();
+        let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
         let mut srv: SccacheServer<Arc<Mutex<MockCommandCreator>>> = srv;
         assert!(srv.port() > 0);
         if let Some(options) = options {
@@ -101,7 +99,7 @@ where
 #[test]
 fn test_server_shutdown() {
     let f = TestFixture::new();
-    let (port, _sender, _storage, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, _sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it to shut down
@@ -116,7 +114,7 @@ fn test_server_shutdown_no_idle() {
     let f = TestFixture::new();
     // Set a ridiculously low idle timeout.
     let (port, _sender, _storage, child) = run_server_thread(
-        &f.tempdir.path(),
+        f.tempdir.path(),
         ServerOptions {
             idle_timeout: Some(0),
             ..Default::default()
@@ -133,7 +131,7 @@ fn test_server_idle_timeout() {
     let f = TestFixture::new();
     // Set a ridiculously low idle timeout.
     let (_port, _sender, _storage, child) = run_server_thread(
-        &f.tempdir.path(),
+        f.tempdir.path(),
         ServerOptions {
             idle_timeout: Some(1),
             ..Default::default()
@@ -149,7 +147,7 @@ fn test_server_idle_timeout() {
 #[test]
 fn test_server_stats() {
     let f = TestFixture::new();
-    let (port, sender, _storage, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, sender, _storage, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     // Ask it for stats.
@@ -164,7 +162,7 @@ fn test_server_stats() {
 #[test]
 fn test_server_unsupported_compiler() {
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     let conn = connect_to_server(port).unwrap();
     {
@@ -213,7 +211,7 @@ fn test_server_unsupported_compiler() {
 fn test_server_compile() {
     let _ = env_logger::try_init();
     let f = TestFixture::new();
-    let (port, sender, server_creator, child) = run_server_thread(&f.tempdir.path(), None);
+    let (port, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
     const PREPROCESSOR_STDERR: &[u8] = b"preprocessor stderr";

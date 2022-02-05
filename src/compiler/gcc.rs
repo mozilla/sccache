@@ -30,13 +30,14 @@ use crate::errors::*;
 
 /// A struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct GCC {
+pub struct Gcc {
     pub gplusplus: bool,
 }
 
-impl CCompilerImpl for GCC {
+#[async_trait]
+impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
-        CCompilerKind::GCC
+        CCompilerKind::Gcc
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
@@ -49,7 +50,8 @@ impl CCompilerImpl for GCC {
         parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus)
     }
 
-    fn preprocess<T>(
+    #[allow(clippy::too_many_arguments)]
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -58,7 +60,7 @@ impl CCompilerImpl for GCC {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
@@ -72,6 +74,7 @@ impl CCompilerImpl for GCC {
             self.kind(),
             rewrite_includes_only,
         )
+        .await
     }
 
     fn generate_compile_commands(
@@ -495,7 +498,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn preprocess<T>(
+pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
     parsed_args: &ParsedArguments,
@@ -504,7 +507,7 @@ pub fn preprocess<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
-) -> SFuture<process::Output>
+) -> Result<process::Output>
 where
     T: CommandCreatorSync,
 {
@@ -530,7 +533,7 @@ where
             CCompilerKind::Clang => {
                 cmd.arg("-frewrite-includes");
             }
-            CCompilerKind::GCC => {
+            CCompilerKind::Gcc => {
                 cmd.arg("-fdirectives-only");
             }
             _ => {}
@@ -547,7 +550,7 @@ where
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
-    Box::new(run_input_output(cmd, None))
+    run_input_output(cmd, None).await
 }
 
 pub fn generate_compile_commands(
@@ -627,7 +630,7 @@ pub fn generate_compile_commands(
             "-o".into(),
             path_transformer.as_dist(out_file)?,
         ];
-        if let CCompilerKind::GCC = kind {
+        if let CCompilerKind::Gcc = kind {
             // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
             //
             // -fdirectives-only
@@ -648,7 +651,7 @@ pub fn generate_compile_commands(
         }
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
         Some(dist::CompileCommand {
-            executable: path_transformer.as_dist(&executable)?,
+            executable: path_transformer.as_dist(executable)?,
             arguments,
             env_vars: dist::osstring_tuples_to_strings(env_vars)?,
             cwd: path_transformer.as_dist_abs(cwd)?,
@@ -736,7 +739,6 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use futures::Future;
 
     fn parse_arguments_(
         arguments: Vec<String>,
@@ -1321,11 +1323,11 @@ mod test {
         let mut path_transformer = dist::PathTransformer::default();
         let (command, dist_command, cacheable) = generate_compile_commands(
             &mut path_transformer,
-            &compiler,
+            compiler,
             &parsed_args,
             f.tempdir.path(),
             &[],
-            CCompilerKind::GCC,
+            CCompilerKind::Gcc,
             false,
         )
         .unwrap();

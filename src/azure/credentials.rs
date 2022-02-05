@@ -165,7 +165,7 @@ mod test {
     fn test_parse_connection_string() {
         let conn = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
 
-        let creds = parse_connection_string(&conn, "container".to_string()).unwrap();
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
         assert_eq!(
             "http://127.0.0.1:10000/devstoreaccount1/",
             creds.azure_blob_endpoint()
@@ -179,7 +179,7 @@ mod test {
     fn test_parse_connection_string_without_account_key() {
         let conn = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
 
-        let creds = parse_connection_string(&conn, "container".to_string()).unwrap();
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
         assert_eq!(
             "http://127.0.0.1:10000/devstoreaccount1/",
             creds.azure_blob_endpoint()
@@ -192,7 +192,7 @@ mod test {
     #[test]
     fn test_conn_str_with_endpoint_suffix_only() {
         let conn = "DefaultEndpointsProtocol=https;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
-        let creds = parse_connection_string(&conn, "container".to_string()).unwrap();
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
 
         assert_eq!(
             "https://foo.blob.core.windows.net/",

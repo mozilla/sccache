@@ -23,7 +23,6 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
-use futures::Future;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -34,10 +33,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process;
 use strip_ansi_escapes::Writer;
-use tokio_compat::runtime::current_thread::Runtime;
-use tokio_io::io::read_exact;
-use tokio_io::AsyncRead;
-use tokio_timer::Timeout;
+use tokio::io::AsyncReadExt;
+use tokio::runtime::Runtime;
 use which::which_in;
 
 use crate::errors::*;
@@ -56,33 +53,30 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-fn read_server_startup_status<R: AsyncRead>(
-    server: R,
-) -> impl Future<Item = ServerStartup, Error = Error> {
+async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+    mut server: R,
+) -> Result<ServerStartup> {
     // This is an async equivalent of ServerConnection::read_one_response
-    read_exact(server, [0u8; 4])
-        .map_err(Error::from)
-        .and_then(|(server, bytes)| {
-            let len = BigEndian::read_u32(&bytes);
-            let data = vec![0; len as usize];
-            read_exact(server, data)
-                .map_err(Error::from)
-                .and_then(|(_server, data)| Ok(bincode::deserialize(&data)?))
-        })
+    let mut bytes = [0u8; 4];
+    server.read_exact(&mut bytes[..]).await?;
+
+    let len = BigEndian::read_u32(&bytes);
+    let mut data = vec![0; len as usize];
+    server.read_exact(data.as_mut_slice()).await?;
+
+    Ok(bincode::deserialize(&data)?)
 }
 
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::Stream;
     use std::time::Duration;
 
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
-    let mut runtime = Runtime::new()?;
-    let listener = tokio_uds::UnixListener::bind(&socket_path)?;
+    let runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
     let _child = process::Command::new(&exe_path)
@@ -92,23 +86,20 @@ fn run_server_process() -> Result<ServerStartup> {
         .env("RUST_BACKTRACE", "1")
         .spawn()?;
 
-    let startup = listener.incoming().into_future().map_err(|e| e.0);
-    let startup = startup.map_err(Error::from).and_then(|(socket, _rest)| {
-        let socket = socket.unwrap(); // incoming() never returns None
-        read_server_startup_status(socket)
-    });
+    let startup = async move {
+        let listener = tokio::net::UnixListener::bind(&socket_path)?;
+        let (socket, _) = listener.accept().await?;
+
+        read_server_startup_status(socket).await
+    };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(startup, timeout).or_else(|err| {
-        if err.is_elapsed() {
-            Ok(ServerStartup::TimedOut)
-        } else if err.is_inner() {
-            Err(err.into_inner().unwrap())
-        } else {
-            Err(err.into_timer().unwrap().into())
+    runtime.block_on(async move {
+        match tokio::time::timeout(timeout, startup).await {
+            Ok(result) => result,
+            Err(_elapsed) => Ok(ServerStartup::TimedOut),
         }
-    });
-    runtime.block_on(timeout)
+    })
 }
 
 #[cfg(not(windows))]
@@ -146,13 +137,11 @@ fn redirect_error_log() -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process() -> Result<ServerStartup> {
-    use futures::future;
+    use futures::StreamExt;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use std::time::Duration;
-    use tokio_named_pipes::NamedPipe;
-    use tokio_reactor::Handle;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
     use winapi::um::handleapi::CloseHandle;
@@ -164,24 +153,8 @@ fn run_server_process() -> Result<ServerStartup> {
     trace!("run_server_process");
 
     // Create a mini event loop and register our named pipe server
-    let mut runtime = Runtime::new()?;
+    let runtime = Runtime::new()?;
     let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
-    let server = runtime.block_on(future::lazy(|| {
-        NamedPipe::new(
-            &pipe_name,
-            #[allow(deprecated)]
-            &Handle::current(),
-        )
-    }))?;
-
-    // Connect a client to our server, and we'll wait below if it's still in
-    // progress.
-
-    match server.connect() {
-        Ok(()) => {}
-        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-        Err(e) => return Err(e.into()),
-    }
 
     // Spawn a server which should come back and connect to us
     let exe_path = env::current_exe()?;
@@ -250,19 +223,23 @@ fn run_server_process() -> Result<ServerStartup> {
         return Err(io::Error::last_os_error().into());
     }
 
-    let result = read_server_startup_status(server);
+    let startup = async move {
+        let listener = parity_tokio_ipc::Endpoint::new(pipe_name);
+        let incoming = listener.incoming()?;
+        futures::pin_mut!(incoming);
+        let socket = incoming.next().await;
+        let socket = socket.unwrap(); // incoming() never returns None
+
+        read_server_startup_status(socket?).await
+    };
 
     let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
-    let timeout = Timeout::new(result, timeout).or_else(|err| {
-        if err.is_elapsed() {
-            Ok(ServerStartup::TimedOut)
-        } else if err.is_inner() {
-            Err(err.into_inner().unwrap())
-        } else {
-            Err(err.into_timer().unwrap().into())
+    runtime.block_on(async move {
+        match tokio::time::timeout(timeout, startup).await {
+            Ok(result) => result,
+            Err(_elapsed) => Ok(ServerStartup::TimedOut),
         }
-    });
-    runtime.block_on(timeout)
+    })
 }
 
 /// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
@@ -518,10 +495,14 @@ where
     if log_enabled!(Trace) {
         trace!("running command: {:?}", cmd);
     }
-    let status = runtime.block_on(
-        cmd.spawn()
-            .and_then(|c| c.wait().fcontext("failed to wait for child")),
-    )?;
+
+    let status = runtime.block_on(async move {
+        let child = cmd.spawn().await?;
+        child
+            .wait()
+            .await
+            .with_context(|| "failed to wait for a child")
+    })?;
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
@@ -678,22 +659,22 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         #[cfg(feature = "dist-client")]
         Command::PackageToolchain(executable, out) => {
             use crate::compiler;
-            use futures_03::executor::ThreadPool;
 
             trace!("Command::PackageToolchain({})", executable.display());
-            let mut runtime = Runtime::new()?;
+            let runtime = Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
             let env: Vec<_> = env::vars_os().collect();
-            let pool = ThreadPool::builder().pool_size(1).create()?;
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
-            let compiler =
-                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None);
-            let packager = compiler.map(|c| c.0.get_toolchain_packager());
-            let res = packager.and_then(|p| p.write_pkg(out_file));
-            runtime.block_on(res)?
+            let pool = runtime.handle().clone();
+            runtime.block_on(async move {
+                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None)
+                    .await
+                    .map(|compiler| compiler.0.get_toolchain_packager())
+                    .and_then(|packager| packager.write_pkg(out_file))
+            })?
         }
         #[cfg(not(feature = "dist-client"))]
         Command::PackageToolchain(_executable, _out) => bail!(

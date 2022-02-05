@@ -710,32 +710,32 @@ pub trait BuilderIncoming: Send + Sync {
 }
 
 /////////
-
-pub trait Client {
+#[async_trait]
+pub trait Client: Send + Sync {
     // To Scheduler
-    fn do_alloc_job(&self, tc: Toolchain) -> SFuture<AllocJobResult>;
+    async fn do_alloc_job(&self, tc: Toolchain) -> Result<AllocJobResult>;
     // To Scheduler
-    fn do_get_status(&self) -> SFuture<SchedulerStatusResult>;
+    async fn do_get_status(&self) -> Result<SchedulerStatusResult>;
     // To Server
-    fn do_submit_toolchain(
+    async fn do_submit_toolchain(
         &self,
         job_alloc: JobAlloc,
         tc: Toolchain,
-    ) -> SFuture<SubmitToolchainResult>;
+    ) -> Result<SubmitToolchainResult>;
     // To Server
-    fn do_run_job(
+    async fn do_run_job(
         &self,
         job_alloc: JobAlloc,
         command: CompileCommand,
         outputs: Vec<String>,
         inputs_packager: Box<dyn pkg::InputsPackager>,
-    ) -> SFuture<(RunJobResult, PathTransformer)>;
-    fn put_toolchain(
+    ) -> Result<(RunJobResult, PathTransformer)>;
+    async fn put_toolchain(
         &self,
-        compiler_path: &Path,
-        weak_key: &str,
+        compiler_path: PathBuf,
+        weak_key: String,
         toolchain_packager: Box<dyn pkg::ToolchainPackager>,
-    ) -> SFuture<(Toolchain, Option<(String, PathBuf)>)>;
+    ) -> Result<(Toolchain, Option<(String, PathBuf)>)>;
     fn rewrite_includes_only(&self) -> bool;
-    fn get_custom_toolchain(&self, exe: &PathBuf) -> Option<PathBuf>;
+    fn get_custom_toolchain(&self, exe: &Path) -> Option<PathBuf>;
 }

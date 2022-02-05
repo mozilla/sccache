@@ -2,10 +2,9 @@ use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
-use futures::future;
-use futures::prelude::*;
-use futures::sync::mpsc;
-use futures::sync::oneshot;
+use futures::channel::mpsc;
+use futures::channel::oneshot;
+use futures::StreamExt;
 
 use crate::errors::*;
 
@@ -38,14 +37,18 @@ impl Client {
         let (helper, tx) = if inherited {
             (None, None)
         } else {
-            let (tx, rx) = mpsc::unbounded::<oneshot::Sender<_>>();
-            let mut rx = rx.wait();
+            let (tx, mut rx) = mpsc::unbounded::<oneshot::Sender<_>>();
             let helper = inner
                 .clone()
                 .into_helper_thread(move |token| {
-                    if let Some(Ok(sender)) = rx.next() {
-                        drop(sender.send(token));
-                    }
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async {
+                        if let Some(sender) = rx.next().await {
+                            drop(sender.send(token));
+                        }
+                    });
                 })
                 .expect("failed to spawn helper thread");
             (Some(Arc::new(helper)), Some(tx))
@@ -64,18 +67,22 @@ impl Client {
     /// This should be invoked before any "work" is spawned (for whatever the
     /// definition of "work" is) to ensure that the system is properly
     /// rate-limiting itself.
-    pub fn acquire(&self) -> SFuture<Acquired> {
+    pub async fn acquire(&self) -> Result<Acquired> {
         let (helper, tx) = match (self.helper.as_ref(), self.tx.as_ref()) {
             (Some(a), Some(b)) => (a, b),
-            _ => return Box::new(future::ok(Acquired { _token: None })),
+            _ => return Ok(Acquired { _token: None }),
         };
         let (mytx, myrx) = oneshot::channel();
         helper.request_token();
         tx.unbounded_send(mytx).unwrap();
-        Box::new(
-            myrx.fcontext("jobserver helper panicked")
-                .and_then(|t| t.context("failed to acquire jobserver token"))
-                .map(|t| Acquired { _token: Some(t) }),
-        )
+
+        let acquired = myrx
+            .await
+            .context("jobserver helper panicked")?
+            .context("failed to acquire jobserver token")?;
+
+        Ok(Acquired {
+            _token: Some(acquired),
+        })
     }
 }
