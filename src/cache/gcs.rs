@@ -662,8 +662,8 @@ async fn test_gcs_oauth_provider() {
     let make_service = hyper::service::make_service_fn(|_socket| async {
         Ok::<_, Infallible>(hyper::service::service_fn(|_request| async {
             let token = serde_json::json!({
-                "accessToken": "1234567890",
-                "expireTime": EXPIRE_TIME,
+                "access_token": "1234567890",
+                "expires_in": EXPIRE_TIME,
             });
             Ok::<_, Infallible>(hyper::Response::new(hyper::Body::from(token.to_string())))
         }))
