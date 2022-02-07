@@ -488,7 +488,7 @@ where
                             if ignore_all_server_io_errors() {
                                 eprintln!(
                                     "sccache: warning: error reading compile response from server \
-                                     compiling locally instead"
+                                     compiling locally instead (option SCCACHE_IGNORE_SERVER_IO_ERROR passed)"
                                 );
                             } else {
                                 return Err(e)
