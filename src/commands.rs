@@ -485,6 +485,7 @@ where
                         }
                         _ => {
                             //TODO: something better here?
+                            eprintln!("unexpected io error: {:?}", e.downcast_ref::<io::Error>());
                             if ignore_all_server_io_errors() {
                                 eprintln!(
                                     "sccache: warning: error reading compile response from server \
