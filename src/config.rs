@@ -143,7 +143,9 @@ impl HTTPUrl {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AzureCacheConfig;
+pub struct AzureCacheConfig {
+    pub key_prefix: String,
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -528,9 +530,16 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
-    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING")
-        .ok()
-        .map(|_| AzureCacheConfig);
+    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
+        let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+        AzureCacheConfig { key_prefix }
+    });
 
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -826,7 +835,9 @@ fn test_parse_size() {
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
-            azure: Some(AzureCacheConfig),
+            azure: Some(AzureCacheConfig {
+                key_prefix: "".to_owned(),
+            }),
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
@@ -865,7 +876,9 @@ fn config_overrides() {
                 CacheType::Memcached(MemcachedCacheConfig {
                     url: "memurl".to_owned()
                 }),
-                CacheType::Azure(AzureCacheConfig),
+                CacheType::Azure(AzureCacheConfig {
+                    key_prefix: "".to_owned()
+                }),
             ],
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),

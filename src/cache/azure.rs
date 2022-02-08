@@ -25,16 +25,20 @@ use crate::errors::*;
 pub struct AzureBlobCache {
     container: Arc<BlobContainer>,
     credentials: AzureCredentials,
+    key_prefix: String,
 }
 
 impl AzureBlobCache {
-    pub fn new() -> Result<AzureBlobCache> {
-        let credentials = match EnvironmentProvider.provide_credentials() {
-            Ok(creds) => creds,
-            Err(err) => bail!(
-                "Could not find Azure credentials in the environment: {}",
-                err
-            ),
+    pub fn new(credentials: Option<AzureCredentials>, key_prefix: &str) -> Result<AzureBlobCache> {
+        let credentials = match credentials {
+            Some(creds) => creds,
+            None => match EnvironmentProvider.provide_credentials() {
+                Ok(creds) => creds,
+                Err(err) => bail!(
+                    "Could not find Azure credentials in the environment: {}",
+                    err
+                ),
+            },
         };
 
         let container = match BlobContainer::new(
@@ -48,14 +52,24 @@ impl AzureBlobCache {
         Ok(AzureBlobCache {
             container: Arc::new(container),
             credentials,
+            key_prefix: key_prefix.to_owned(),
         })
+    }
+
+    fn normalize_key(&self, key: &str) -> String {
+        if self.key_prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", &self.key_prefix, key)
+        }
     }
 }
 
 #[async_trait]
 impl Storage for AzureBlobCache {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.container.get(key, &self.credentials).await {
+        let key = self.normalize_key(key);
+        match self.container.get(&key, &self.credentials).await {
             Ok(data) => {
                 let hit = CacheRead::from(io::Cursor::new(data))?;
                 Ok(Cache::Hit(hit))
@@ -70,10 +84,11 @@ impl Storage for AzureBlobCache {
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let start = Instant::now();
         let data = entry.finish()?;
+        let key = self.normalize_key(key);
 
         let _ = self
             .container
-            .put(key, data, &self.credentials)
+            .put(&key, data, &self.credentials)
             .await
             .context("Failed to put cache entry in Azure")?;
 
@@ -81,7 +96,15 @@ impl Storage for AzureBlobCache {
     }
 
     fn location(&self) -> String {
-        format!("Azure, container: {}", self.container)
+        format!(
+            "Azure, container: {}, {}",
+            self.container,
+            if self.key_prefix.is_empty() {
+                "(none)"
+            } else {
+                &self.key_prefix
+            },
+        )
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
@@ -90,4 +113,42 @@ impl Storage for AzureBlobCache {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+}
+
+#[test]
+fn normalize_key() {
+    let credentials = AzureCredentials::new(
+        "blob endpoint",
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    let cache = AzureBlobCache::new(Some(credentials.clone()), "").unwrap();
+    assert_eq!(cache.normalize_key("key"), String::from("key"));
+
+    let cache = AzureBlobCache::new(Some(credentials), "prefix").unwrap();
+    assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
+}
+
+#[test]
+fn location() {
+    let credentials = AzureCredentials::new(
+        "blob endpoint",
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    let cache = AzureBlobCache::new(Some(credentials.clone()), "").unwrap();
+    assert_eq!(
+        cache.location(),
+        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), (none)")
+    );
+
+    let cache = AzureBlobCache::new(Some(credentials), "prefix").unwrap();
+    assert_eq!(
+        cache.location(),
+        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), prefix")
+    );
 }

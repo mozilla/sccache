@@ -296,10 +296,10 @@ pub trait Storage: Send + Sync {
 pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
-            CacheType::Azure(config::AzureCacheConfig) => {
-                debug!("Trying Azure Blob Store account");
+            CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
+                debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match AzureBlobCache::new() {
+                match AzureBlobCache::new(None, key_prefix) {
                     Ok(storage) => {
                         trace!("Using AzureBlobCache");
                         return Arc::new(storage);
