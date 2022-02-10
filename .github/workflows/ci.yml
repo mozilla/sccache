@@ -34,7 +34,7 @@ jobs:
         run: cargo ${{ matrix.cargo_cmd }}
 
   test:
-    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
+    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }} ${{ matrix.dist_exec_strategy }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 30
@@ -48,6 +48,15 @@ jobs:
             rustc: 1.60.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
+            cachepot_log: cachepot=trace
+            dist_exec_strategy: docker
+          - os: ubuntu-20.04
+            rustc: 1.56.1
+            extra_desc: dist-worker
+            extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
+            cachepot_log: cachepot=trace
+            cachepot_sandbox: userns
+            dist_exec_strategy: spawn
           - os: ubuntu-20.04
             rustc: stable
           - os: ubuntu-20.04
@@ -68,9 +77,16 @@ jobs:
             rustc: beta
     env:
       RUST_BACKTRACE: 1
+      DIST_EXEC_STRATEGY: ${{ matrix.dist_exec_strategy }}
+      CACHEPOT_SANDBOX: ${{ matrix.cachepot_sandbox }}
+      CACHEPOT_LOG: ${{ matrix.cachepot_log }}
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
+
+      - name: Install bubblewrap (needed for dist test suite)
+        if: contains(matrix.extra_desc, 'dist-worker')
+        run: sudo apt install bubblewrap -y
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain

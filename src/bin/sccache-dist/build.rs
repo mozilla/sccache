@@ -24,6 +24,7 @@ use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{hash_map, HashMap};
 use std::io;
 use std::iter;
+use std::os::unix::net::UnixStream;
 use std::path::{self, Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
 use std::sync::Mutex;
@@ -110,10 +111,7 @@ impl OverlayBuilder {
     pub fn new(bubblewrap: PathBuf, dir: PathBuf) -> Result<Self> {
         info!("Creating overlay builder");
 
-        if !nix::unistd::getuid().is_root() || !nix::unistd::geteuid().is_root() {
-            // Not root, or a setuid binary - haven't put enough thought into supporting this, bail
-            bail!("not running as root")
-        }
+        // TODO(#144): Check kernel support for user namespaces
 
         let out = Command::new(&bubblewrap)
             .arg("--version")
@@ -265,158 +263,138 @@ impl OverlayBuilder {
             compile_command.arguments
         );
 
-        crossbeam_utils::thread::scope(|scope| {
-            scope
-                .spawn(|_| {
-                    // Now mounted filesystems will be automatically unmounted when this thread dies
-                    // (and tmpfs filesystems will be completely destroyed)
-                    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
-                        .context("Failed to enter a new Linux namespace")?;
-                    // Make sure that all future mount changes are private to this namespace
-                    // TODO: shouldn't need to add these annotations
-                    let source: Option<&str> = None;
-                    let fstype: Option<&str> = None;
-                    let data: Option<&str> = None;
-                    // Turn / into a 'slave', so it receives mounts from real root, but doesn't propagate back
-                    nix::mount::mount(
-                        source,
-                        "/",
-                        fstype,
-                        nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_PRIVATE,
-                        data,
-                    )
-                    .context("Failed to turn / into a slave")?;
+        let CompileCommand {
+            executable,
+            arguments,
+            env_vars,
+            cwd,
+        } = compile_command;
+        let cwd = Path::new(&cwd);
 
-                    let work_dir = overlay.build_dir.join("work");
-                    let upper_dir = overlay.build_dir.join("upper");
-                    let target_dir = overlay.build_dir.join("target");
-                    fs::create_dir(&work_dir).context("Failed to create overlay work directory")?;
-                    fs::create_dir(&upper_dir)
-                        .context("Failed to create overlay upper directory")?;
-                    fs::create_dir(&target_dir)
-                        .context("Failed to create overlay target directory")?;
+        let work_dir = overlay.build_dir.join("work");
+        let upper_dir = overlay.build_dir.join("upper");
+        let target_dir = overlay.build_dir.join("target");
 
-                    let () = Overlay::writable(
-                        iter::once(overlay.toolchain_dir.as_path()),
-                        upper_dir,
-                        work_dir,
-                        &target_dir,
-                        // This error is unfortunately not Send+Sync
-                    )
-                    .mount()
-                    .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
+        fs::create_dir(&work_dir).context("Failed to create overlay work directory")?;
+        fs::create_dir(&upper_dir).context("Failed to create overlay upper directory")?;
+        fs::create_dir(&target_dir).context("Failed to create overlay target directory")?;
 
-                    trace!("copying in inputs");
-                    // Note that we don't unpack directly into the upperdir since there overlayfs has some
-                    // special marker files that we don't want to create by accident (or malicious intent)
-                    tar::Archive::new(inputs_rdr)
-                        .unpack(&target_dir)
-                        .context("Failed to unpack inputs to overlay")?;
+        // If specified, run the build in a new user namespace
+        let namespaced = match std::env::var("CACHEPOT_SANDBOX").as_deref() {
+            Ok("userns") => new_userns,
+            _ => current_ns,
+        };
 
-                    let CompileCommand {
-                        executable,
-                        arguments,
-                        env_vars,
-                        cwd,
-                    } = compile_command;
-                    let cwd = Path::new(&cwd);
+        namespaced(move || {
+            Overlay::writable(
+                iter::once(overlay.toolchain_dir.as_path()),
+                upper_dir,
+                work_dir,
+                &target_dir,
+                // This error is unfortunately not Send+Sync
+            )
+            .mount()
+            .map_err(|e| anyhow!("Failed to mount overlay FS: {}", e.to_string()))?;
 
-                    trace!("creating output directories");
-                    fs::create_dir_all(join_suffix(&target_dir, cwd))
-                        .context("Failed to create cwd")?;
-                    for path in output_paths.iter() {
-                        // If it doesn't have a parent, nothing needs creating
-                        let output_parent = if let Some(p) = Path::new(path).parent() {
-                            p
+            trace!("copying in inputs");
+            // Note that we don't unpack directly into the upperdir since there overlayfs has some
+            // special marker files [1] that we don't want to create by accident (or malicious intent)
+            // [1]: like https://www.kernel.org/doc/html/latest/filesystems/overlayfs.html#volatile-mount
+            tar::Archive::new(inputs_rdr)
+                .unpack(&target_dir)
+                .context("Failed to unpack inputs to overlay")?;
+
+            trace!("creating output directories");
+            fs::create_dir_all(join_suffix(&target_dir, cwd)).context("Failed to create cwd")?;
+            for path in output_paths.iter() {
+                // If it doesn't have a parent, nothing needs creating
+                let output_parent = if let Some(p) = Path::new(path).parent() {
+                    p
+                } else {
+                    continue;
+                };
+                fs::create_dir_all(join_suffix(&target_dir, cwd.join(output_parent)))
+                    .context("Failed to create an output directory")?;
+            }
+
+            trace!("performing compile");
+            // Bubblewrap notes:
+            // - If we're running as uid 0 (to do the mounts above, if we're running without
+            //   entering a new unprivileged Linux user namespace), then the bubblewrap is run as uid 0
+            // - There's special handling in bubblewrap to compare uid and euid - of interest to us,
+            //   if uid == euid == 0, bubblewrap preserves capabilities (not good!) so we explicitly
+            //   drop all capabilities
+            // - By entering a new user namespace means any set of capabilities do not apply to any
+            //   other user namespace, i.e. you lose privileges. This is not strictly necessary because
+            //   we're dropping caps anyway so it's irrelevant which namespace we're in, but it doesn't
+            //   hurt.
+            // - --unshare-all is not ideal as it happily continues if it fails to unshare either
+            //   the user or cgroups namespace, so we list everything explicitly
+            // - The order of bind vs proc + dev is important - the new root must be put in place
+            //   first, otherwise proc and dev get hidden
+            let mut cmd = Command::new(bubblewrap);
+            cmd.arg("--die-with-parent")
+                .args(&["--cap-drop", "ALL"])
+                .args(&[
+                    "--unshare-user",
+                    "--unshare-cgroup",
+                    "--unshare-ipc",
+                    "--unshare-pid",
+                    "--unshare-net",
+                    "--unshare-uts",
+                ])
+                .arg("--bind")
+                .arg(&target_dir)
+                .arg("/")
+                .args(&["--proc", "/proc"])
+                .args(&["--dev", "/dev"])
+                .arg("--chdir")
+                .arg(cwd);
+
+            for (k, v) in env_vars {
+                if k.contains('=') {
+                    warn!("Skipping environment variable: {:?}", k);
+                    continue;
+                }
+                cmd.arg("--setenv").arg(k).arg(v);
+            }
+            cmd.arg("--");
+            cmd.arg(executable);
+            cmd.args(arguments);
+            let compile_output = cmd
+                .output()
+                .context("Failed to retrieve output from compile")?;
+            trace!("compile_output: {:?}", compile_output);
+
+            let mut outputs = vec![];
+            trace!("retrieving {:?}", output_paths);
+            for path in output_paths {
+                // Resolve in case it's relative since we copy it from the root level
+                let abspath = join_suffix(&target_dir, cwd.join(&path));
+                match fs::File::open(abspath) {
+                    Ok(file) => {
+                        let output = OutputData::try_from_reader(file)
+                            .context("Failed to read output file")?;
+                        outputs.push((path, output))
+                    }
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::NotFound {
+                            debug!("Missing output path {:?}", path)
                         } else {
-                            continue;
-                        };
-                        fs::create_dir_all(join_suffix(&target_dir, cwd.join(output_parent)))
-                            .context("Failed to create an output directory")?;
-                    }
-
-                    trace!("performing compile");
-                    // Bubblewrap notes:
-                    // - We're running as uid 0 (to do the mounts above), and so bubblewrap is run as uid 0
-                    // - There's special handling in bubblewrap to compare uid and euid - of interest to us,
-                    //   if uid == euid == 0, bubblewrap preserves capabilities (not good!) so we explicitly
-                    //   drop all capabilities
-                    // - By entering a new user namespace means any set of capabilities do not apply to any
-                    //   other user namespace, i.e. you lose privileges. This is not strictly necessary because
-                    //   we're dropping caps anyway so it's irrelevant which namespace we're in, but it doesn't
-                    //   hurt.
-                    // - --unshare-all is not ideal as it happily continues if it fails to unshare either
-                    //   the user or cgroups namespace, so we list everything explicitly
-                    // - The order of bind vs proc + dev is important - the new root must be put in place
-                    //   first, otherwise proc and dev get hidden
-                    let mut cmd = Command::new(bubblewrap);
-                    cmd.arg("--die-with-parent")
-                        .args(&["--cap-drop", "ALL"])
-                        .args(&[
-                            "--unshare-user",
-                            "--unshare-cgroup",
-                            "--unshare-ipc",
-                            "--unshare-pid",
-                            "--unshare-net",
-                            "--unshare-uts",
-                        ])
-                        .arg("--bind")
-                        .arg(&target_dir)
-                        .arg("/")
-                        .args(&["--proc", "/proc"])
-                        .args(&["--dev", "/dev"])
-                        .arg("--chdir")
-                        .arg(cwd);
-
-                    for (k, v) in env_vars {
-                        if k.contains('=') {
-                            warn!("Skipping environment variable: {:?}", k);
-                            continue;
-                        }
-                        cmd.arg("--setenv").arg(k).arg(v);
-                    }
-                    cmd.arg("--");
-                    cmd.arg(executable);
-                    cmd.args(arguments);
-                    let compile_output = cmd
-                        .output()
-                        .context("Failed to retrieve output from compile")?;
-                    trace!("compile_output: {:?}", compile_output);
-
-                    let mut outputs = vec![];
-                    trace!("retrieving {:?}", output_paths);
-                    for path in output_paths {
-                        let abspath = join_suffix(&target_dir, cwd.join(&path)); // Resolve in case it's relative since we copy it from the root level
-                        match fs::File::open(abspath) {
-                            Ok(file) => {
-                                let output = OutputData::try_from_reader(file)
-                                    .context("Failed to read output file")?;
-                                outputs.push((path, output))
-                            }
-                            Err(e) => {
-                                if e.kind() == io::ErrorKind::NotFound {
-                                    debug!("Missing output path {:?}", path)
-                                } else {
-                                    return Err(
-                                        Error::from(e).context("Failed to open output file")
-                                    );
-                                }
-                            }
+                            return Err(Error::from(e).context("Failed to open output file"));
                         }
                     }
-                    let compile_output = ProcessOutput::try_from(compile_output)
-                        .context("Failed to convert compilation exit status")?;
-                    Ok(BuildResult {
-                        output: compile_output,
-                        outputs,
-                    })
+                }
+            }
 
-                    // Bizarrely there's no way to actually get any information from a thread::Result::Err
-                })
-                .join()
-                .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
+            let compile_output = ProcessOutput::try_from(compile_output)
+                .context("Failed to convert compilation exit status")?;
+
+            Ok(BuildResult {
+                output: compile_output,
+                outputs,
+            })
         })
-        .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
@@ -438,6 +416,132 @@ impl OverlayBuilder {
     }
 }
 
+/// Prepare to run the `build_fn` closure in the current user namespace by
+/// unsharing the mount namespace (to clean up after setting up overlay mounts)
+fn current_ns<B: FnOnce() -> Result<BuildResult> + Send>(build_fn: B) -> Result<BuildResult> {
+    // Now mounted filesystems will be automatically unmounted when this thread dies
+    // (and tmpfs filesystems will be completely destroyed)
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
+        .context("Failed to enter a new Linux namespace")?;
+
+    crossbeam_utils::thread::scope(|scope| {
+        scope
+            .spawn(|_| build_fn())
+            // Bizarrely there's no way to actually get any information from a thread::Result::Err
+            .join()
+            .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
+    })
+    .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
+}
+
+/// Run the `build_fn` closure in a new Linux user namespace
+///
+/// NOTE: This is using a fork in order to unshare a new user namespace (needs
+/// to be done from a main/single thread). The current approach is not safe, so
+/// this is considered *experimental* at best, for the time being.
+fn new_userns<B: FnOnce() -> Result<BuildResult>>(build_fn: B) -> Result<BuildResult> {
+    use std::io::Write;
+
+    let (mut tx, rx) = UnixStream::pair()?;
+
+    // SAFETY: Unfortunately, this is *NOT* safe, since we don't only call
+    // `async-signal-safe` [1] syscalls in the child process (most notably
+    // this includes memory allocation). However, it's good enough for a
+    // proof of concept for rootless build sandbox using user namespaces.
+    // The reason why we need to fork in the first place is that creating
+    // a new user namespace with `CLONE_NEWUSER` is required to be called
+    // from a main thread, which fork() separates the calling thread as one.
+    // FIXME(#145): Redesign this binary to be re-executable like
+    // `cachepot-dist sandbox` (akin to server/scheduler), which would enter
+    // the child namespace in the init function, passing the outputs via
+    // shared pipes or a shared tempdir.
+    // [1]: https://man7.org/linux/man-pages/man7/signal-safety.7.html
+    let pid = match unsafe { nix::unistd::fork() }.unwrap() {
+        nix::unistd::ForkResult::Parent { child } => {
+            drop(tx);
+
+            child
+        }
+        nix::unistd::ForkResult::Child => {
+            drop(rx);
+
+            // We need to catch these here errors so they *DON'T* escape to
+            // the forked parent's context.
+            // Forking is a Bad Idea^TM anyway, see note above.
+            let do_work = move || -> Result<BuildResult> {
+                // Fetch uid/gid of the parent namespace user in order to
+                // subsequently map to it in the child user namespace
+                let euid = nix::unistd::Uid::effective();
+                let egid = nix::unistd::Gid::effective();
+
+                // We must call this from a main thread, hence why we forked
+                // in the first place.
+                nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWUSER)
+                    .context("Failed to enter a new user namespace")?;
+
+                // Now mounted filesystems will be automatically unmounted when this thread dies
+                // (and tmpfs filesystems will be completely destroyed)
+                nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
+                    .context("Failed to enter a new Linux namespace")?;
+
+                // Equivalent of `unshare --map-current-user` - we need that
+                // to mount overlayfs and access files owned by the parent
+                // namespace user
+                std::fs::write("/proc/self/uid_map", format!("{} {} 1", euid, euid))
+                    .context("Failed writing to uid_map")?;
+                std::fs::write("/proc/self/setgroups", "deny")
+                    .context("Failed writing to setgroups")?;
+                std::fs::write("/proc/self/gid_map", format!("{} {} 1", egid, egid))
+                    .context("Failed writing to gid_map")?;
+
+                // Make sure that all future mount changes are private to this namespace
+                // Equivalent of `unshare --propagation private` (when used with `--mount`)
+                let fstype: Option<&str> = None;
+                let data: Option<&str> = None;
+                nix::mount::mount(
+                    Some("none"),
+                    "/",
+                    fstype,
+                    nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_PRIVATE,
+                    data,
+                )
+                .context("Failed to turn / into a slave")?;
+
+                build_fn()
+            };
+
+            match do_work()
+                .and_then(|result| bincode::serialize(&result).context("Can't serialize results"))
+                .and_then(|results| tx.write_all(&results).context("Can't pipe build results"))
+            {
+                Ok(..) => std::process::exit(0),
+                Err(err) => {
+                    error!("Error running build in a bubblewrap fork child: {}", err);
+                    std::process::exit(1)
+                }
+            }
+        }
+    };
+
+    trace!("Waiting on child bubblewrap build with PID {}", pid);
+    use nix::sys::wait::{WaitPidFlag, WaitStatus};
+    match nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WSTOPPED)) {
+        Ok(WaitStatus::Exited(_, _code)) => {
+            let results: BuildResult = bincode::deserialize_from(rx)?;
+
+            Ok(results)
+        }
+        Ok(..) => {
+            warn!("Error waiting for child build");
+            Err(anyhow!("Error waiting for a child build"))
+        }
+        Err(e) => {
+            warn!("Error waiting for child build: {}", e);
+            Err(e).map_err(Into::into)
+        }
+    }
+}
+
 impl BuilderIncoming for OverlayBuilder {
     fn run_build(
         &self,
@@ -453,6 +557,9 @@ impl BuilderIncoming for OverlayBuilder {
             .context("failed to prepare overlay dirs")?;
         debug!("Performing build in {:?}", overlay);
         let res = Self::perform_build(&self.bubblewrap, command, inputs_rdr, outputs, &overlay);
+        if let Err(e) = &res {
+            warn!("Error performing build: {}", e);
+        }
         debug!("Finishing with overlay");
         self.finish_overlay(&tc, overlay);
         debug!("Returning result");
