@@ -456,6 +456,22 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
         let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
 
+        Ok(Self::with_listener(
+            listener,
+            runtime,
+            client,
+            dist_client,
+            storage,
+        ))
+    }
+
+    pub fn with_listener(
+        listener: TcpListener,
+        runtime: Runtime,
+        client: Client,
+        dist_client: DistClientContainer,
+        storage: Arc<dyn Storage>,
+    ) -> SccacheServer<C> {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
@@ -463,14 +479,14 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         let pool = runtime.handle().clone();
         let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 
-        Ok(SccacheServer {
+        SccacheServer {
             runtime,
             listener,
             rx,
             service,
             timeout: Duration::from_secs(get_idle_timeout()),
             wait,
-        })
+        }
     }
 
     /// Configures how long this server will be idle before shutting down.
