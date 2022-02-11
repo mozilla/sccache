@@ -97,7 +97,7 @@ impl Storage for AzureBlobCache {
 
     fn location(&self) -> String {
         format!(
-            "Azure, container: {}, {}",
+            "Azure, container: {}, key_prefix: {}",
             self.container,
             if self.key_prefix.is_empty() {
                 "(none)"
