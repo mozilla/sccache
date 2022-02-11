@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "azure")]
-use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
@@ -24,6 +22,8 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
+#[cfg(feature = "azure")]
+use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -296,15 +296,21 @@ pub trait Storage: Send + Sync {
 pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
-            CacheType::Azure(config::AzureCacheConfig) => {
-                debug!("Trying Azure Blob Store account");
+            CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
+                debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match AzureBlobCache::new() {
-                    Ok(storage) => {
-                        trace!("Using AzureBlobCache");
-                        return Arc::new(storage);
-                    }
-                    Err(e) => warn!("Failed to create Azure cache: {:?}", e),
+                match azure::EnvironmentProvider.provide_credentials() {
+                    Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
+                        Ok(storage) => {
+                            trace!("Using AzureBlobCache");
+                            return Arc::new(storage);
+                        }
+                        Err(e) => warn!("Failed to create Azure cache: {:?}", e),
+                    },
+                    Err(err) => warn!(
+                        "Failed to create Azure cache: could not find Azure credentials in the environment: {}",
+                        err
+                    ),
                 }
             }
             CacheType::GCS(config::GCSCacheConfig {
