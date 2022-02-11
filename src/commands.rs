@@ -55,12 +55,10 @@ fn get_port() -> u16 {
 
 /// Check if ignoring all response errors
 fn ignore_all_server_io_errors() -> bool {
-    let ignore;
     match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
-        Ok(val) => ignore = val,
-        Err(_e) => ignore = "none".to_string(),
+        Ok(ignore_server_error) => ignore_server_error == "1",
+        Err(_) => false,
     }
-    ignore == "1"
 }
 
 async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
@@ -485,7 +483,6 @@ where
                         }
                         _ => {
                             //TODO: something better here?
-                            eprintln!("unexpected io error: {:?}", e.downcast_ref::<io::Error>());
                             if ignore_all_server_io_errors() {
                                 eprintln!(
                                     "sccache: warning: error reading compile response from server \
