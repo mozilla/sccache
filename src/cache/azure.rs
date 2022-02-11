@@ -29,18 +29,7 @@ pub struct AzureBlobCache {
 }
 
 impl AzureBlobCache {
-    pub fn new(credentials: Option<AzureCredentials>, key_prefix: &str) -> Result<AzureBlobCache> {
-        let credentials = match credentials {
-            Some(creds) => creds,
-            None => match EnvironmentProvider.provide_credentials() {
-                Ok(creds) => creds,
-                Err(err) => bail!(
-                    "Could not find Azure credentials in the environment: {}",
-                    err
-                ),
-            },
-        };
-
+    pub fn new(credentials: AzureCredentials, key_prefix: &str) -> Result<AzureBlobCache> {
         let container = match BlobContainer::new(
             credentials.azure_blob_endpoint(),
             credentials.blob_container_name(),
@@ -124,10 +113,10 @@ fn normalize_key() {
         String::from("container name"),
     );
 
-    let cache = AzureBlobCache::new(Some(credentials.clone()), "").unwrap();
+    let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
     assert_eq!(cache.normalize_key("key"), String::from("key"));
 
-    let cache = AzureBlobCache::new(Some(credentials), "prefix").unwrap();
+    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
     assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
 }
 
@@ -140,15 +129,15 @@ fn location() {
         String::from("container name"),
     );
 
-    let cache = AzureBlobCache::new(Some(credentials.clone()), "").unwrap();
+    let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
     assert_eq!(
         cache.location(),
-        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), (none)")
+        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: (none)")
     );
 
-    let cache = AzureBlobCache::new(Some(credentials), "prefix").unwrap();
+    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
     assert_eq!(
         cache.location(),
-        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), prefix")
+        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: prefix")
     );
 }

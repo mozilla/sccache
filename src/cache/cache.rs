@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #[cfg(feature = "azure")]
-use crate::cache::azure::AzureBlobCache;
+use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
@@ -299,12 +299,18 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
                 debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match AzureBlobCache::new(None, key_prefix) {
-                    Ok(storage) => {
-                        trace!("Using AzureBlobCache");
-                        return Arc::new(storage);
-                    }
-                    Err(e) => warn!("Failed to create Azure cache: {:?}", e),
+                match azure::EnvironmentProvider.provide_credentials() {
+                    Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
+                        Ok(storage) => {
+                            trace!("Using AzureBlobCache");
+                            return Arc::new(storage);
+                        }
+                        Err(e) => warn!("Failed to create Azure cache: {:?}", e),
+                    },
+                    Err(err) => warn!(
+                        "Failed to create Azure cache: could not find Azure credentials in the environment: {}",
+                        err
+                    ),
                 }
             }
             CacheType::GCS(config::GCSCacheConfig {
