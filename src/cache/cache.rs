@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "azure")]
-use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
@@ -24,6 +22,8 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
+#[cfg(feature = "azure")]
+use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
