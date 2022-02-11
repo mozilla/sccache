@@ -53,6 +53,14 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+/// Check if ignoring all response errors
+fn ignore_all_server_io_errors() -> bool {
+    match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
+        Ok(ignore_server_error) => ignore_server_error == "1",
+        Err(_) => false,
+    }
+}
+
 async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
     mut server: R,
 ) -> Result<ServerStartup> {
@@ -475,7 +483,15 @@ where
                         }
                         _ => {
                             //TODO: something better here?
-                            return Err(e).context("error reading compile response from server");
+                            if ignore_all_server_io_errors() {
+                                eprintln!(
+                                    "sccache: warning: error reading compile response from server \
+                                     compiling locally instead"
+                                );
+                            } else {
+                                return Err(e)
+                                    .context("error reading compile response from server");
+                            }
                         }
                     }
                 }
