@@ -195,13 +195,14 @@ impl Bucket {
         creds: &AwsCredentials,
     ) -> String {
         let string = format!(
-            "{verb}\n{md5}\n{ty}\n{date}\n{headers}{resource}",
+            "{verb}\n{md5}\n{ty}\n{date}\n{headers}/{name}/{path}",
             verb = verb,
             md5 = md5,
             ty = content_type,
             date = date,
             headers = headers,
-            resource = format!("/{}/{}", self.name, path)
+            name = self.name,
+            path = path
         );
         let signature = signature(&string, creds.aws_secret_access_key());
         format!("AWS {}:{}", creds.aws_access_key_id(), signature)
