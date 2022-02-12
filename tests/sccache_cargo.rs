@@ -17,7 +17,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[macro_use]
 extern crate log;
 
@@ -84,6 +83,7 @@ impl SccacheTest<'_> {
             // Explicitly disable incremental compilation because sccache is unable to cache it at
             // the time of writing.
             ("CARGO_INCREMENTAL", OsString::from("0")),
+            ("TEST_ENV_VAR", OsString::from("1")),
         ];
 
         if let Some(vec) = additional_envs {
@@ -135,6 +135,14 @@ fn test_rust_cargo_check() -> Result<()> {
 #[serial]
 fn test_rust_cargo_build() -> Result<()> {
     test_rust_cargo_cmd("build", SccacheTest::new(None)?)
+}
+
+/// This test checks that changing an environment variable reference by env! is detected by
+/// sccache, causes a rebuild and is correctly printed to stdout.
+#[test]
+#[serial]
+fn test_rust_cargo_run_with_env_dep_parsing() -> Result<()> {
+    test_rust_cargo_env_dep(SccacheTest::new(None)?)
 }
 
 #[cfg(feature = "unstable")]
@@ -196,5 +204,51 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
         .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":2}}"#).from_utf8())?
         .try_success()?;
 
+    Ok(())
+}
+
+fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
+    // `cargo clean` first, just to be sure there's no leftover build objects.
+    Command::new(CARGO.as_os_str())
+        .args(&["clean"])
+        .envs(test_info.env.iter().cloned())
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_success()?;
+    // Now build the crate with cargo.
+    Command::new(CARGO.as_os_str())
+        .args(&["run", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_stderr(predicates::str::contains("\x1b[").from_utf8().not())?
+        .try_stdout(predicates::str::contains("Env var: 1"))?
+        .try_success()?;
+    // Clean it so we can build it again.
+    Command::new(CARGO.as_os_str())
+        .args(&["clean"])
+        .envs(test_info.env.iter().cloned())
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_success()?;
+    Command::new(CARGO.as_os_str())
+        .args(&["run", "--color=always"])
+        .envs(test_info.env.iter().cloned())
+        .env("TEST_ENV_VAR", "OTHER_VALUE")
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_stderr(predicates::str::contains("\x1b[").from_utf8())?
+        .try_stdout(predicates::str::contains("Env var: OTHER_VALUE"))?
+        .try_success()?;
+
+    // Now get the stats and ensure that we had one cache hit for the second build.
+    // The test crate has one dependency (itoa) so there are two separate compilations, but only
+    // itoa should be cached (due to the changed environment variable).
+    test_info
+        .show_stats()?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())?
+        .try_success()?;
+
+    drop(test_info);
     Ok(())
 }
