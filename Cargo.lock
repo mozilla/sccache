@@ -100,15 +100,6 @@ checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
 
 [[package]]
 name = "base64"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b25d992356d2eb0ed82172f5248873db5560c4721f564b13cb5193bda5e668e"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
-name = "base64"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3441f0f7b02788e948e47f457ca01f1d7e6d92c693bc132c22b087d3141c03ff"
@@ -211,16 +202,6 @@ name = "byteorder"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
-
-[[package]]
-name = "bytes"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "206fdffcfa2df7cbe15601ef46c813fce0965eb3286db6b56c583b814b51c81c"
-dependencies = [
- "byteorder",
- "iovec",
-]
 
 [[package]]
 name = "bytes"
@@ -575,7 +556,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fc25a87fa4fd2094bffb06925852034d90a17f0d1e05197d4956d3555752191"
 dependencies = [
  "matches",
- "percent-encoding 2.1.0",
+ "percent-encoding",
 ]
 
 [[package]]
@@ -740,7 +721,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "http 0.2.5",
+ "http",
  "indexmap",
  "slab",
  "tokio 1.13.0",
@@ -775,17 +756,6 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.1.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6ccf5ede3a895d8856620237b2f02972c1bbc78d2965ad7fe8838d4a0ed41f0"
-dependencies = [
- "bytes 0.4.12",
- "fnv",
- "itoa",
-]
-
-[[package]]
-name = "http"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1323096b05d41827dadeaee54c9981958c0f94e670bc94ed80037d1a7b8b186b"
@@ -802,7 +772,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ff4f84919677303da5f147645dbea6b1881f368d03ac84e1dc09031ebd7b2c6"
 dependencies = [
  "bytes 1.1.0",
- "http 0.2.5",
+ "http",
  "pin-project-lite 0.2.7",
 ]
 
@@ -835,7 +805,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http 0.2.5",
+ "http",
  "http-body",
  "httparse",
  "httpdate",
@@ -863,19 +833,17 @@ dependencies = [
 
 [[package]]
 name = "hyperx"
-version = "0.13.2"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a94cbc2c6f63028e5736ca4e811ae36d3990059c384cbe68298c66728a9776"
+checksum = "5617e92fc2f2501c3e2bc6ce547cad841adba2bae5b921c7e52510beca6d084c"
 dependencies = [
- "base64 0.10.1",
- "bytes 0.4.12",
- "http 0.1.21",
- "httparse",
+ "base64 0.13.0",
+ "bytes 1.1.0",
+ "http",
+ "httpdate",
  "language-tags",
- "log",
  "mime",
- "percent-encoding 1.0.1",
- "time 0.1.43",
+ "percent-encoding",
  "unicase",
 ]
 
@@ -898,15 +866,6 @@ checksum = "bc633605454125dec4b66843673f01c7df2b89479b32e0ed634e43a91cff62a5"
 dependencies = [
  "autocfg",
  "hashbrown",
-]
-
-[[package]]
-name = "iovec"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2b3ea6ff95e175473f8ffe6a7eb7c00d054240321b84c57051175fe3c1e075e"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -974,9 +933,9 @@ dependencies = [
 
 [[package]]
 name = "language-tags"
-version = "0.2.2"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a91d884b6667cd606bb5a69aa0c99ba811a115fc68915e7056ec08a46e93199a"
+checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
 name = "lazy_static"
@@ -1321,12 +1280,6 @@ dependencies = [
 
 [[package]]
 name = "percent-encoding"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31010dd2e1ac33d5b46a5b413495239882813e0369f8ed8a5e266f173602f831"
-
-[[package]]
-name = "percent-encoding"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4fd5641d01c8f18a23da7b6fe29298ff4b55afcccdf78973b24cf3175fee32e"
@@ -1587,7 +1540,7 @@ dependencies = [
  "futures-util",
  "itoa",
  "native-tls",
- "percent-encoding 2.1.0",
+ "percent-encoding",
  "pin-project-lite 0.2.7",
  "tokio 1.13.0",
  "tokio-native-tls",
@@ -1657,7 +1610,7 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
- "http 0.2.5",
+ "http",
  "http-body",
  "hyper",
  "hyper-tls",
@@ -1667,7 +1620,7 @@ dependencies = [
  "log",
  "mime",
  "native-tls",
- "percent-encoding 2.1.0",
+ "percent-encoding",
  "pin-project-lite 0.2.7",
  "serde",
  "serde_json",
@@ -1716,7 +1669,7 @@ dependencies = [
  "filetime",
  "multipart",
  "num_cpus",
- "percent-encoding 2.1.0",
+ "percent-encoding",
  "rand 0.8.4",
  "serde",
  "serde_derive",
@@ -1776,7 +1729,7 @@ dependencies = [
  "futures",
  "futures-locks",
  "hmac",
- "http 0.2.5",
+ "http",
  "hyper",
  "hyperx",
  "itertools",
@@ -1795,7 +1748,7 @@ dependencies = [
  "number_prefix",
  "openssl",
  "parity-tokio-ipc",
- "percent-encoding 2.1.0",
+ "percent-encoding",
  "predicates",
  "rand 0.8.4",
  "redis",
@@ -2470,7 +2423,7 @@ dependencies = [
  "form_urlencoded",
  "idna",
  "matches",
- "percent-encoding 2.1.0",
+ "percent-encoding",
 ]
 
 [[package]]
