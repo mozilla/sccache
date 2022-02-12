@@ -247,7 +247,7 @@ impl CacheConfigs {
             .chain(gcs.map(CacheType::GCS))
             .chain(azure.map(CacheType::Azure))
             .collect();
-        let fallback = disk.unwrap_or_else(Default::default);
+        let fallback = disk.unwrap_or_default();
 
         (caches, fallback)
     }
