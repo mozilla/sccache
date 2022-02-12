@@ -661,6 +661,7 @@ macro_rules! take_arg {
 }
 
 #[cfg(test)]
+#[allow(clippy::enum_variant_names)]
 mod tests {
     use super::*;
     use itertools::{diff_with, Diff};
