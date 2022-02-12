@@ -837,7 +837,7 @@ version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5617e92fc2f2501c3e2bc6ce547cad841adba2bae5b921c7e52510beca6d084c"
 dependencies = [
- "base64 0.13.0",
+ "base64 0.12.3",
  "bytes 1.1.0",
  "http",
  "httpdate",
