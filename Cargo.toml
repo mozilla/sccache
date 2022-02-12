@@ -100,6 +100,8 @@ chrono = "0.4"
 itertools = "0.10"
 predicates = "=2.1.1"
 thirtyfour_sync = "0.27"
+once_cell = "1.9"
+serial_test = "0.5"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.4"
