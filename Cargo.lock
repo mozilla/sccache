@@ -1777,7 +1777,7 @@ dependencies = [
  "parity-tokio-ipc",
  "percent-encoding 2.1.0",
  "predicates 1.0.8",
- "rand 0.7.3",
+ "rand 0.8.4",
  "redis",
  "regex",
  "reqwest",
