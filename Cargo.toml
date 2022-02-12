@@ -76,7 +76,6 @@ tokio-serde = "0.8"
 tokio-util = { version = "0.6", features = ["codec"] }
 tower = "0.4"
 toml = "0.5"
-untrusted = { version = "0.7", optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "0.8", features = ["v4"] }
 walkdir = "2"
@@ -122,7 +121,7 @@ all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
 azure = ["chrono", "hyper", "hyperx", "reqwest", "url", "hmac", "md-5", "sha2"]
 s3 = ["chrono", "hyper", "hyperx", "reqwest", "simple-s3", "hmac", "sha-1"]
 simple-s3 = []
-gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "untrusted", "url"]
+gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "url"]
 memcached = ["memcached-rs"]
 native-zlib = []
 # Enable features that require unstable features of Nightly Rust.

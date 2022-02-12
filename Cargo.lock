@@ -1825,7 +1825,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "tower",
- "untrusted",
  "url",
  "uuid",
  "version-compare",
