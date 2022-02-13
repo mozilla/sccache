@@ -939,8 +939,6 @@ fn test_gcs_oauth_url() {
     };
 }
 
-
-
 #[test]
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
@@ -967,11 +965,12 @@ size = 7516192768 # 7 GiBytes
 
 [cache.gcs]
 # optional url
-url = "..."
+deprecated_url = "..."
 rw_mode = "READ_ONLY"
 # rw_mode = "READ_WRITE"
 cred_path = "/psst/secret/cred"
 bucket = "bucket"
+key_prefix = "prefix"
 
 [cache.memcached]
 url = "..."
@@ -983,10 +982,12 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
+key_prefix = "s3prefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
-    assert_eq!(file_config,
+    assert_eq!(
+        file_config,
         FileConfig {
             cache: CacheConfigs {
                 azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
@@ -995,11 +996,12 @@ use_ssl = true
                     size: 7 * 1024 * 1024 * 1024,
                 }),
                 gcs: Some(GCSCacheConfig {
-                    url: Some("...".to_owned()),
+                    oauth_url: None,
+                    deprecated_url: Some("...".to_owned()),
                     bucket: "bucket".to_owned(),
                     cred_path: Some(PathBuf::from("/psst/secret/cred")),
                     rw_mode: GCSCacheRWMode::ReadOnly,
-
+                    key_prefix: "prefix".into(),
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
@@ -1011,12 +1013,19 @@ use_ssl = true
                     bucket: "name".to_owned(),
                     endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
                     use_ssl: true,
+                    key_prefix: "s3prefix".into()
                 }),
             },
             dist: DistConfig {
-                auth: DistAuth::Token { token: "secrettoken".to_owned() } ,
+                auth: DistAuth::Token {
+                    token: "secrettoken".to_owned()
+                },
                 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-                scheduler_url: Some(parse_http_url("http://1.2.3.4:10600").map(|url| { HTTPUrl::from_url(url)}).expect("Scheduler url must be valid url str")),
+                scheduler_url: Some(
+                    parse_http_url("http://1.2.3.4:10600")
+                        .map(|url| { HTTPUrl::from_url(url) })
+                        .expect("Scheduler url must be valid url str")
+                ),
                 #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
                 scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
                 cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
