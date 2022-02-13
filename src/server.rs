@@ -684,6 +684,8 @@ where
     tx: mpsc::Sender<ServerMessage>,
 
     /// Information tracking how many services (connected clients) are active.
+    /// This field causes [WaitUntilZero] to wait until this struct drops.
+    #[allow(dead_code)]
     info: ActiveInfo,
 }
 
@@ -1748,6 +1750,7 @@ struct WaitUntilZero {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ActiveInfo {
     info: Arc<Mutex<Info>>,
 }
