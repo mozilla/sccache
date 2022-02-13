@@ -25,12 +25,15 @@ dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
 [cache.gcs]
-# optional url
-url = "..."
+# optional oauth url
+oauth_url = "..."
+# optional deprecated url
+deprecated_url = "..."
 rw_mode = "READ_ONLY"
 # rw_mode = "READ_WRITE"
 cred_path = "/psst/secret/cred"
 bucket = "bucket"
+key_prefix = "prefix"
 
 [cache.memcached]
 url = "..."
@@ -42,6 +45,7 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
+key_prefix = "s3prefix"
 ```
 
 ## env
