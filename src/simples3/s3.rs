@@ -6,7 +6,7 @@ use std::ascii::AsciiExt;
 use std::fmt;
 
 use crate::simples3::credential::*;
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
@@ -38,7 +38,7 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
 }
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::<Sha1>::new_varkey(key).expect("HMAC can take key of any size");
+    let mut hmac = Hmac::<Sha1>::new_from_slice(key).expect("HMAC can take key of any size");
     hmac.update(data);
     hmac.finalize().into_bytes().as_slice().to_vec()
 }

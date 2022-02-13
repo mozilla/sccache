@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use crate::azure::credentials::*;
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use hyperx::header;
 use md5::{Digest, Md5};
 use reqwest::Url;
@@ -29,7 +29,7 @@ use crate::util::HeadersExt;
 const BLOB_API_VERSION: &str = "2017-04-17";
 
 fn hmac(data: &[u8], secret: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::<Sha256>::new_varkey(secret).expect("HMAC can take key of any size");
+    let mut hmac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC can take key of any size");
     hmac.update(data);
     hmac.finalize().into_bytes().as_slice().to_vec()
 }
