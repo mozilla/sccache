@@ -115,7 +115,6 @@ pub struct RustHasher {
 #[derive(Debug, Clone)]
 pub struct RustupProxy {
     proxy_executable: PathBuf,
-    filetime: FileTime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -553,13 +552,8 @@ impl RustupProxy {
     where
         P: AsRef<Path>,
     {
-        let filetime = fs::metadata(proxy_executable.as_ref())
-            .map(|attr| FileTime::from_last_modification_time(&attr))?;
         let proxy_executable = proxy_executable.as_ref().to_owned();
-        Ok(Self {
-            proxy_executable,
-            filetime,
-        })
+        Ok(Self { proxy_executable })
     }
 
     pub async fn find_proxy_executable<T>(
