@@ -608,7 +608,7 @@ mod server {
         fn verify_token(&self, job_id: JobId, token: &str) -> Result<()> {
             let valid_claims = JobJwt { job_id };
             let key = jwt::DecodingKey::from_secret(&self.server_key);
-            jwt::decode(&token, &key, &JWT_VALIDATION)
+            jwt::decode(token, &key, &JWT_VALIDATION)
                 .map_err(|e| anyhow!("JWT decode failed: {}", e))
                 .and_then(|res| {
                     fn identical_t<T>(_: &T, _: &T) {}
@@ -778,7 +778,7 @@ mod server {
                         let alloc_job_res: AllocJobResult = try_or_500_log!(req_id, handler.handle_alloc_job(&requester, toolchain));
                         let certs = server_certificates.lock().unwrap();
                         let res = AllocJobHttpResponse::from_alloc_job_result(alloc_job_res, &certs);
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (GET) (/api/v1/scheduler/server_certificate/{server_id: ServerId}) => {
                         let certs = server_certificates.lock().unwrap();
@@ -788,7 +788,7 @@ mod server {
                             cert_digest: cert_digest.clone(),
                             cert_pem: cert_pem.clone(),
                         };
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (POST) (/api/v1/scheduler/heartbeat_server) => {
                         let server_id = check_server_auth_or_err!(request);
@@ -807,7 +807,7 @@ mod server {
                             num_cpus,
                             job_authorizer
                         ));
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (POST) (/api/v1/scheduler/job_state/{job_id: JobId}) => {
                         let server_id = check_server_auth_or_err!(request);
@@ -817,11 +817,11 @@ mod server {
                         let res: UpdateJobStateResult = try_or_500_log!(req_id, handler.handle_update_job_state(
                             job_id, server_id, job_state
                         ));
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (GET) (/api/v1/scheduler/status) => {
                         let res: SchedulerStatusResult = try_or_500_log!(req_id, handler.handle_status());
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     _ => {
                         warn!("Unknown request {:?}", request);
@@ -968,7 +968,7 @@ mod server {
                         trace!("Req {}: assign_job({}): {:?}", req_id, job_id, toolchain);
 
                         let res: AssignJobResult = try_or_500_log!(req_id, handler.handle_assign_job(job_id, toolchain));
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/submit_toolchain/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
@@ -977,7 +977,7 @@ mod server {
                         let body = request.data().expect("body was already read in submit_toolchain");
                         let toolchain_rdr = ToolchainReader(Box::new(body));
                         let res: SubmitToolchainResult = try_or_500_log!(req_id, handler.handle_submit_toolchain(&requester, job_id, toolchain_rdr));
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     (POST) (/api/v1/distserver/run_job/{job_id: JobId}) => {
                         job_auth_or_401!(request, &job_authorizer, job_id);
@@ -996,7 +996,7 @@ mod server {
                         let outputs = outputs.into_iter().collect();
 
                         let res: RunJobResult = try_or_500_log!(req_id, handler.handle_run_job(&requester, job_id, command, outputs, inputs_rdr));
-                        prepare_response(&request, &res)
+                        prepare_response(request, &res)
                     },
                     _ => {
                         warn!("Unknown request {:?}", request);

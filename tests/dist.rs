@@ -34,7 +34,9 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
     write_source(tmpdir, source_file, "#if !defined(SCCACHE_TEST_DEFINE)\n#error SCCACHE_TEST_DEFINE is not defined\n#endif\nint x() { return 5; }");
     sccache_command()
         .args(&[
-            std::env::var("CC").unwrap_or("gcc".to_string()).as_str(),
+            std::env::var("CC")
+                .unwrap_or_else(|_| "gcc".to_string())
+                .as_str(),
             "-c",
             "-DSCCACHE_TEST_DEFINE",
         ])
