@@ -581,7 +581,7 @@ pub fn parse_arguments(
             let arg = try_or_cannot_cache!(arg, "argument parse");
             // Eagerly bail if it looks like we need to do more complicated work
             use crate::compiler::gcc::ArgData::*;
-            let mut args = match arg.get_data() {
+            let args = match arg.get_data() {
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
                 | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
                 | Some(TooHard(_)) => cannot_cache!(arg
@@ -621,7 +621,7 @@ pub fn parse_arguments(
                 _ => NormalizedDisposition::Separated,
             };
             for arg in arg.normalize(norm).iter_os_strings() {
-                append_fn(arg, &mut args);
+                append_fn(arg, args);
             }
         }
     }

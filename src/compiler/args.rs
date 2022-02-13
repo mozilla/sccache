@@ -307,6 +307,7 @@ macro_rules! ArgData {
     };
     { $( $tok:tt )+ } => {
         #[derive(Clone, Debug, PartialEq)]
+        #[allow(clippy::enum_variant_names)]
         enum ArgData {
             $($tok)+
         }
