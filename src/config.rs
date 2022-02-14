@@ -762,7 +762,7 @@ pub mod scheduler {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).context("Failed to load scheduler config file")
+        super::try_read_config_file(conf_path).context("Failed to load scheduler config file")
     }
 }
 
@@ -817,7 +817,7 @@ pub mod server {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).context("Failed to load server config file")
+        super::try_read_config_file(conf_path).context("Failed to load server config file")
     }
 }
 

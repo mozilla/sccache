@@ -215,7 +215,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-scheduler", &matches);
+            check_init_syslog("sccache-scheduler", matches);
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
@@ -228,7 +228,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-buildserver", &matches);
+            check_init_syslog("sccache-buildserver", matches);
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
@@ -262,10 +262,10 @@ fn create_jwt_server_token(
     key: &[u8],
 ) -> Result<String> {
     let key = jwt::EncodingKey::from_secret(key);
-    jwt::encode(&header, &ServerJwt { server_id }, &key).map_err(Into::into)
+    jwt::encode(header, &ServerJwt { server_id }, &key).map_err(Into::into)
 }
 fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
-    jwt::dangerous_insecure_decode::<ServerJwt>(&server_token)
+    jwt::dangerous_insecure_decode::<ServerJwt>(server_token)
         .map(|res| res.claims.server_id)
         .ok()
 }
@@ -333,7 +333,7 @@ fn run(command: Command) -> Result<i32> {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
-                    Box::new(move |server_token| check_server_token(server_token, &token))
+                    Box::new(move |server_token| check_server_token(server_token, token))
                 }
                 scheduler_config::ServerAuth::Token { token } => {
                     Box::new(move |server_token| check_server_token(server_token, &token))
@@ -395,7 +395,7 @@ fn run(command: Command) -> Result<i32> {
             let scheduler_auth = match scheduler_auth {
                 server_config::SchedulerAuth::Insecure => {
                     warn!("Server starting with DANGEROUSLY_INSECURE scheduler authentication");
-                    create_server_token(server_id, &INSECURE_DIST_SERVER_TOKEN)
+                    create_server_token(server_id, INSECURE_DIST_SERVER_TOKEN)
                 }
                 server_config::SchedulerAuth::Token { token } => {
                     create_server_token(server_id, &token)
@@ -519,6 +519,12 @@ impl Scheduler {
                 }
             }
         }
+    }
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -742,7 +748,7 @@ impl SchedulerIncoming for Scheduler {
             }
             Some(ref mut details) if details.server_nonce != server_nonce => {
                 for job_id in details.jobs_assigned.iter() {
-                    if jobs.remove(&job_id).is_none() {
+                    if jobs.remove(job_id).is_none() {
                         warn!(
                             "Unknown job found when replacing server {}: {}",
                             server_id.addr(),
