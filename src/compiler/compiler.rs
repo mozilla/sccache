@@ -112,7 +112,7 @@ enum CacheLookupResult {
 }
 
 /// An interface to a compiler for argument parsing.
-pub trait Compiler<T>: Send + 'static
+pub trait Compiler<T>: Send + Sync + 'static
 where
     T: CommandCreatorSync,
 {
@@ -136,7 +136,7 @@ impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
     }
 }
 
-pub trait CompilerProxy<T>: Send + 'static
+pub trait CompilerProxy<T>: Send + Sync + 'static
 where
     T: CommandCreatorSync + Sized,
 {
