@@ -528,20 +528,17 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn preprocess<T>(
-    creator: &T,
-    executable: &Path,
+fn preprocess_cmd<T>(
+    cmd: &mut T,
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
-) -> Result<process::Output>
-where
-    T: CommandCreatorSync,
+) where
+    T: RunCommand,
 {
-    trace!("preprocess");
     let language = match parsed_args.language {
         Language::C => "c",
         Language::Cxx => "c++",
@@ -549,7 +546,6 @@ where
         Language::ObjectiveCxx => "objective-c++",
         Language::Cuda => "cu",
     };
-    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-x").arg(language).arg("-E");
     // When performing distributed compilation, line number info is important for error
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
@@ -582,7 +578,33 @@ where
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
+}
 
+#[allow(clippy::too_many_arguments)]
+pub async fn preprocess<T>(
+    creator: &T,
+    executable: &Path,
+    parsed_args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+    may_dist: bool,
+    kind: CCompilerKind,
+    rewrite_includes_only: bool,
+) -> Result<process::Output>
+where
+    T: CommandCreatorSync,
+{
+    trace!("preprocess");
+    let mut cmd = creator.clone().new_command_sync(executable);
+    preprocess_cmd(
+        &mut cmd,
+        parsed_args,
+        cwd,
+        env_vars,
+        may_dist,
+        kind,
+        rewrite_includes_only,
+    );
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
@@ -1181,6 +1203,78 @@ mod test {
         };
 
         assert!(args.common_args.contains(&"-fdiagnostics-color".into()));
+    }
+
+    #[test]
+    fn pedantic_default() {
+        let args = stringvec!["-pedantic", "-c", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+        );
+        // disable with extensions enabled
+        assert!(!cmd.args.contains(&"-fdirectives-only".into()));
+    }
+
+    #[test]
+    fn pedantic_std() {
+        let args = stringvec!["-pedantic-errors", "-c", "-std=c++14", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+        );
+        // no reason to disable it with no extensions enabled
+        assert!(cmd.args.contains(&"-fdirectives-only".into()));
+    }
+
+    #[test]
+    fn pedantic_gnu() {
+        let args = stringvec!["-pedantic-errors", "-c", "-std=gnu++14", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+        );
+        // disable with extensions enabled
+        assert!(!cmd.args.contains(&"-fdirectives-only".into()));
     }
 
     #[test]
