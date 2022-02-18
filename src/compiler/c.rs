@@ -522,14 +522,7 @@ impl pkg::InputsPackager for CInputsPackager {
 
         {
             let (input_path, dirs) = pkg::simplify_path(&input_path)?;
-            for dir in dirs {
-                let dist_dir = path_transformer
-                    .as_dist(&dir)
-                    .with_context(|| format!("unable to transform input dir {}", dir.display()))?;
-                let mut dir_header = pkg::make_tar_header(&dir, &dist_dir, true)?;
-                dir_header.set_cksum();
-                builder.append(&dir_header, "".as_bytes())?;
-            }
+            assert!(dirs.is_empty()); // must be simplified already
             let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
                 format!("unable to transform input path {}", input_path.display())
             })?;
@@ -542,14 +535,7 @@ impl pkg::InputsPackager for CInputsPackager {
 
         for input_path in extra_hash_files {
             let (input_path, dirs) = pkg::simplify_path(&input_path)?;
-            for dir in dirs {
-                let dist_dir = path_transformer
-                    .as_dist(&dir)
-                    .with_context(|| format!("unable to transform input dir {}", dir.display()))?;
-                let mut dir_header = pkg::make_tar_header(&dir, &dist_dir, true)?;
-                dir_header.set_cksum();
-                builder.append(&dir_header, "".as_bytes())?;
-            }
+            assert!(dirs.is_empty()); // must be simplified already
             if !super::CAN_DIST_DYLIBS
                 && input_path
                     .extension()

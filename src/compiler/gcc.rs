@@ -19,7 +19,7 @@ use crate::compiler::c::{
 use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use crate::{counted_array, dist};
+use crate::{counted_array, dist, dist::pkg};
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -275,7 +275,7 @@ where
     let it = ExpandIncludeFile::new(cwd, arguments);
 
     for arg in ArgsIter::new(it, arg_info) {
-        let arg = try_or_cannot_cache!(arg, "argument parse");
+        let mut arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
         // failed to expand it, or it was a concatenated argument - either way, bail.
         // We refuse to cache concatenated arguments (like "-include@foo") because they're a
@@ -386,8 +386,22 @@ where
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(cwd.join(path));
-                &mut common_args
+                match pkg::simplify_path(path) {
+                    Ok((simple_path, _)) => {
+                        let new = ExtraHashFile(simple_path.clone());
+                        // reassign arg with simplified path
+                        arg = match arg {
+                            Argument::WithValue(flag, _, disp) => {
+                                Argument::WithValue(flag, new, disp)
+                            }
+                            Argument::Flag(flag, _) => Argument::Flag(flag, new),
+                            _ => unreachable!(),
+                        };
+                        extra_hash_files.push(cwd.join(simple_path));
+                        &mut common_args
+                    }
+                    Err(_) => cannot_cache!("Cannot simplify path"),
+                }
             }
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
@@ -416,7 +430,7 @@ where
     let xclang_it = ExpandIncludeFile::new(cwd, &xclangs);
     let mut follows_plugin_arg = false;
     for arg in ArgsIter::new(xclang_it, (&ARGS[..], &clang::ARGS[..])) {
-        let arg = try_or_cannot_cache!(arg, "argument parse");
+        let mut arg = try_or_cannot_cache!(arg, "argument parse");
         let args = match arg.get_data() {
             Some(SplitDwarf)
             | Some(PedanticFlag)
@@ -448,8 +462,22 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
-                extra_hash_files.push(cwd.join(path));
-                &mut common_args
+                match pkg::simplify_path(path) {
+                    Ok((simple_path, _)) => {
+                        let new = ExtraHashFile(simple_path.clone());
+                        // reassign arg with simplified path
+                        arg = match arg {
+                            Argument::WithValue(flag, _, disp) => {
+                                Argument::WithValue(flag, new, disp)
+                            }
+                            Argument::Flag(flag, _) => Argument::Flag(flag, new),
+                            _ => unreachable!(),
+                        };
+                        extra_hash_files.push(cwd.join(simple_path));
+                        &mut common_args
+                    }
+                    Err(_) => cannot_cache!("Cannot simplify path"),
+                }
             }
             Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
@@ -488,7 +516,10 @@ where
         );
     }
     let input = match input_arg {
-        Some(i) => i,
+        Some(path) => match pkg::simplify_path(Path::new(&path)) {
+            Ok((simple_path, _)) => simple_path,
+            Err(_) => cannot_cache!("Cannot simplify path"),
+        },
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
@@ -555,7 +586,7 @@ where
     );
 
     CompilerArguments::Ok(ParsedArguments {
-        input: input.into(),
+        input,
         language,
         compilation_flag,
         depfile: None,
@@ -1562,7 +1593,7 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert_eq!(Some("foo/bar.c"), input.to_str());
+        assert_eq!(PathBuf::from("foo/bar.c"), input);
         assert_eq!(Language::C, language);
         assert_map_contains!(
             outputs,
