@@ -25,6 +25,9 @@ jobs:
         with:
           components: ${{ matrix.component }}
           toolchain: 1.58.1
+          
+      - name: Activate Rust dependency caching
+        uses: Swatinem/rust-cache@v1.3.0  
 
       - name: clippy version
         run: cargo clippy --version
@@ -75,6 +78,9 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+          
+      - name: Activate Rust dependency caching
+        uses: Swatinem/rust-cache@v1.3.0  
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
@@ -137,6 +143,9 @@ jobs:
           sed 2iREALGCC=aarch64-linux-gnu-gcc /usr/bin/musl-gcc | sudo tee /usr/bin/aarch64-linux-musl-gcc > /dev/null
           sudo chmod +x /usr/bin/aarch64-linux-musl-gcc
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
+        
+      - name: Activate Rust dependency caching
+        uses: Swatinem/rust-cache@v1.3.0  
 
       - name: Build
         run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
