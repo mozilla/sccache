@@ -10,10 +10,6 @@ categories = ["command-line-utilities", "development-tools::build-utils"]
 keywords = ["ccache"]
 edition = "2018"
 
-[badges]
-travis-ci = { repository = "mozilla/sccache" }
-appveyor = { repository = "mozilla/sccache" }
-
 [[bin]]
 name = "sccache"
 
