@@ -123,7 +123,7 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
     Ok(hashes)
 }
 
-/// Calculate the digest of each Unix archive file in `files` on background threads in
+/// Calculate the digest of each static library archive in `files` on background threads in
 /// `pool`.
 ///
 /// The hash is calculated by adding the filename of each archive entry followed
