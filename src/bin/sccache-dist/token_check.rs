@@ -74,9 +74,10 @@ impl EqCheck {
 const MOZ_SESSION_TIMEOUT: Duration = Duration::from_secs(60 * 15);
 const MOZ_USERINFO_ENDPOINT: &str = "https://auth.mozilla.auth0.com/userinfo";
 
-// Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
+/// Mozilla-specific check by forwarding the token onto the auth0 userinfo endpoint
 pub struct MozillaCheck {
-    auth_cache: Mutex<HashMap<String, Instant>>, // token, token_expiry
+    // token, token_expiry
+    auth_cache: Mutex<HashMap<String, Instant>>,
     client: reqwest::blocking::Client,
     required_groups: Vec<String>,
 }
@@ -120,14 +121,20 @@ impl MozillaCheck {
             exp: u64,
             sub: String,
         }
+        let mut validation = jwt::Validation::default();
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         // We don't really do any validation here (just forwarding on) so it's ok to unsafely decode
-        let insecure_token = jwt::dangerous_insecure_decode::<MozillaToken>(token)
+        validation.insecure_disable_signature_validation();
+        let dummy_key = jwt::DecodingKey::from_secret(b"secret");
+        let insecure_token = jwt::decode::<MozillaToken>(token, &dummy_key, &validation)
             .context("Unable to decode jwt")?;
         let user = insecure_token.claims.sub;
         trace!("Validating token for user {} with mozilla", user);
         if UNIX_EPOCH + Duration::from_secs(insecure_token.claims.exp) < SystemTime::now() {
             bail!("JWT expired")
         }
+
         // If the token is cached and not expired, return it
         let mut auth_cache = self.auth_cache.lock().unwrap();
         if let Some(cached_at) = auth_cache.get(token) {
@@ -220,14 +227,14 @@ fn test_auth_verify_check_mozilla_profile() {
     assert!(check_mozilla_profile(
         "ad|Mozilla-LDAP|asayers",
         &["hris_dept_firefox".to_owned()],
-        profile
+        profile,
     )
     .is_ok());
     assert!(check_mozilla_profile("ad|Mozilla-LDAP|asayers", &[], profile).is_ok());
     assert!(check_mozilla_profile(
         "ad|Mozilla-LDAP|asayers",
         &["hris_the_ceo".to_owned()],
-        profile
+        profile,
     )
     .is_err());
 
@@ -356,7 +363,7 @@ impl ValidJWTCheck {
         );
         let mut validation = jwt::Validation::new(header.alg);
         validation.set_audience(&[&self.audience]);
-        validation.iss = Some(self.issuer.clone());
+        validation.set_issuer(&[&self.issuer]);
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity

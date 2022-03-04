@@ -42,7 +42,7 @@ http = "0.2"
 hyper = { version = "0.14", optional = true, features = ["server"] }
 hyperx = { version = "1.0", optional = true }
 jobserver = "0.1"
-jsonwebtoken = { version = "7", optional = true }
+jsonwebtoken = { version = "8", optional = true }
 lazy_static = "1.0.0"
 libc = "0.2.10"
 linked-hash-map = "0.5"
