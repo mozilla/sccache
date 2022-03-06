@@ -19,6 +19,10 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use wiremock::matchers::{body_bytes, method, path};
+#[cfg(test)]
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::errors::*;
 
@@ -105,22 +109,6 @@ impl Storage for AzureBlobCache {
 }
 
 #[test]
-fn normalize_key() {
-    let credentials = AzureCredentials::new(
-        "blob endpoint",
-        "account name",
-        None,
-        String::from("container name"),
-    );
-
-    let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
-    assert_eq!(cache.normalize_key("key"), String::from("key"));
-
-    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
-    assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
-}
-
-#[test]
 fn location() {
     let credentials = AzureCredentials::new(
         "blob endpoint",
@@ -140,4 +128,132 @@ fn location() {
         cache.location(),
         String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: prefix")
     );
+}
+
+#[tokio::test]
+async fn get_cache_hit() -> Result<()> {
+    let server = MockServer::start().await;
+    let credentials = AzureCredentials::new(
+        &server.uri(),
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/container%20name/foo/bar"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(CacheWrite::new().finish()?))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = AzureBlobCache::new(credentials, "").unwrap();
+    let result = cache.get("foo/bar").await;
+    assert!(result.is_ok());
+    match result.unwrap() {
+        Cache::Hit(_) => Ok(()),
+        x => bail!("Result {:?} is not Cache::Hit", x),
+    }
+}
+
+#[tokio::test]
+async fn get_cache_miss() -> Result<()> {
+    let server = MockServer::start().await;
+    let credentials = AzureCredentials::new(
+        &server.uri(),
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/container%20name/foo/bar"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = AzureBlobCache::new(credentials, "").unwrap();
+    let result = cache.get("foo/bar").await;
+    assert!(result.is_ok());
+    match result.unwrap() {
+        Cache::Miss => Ok(()),
+        x => bail!("Result {:?} is not Cache::Miss", x),
+    }
+}
+
+#[tokio::test]
+async fn get_with_key_prefix() -> Result<()> {
+    let server = MockServer::start().await;
+    let credentials = AzureCredentials::new(
+        &server.uri(),
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/container%20name/prefix/foo/bar"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
+    let result = cache.get("foo/bar").await;
+    assert!(result.is_ok());
+    match result.unwrap() {
+        Cache::Miss => Ok(()),
+        x => bail!("Result {:?} is not Cache::Miss", x),
+    }
+}
+
+#[tokio::test]
+async fn put() -> Result<()> {
+    let server = MockServer::start().await;
+    let credentials = AzureCredentials::new(
+        &server.uri(),
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    Mock::given(method("PUT"))
+        .and(path("/container%20name/foo/bar"))
+        .and(body_bytes(CacheWrite::new().finish()?))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = AzureBlobCache::new(credentials, "").unwrap();
+    let result = cache.put("foo/bar", CacheWrite::new()).await;
+    assert!(result.is_ok());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn put_with_key_prefix() -> Result<()> {
+    let server = MockServer::start().await;
+    let credentials = AzureCredentials::new(
+        &server.uri(),
+        "account name",
+        None,
+        String::from("container name"),
+    );
+
+    Mock::given(method("PUT"))
+        .and(path("/container%20name/prefix/foo/bar"))
+        .and(body_bytes(CacheWrite::new().finish()?))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
+    let result = cache.put("foo/bar", CacheWrite::new()).await;
+    assert!(result.is_ok());
+
+    Ok(())
 }
