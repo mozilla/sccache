@@ -46,30 +46,39 @@ fn md5(data: &[u8]) -> String {
     base64::encode_config(&digest.finalize(), base64::STANDARD)
 }
 
-pub struct BlobContainer {
+#[async_trait]
+pub trait BlobContainer: fmt::Display + Send + Sync {
+    async fn get(&self, key: &str, creds: &AzureCredentials) -> Result<Vec<u8>>;
+    async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()>;
+}
+
+pub struct HttpBlobContainer {
     url: String,
     client: Client,
 }
 
-impl fmt::Display for BlobContainer {
+impl fmt::Display for HttpBlobContainer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BlobContainer(url={})", self.url)
     }
 }
 
-impl BlobContainer {
-    pub fn new(base_url: &str, container_name: &str) -> Result<BlobContainer> {
+impl HttpBlobContainer {
+    pub fn new(base_url: &str, container_name: &str) -> Result<Self> {
         assert!(
             base_url.ends_with('/'),
             "base_url is assumed to end in a trailing slash"
         );
-        Ok(BlobContainer {
+        Ok(Self {
             url: format!("{}{}/", base_url, container_name),
             client: Client::new(),
         })
     }
+}
 
-    pub async fn get(&self, key: &str, creds: &AzureCredentials) -> Result<Vec<u8>> {
+#[async_trait]
+impl BlobContainer for HttpBlobContainer {
+    async fn get(&self, key: &str, creds: &AzureCredentials) -> Result<Vec<u8>> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let dt = chrono::Utc::now();
@@ -129,7 +138,7 @@ impl BlobContainer {
         Ok(bytes.into_iter().collect())
     }
 
-    pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {
+    async fn put(&self, key: &str, content: Vec<u8>, creds: &AzureCredentials) -> Result<()> {
         let url_string = format!("{}{}", self.url, key);
         let uri = Url::from_str(&url_string).unwrap();
         let dt = chrono::Utc::now();
@@ -268,6 +277,8 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 mod test {
     use super::*;
     use tokio::runtime::Runtime;
+    use wiremock::matchers::{body_bytes, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_signing() {
@@ -322,7 +333,8 @@ mod test {
 
         let runtime = Runtime::new().unwrap();
 
-        let container = BlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
+        let container =
+            HttpBlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
 
         let put_future = container.put("foo", b"barbell".to_vec(), &creds);
         runtime.block_on(put_future).unwrap();
@@ -331,5 +343,74 @@ mod test {
         let result = runtime.block_on(get_future).unwrap();
 
         assert_eq!(b"barbell".to_vec(), result);
+    }
+
+    #[tokio::test]
+    async fn get_cache_hit() -> Result<()> {
+        let server = MockServer::start().await;
+        let base_url = format!("{}/", server.uri());
+        let credentials =
+            AzureCredentials::new(&base_url, "account name", None, String::from("container"));
+        let container = HttpBlobContainer::new(&base_url, credentials.blob_container_name())?;
+
+        let body = b"hello".to_vec();
+        Mock::given(method("GET"))
+            .and(path("/container/foo/bar"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = container.get("foo/bar", &credentials).await?;
+        assert_eq!(result, body);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_cache_miss() -> Result<()> {
+        let server = MockServer::start().await;
+        let base_url = format!("{}/", server.uri());
+        let credentials =
+            AzureCredentials::new(&base_url, "account name", None, String::from("container"));
+        let container = HttpBlobContainer::new(&base_url, credentials.blob_container_name())?;
+
+        Mock::given(method("GET"))
+            .and(path("/container/foo/bar"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = container.get("foo/bar", &credentials).await;
+        match result {
+            Err(e) => match e.downcast::<BadHttpStatusError>() {
+                Ok(_) => Ok(()),
+                Err(e) => bail!("Result is not an Err(BadHttpStatusError): {}", e),
+            },
+            x => bail!("Result {:?} is not an Err(BadHttpStatusError)", x),
+        }
+    }
+
+    #[tokio::test]
+    async fn put() -> Result<()> {
+        let server = MockServer::start().await;
+        let base_url = format!("{}/", server.uri());
+        let credentials =
+            AzureCredentials::new(&base_url, "account name", None, String::from("container"));
+        let container = HttpBlobContainer::new(&base_url, credentials.blob_container_name())?;
+
+        let body = b"hello".to_vec();
+        Mock::given(method("PUT"))
+            .and(path("/container/foo/bar"))
+            .and(body_bytes(body.clone()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        container.put("foo/bar", body, &credentials).await?;
+
+        Ok(())
     }
 }
