@@ -19,8 +19,6 @@
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
-extern crate clap;
-#[macro_use]
 extern crate counted_array;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
@@ -67,25 +65,15 @@ const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
     init_logging();
-    std::process::exit(match cmdline::parse() {
-        Ok(cmd) => match commands::run_command(cmd) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("sccache: error: {}", e);
-                for e in e.chain().skip(1) {
-                    eprintln!("sccache: caused by: {}", e);
-                }
-                2
-            }
-        },
+    let cmd = cmdline::parse();
+    std::process::exit(match commands::run_command(cmd) {
+        Ok(s) => s,
         Err(e) => {
-            println!("sccache: {}", e);
+            eprintln!("sccache: error: {}", e);
             for e in e.chain().skip(1) {
-                println!("sccache: caused by: {}", e);
+                eprintln!("sccache: caused by: {}", e);
             }
-            cmdline::get_app().print_help().unwrap();
-            println!();
-            1
+            2
         }
     });
 }
