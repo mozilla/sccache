@@ -570,8 +570,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let srv = connect_or_start_server(get_port())?;
             let stats = request_stats(srv).context("failed to get stats from server")?;
             match fmt {
-                StatsFormat::text => stats.print(),
-                StatsFormat::json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+                StatsFormat::Text => stats.print(),
+                StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
             }
         }
         Command::InternalStartServer => {
