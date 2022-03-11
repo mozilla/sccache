@@ -1,6 +1,4 @@
 extern crate base64;
-#[macro_use]
-extern crate clap;
 extern crate crossbeam_utils;
 extern crate env_logger;
 extern crate flate2;
@@ -22,7 +20,6 @@ extern crate tar;
 extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
-use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
@@ -38,205 +35,34 @@ use sccache::util::daemonize;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use syslog::Facility;
 
 mod build;
+mod cmdline;
 mod token_check;
 
+use cmdline::{AuthSubcommand, Command};
+
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
-
-enum Command {
-    Auth(AuthSubcommand),
-    Scheduler(scheduler_config::Config),
-    Server(server_config::Config),
-}
-
-enum AuthSubcommand {
-    Base64 {
-        num_bytes: usize,
-    },
-    JwtHS256ServerToken {
-        secret_key: String,
-        server_id: ServerId,
-    },
-}
 
 // Only supported on x86_64 Linux machines
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
     init_logging();
-    std::process::exit(match parse() {
-        Ok(cmd) => match run(cmd) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("sccache-dist: error: {}", e);
-
-                for e in e.chain().skip(1) {
-                    eprintln!("sccache-dist: caused by: {}", e);
-                }
-                2
-            }
-        },
+    std::process::exit(match run(cmdline::parse()) {
+        Ok(s) => s,
         Err(e) => {
-            println!("sccache-dist: {}", e);
+            eprintln!("sccache-dist: error: {}", e);
+
             for e in e.chain().skip(1) {
-                println!("sccache-dist: caused by: {}", e);
+                eprintln!("sccache-dist: caused by: {}", e);
             }
-            get_app().print_help().unwrap();
-            println!();
-            1
+            2
         }
     });
-}
-
-/// These correspond to the values of `log::LevelFilter`.
-const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
-
-pub fn get_app<'a, 'b>() -> App<'a, 'b> {
-    App::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .subcommand(
-            SubCommand::with_name("auth")
-                .subcommand(SubCommand::with_name("generate-jwt-hs256-key"))
-                .subcommand(
-                    SubCommand::with_name("generate-jwt-hs256-server-token")
-                        .arg(Arg::from_usage(
-                            "--server <SERVER_ADDR> 'Generate a key for the specified server'",
-                        ))
-                        .arg(
-                            Arg::from_usage(
-                                "--secret-key [KEY] 'Use specified key to create the token'",
-                            )
-                            .required_unless("config"),
-                        )
-                        .arg(
-                            Arg::from_usage(
-                                "--config [PATH] 'Use the key from the scheduler config file'",
-                            )
-                            .required_unless("secret-key"),
-                        ),
-                )
-                .subcommand(
-                    SubCommand::with_name("generate-shared-token").arg(
-                        Arg::from_usage(
-                            "--bits [BITS] 'Use the specified number of bits of randomness'",
-                        )
-                        .default_value("256"),
-                    ),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("scheduler")
-                .arg(Arg::from_usage(
-                    "--config <PATH> 'Use the scheduler config file at PATH'",
-                ))
-                .arg(
-                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                        .required(false)
-                        .possible_values(LOG_LEVELS),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("server")
-                .arg(Arg::from_usage(
-                    "--config <PATH> 'Use the server config file at PATH'",
-                ))
-                .arg(
-                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                        .required(false)
-                        .possible_values(LOG_LEVELS),
-                ),
-        )
-}
-
-fn check_init_syslog<'a>(name: &str, matches: &ArgMatches<'a>) {
-    if matches.is_present("syslog") {
-        let level = value_t!(matches, "syslog", log::LevelFilter).unwrap_or_else(|e| e.exit());
-        drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
-    }
-}
-
-fn parse() -> Result<Command> {
-    let matches = get_app().get_matches();
-    Ok(match matches.subcommand() {
-        ("auth", Some(matches)) => {
-            Command::Auth(match matches.subcommand() {
-                ("generate-jwt-hs256-key", Some(_matches)) => {
-                    // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
-                    AuthSubcommand::Base64 { num_bytes: 256 / 8 }
-                }
-                ("generate-jwt-hs256-server-token", Some(matches)) => {
-                    let server_id = ServerId::new(value_t_or_exit!(matches, "server", SocketAddr));
-                    let secret_key = if let Some(config_path) =
-                        matches.value_of("config").map(Path::new)
-                    {
-                        if let Some(config) = scheduler_config::from_path(config_path)? {
-                            match config.server_auth {
-                                scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
-                                scheduler_config::ServerAuth::Insecure
-                                | scheduler_config::ServerAuth::Token { token: _ } => {
-                                    bail!("Scheduler not configured with JWT HS256")
-                                }
-                            }
-                        } else {
-                            bail!("Could not load config")
-                        }
-                    } else {
-                        matches
-                            .value_of("secret-key")
-                            .expect("missing secret-key in parsed subcommand")
-                            .to_owned()
-                    };
-                    AuthSubcommand::JwtHS256ServerToken {
-                        secret_key,
-                        server_id,
-                    }
-                }
-                ("generate-shared-token", Some(matches)) => {
-                    let bits = value_t_or_exit!(matches, "bits", usize);
-                    if bits % 8 != 0 || bits < 64 || bits > 4096 {
-                        bail!("Number of bits must be divisible by 8, greater than 64 and less than 4096")
-                    }
-                    AuthSubcommand::Base64 {
-                        num_bytes: bits / 8,
-                    }
-                }
-                _ => bail!("No subcommand of auth specified"),
-            })
-        }
-        ("scheduler", Some(matches)) => {
-            let config_path = Path::new(
-                matches
-                    .value_of("config")
-                    .expect("missing config in parsed subcommand"),
-            );
-            check_init_syslog("sccache-scheduler", matches);
-            if let Some(config) = scheduler_config::from_path(config_path)? {
-                Command::Scheduler(config)
-            } else {
-                bail!("Could not load config")
-            }
-        }
-        ("server", Some(matches)) => {
-            let config_path = Path::new(
-                matches
-                    .value_of("config")
-                    .expect("missing config in parsed subcommand"),
-            );
-            check_init_syslog("sccache-buildserver", matches);
-            if let Some(config) = server_config::from_path(config_path)? {
-                Command::Server(config)
-            } else {
-                bail!("Could not load config")
-            }
-        }
-        _ => bail!("No subcommand specified"),
-    })
 }
 
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
