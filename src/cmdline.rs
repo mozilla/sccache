@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{ArgGroup, IntoApp, Parser};
+use clap::{ArgGroup, Parser};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -128,8 +128,6 @@ pub fn parse() -> Command {
             for e in e.chain().skip(1) {
                 println!("sccache: caused by: {e}");
             }
-            let mut clap_command = Opts::command();
-            clap_command.print_help().unwrap();
             std::process::exit(1);
         }
     }
@@ -239,15 +237,5 @@ fn try_parse() -> Result<Command> {
         })
     } else {
         unreachable!("`ArgGroup` should enforce a single command to be run");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cli_debug_asserts() {
-        Opts::command().debug_assert();
     }
 }
