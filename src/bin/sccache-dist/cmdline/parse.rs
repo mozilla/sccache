@@ -34,7 +34,7 @@ struct AuthOpts {
 #[derive(Subcommand)]
 enum AuthCommand {
     GenerateJwtHs256Key,
-    GenerateJwtHs256Token(ServerTokenOpts),
+    GenerateJwtHs256ServerToken(ServerTokenOpts),
     GenerateSharedToken(SharedTokenOpts),
 }
 
@@ -165,7 +165,7 @@ fn try_parse() -> anyhow::Result<ExternalCommand> {
             AuthCommand::GenerateJwtHs256Key => ExternalAuthSubcommand::Base64 {
                 num_bytes: TokenBits::default().as_bytes(),
             },
-            AuthCommand::GenerateJwtHs256Token(ServerTokenOpts {
+            AuthCommand::GenerateJwtHs256ServerToken(ServerTokenOpts {
                 server,
                 config,
                 secret_key,
