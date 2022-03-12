@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{error::ErrorKind, IntoApp, Parser};
+use clap::{ArgGroup, IntoApp, Parser};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use which::which_in;
+
+const ENV_VAR_SCCACHE_START_SERVER: &str = "SCCACHE_START_SERVER";
 
 #[derive(clap::ArgEnum, Debug, Clone)]
 pub enum StatsFormat {
@@ -66,13 +68,27 @@ pub enum Command {
 #[clap(version)]
 #[clap(trailing_var_arg = true)]
 #[clap(after_help = concat!(
-        "Enabled features:\n",
-        "    S3:        ", cfg!(feature = "s3"), "\n",
-        "    Redis:     ", cfg!(feature = "redis"), "\n",
-        "    Memcached: ", cfg!(feature = "memcached"), "\n",
-        "    GCS:       ", cfg!(feature = "gcs"), "\n",
-        "    Azure:     ", cfg!(feature = "azure"), "\n")
+    "Enabled features:\n",
+    "    S3:        ", cfg!(feature = "s3"), "\n",
+    "    Redis:     ", cfg!(feature = "redis"), "\n",
+    "    Memcached: ", cfg!(feature = "memcached"), "\n",
+    "    GCS:       ", cfg!(feature = "gcs"), "\n",
+    "    Azure:     ", cfg!(feature = "azure"), "\n")
 )]
+#[clap(group(
+    ArgGroup::new("one_and_only_one")
+        .args(&[
+            "dist-auth",
+            "dist-status",
+            "show-stats",
+            "start-server",
+            "stop-server",
+            "zero-stats",
+            "package-toolchain",
+            "cmd",
+        ])
+        .required(true)
+))]
 struct Opts {
     /// authenticate for distributed compilation
     #[clap(long)]
@@ -84,7 +100,7 @@ struct Opts {
     #[clap(short, long)]
     show_stats: bool,
     /// start background server
-    #[clap(long)]
+    #[clap(long, env = ENV_VAR_SCCACHE_START_SERVER, hide_env = true)]
     start_server: bool,
     /// stop background server
     #[clap(long)]
@@ -94,10 +110,10 @@ struct Opts {
     zero_stats: bool,
 
     /// package toolchain for distributed compilation
-    #[clap(long, number_of_values = 2)]
+    #[clap(long, number_of_values = 2, value_names = &["EXECUTABLE", "OUT"])]
     package_toolchain: Vec<PathBuf>,
     /// set output format of statistics
-    #[clap(long, arg_enum, default_value_t = StatsFormat::default())]
+    #[clap(long, arg_enum, value_name = "FORMAT", default_value_t = StatsFormat::default())]
     stats_format: StatsFormat,
 
     cmd: Vec<OsString>,
@@ -123,13 +139,14 @@ fn try_parse() -> Result<Command> {
     trace!("parse");
     let cwd =
         env::current_dir().context("sccache: Couldn't determine current working directory")?;
-    // The internal start server command is passed in the environment.
-    let internal_start_server = match env::var("SCCACHE_START_SERVER") {
-        Ok(val) => val == "1",
-        Err(_) => false,
-    };
+    let internal_start_server = env::var(ENV_VAR_SCCACHE_START_SERVER).as_deref() == Ok("1");
+
     let mut args: Vec<_> = env::args_os().collect();
     if !internal_start_server {
+        // Internal start server is passed in the env, but we only care about it being `1`, unset it
+        // otherwise so that the `ArgGroup` is enforced correctly
+        env::remove_var(ENV_VAR_SCCACHE_START_SERVER);
+
         if let Ok(exe) = env::current_exe() {
             match exe
                 .file_stem()
@@ -172,7 +189,7 @@ fn try_parse() -> Result<Command> {
         dist_auth,
         dist_status,
         show_stats,
-        start_server,
+        mut start_server,
         stop_server,
         zero_stats,
         package_toolchain,
@@ -180,27 +197,10 @@ fn try_parse() -> Result<Command> {
         cmd,
     } = Opts::parse_from(args);
 
-    // Ensure that we've only received one command to run.
-    if [
-        dist_auth,
-        dist_status,
-        internal_start_server,
-        show_stats,
-        start_server,
-        stop_server,
-        zero_stats,
-        !cmd.is_empty(),
-        !package_toolchain.is_empty(),
-    ]
-    .iter()
-    .filter(|&&x| x)
-    .count()
-        > 1
-    {
-        let mut clap_command = Opts::command();
-        clap_command
-            .error(ErrorKind::ArgumentConflict, "Only one command can be run")
-            .exit();
+    // `start_server` is used to smuggle `SCCACHE_START_SERVER` into the group since env var only
+    // args aren't supported in `clap`
+    if internal_start_server {
+        start_server = false;
     }
 
     if internal_start_server {
@@ -238,9 +238,16 @@ fn try_parse() -> Result<Command> {
             env_vars,
         })
     } else {
-        let mut clap_command = Opts::command();
-        clap_command
-            .error(ErrorKind::ArgumentConflict, "No command specified")
-            .exit();
+        unreachable!("`ArgGroup` should enforce a single command to be run");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_debug_asserts() {
+        Opts::command().debug_assert();
     }
 }
