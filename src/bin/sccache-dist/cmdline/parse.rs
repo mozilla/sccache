@@ -1,35 +1,25 @@
 use std::{fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::bail;
-use clap::{ArgEnum, IntoApp, Parser, Subcommand};
-use sccache::{config, dist::ServerId};
+use clap::{ArgEnum, ArgGroup, Parser, Subcommand};
+use sccache::{
+    config::{self, scheduler::ServerAuth as SchedulerServerAuth},
+    dist::ServerId,
+};
 use syslog::Facility;
 
-pub enum Command {
-    Auth(AuthSubcommand),
-    Scheduler(config::scheduler::Config),
-    Server(config::server::Config),
-}
-
-pub enum AuthSubcommand {
-    Base64 {
-        num_bytes: usize,
-    },
-    JwtHS256ServerToken {
-        secret_key: String,
-        server_id: ServerId,
-    },
-}
+use crate::cmdline::{AuthSubcommand as ExternalAuthSubcommand, Command as ExternalCommand};
 
 #[derive(Parser)]
 #[clap(version)]
+#[clap(propagate_version = true)]
 struct Opts {
     #[clap(subcommand)]
-    command: CliCommand,
+    command: Command,
 }
 
 #[derive(Subcommand)]
-enum CliCommand {
+enum Command {
     Auth(AuthOpts),
     Scheduler(SchedulerOpts),
     Server(ServerOpts),
@@ -38,38 +28,56 @@ enum CliCommand {
 #[derive(Parser)]
 struct AuthOpts {
     #[clap(subcommand)]
-    subcommand: CliAuthSubcommand,
+    subcommand: AuthCommand,
 }
 
 #[derive(Subcommand)]
-enum CliAuthSubcommand {
+enum AuthCommand {
     GenerateJwtHs256Key,
     GenerateJwtHs256Token(ServerTokenOpts),
     GenerateSharedToken(SharedTokenOpts),
 }
 
 #[derive(Parser)]
+#[clap(group(
+    ArgGroup::new("key_source_mutual_exclusion")
+        .args(&["secret-key", "config"])
+        .required(true)
+))]
 struct ServerTokenOpts {
     /// Generate a key for the specified server
     #[clap(long, value_name = "SERVER_ADDR")]
     server: SocketAddr,
     /// Use specified key to create the token
-    #[clap(long, value_name = "KEY", required_unless_present = "config")]
+    #[clap(long, value_name = "KEY")]
     secret_key: Option<String>,
     /// Use the key from the scheduler config file at PATH
-    #[clap(long, value_name = "PATH", required_unless_present = "secret_key")]
+    #[clap(long, value_name = "PATH")]
     config: Option<PathBuf>,
 }
 
 #[derive(Parser)]
 struct SharedTokenOpts {
     /// Use the specified number of bits of randomness
-    #[clap(long, default_value_t = TokenBits(256))]
+    #[clap(long, default_value_t = TokenBits::default())]
     bits: TokenBits,
 }
 
 #[derive(Debug)]
 struct TokenBits(usize);
+
+impl TokenBits {
+    fn as_bytes(&self) -> usize {
+        self.0 / 8
+    }
+}
+
+impl Default for TokenBits {
+    fn default() -> Self {
+        // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
+        Self(256)
+    }
+}
 
 impl FromStr for TokenBits {
     type Err = anyhow::Error;
@@ -131,9 +139,8 @@ struct ServerOpts {
     syslog: LogLevel,
 }
 
-///
 /// Parse the commandline into a `Command` to execute.
-pub fn parse() -> Command {
+pub fn parse() -> ExternalCommand {
     match try_parse() {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -141,25 +148,24 @@ pub fn parse() -> Command {
             for e in e.chain().skip(1) {
                 println!("sccache-dist: caused by: {e}");
             }
-            let mut clap_command = Opts::command();
-            clap_command.print_help().unwrap();
             std::process::exit(1);
         }
     }
 }
 
-fn check_init_syslog<'a>(name: &str, log_level: LogLevel) {
+fn check_init_syslog(name: &str, log_level: LogLevel) {
     let level = log::LevelFilter::from(log_level);
     drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
 }
 
-fn try_parse() -> anyhow::Result<Command> {
+fn try_parse() -> anyhow::Result<ExternalCommand> {
     let Opts { command } = Opts::parse();
     Ok(match command {
-        CliCommand::Auth(AuthOpts { subcommand }) => Command::Auth(match subcommand {
-            // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
-            CliAuthSubcommand::GenerateJwtHs256Key => AuthSubcommand::Base64 { num_bytes: 256 / 8 },
-            CliAuthSubcommand::GenerateJwtHs256Token(ServerTokenOpts {
+        Command::Auth(AuthOpts { subcommand }) => ExternalCommand::Auth(match subcommand {
+            AuthCommand::GenerateJwtHs256Key => ExternalAuthSubcommand::Base64 {
+                num_bytes: TokenBits::default().as_bytes(),
+            },
+            AuthCommand::GenerateJwtHs256Token(ServerTokenOpts {
                 server,
                 config,
                 secret_key,
@@ -168,11 +174,9 @@ fn try_parse() -> anyhow::Result<Command> {
                     (Some(config), None) => {
                         if let Some(config) = config::scheduler::from_path(&config)? {
                             match config.server_auth {
-                                config::scheduler::ServerAuth::JwtHS256 { secret_key } => {
-                                    secret_key
-                                }
-                                config::scheduler::ServerAuth::Insecure
-                                | config::scheduler::ServerAuth::Token { token: _ } => {
+                                SchedulerServerAuth::JwtHS256 { secret_key } => secret_key,
+                                SchedulerServerAuth::Insecure
+                                | SchedulerServerAuth::Token { .. } => {
                                     bail!("Scheduler not configured with JWT HS256")
                                 }
                             }
@@ -181,34 +185,34 @@ fn try_parse() -> anyhow::Result<Command> {
                         }
                     }
                     (None, Some(secret_key)) => secret_key,
-                    _ => unreachable!("Prevented by `required_unless_present` with `clap`"),
+                    _ => unreachable!("Prevented by `key_source_mutual_exclusion` `ArgGroup`"),
                 };
 
-                AuthSubcommand::JwtHS256ServerToken {
+                ExternalAuthSubcommand::JwtHS256ServerToken {
                     secret_key,
                     server_id: ServerId::new(server),
                 }
             }
-            CliAuthSubcommand::GenerateSharedToken(SharedTokenOpts { bits }) => {
-                AuthSubcommand::Base64 {
-                    num_bytes: bits.0 / 8,
+            AuthCommand::GenerateSharedToken(SharedTokenOpts { bits }) => {
+                ExternalAuthSubcommand::Base64 {
+                    num_bytes: bits.as_bytes(),
                 }
             }
         }),
-        CliCommand::Scheduler(SchedulerOpts { config, syslog }) => {
+        Command::Scheduler(SchedulerOpts { config, syslog }) => {
             check_init_syslog("sccache-scheduler", syslog);
 
             if let Some(config) = config::scheduler::from_path(&config)? {
-                Command::Scheduler(config)
+                ExternalCommand::Scheduler(config)
             } else {
                 bail!("Could not load config")
             }
         }
-        CliCommand::Server(ServerOpts { config, syslog }) => {
+        Command::Server(ServerOpts { config, syslog }) => {
             check_init_syslog("sccache-buildserver", syslog);
 
             if let Some(config) = config::server::from_path(&config)? {
-                Command::Server(config)
+                ExternalCommand::Server(config)
             } else {
                 bail!("Could not load config")
             }
