@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{ArgGroup, Parser};
+use clap::ValueSource;
+use clap::{error::ErrorKind, ArgGroup, IntoApp, Parser};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -100,7 +101,7 @@ struct Opts {
     #[clap(short, long)]
     show_stats: bool,
     /// start background server
-    #[clap(long, env = ENV_VAR_SCCACHE_START_SERVER, hide_env = true)]
+    #[clap(long, hide_env = true, env = ENV_VAR_SCCACHE_START_SERVER)]
     start_server: bool,
     /// stop background server
     #[clap(long)]
@@ -123,13 +124,17 @@ struct Opts {
 pub fn parse() -> Command {
     match try_parse() {
         Ok(cmd) => cmd,
-        Err(e) => {
-            println!("sccache: {e}");
-            for e in e.chain().skip(1) {
-                println!("sccache: caused by: {e}");
+        Err(e) => match e.downcast::<clap::error::Error>() {
+            // If the error is from clap then let them handle formatting and exiting
+            Ok(clap_err) => clap_err.exit(),
+            Err(some_other_err) => {
+                println!("sccache: {some_other_err}");
+                for source in some_other_err.chain().skip(1) {
+                    println!("sccache: caused by: {source}");
+                }
+                std::process::exit(1);
             }
-            std::process::exit(1);
-        }
+        },
     }
 }
 
@@ -137,14 +142,18 @@ fn try_parse() -> Result<Command> {
     trace!("parse");
     let cwd =
         env::current_dir().context("sccache: Couldn't determine current working directory")?;
-    let internal_start_server = env::var(ENV_VAR_SCCACHE_START_SERVER).as_deref() == Ok("1");
+
+    // We only if the value is `1` so unset it otherwise
+    let internal_start_server = match env::var(ENV_VAR_SCCACHE_START_SERVER).as_deref() {
+        Ok("1") => true,
+        _ => {
+            env::remove_var(ENV_VAR_SCCACHE_START_SERVER);
+            false
+        }
+    };
 
     let mut args: Vec<_> = env::args_os().collect();
     if !internal_start_server {
-        // Internal start server is passed in the env, but we only care about it being `1`, unset it
-        // otherwise so that the `ArgGroup` is enforced correctly
-        env::remove_var(ENV_VAR_SCCACHE_START_SERVER);
-
         if let Ok(exe) = env::current_exe() {
             match exe
                 .file_stem()
@@ -183,40 +192,66 @@ fn try_parse() -> Result<Command> {
         }
     }
 
+    let opts_result = Opts::try_parse_from(&args);
+
+    // A command can either be from `ENV_VAR_SCCACHE_START_SERVER` being set or from command-line
+    // args. Validate things so that error messages are nice and the returned opts are correct
+    let opts = match (internal_start_server, opts_result) {
+        (true, Err(e)) => {
+            // Return a more obvious error message when there is a conflict from
+            // `ENV_VAR_SCCACHE_START_SERVER` being used with another command
+            if e.kind() == ErrorKind::ArgumentConflict {
+                bail!("`{ENV_VAR_SCCACHE_START_SERVER}=1` can't be used with other commands");
+            } else {
+                return Err(e.into());
+            }
+        }
+        (false, Err(e)) => {
+            return Err(e.into());
+        }
+        (true, Ok(mut opts)) => {
+            // `start_server` is used to smuggle `ENV_VAR_SCCACHE_START_SERVER` into the arg group,
+            // but they should still conflict, so check the source of `start_server` to see if they
+            // were both set or not
+            let opts_matches = Opts::command().try_get_matches_from(&args)?;
+            if let Some(ValueSource::EnvVariable) = opts_matches.value_source("start-server") {
+                opts.start_server = false;
+                opts
+            } else {
+                bail!("`{ENV_VAR_SCCACHE_START_SERVER}=1` can't be used with other commands");
+            }
+        }
+        (false, Ok(opts)) => opts,
+    };
+
     let Opts {
         dist_auth,
         dist_status,
         show_stats,
-        mut start_server,
+        start_server,
         stop_server,
         zero_stats,
         package_toolchain,
         stats_format,
         cmd,
-    } = Opts::parse_from(args);
+    } = opts;
 
-    // `start_server` is used to smuggle `SCCACHE_START_SERVER` into the group since env var only
-    // args aren't supported in `clap`
-    if internal_start_server {
-        start_server = false;
-    }
-
-    if internal_start_server {
-        Ok(Command::InternalStartServer)
+    Ok(if internal_start_server {
+        Command::InternalStartServer
     } else if show_stats {
-        Ok(Command::ShowStats(stats_format))
+        Command::ShowStats(stats_format)
     } else if start_server {
-        Ok(Command::StartServer)
+        Command::StartServer
     } else if stop_server {
-        Ok(Command::StopServer)
+        Command::StopServer
     } else if zero_stats {
-        Ok(Command::ZeroStats)
+        Command::ZeroStats
     } else if dist_auth {
-        Ok(Command::DistAuth)
+        Command::DistAuth
     } else if dist_status {
-        Ok(Command::DistStatus)
+        Command::DistStatus
     } else if let [executable, out] = package_toolchain.as_slice() {
-        Ok(Command::PackageToolchain(executable.into(), out.into()))
+        Command::PackageToolchain(executable.into(), out.into())
     } else if let [exe, cmdline @ ..] = cmd.as_slice() {
         let mut env_vars: Vec<_> = env::vars_os().collect();
 
@@ -229,13 +264,13 @@ fn try_parse() -> Result<Command> {
             env_vars.retain(|(k, _v)| k != "LD_PRELOAD" && k != "RUNNING_UNDER_RR");
         }
 
-        Ok(Command::Compile {
+        Command::Compile {
             exe: exe.to_owned(),
             cmdline: cmdline.to_owned(),
             cwd,
             env_vars,
-        })
+        }
     } else {
         unreachable!("`ArgGroup` should enforce a single command to be run");
-    }
+    })
 }
