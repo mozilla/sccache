@@ -388,10 +388,16 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
     msvc_take_arg!("errorReport:", OsString, Concatenated, PassThroughWithSuffix), // Deprecated.
     msvc_take_arg!("execution-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("experimental:external", PassThrough),
     msvc_flag!("experimental:module", TooHardFlag),
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
+    msvc_flag!("external:W0", PassThrough),
+    msvc_flag!("external:W1", PassThrough),
+    msvc_flag!("external:W2", PassThrough),
+    msvc_flag!("external:W3", PassThrough),
+    msvc_flag!("external:W4", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
@@ -1236,6 +1242,43 @@ mod test {
             ]
         );
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_external_warning_suppression_forward_slashes() {
+        // Parsing /external:W relies on /experimental:external being parsed
+        // and placed into common_args.
+        for n in 0..5 {
+            let args = ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/experimental:external",
+                format!("/external:W{}", n)
+            ];
+            let ParsedArguments {
+                input,
+                language,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                ..
+            } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.c"), input.to_str());
+            assert_eq!(Language::C, language);
+            assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+            assert_eq!(1, outputs.len());
+            assert!(preprocessor_args.is_empty());
+            assert_eq!(
+                common_args,
+                ovec!["/experimental:external", format!("/external:W{}", n)]
+            );
+            assert!(!msvc_show_includes);
+        }
     }
 
     #[test]
