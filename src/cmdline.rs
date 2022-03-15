@@ -68,6 +68,7 @@ pub enum Command {
 #[derive(Parser)]
 #[clap(version)]
 #[clap(trailing_var_arg = true)]
+#[clap(max_term_width = 110)]
 #[clap(after_help = concat!(
     "Enabled features:\n",
     "    S3:        ", cfg!(feature = "s3"), "\n",
@@ -111,7 +112,7 @@ struct Opts {
     zero_stats: bool,
 
     /// package toolchain for distributed compilation
-    #[clap(long, number_of_values = 2, value_names = &["EXECUTABLE", "OUT"])]
+    #[clap(long, number_of_values = 2, value_names = &["EXE", "OUT"])]
     package_toolchain: Vec<PathBuf>,
     /// set output format of statistics
     #[clap(long, arg_enum, value_name = "FORMAT", default_value_t = StatsFormat::default())]
