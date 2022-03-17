@@ -64,19 +64,7 @@ impl AzureCredentials {
     }
 }
 
-pub trait AzureCredentialsProvider {
-    fn provide_credentials(&self) -> Result<AzureCredentials>;
-}
-
-pub struct EnvironmentProvider;
-
-impl AzureCredentialsProvider for EnvironmentProvider {
-    fn provide_credentials(&self) -> Result<AzureCredentials> {
-        credentials_from_environment()
-    }
-}
-
-fn credentials_from_environment() -> Result<AzureCredentials> {
+pub fn credentials_from_environment() -> Result<AzureCredentials> {
     let env_conn_str = var("SCCACHE_AZURE_CONNECTION_STRING")
         .context("No SCCACHE_AZURE_CONNECTION_STRING in environment")?;
 
@@ -160,6 +148,92 @@ fn substr(text: &str, to_skip: usize) -> &str {
 #[cfg(test)]
 mod test {
     use super::*;
+    use lazy_static::lazy_static;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::{Mutex, MutexGuard};
+
+    lazy_static! {
+        static ref ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+    }
+
+    struct TempCredentialsEnv {
+        _guard: MutexGuard<'static, ()>,
+        prev_connection_string: Option<OsString>,
+        prev_container_name: Option<OsString>,
+    }
+
+    impl TempCredentialsEnv {
+        pub fn new(
+            connection_string: Option<String>,
+            container_name: Option<String>,
+        ) -> TempCredentialsEnv {
+            let result = TempCredentialsEnv {
+                _guard: ENV_TEST_MUTEX.lock().unwrap(),
+                prev_connection_string: var_os("SCCACHE_AZURE_CONNECTION_STRING"),
+                prev_container_name: var_os("SCCACHE_AZURE_BLOB_CONTAINER"),
+            };
+            set_var_os_option("SCCACHE_AZURE_CONNECTION_STRING", connection_string);
+            set_var_os_option("SCCACHE_AZURE_BLOB_CONTAINER", container_name);
+            result
+        }
+    }
+
+    impl Drop for TempCredentialsEnv {
+        fn drop(&mut self) {
+            set_var_os_option(
+                "SCCACHE_AZURE_CONNECTION_STRING",
+                self.prev_connection_string.as_ref(),
+            );
+            set_var_os_option(
+                "SCCACHE_AZURE_BLOB_CONTAINER",
+                self.prev_container_name.as_ref(),
+            );
+        }
+    }
+
+    fn set_var_os_option(key: impl AsRef<OsStr>, val: Option<impl AsRef<OsStr>>) {
+        if let Some(ref val) = val {
+            set_var(key, val);
+        } else {
+            remove_var(key);
+        }
+    }
+
+    #[test]
+    fn test_credentials_from_environment() {
+        let _temp_env = TempCredentialsEnv::new(Some("DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;".to_owned()), Some("container".to_owned()));
+
+        let creds = credentials_from_environment().unwrap();
+        assert_eq!(
+            "http://127.0.0.1:10000/devstoreaccount1/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("devstoreaccount1", creds.azure_account_name());
+        assert!(creds.azure_account_key().is_none());
+        assert_eq!("container", creds.blob_container_name());
+    }
+
+    #[test]
+    fn test_credentials_from_environment_no_conn_str() {
+        let _temp_env = TempCredentialsEnv::new(None, Some("container".to_owned()));
+
+        let err = credentials_from_environment().unwrap_err();
+        assert_eq!(
+            "No SCCACHE_AZURE_CONNECTION_STRING in environment",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn test_credentials_from_environment_no_container_name() {
+        let _temp_env = TempCredentialsEnv::new(Some("DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;".to_owned()), None);
+
+        let err = credentials_from_environment().unwrap_err();
+        assert_eq!(
+            "No SCCACHE_AZURE_BLOB_CONTAINER in environment",
+            err.to_string()
+        );
+    }
 
     #[test]
     fn test_parse_connection_string() {
@@ -190,7 +264,7 @@ mod test {
     }
 
     #[test]
-    fn test_conn_str_with_endpoint_suffix_only() {
+    fn conn_str_with_endpoint_suffix_only() {
         let conn = "DefaultEndpointsProtocol=https;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
         let creds = parse_connection_string(conn, "container".to_string()).unwrap();
 
@@ -200,5 +274,45 @@ mod test {
         );
         assert_eq!("foo", creds.azure_account_name());
         assert_eq!("bar", creds.azure_account_key().as_ref().unwrap());
+    }
+
+    #[test]
+    fn conn_str_with_empty_endpoints_protocol() {
+        let conn = "DefaultEndpointsProtocol=;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
+
+        assert_eq!(
+            "https://foo.blob.core.windows.net/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("foo", creds.azure_account_name());
+        assert_eq!("bar", creds.azure_account_key().as_ref().unwrap());
+    }
+
+    #[test]
+    fn conn_str_without_blob_endpoint_and_endpoint_suffix_and_account_name() {
+        let conn = "";
+        let err = parse_connection_string(conn, "container".to_string()).unwrap_err();
+        assert_eq!("Can not infer blob endpoint; connection string is missing BlobEndpoint, AccountName, and/or EndpointSuffix.", err.to_string());
+    }
+
+    #[test]
+    fn conn_str_without_account_name() {
+        let conn =
+            "DefaultEndpointsProtocol=http;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
+        let err = parse_connection_string(conn, "container".to_string()).unwrap_err();
+        assert_eq!("Azure connection string missing at least one of BlobEndpoint (or DefaultEndpointProtocol and EndpointSuffix), or AccountName.", err.to_string());
+    }
+
+    #[test]
+    fn conn_str_blob_endpoint_non_http() {
+        let conn = "DefaultEndpointsProtocol=ws;AccountName=devstoreaccount1;BlobEndpoint=127.0.0.1:10000/devstoreaccount1;";
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
+
+        assert_eq!(
+            "ws://127.0.0.1:10000/devstoreaccount1/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("devstoreaccount1", creds.azure_account_name());
     }
 }
