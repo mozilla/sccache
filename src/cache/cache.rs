@@ -23,7 +23,7 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 #[cfg(feature = "azure")]
-use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
+use crate::{azure, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -299,7 +299,7 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
                 debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match azure::EnvironmentProvider.provide_credentials() {
+                match azure::credentials_from_environment() {
                     Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
                         Ok(storage) => {
                             trace!("Using AzureBlobCache");
