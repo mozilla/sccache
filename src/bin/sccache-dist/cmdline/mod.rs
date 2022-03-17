@@ -4,12 +4,14 @@ mod parse;
 
 pub use parse::parse;
 
+#[derive(Debug)]
 pub enum Command {
     Auth(AuthSubcommand),
     Scheduler(config::scheduler::Config),
     Server(config::server::Config),
 }
 
+#[derive(Debug, PartialEq)]
 pub enum AuthSubcommand {
     Base64 {
         num_bytes: usize,
