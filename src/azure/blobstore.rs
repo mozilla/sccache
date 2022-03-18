@@ -276,7 +276,6 @@ fn canonicalize_resource(uri: &Url, account_name: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use tokio::runtime::Runtime;
     use wiremock::matchers::{body_bytes, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -300,49 +299,6 @@ mod test {
         let canon = canonicalize_resource(&url, "testaccount");
 
         assert_eq!("/testaccount/container/key", &canon);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_put_blob() {
-        /*
-        NOTE:
-
-        This test assumes that you are running a local storage emulator,
-        such as azurite.  It will fail, perhaps hanging indefinitely, if
-        you aren't!
-
-        You may also replace the hardcoded constants with your own Azure
-        credentials, if you wish to run the test against an actual blob
-        store.  If you do this, **don't check your credentials in**!
-
-        Run this test with `cargo test --features azure -- --ignored`.
-        */
-
-        let blob_endpoint = "http://localhost:10000/devstoreaccount1/";
-        let client_name = "devstoreaccount1";
-        let client_key = Some("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".to_string());
-
-        let container_name = "sccache";
-        let creds = AzureCredentials::new(
-            blob_endpoint,
-            client_name,
-            client_key,
-            container_name.to_string(),
-        );
-
-        let runtime = Runtime::new().unwrap();
-
-        let container =
-            HttpBlobContainer::new(creds.azure_blob_endpoint(), container_name).unwrap();
-
-        let put_future = container.put("foo", b"barbell".to_vec(), &creds);
-        runtime.block_on(put_future).unwrap();
-
-        let get_future = container.get("foo", &creds);
-        let result = runtime.block_on(get_future).unwrap();
-
-        assert_eq!(b"barbell".to_vec(), result);
     }
 
     #[tokio::test]
