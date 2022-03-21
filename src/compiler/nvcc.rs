@@ -174,6 +174,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
 
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--compiler-bindir", PathBuf, CanBeSeparated('='), ExtraHashFile),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -196,6 +197,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-ccbin", PathBuf, CanBeSeparated('='), ExtraHashFile),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
