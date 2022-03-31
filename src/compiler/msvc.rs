@@ -590,8 +590,8 @@ pub fn parse_arguments(
             use crate::compiler::gcc::ArgData::*;
             let args = match arg.get_data() {
                 Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
-                | Some(PedanticFlag) | Some(Standard(_)) | Some(Language(_)) | Some(Output(_))
-                | Some(TooHardFlag) | Some(XClang(_)) | Some(TooHard(_)) => cannot_cache!(arg
+                | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
+                | Some(TooHard(_)) => cannot_cache!(arg
                     .flag_str()
                     .unwrap_or("Can't handle complex arguments through clang",)),
                 None => match arg {
@@ -603,7 +603,9 @@ pub fn parse_arguments(
                 | Some(NoDiagnosticsColorFlag)
                 | Some(Arch(_))
                 | Some(PassThrough(_))
-                | Some(PassThroughPath(_)) => &mut common_args,
+                | Some(PassThroughPath(_))
+                | Some(PedanticFlag)
+                | Some(Standard(_)) => &mut common_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
