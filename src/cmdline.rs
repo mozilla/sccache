@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{Arg, ArgEnum, ArgGroup, ErrorKind, PossibleValue};
+use clap::{Arg, ArgGroup, ErrorKind};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -22,21 +22,22 @@ use which::which_in;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
-#[derive(ArgEnum, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum StatsFormat {
     Text,
     Json,
 }
 
 impl StatsFormat {
-    fn default_str() -> &'static str {
-        "text"
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
     }
 
-    fn possible_values() -> impl Iterator<Item = PossibleValue<'static>> {
-        Self::value_variants()
-            .iter()
-            .filter_map(ArgEnum::to_possible_value)
+    fn values() -> &'static [Self] {
+        &[Self::Text, Self::Json]
     }
 }
 
@@ -49,6 +50,12 @@ impl FromStr for StatsFormat {
             "json" => Ok(Self::Json),
             _ => bail!("Unrecognized stats format: {:?}", s),
         }
+    }
+}
+
+impl Default for StatsFormat {
+    fn default() -> Self {
+        Self::Text
     }
 }
 
@@ -129,8 +136,8 @@ fn get_clap_command() -> clap::Command<'static> {
             flag_infer_long("stats-format")
                 .help("set output format of statistics")
                 .value_name("FMT")
-                .possible_values(StatsFormat::possible_values())
-                .default_value(StatsFormat::default_str()),
+                .possible_values(StatsFormat::values().iter().map(StatsFormat::as_str))
+                .default_value(StatsFormat::default().as_str()),
             Arg::new("CMD")
                 .multiple_occurrences(true)
                 .use_value_delimiter(false),
