@@ -1,7 +1,7 @@
 use std::{env, ffi::OsString, fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::bail;
-use clap::{Arg, ArgEnum, ArgGroup, Command as ClapCommand, PossibleValue};
+use clap::{Arg, ArgGroup, Command as ClapCommand};
 use sccache::{config, dist::ServerId};
 use syslog::Facility;
 
@@ -46,7 +46,7 @@ impl fmt::Display for TokenBits {
     }
 }
 
-#[derive(ArgEnum, Clone, Copy)]
+#[derive(Clone, Copy)]
 enum LogLevel {
     Error,
     Warn,
@@ -56,10 +56,24 @@ enum LogLevel {
 }
 
 impl LogLevel {
-    fn possible_values() -> impl Iterator<Item = PossibleValue<'static>> {
-        Self::value_variants()
-            .iter()
-            .filter_map(ArgEnum::to_possible_value)
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+
+    fn values() -> &'static [Self] {
+        &[
+            Self::Error,
+            Self::Warn,
+            Self::Info,
+            Self::Debug,
+            Self::Trace,
+        ]
     }
 }
 
@@ -117,7 +131,7 @@ fn get_clap_command() -> ClapCommand<'static> {
     let syslog = flag_infer_long("syslog")
         .help("Log to the syslog with LEVEL")
         .value_name("LEVEL")
-        .possible_values(LogLevel::possible_values());
+        .possible_values(LogLevel::values().iter().map(LogLevel::as_str));
     let config_with_help_message =
         |help: &'static str| flag_infer_long("config").help(help).value_name("PATH");
 
