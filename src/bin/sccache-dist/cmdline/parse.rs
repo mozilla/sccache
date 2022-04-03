@@ -8,30 +8,15 @@ use syslog::Facility;
 use crate::cmdline::{AuthSubcommand, Command};
 
 #[derive(Debug)]
-struct TokenBits(usize);
+struct TokenLength(usize);
 
-impl TokenBits {
+impl TokenLength {
     fn as_bytes(&self) -> usize {
         self.0 / 8
     }
 
-    fn default_str() -> &'static str {
-        // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
-        "256"
-    }
-}
-
-impl Default for TokenBits {
-    fn default() -> Self {
-        Self::default_str().parse().expect("Default isn't valid")
-    }
-}
-
-impl FromStr for TokenBits {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bits: usize = s.parse()?;
+    fn from_bits(bits: &str) -> anyhow::Result<Self> {
+        let bits: usize = bits.parse()?;
         if bits % 8 != 0 || bits < 64 || bits > 4_096 {
             bail!("Number of bits must be divisible by 8, greater than 64 and less than 4096")
         }
@@ -40,7 +25,7 @@ impl FromStr for TokenBits {
     }
 }
 
-impl fmt::Display for TokenBits {
+impl fmt::Display for TokenLength {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -167,7 +152,8 @@ fn get_clap_command() -> ClapCommand<'static> {
                         flag_infer_long("bits")
                             .help("Use the specified number of bits of randomness")
                             .value_name("BITS")
-                            .default_value(TokenBits::default_str()),
+                            .default_value("256")
+                            .validator(TokenLength::from_bits),
                     ),
                 ),
         )
@@ -193,9 +179,8 @@ fn try_parse_from(
 
     Ok(match matches.subcommand() {
         Some(("auth", matches)) => Command::Auth(match matches.subcommand() {
-            Some(("generate-jwt-hs256-key", _)) => AuthSubcommand::Base64 {
-                num_bytes: TokenBits::default().as_bytes(),
-            },
+            // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
+            Some(("generate-jwt-hs256-key", _)) => AuthSubcommand::Base64 { num_bytes: 256 / 8 },
             Some(("generate-jwt-hs256-server-token", matches)) => {
                 let server_addr: SocketAddr = matches.value_of_t("server")?;
                 let server_id = ServerId::new(server_addr);
@@ -223,7 +208,11 @@ fn try_parse_from(
                 }
             }
             Some(("generate-shared-token", matches)) => {
-                let token_bits: TokenBits = matches.value_of_t("bits")?;
+                let token_bits = TokenLength::from_bits(
+                    matches.value_of("bits").expect("clap provides default"),
+                )
+                .expect("clap uses `from_bits` as a validator");
+
                 AuthSubcommand::Base64 {
                     num_bytes: token_bits.as_bytes(),
                 }
