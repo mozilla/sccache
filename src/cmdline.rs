@@ -158,30 +158,14 @@ fn get_clap_command() -> clap::Command<'static> {
         )
 }
 
-/// Parse the commandline into a `Command` to execute.
-pub fn parse() -> Command {
+/// Parse the commandline args into a `Result<Command>` to execute.
+pub fn try_parse() -> Result<Command> {
     trace!("parse");
-    match try_parse() {
-        Ok(cmd) => cmd,
-        Err(e) => match e.downcast::<clap::error::Error>() {
-            // If the error is from clap then let them handle formatting and exiting
-            Ok(clap_err) => clap_err.exit(),
-            Err(some_other_err) => {
-                println!("sccache: {some_other_err}");
-                for source in some_other_err.chain().skip(1) {
-                    println!("sccache: caused by: {source}");
-                }
-                std::process::exit(1);
-            }
-        },
-    }
-}
 
-fn try_parse() -> Result<Command> {
     let cwd =
         env::current_dir().context("sccache: Couldn't determine current working directory")?;
 
-    // We only care if it's `1` so normalize it since `clap` will be trying to read it
+    // We only care if it's `1`
     let internal_start_server = env::var(ENV_VAR_INTERNAL_START_SERVER).as_deref() == Ok("1");
     let mut args: Vec<_> = env::args_os().collect();
 

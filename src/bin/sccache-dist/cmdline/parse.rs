@@ -91,21 +91,9 @@ impl From<LogLevel> for log::LevelFilter {
     }
 }
 
-/// Parse the commandline into a `Command` to execute.
-pub fn parse() -> Command {
-    match try_parse_from(env::args()) {
-        Ok(cmd) => cmd,
-        Err(e) => match e.downcast::<clap::error::Error>() {
-            Ok(clap_err) => clap_err.exit(),
-            Err(some_other_err) => {
-                println!("sccache-dist: {some_other_err}");
-                for source_err in some_other_err.chain().skip(1) {
-                    println!("sccache-dist: caused by: {source_err}");
-                }
-                std::process::exit(1);
-            }
-        },
-    }
+/// Parse commandline args into a `Result<Command>` to execute.
+pub fn try_parse() -> anyhow::Result<Command> {
+    try_parse_from(env::args())
 }
 
 fn flag_infer_long(name: &'static str) -> Arg<'static> {

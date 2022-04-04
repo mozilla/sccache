@@ -67,8 +67,23 @@ pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
     init_logging();
-    let cmd = cmdline::parse();
-    std::process::exit(match commands::run_command(cmd) {
+
+    let command = match cmdline::try_parse() {
+        Ok(cmd) => cmd,
+        Err(e) => match e.downcast::<clap::error::Error>() {
+            // If the error is from clap then let them handle formatting and exiting
+            Ok(clap_err) => clap_err.exit(),
+            Err(some_other_err) => {
+                println!("sccache: {some_other_err}");
+                for source in some_other_err.chain().skip(1) {
+                    println!("sccache: caused by: {source}");
+                }
+                std::process::exit(1);
+            }
+        },
+    };
+
+    std::process::exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sccache: error: {}", e);
