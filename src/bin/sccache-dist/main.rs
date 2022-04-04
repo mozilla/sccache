@@ -52,7 +52,22 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
     init_logging();
-    std::process::exit(match run(cmdline::parse()) {
+
+    let command = match cmdline::try_parse() {
+        Ok(cmd) => cmd,
+        Err(e) => match e.downcast::<clap::error::Error>() {
+            Ok(clap_err) => clap_err.exit(),
+            Err(some_other_err) => {
+                println!("sccache-dist: {some_other_err}");
+                for source_err in some_other_err.chain().skip(1) {
+                    println!("sccache-dist: caused by: {source_err}");
+                }
+                std::process::exit(1);
+            }
+        },
+    };
+
+    std::process::exit(match run(command) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("sccache-dist: error: {}", e);

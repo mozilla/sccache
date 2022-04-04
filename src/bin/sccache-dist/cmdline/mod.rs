@@ -2,7 +2,7 @@ use sccache::{config, dist::ServerId};
 
 mod parse;
 
-pub use parse::parse;
+pub use parse::try_parse;
 
 #[derive(Debug)]
 pub enum Command {
