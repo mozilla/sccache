@@ -332,10 +332,6 @@ mod tests {
                 secret_key: "very secret".to_owned(),
             },
         );
-
-        // TODO: need some sample config to be used here
-        // let mut config = base;
-        // config.extend_from_slice(&["--config", "some/path.toml"]);
     }
 
     #[test]
@@ -357,16 +353,4 @@ mod tests {
             );
         }
     }
-
-    // TODO: add tests for with sample config file
-    // #[test]
-    // fn scheduler_good() {
-    //     todo!()
-    // }
-
-    // TODO: add tests for with sample config file
-    // #[test]
-    // fn server_good() {
-    //     todo!()
-    // }
 }
