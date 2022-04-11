@@ -229,31 +229,22 @@ pub fn try_parse() -> Result<Command> {
             bail!("`{ENV_VAR_INTERNAL_START_SERVER}=1` can't be used with other commands");
         }
         (false, Ok(matches)) => {
-            let show_stats = matches.is_present("show-stats");
-            let start_server = matches.is_present("start-server");
-            let stop_server = matches.is_present("stop-server");
-            let zero_stats = matches.is_present("zero-stats");
-            let dist_auth = matches.is_present("dist-auth");
-            let dist_status = matches.is_present("dist-status");
-            let package_toolchain = matches.is_present("package-toolchain");
-            let cmd = matches.is_present("CMD");
-
-            if show_stats {
+            if matches.is_present("show-stats") {
                 let fmt = matches
                     .value_of_t("stats-format")
                     .expect("There is a default value");
                 Ok(Command::ShowStats(fmt))
-            } else if start_server {
+            } else if matches.is_present("start-server") {
                 Ok(Command::StartServer)
-            } else if stop_server {
+            } else if matches.is_present("stop-server") {
                 Ok(Command::StopServer)
-            } else if zero_stats {
+            } else if matches.is_present("zero-stats") {
                 Ok(Command::ZeroStats)
-            } else if dist_auth {
+            } else if matches.is_present("dist-auth") {
                 Ok(Command::DistAuth)
-            } else if dist_status {
+            } else if matches.is_present("dist-status") {
                 Ok(Command::DistStatus)
-            } else if package_toolchain {
+            } else if matches.is_present("package-toolchain") {
                 let mut toolchain_values: Vec<PathBuf> =
                     matches.values_of_t("package-toolchain")?;
                 let maybe_out = toolchain_values.pop();
@@ -262,7 +253,7 @@ pub fn try_parse() -> Result<Command> {
                     (Some(exe), Some(out)) => Ok(Command::PackageToolchain(exe, out)),
                     _ => unreachable!("clap should enforce two values"),
                 }
-            } else if cmd {
+            } else if matches.is_present("CMD") {
                 let mut env_vars = env::vars_os().collect::<Vec<_>>();
 
                 // If we're running under rr, avoid the `LD_PRELOAD` bits, as it will
