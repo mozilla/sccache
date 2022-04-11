@@ -91,11 +91,6 @@ impl From<LogLevel> for log::LevelFilter {
     }
 }
 
-/// Parse commandline args into a `Result<Command>` to execute.
-pub fn try_parse() -> anyhow::Result<Command> {
-    try_parse_from(env::args())
-}
-
 fn flag_infer_long(name: &'static str) -> Arg<'static> {
     Arg::new(name).long(name)
 }
@@ -160,7 +155,8 @@ fn check_init_syslog(name: &str, log_level: LogLevel) {
     drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
 }
 
-fn try_parse_from(
+/// Parse commandline `args` into a `Result<Command>` to execute.
+pub fn try_parse_from(
     args: impl IntoIterator<Item = impl Into<OsString> + Clone>,
 ) -> anyhow::Result<Command> {
     let matches = get_clap_command().try_get_matches_from(args)?;

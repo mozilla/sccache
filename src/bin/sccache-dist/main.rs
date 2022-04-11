@@ -53,7 +53,7 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 fn main() {
     init_logging();
 
-    let command = match cmdline::try_parse() {
+    let command = match cmdline::try_parse_from(env::args()) {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
             Ok(clap_err) => clap_err.exit(),
