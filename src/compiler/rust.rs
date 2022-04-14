@@ -2276,10 +2276,12 @@ impl RlibDepReader {
 #[cfg(feature = "dist-client")]
 fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     let mut lines = stdout.lines();
-    match lines.next() {
-        Some("=External Dependencies=") => {}
-        Some(s) => bail!("Unknown first line from rustc -Z ls: {}", s),
-        None => bail!("No output from rustc -Z ls"),
+    loop {
+        match lines.next() {
+            Some("=External Dependencies=") => break,
+            Some(_s) => {}
+            None => bail!("No output from rustc -Z ls"),
+        }
     }
 
     let mut dep_names = vec![];
@@ -2895,8 +2897,33 @@ c:/foo/bar.rs:
 
     #[cfg(feature = "dist-client")]
     #[test]
-    fn test_parse_rustc_z_ls() {
+    fn test_parse_rustc_z_ls_pre_1_55() {
         let output = "=External Dependencies=
+1 lucet_runtime
+2 lucet_runtime_internals-1ff6232b6940e924
+3 lucet_runtime_macros-c18e1952b835769e
+
+
+";
+        let res = parse_rustc_z_ls(output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], "lucet_runtime");
+        assert_eq!(res[1], "lucet_runtime_internals");
+        assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls_post_1_55() {
+        // This was introduced in rust 1.55 by
+        // https://github.com/rust-lang/rust/commit/cef3ab75b12155e0582dd8b7710b7b901215fdd6
+        let output = "Crate info:
+name lucet_runtime
+hash 6c42566fc9757bba stable_crate_id StableCrateId(11157525371370257329)
+proc_macro false
+=External Dependencies=
 1 lucet_runtime
 2 lucet_runtime_internals-1ff6232b6940e924
 3 lucet_runtime_macros-c18e1952b835769e
