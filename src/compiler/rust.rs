@@ -1753,6 +1753,41 @@ struct RustInputsPackager {
 }
 
 #[cfg(feature = "dist-client")]
+fn can_trim_this(input_path: &Path) -> bool {
+    trace!("can_trim_this: input_path={:?}", input_path);
+    let mut ar_path = input_path.to_path_buf();
+    ar_path.set_extension("a");
+    // Check if the input path exists with both a .rlib and a .a, in which case
+    // we want to refuse to trim, otherwise triggering
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
+    input_path
+        .extension()
+        .map(|e| e == RLIB_EXTENSION)
+        .unwrap_or(false)
+        && !ar_path.exists()
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_can_trim_this() {
+    use crate::test::utils::create_file;
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+
+    // With only one rlib file we should be fine
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+
+    // Adding an ar from a staticlib (i.e., crate-type = ["staticlib", "rlib"]
+    // we need to refuse to allow trimming
+    let _ar_file = create_file(tempdir, "libtest.a", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+}
+
+#[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
     fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
@@ -1903,12 +1938,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
             let file = fs::File::open(input_path)?;
-            if can_trim_rlibs
-                && input_path
-                    .extension()
-                    .map(|e| e == RLIB_EXTENSION)
-                    .unwrap_or(false)
-            {
+            if can_trim_rlibs && can_trim_this(input_path) {
                 let mut archive = ar::Archive::new(file);
 
                 while let Some(entry_result) = archive.next_entry() {
