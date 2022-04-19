@@ -76,6 +76,16 @@ jobs:
         with:
           toolchain: ${{ matrix.rustc }}
 
+      - name: Install LLVM/Clang
+        if: contains(matrix.os, 'ubuntu')
+        run: 
+          sudo apt-get update || true
+          sudo apt-get install wget
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 13
+          sudo ./llvm.sh 14
+
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
 

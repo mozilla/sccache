@@ -39,12 +39,16 @@ pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
     pub is_clang: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
 impl CCompilerImpl for Msvc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Msvc
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         false
@@ -67,6 +71,7 @@ impl CCompilerImpl for Msvc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        _version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
