@@ -56,6 +56,8 @@ jobs:
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+          - os: ubuntu-20.04
+            rustc: stable
           - os: macOS-10.15
           - os: windows-2019
             rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
@@ -75,16 +77,6 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
-
-      - name: Install LLVM/Clang
-        if: contains(matrix.os, 'ubuntu')
-        run: 
-          sudo apt-get update || true
-          sudo apt-get install wget
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 13
-          sudo ./llvm.sh 14
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}

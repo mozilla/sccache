@@ -32,17 +32,12 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(Clone, Debug)]
-pub struct Diab {
-    pub version: Option<String>,
-}
+pub struct Diab;
 
 #[async_trait]
 impl CCompilerImpl for Diab {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Diab
-    }
-    fn version(&self) -> Option<String> {
-        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         false
@@ -65,7 +60,6 @@ impl CCompilerImpl for Diab {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         _rewrite_includes_only: bool,
-        _version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,

@@ -35,6 +35,9 @@ use crate::errors::*;
 pub struct Clang {
     /// true iff this is clang++.
     pub clangplusplus: bool,
+    /// true iff this is Apple's clang(++).
+    pub is_appleclang: bool,
+    /// String from __VERSION__ macro.
     pub version: Option<String>,
 }
 
@@ -42,9 +45,6 @@ pub struct Clang {
 impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
-    }
-    fn version(&self) -> Option<String> {
-        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         self.clangplusplus
@@ -73,11 +73,27 @@ impl CCompilerImpl for Clang {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
+        let mut ignorable_whitespace_flags = vec!["-P".to_string()];
+
+        // Clang 14 and later support -fminimize-whitespace, which normalizes away whitespace which in turn increases cache hit rate.
+        if !self.is_appleclang {
+            if let Some(version_val) = self.version.clone() {
+                if let Some(parsed_version) = version_val.split(' ').find(|x| x.contains('.')) {
+                    if let Some(major_version) = parsed_version.split('.').next() {
+                        if let Ok(parsed_major_version) = major_version.parse::<usize>() {
+                            if parsed_major_version >= 14 {
+                                ignorable_whitespace_flags.push("-fminimize-whitespace".to_string())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         gcc::preprocess(
             creator,
             executable,
@@ -87,7 +103,7 @@ impl CCompilerImpl for Clang {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-            version,
+            ignorable_whitespace_flags,
         )
         .await
     }
@@ -179,6 +195,7 @@ mod test {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Clang {
             clangplusplus: false,
+            is_appleclang: false,
             version: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap())

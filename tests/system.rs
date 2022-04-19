@@ -26,6 +26,7 @@ use crate::harness::{
 use assert_cmd::prelude::*;
 use log::Level::Trace;
 use predicates::prelude::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -48,8 +49,7 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang-13", "clang-14"];
-// const COMPILERS: &[&str] = &["gcc", "clang", "clang-13", "clang-14"];
+const COMPILERS: &[&str] = &["gcc", "clang"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
@@ -71,8 +71,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     input: &str,
     output: &str,
 ) -> Vec<OsString> {
-    let compiler_prefix = compiler.split('-').next().unwrap();
-    match compiler_prefix {
+    match compiler {
         "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
@@ -376,10 +375,34 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
     }
 
-    if compiler.name == "clang-13" {
+    // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
+    if compiler.name == "clang" {
+        let version_cmd = Command::new(compiler.name)
+            .arg("--version")
+            .output()
+            .expect("Failure when getting compiler version");
+        assert!(version_cmd.status.success());
+
+        let version_output = match str::from_utf8(&version_cmd.stdout) {
+            Ok(v) => v,
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+        };
+
+        // Apple clang would match "Apple LLVM version"
+        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        let (major, is_appleclang) = match re.captures(version_output) {
+            Some(c) => (
+                c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
+                c.name("apple") == None,
+            ),
+            None => panic!(
+                "Version info not found in --version output: {}",
+                version_output
+            ),
+        };
+        test_clang_cache_whitespace_normalization(compiler, tempdir, !is_appleclang && major >= 14);
+    } else {
         test_clang_cache_whitespace_normalization(compiler, tempdir, false);
-    } else if compiler.name == "clang-14" {
-        test_clang_cache_whitespace_normalization(compiler, tempdir, true);
     }
 }
 
@@ -389,19 +412,20 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
         exe,
         env_vars,
     } = compiler;
-    trace!("run_sccache_command_test: {}", name);
+    println!("run_sccache_command_test: {}", name);
+    println!("expecting hit: {}", hit);
     // Compile a source file.
     copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
     zero_stats();
 
-    trace!("compile whitespace");
+    println!("compile whitespace");
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT_WITH_WHITESPACE, OUTPUT))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
         .success();
-    trace!("request stats");
+    println!("request stats");
     get_stats(|info| {
         assert_eq!(1, info.stats.compile_requests);
         assert_eq!(1, info.stats.requests_executed);
@@ -409,7 +433,7 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
         assert_eq!(1, info.stats.cache_misses.all());
     });
 
-    trace!("compile whitespace_alt");
+    println!("compile whitespace_alt");
     sccache_command()
         .args(&compile_cmdline(
             name,
@@ -421,7 +445,7 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
         .envs(env_vars)
         .assert()
         .success();
-    trace!("request stats (expecting cache hit)");
+    println!("request stats (expecting cache hit)");
     if hit {
         get_stats(|info| {
             assert_eq!(2, info.stats.compile_requests);

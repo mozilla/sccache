@@ -32,16 +32,12 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Gcc {
     pub gplusplus: bool,
-    pub version: Option<String>,
 }
 
 #[async_trait]
 impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Gcc
-    }
-    fn version(&self) -> Option<String> {
-        self.version.clone()
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
@@ -64,7 +60,6 @@ impl CCompilerImpl for Gcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        version: Option<String>,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -78,7 +73,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-            version,
+            vec!["-P".to_string()],
         )
         .await
     }
@@ -542,7 +537,7 @@ fn preprocess_cmd<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
-    version: Option<String>,
+    ignorable_whitespace_flags: Vec<String>,
 ) where
     T: RunCommand,
 {
@@ -559,18 +554,7 @@ fn preprocess_cmd<T>(
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so don't use -P.
     if !may_dist && !parsed_args.profile_generate {
-        cmd.arg("-P");
-        if let (CCompilerKind::Clang, Some(version)) = (kind.clone(), version) {
-            if let Some(parsed_version) = version.split(' ').find(|x| x.contains('.')) {
-                if let Some(major_version) = parsed_version.split('.').next() {
-                    if let Ok(parsed_major_version) = major_version.parse::<usize>() {
-                        if parsed_major_version >= 14 {
-                            cmd.arg("-fminimize-whitespace");
-                        }
-                    }
-                }
-            }
-        }
+        cmd.args(&ignorable_whitespace_flags);
     }
     if rewrite_includes_only {
         if parsed_args.suppress_rewrite_includes_only {
@@ -608,7 +592,7 @@ pub async fn preprocess<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
-    version: Option<String>,
+    ignorable_whitespace_flags: Vec<String>,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
@@ -623,7 +607,7 @@ where
         may_dist,
         kind,
         rewrite_includes_only,
-        version,
+        ignorable_whitespace_flags,
     );
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
@@ -1244,7 +1228,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
-            None,
+            vec![],
         );
         // disable with extensions enabled
         assert!(!cmd.args.contains(&"-fdirectives-only".into()));
@@ -1269,7 +1253,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
-            None,
+            vec![],
         );
         // no reason to disable it with no extensions enabled
         assert!(cmd.args.contains(&"-fdirectives-only".into()));
@@ -1294,7 +1278,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
-            None,
+            vec![],
         );
         // disable with extensions enabled
         assert!(!cmd.args.contains(&"-fdirectives-only".into()));
