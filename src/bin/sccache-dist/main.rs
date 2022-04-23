@@ -4,7 +4,10 @@ extern crate env_logger;
 extern crate flate2;
 extern crate hyperx;
 extern crate jsonwebtoken as jwt;
+
+#[cfg(not(target_os = "freebsd"))]
 extern crate libmount;
+
 #[macro_use]
 extern crate log;
 extern crate nix;
@@ -40,7 +43,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[cfg_attr(target_os = "freebsd", path = "build_freebsd.rs")]
 mod build;
+
 mod cmdline;
 mod token_check;
 
@@ -48,8 +53,11 @@ use cmdline::{AuthSubcommand, Command};
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
-// Only supported on x86_64 Linux machines
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+// Only supported on x86_64 Linux machines and on FreeBSD
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "freebsd"
+))]
 fn main() {
     init_logging();
 
@@ -227,15 +235,34 @@ fn run(command: Command) -> Result<i32> {
             toolchain_cache_size,
         }) => {
             let builder: Box<dyn dist::BuilderIncoming> = match builder {
+                #[cfg(not(target_os = "freebsd"))]
                 server_config::BuilderType::Docker => {
                     Box::new(build::DockerBuilder::new().context("Docker builder failed to start")?)
                 }
+                #[cfg(not(target_os = "freebsd"))]
                 server_config::BuilderType::Overlay {
                     bwrap_path,
                     build_dir,
                 } => Box::new(
                     build::OverlayBuilder::new(bwrap_path, build_dir)
                         .context("Overlay builder failed to start")?,
+                ),
+                #[cfg(target_os = "freebsd")]
+                server_config::BuilderType::Pot {
+                    pot_fs_root,
+                    clone_from,
+                    pot_cmd,
+                    pot_clone_args,
+                } => Box::new(
+                    build::PotBuilder::new(pot_fs_root, clone_from, pot_cmd, pot_clone_args)
+                        .context("Pot builder failed to start")?,
+                ),
+                _ => bail!(
+                    "Builder type `{}` not supported on this platform",
+                    format!("{:?}", builder)
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
                 ),
             };
 

@@ -49,11 +49,11 @@ use tempfile::TempDir;
 use crate::errors::*;
 
 /// Can dylibs (shared libraries or proc macros) be distributed on this platform?
-#[cfg(all(feature = "dist-client", target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(feature = "dist-client", any(all(target_os = "linux", target_arch = "x86_64"), target_os = "freebsd")))]
 pub const CAN_DIST_DYLIBS: bool = true;
 #[cfg(all(
     feature = "dist-client",
-    not(all(target_os = "linux", target_arch = "x86_64"))
+    not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "freebsd"))
 ))]
 pub const CAN_DIST_DYLIBS: bool = false;
 

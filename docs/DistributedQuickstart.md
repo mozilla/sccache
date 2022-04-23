@@ -62,7 +62,7 @@ Like the local server, the scheduler process will daemonize itself unless `SCCAC
 Configure a build server
 ------------------------
 
-A build server communicates with the scheduler and executes compiles requested by clients. Only Linux is supported for running a build server, but executing cross-compile requests from macOS/Windows clients is supported.
+A build server communicates with the scheduler and executes compiles requested by clients. Only Linux is supported for running a build server, but executing cross-compile requests from macOS/Windows clients is supported. You can also run a build server on FreeBSD, please see [distributed sccache on FreeBSD](DistributedFreeBSD.md).
 
 The build server requires [bubblewrap](https://github.com/projectatomic/bubblewrap) to sandbox execution, at least version 0.3.0. Verify your version of bubblewrap *before* attempting to run the server. On Ubuntu 18.10+ you can `apt install bubblewrap` to install it. If you build from source you will need to first install your distro's equivalent of the `libcap-dev` package.
 

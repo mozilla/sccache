@@ -84,7 +84,6 @@ zstd = "0.12"
 
 # dist-server only
 crossbeam-utils = { version = "0.8", optional = true }
-libmount = { version = "0.1.10", optional = true }
 nix = { version = "0.25.0", optional = true }
 rouille = { version = "3.5", optional = true, default-features = false, features = ["ssl"] }
 syslog = { version = "6", optional = true }
@@ -110,6 +109,10 @@ wiremock = "0.5.15"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.4"
+
+[target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]
+optional = true
+version = "0.1.10"
 
 [target.'cfg(windows)'.dependencies]
 parity-tokio-ipc = "0.9"
