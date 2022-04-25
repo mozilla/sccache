@@ -1909,6 +1909,7 @@ dependencies = [
  "retry",
  "ring",
  "rouille",
+ "semver",
  "serde",
  "serde_derive",
  "serde_json",
