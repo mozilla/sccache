@@ -363,7 +363,16 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                match config.pool.block_on(dist_client.do_get_status()) {
+                let status = {
+                    match Handle::try_current() {
+                        Ok(handle) => {
+                            let _ = handle.enter();
+                            futures::executor::block_on(dist_client.do_get_status())
+                        }
+                        Err(_) => config.pool.block_on(dist_client.do_get_status()),
+                    }
+                };
+                match status {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -776,6 +785,7 @@ where
 
 use futures::future::Either;
 use futures::TryStreamExt;
+use tokio::runtime::Handle;
 
 impl<C> SccacheService<C>
 where
