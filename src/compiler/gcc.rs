@@ -32,6 +32,7 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Gcc {
     pub gplusplus: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
@@ -41,6 +42,9 @@ impl CCompilerImpl for Gcc {
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn parse_arguments(
         &self,

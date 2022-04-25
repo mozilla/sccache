@@ -49,6 +49,9 @@ impl CCompilerImpl for Clang {
     fn plusplus(&self) -> bool {
         self.clangplusplus
     }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],

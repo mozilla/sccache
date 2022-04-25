@@ -177,6 +177,8 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     fn kind(&self) -> CCompilerKind;
     /// Return true iff this is g++ or clang++.
     fn plusplus(&self) -> bool;
+    /// Return the compiler version reported by the compiler executable.
+    fn version(&self) -> Option<String>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -217,7 +219,6 @@ where
     pub async fn new(
         compiler: I,
         executable: PathBuf,
-        version: Option<String>,
         pool: &tokio::runtime::Handle,
     ) -> Result<CCompiler<I>> {
         let digest = Digest::file(executable.clone(), pool).await?;
@@ -225,7 +226,7 @@ where
         Ok(CCompiler {
             executable,
             executable_digest: {
-                if let Some(version) = version {
+                if let Some(version) = compiler.version() {
                     let mut m = Digest::new();
                     m.update(digest.as_bytes());
                     m.update(version.as_bytes());
