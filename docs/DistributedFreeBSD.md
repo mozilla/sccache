@@ -91,9 +91,9 @@ token = "my client token"
 
 [[dist.toolchains]]
 type = "path_override"
-compiler_executable = "/usr/bin/clang"
-archive = "/path/to/clang_toolchain_somehash.tar.gz"
-archive_compiler_executable = "/usr/bin/clang"
+compiler_executable = "/usr/bin/cc"
+archive = "/path/to/empty.tar.gz"
+archive_compiler_executable = "/usr/bin/cc"
 
 [[dist.toolchains]]
 type = "path_override"
@@ -102,29 +102,30 @@ archive = "/path/to/rust-toolchain.tgz"
 archive_compiler_executable = "/usr/local/bin/rustc"
 ```
 
-In this example, the clang toolchain was created using icecc-create-env from
-icecream:
+Creating toolchain archives
+---------------------------
 
-```sh
-fetch -o icecc-create-env \
-https://raw.githubusercontent.com/icecc/icecream/master/client/icecc-create-env.in
-chmod +x icecc-create-env
-./icecc-create-env --clang /usr/bin/clang /usr/bin/false
-mv longhash.tar.gz clang_toolchain_somehash.tar.gz
-```
-
-The rust toolchain can be created from the installed rust package:
+The toolchain files from the examples above can be created like this:
 
 ```sh
 pkg install gtar
-pkg info -lq rust | gtar -cf - -T - | gzip >/path/to/rust-toolchain.tgz
+gtar cvf - --files-from /dev/null | gzip >empty.tar.gz
+pkg info -lq rust | gtar -cf - -T - | gzip >rust-toolchain.tgz
 ```
 
-Note: It's important to use `gtar` (GNU tar) here, as the [flate2](
-https://github.com/rust-lang/flate2-rs) crate has issues processing
-sparse files created by `bsdtar`.
+This just creates an empty file for the system compiler (as it is
+included in the pot image anyway) and the toolchain for rustc is
+created from the rust package installed on the system.
 
-`cargo build` invocation example:
+See [the distributed quickstart](DistributedQuickstart.md) guide for
+instructions how to create other C toolchains using icecc-create-env.
+
+Note: We use `gtar` (GNU tar) here, as the [flate2](
+https://github.com/rust-lang/flate2-rs) crate has issues processing
+sparse files created with `bsdtar`.
+
+Cargo invocation example
+------------------------
 
 ```sh
 RUSTC_WRAPPER=~/.cargo/bin/sccache \
