@@ -39,6 +39,7 @@ pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
     pub is_clang: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
@@ -48,6 +49,9 @@ impl CCompilerImpl for Msvc {
     }
     fn plusplus(&self) -> bool {
         false
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn parse_arguments(
         &self,

@@ -56,6 +56,7 @@ jobs:
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
+          - os: ubuntu-22.04
           - os: macOS-10.15
           - os: windows-2019
             rustc: 1.48.0 # Oldest supported version, keep in sync with README.md

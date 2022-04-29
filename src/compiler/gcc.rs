@@ -32,6 +32,7 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Gcc {
     pub gplusplus: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
@@ -41,6 +42,9 @@ impl CCompilerImpl for Gcc {
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn parse_arguments(
         &self,
@@ -73,6 +77,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
+            vec!["-P".to_string()],
         )
         .await
     }
@@ -536,6 +541,7 @@ fn preprocess_cmd<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
+    ignorable_whitespace_flags: Vec<String>,
 ) where
     T: RunCommand,
 {
@@ -552,7 +558,7 @@ fn preprocess_cmd<T>(
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so don't use -P.
     if !may_dist && !parsed_args.profile_generate {
-        cmd.arg("-P");
+        cmd.args(&ignorable_whitespace_flags);
     }
     if rewrite_includes_only {
         if parsed_args.suppress_rewrite_includes_only {
@@ -590,6 +596,7 @@ pub async fn preprocess<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
+    ignorable_whitespace_flags: Vec<String>,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
@@ -604,6 +611,7 @@ where
         may_dist,
         kind,
         rewrite_includes_only,
+        ignorable_whitespace_flags,
     );
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
@@ -1224,6 +1232,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
+            vec![],
         );
         // disable with extensions enabled
         assert!(!cmd.args.contains(&"-fdirectives-only".into()));
@@ -1248,6 +1257,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
+            vec![],
         );
         // no reason to disable it with no extensions enabled
         assert!(cmd.args.contains(&"-fdirectives-only".into()));
@@ -1272,6 +1282,7 @@ mod test {
             true,
             CCompilerKind::Gcc,
             true,
+            vec![],
         );
         // disable with extensions enabled
         assert!(!cmd.args.contains(&"-fdirectives-only".into()));
