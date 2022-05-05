@@ -98,6 +98,7 @@ mod common {
     #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
     #[serde(deny_unknown_fields)]
     pub struct JobJwt {
+        pub exp: u64,
         pub job_id: dist::JobId,
     }
 
@@ -396,14 +397,12 @@ mod server {
     const JWT_KEY_LENGTH: usize = 256 / 8;
     lazy_static! {
         static ref JWT_HEADER: jwt::Header = jwt::Header::new(jwt::Algorithm::HS256);
-        static ref JWT_VALIDATION: jwt::Validation = jwt::Validation {
-            leeway: 0,
-            validate_exp: false,
-            validate_nbf: false,
-            aud: None,
-            iss: None,
-            sub: None,
-            algorithms: vec![jwt::Algorithm::HS256],
+        static ref JWT_VALIDATION: jwt::Validation = {
+            let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
+            validation.leeway = 0;
+            validation.validate_exp = false;
+            validation.validate_nbf = false;
+            validation
         };
     }
 
@@ -603,13 +602,13 @@ mod server {
     }
     impl dist::JobAuthorizer for JWTJobAuthorizer {
         fn generate_token(&self, job_id: JobId) -> Result<String> {
-            let claims = JobJwt { job_id };
+            let claims = JobJwt { exp: 0, job_id };
             let key = jwt::EncodingKey::from_secret(&self.server_key);
             jwt::encode(&JWT_HEADER, &claims, &key)
                 .map_err(|e| anyhow!("Failed to create JWT for job: {}", e))
         }
         fn verify_token(&self, job_id: JobId, token: &str) -> Result<()> {
-            let valid_claims = JobJwt { job_id };
+            let valid_claims = JobJwt { exp: 0, job_id };
             let key = jwt::DecodingKey::from_secret(&self.server_key);
             jwt::decode(token, &key, &JWT_VALIDATION)
                 .map_err(|e| anyhow!("JWT decode failed: {}", e))

@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
-          toolchain: 1.58.1
+          toolchain: 1.58
 
       - name: clippy version
         run: cargo clippy --version
@@ -42,24 +42,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-18.04
-            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-18.04
-            rustc: 1.48.0
+          - os: ubuntu-20.04
+            rustc: 1.58.0 # Oldest supported version, keep in sync with README.md
+          - os: ubuntu-20.04
+            rustc: 1.58.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: stable
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: beta
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
           - os: ubuntu-22.04
           - os: macOS-10.15
           - os: windows-2019
-            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
+            rustc: 1.58.0 # Oldest supported version, keep in sync with README.md
           - os: windows-2019
             rustc: nightly
             allow_failure: true
@@ -172,7 +172,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
