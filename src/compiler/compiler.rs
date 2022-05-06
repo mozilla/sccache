@@ -1000,8 +1000,12 @@ nvcc
 msvc
 #elif defined(_MSC_VER) && defined(_MT)
 msvc-clang
+#elif defined(__clang__) && defined(__cplusplus) && defined(__apple_build_version__)
+apple-clang++
 #elif defined(__clang__) && defined(__cplusplus)
 clang++
+#elif defined(__clang__) && defined(__apple_build_version__)
+apple-clang
 #elif defined(__clang__)
 clang
 #elif defined(__GNUC__) && defined(__cplusplus)
@@ -1052,14 +1056,15 @@ __VERSION__
             .filter(|&line| line != "__VERSION__")
             .map(str::to_owned);
         match kind {
-            "clang" | "clang++" => {
+            "clang" | "clang++" | "apple-clang" | "apple-clang++" => {
                 debug!("Found {}", kind);
                 return CCompiler::new(
                     Clang {
-                        clangplusplus: kind == "clang++",
+                        clangplusplus: kind.ends_with("++"),
+                        is_appleclang: kind.starts_with("apple-"),
+                        version: version.clone(),
                     },
                     executable,
-                    version,
                     &pool,
                 )
                 .await
@@ -1067,18 +1072,24 @@ __VERSION__
             }
             "diab" => {
                 debug!("Found diab");
-                return CCompiler::new(Diab, executable, version, &pool)
-                    .await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                return CCompiler::new(
+                    Diab {
+                        version: version.clone(),
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "gcc" | "g++" => {
                 debug!("Found {}", kind);
                 return CCompiler::new(
                     Gcc {
                         gplusplus: kind == "g++",
+                        version: version.clone(),
                     },
                     executable,
-                    version,
                     &pool,
                 )
                 .await
@@ -1101,9 +1112,9 @@ __VERSION__
                     Msvc {
                         includes_prefix: prefix,
                         is_clang,
+                        version: version.clone(),
                     },
                     executable,
-                    version,
                     &pool,
                 )
                 .await
@@ -1111,9 +1122,15 @@ __VERSION__
             }
             "nvcc" => {
                 debug!("Found NVCC");
-                return CCompiler::new(Nvcc, executable, version, &pool)
-                    .await
-                    .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                return CCompiler::new(
+                    Nvcc {
+                        version: version.clone(),
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             _ => (),
         }

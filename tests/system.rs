@@ -26,6 +26,7 @@ use crate::harness::{
 use assert_cmd::prelude::*;
 use log::Level::Trace;
 use predicates::prelude::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -78,6 +79,8 @@ fn compile_cmdline<T: AsRef<OsStr>>(
 }
 
 const INPUT: &str = "test.c";
+const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
+const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
@@ -369,7 +372,94 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
-        test_gcc_clang_no_warnings_from_macro_expansion(compiler, tempdir);
+        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+    }
+
+    // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
+    if compiler.name == "clang" {
+        let version_cmd = Command::new(compiler.name)
+            .arg("--version")
+            .output()
+            .expect("Failure when getting compiler version");
+        assert!(version_cmd.status.success());
+
+        let version_output = match str::from_utf8(&version_cmd.stdout) {
+            Ok(v) => v,
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+        };
+
+        // Apple clang would match "Apple LLVM version"
+        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        let (major, is_appleclang) = match re.captures(version_output) {
+            Some(c) => (
+                c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
+                c.name("apple") == None,
+            ),
+            None => panic!(
+                "Version info not found in --version output: {}",
+                version_output
+            ),
+        };
+        test_clang_cache_whitespace_normalization(compiler, tempdir, !is_appleclang && major >= 14);
+    } else {
+        test_clang_cache_whitespace_normalization(compiler, tempdir, false);
+    }
+}
+
+fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("run_sccache_command_test: {}", name);
+    println!("expecting hit: {}", hit);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
+    zero_stats();
+
+    println!("compile whitespace");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT_WITH_WHITESPACE, OUTPUT))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    println!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    println!("compile whitespace_alt");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_WITH_WHITESPACE_ALT,
+            OUTPUT,
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    println!("request stats (expecting cache hit)");
+    if hit {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(1, info.stats.cache_hits.all());
+            assert_eq!(1, info.stats.cache_misses.all());
+        });
+    } else {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(0, info.stats.cache_hits.all());
+            assert_eq!(2, info.stats.cache_misses.all());
+        });
     }
 }
 

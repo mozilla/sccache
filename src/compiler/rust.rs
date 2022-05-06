@@ -1753,6 +1753,41 @@ struct RustInputsPackager {
 }
 
 #[cfg(feature = "dist-client")]
+fn can_trim_this(input_path: &Path) -> bool {
+    trace!("can_trim_this: input_path={:?}", input_path);
+    let mut ar_path = input_path.to_path_buf();
+    ar_path.set_extension("a");
+    // Check if the input path exists with both a .rlib and a .a, in which case
+    // we want to refuse to trim, otherwise triggering
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
+    input_path
+        .extension()
+        .map(|e| e == RLIB_EXTENSION)
+        .unwrap_or(false)
+        && !ar_path.exists()
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_can_trim_this() {
+    use crate::test::utils::create_file;
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+
+    // With only one rlib file we should be fine
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+
+    // Adding an ar from a staticlib (i.e., crate-type = ["staticlib", "rlib"]
+    // we need to refuse to allow trimming
+    let _ar_file = create_file(tempdir, "libtest.a", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
+}
+
+#[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
     fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
@@ -1903,12 +1938,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
             let file = fs::File::open(input_path)?;
-            if can_trim_rlibs
-                && input_path
-                    .extension()
-                    .map(|e| e == RLIB_EXTENSION)
-                    .unwrap_or(false)
-            {
+            if can_trim_rlibs && can_trim_this(input_path) {
                 let mut archive = ar::Archive::new(file);
 
                 while let Some(entry_result) = archive.next_entry() {
@@ -2276,10 +2306,12 @@ impl RlibDepReader {
 #[cfg(feature = "dist-client")]
 fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     let mut lines = stdout.lines();
-    match lines.next() {
-        Some("=External Dependencies=") => {}
-        Some(s) => bail!("Unknown first line from rustc -Z ls: {}", s),
-        None => bail!("No output from rustc -Z ls"),
+    loop {
+        match lines.next() {
+            Some("=External Dependencies=") => break,
+            Some(_s) => {}
+            None => bail!("No output from rustc -Z ls"),
+        }
     }
 
     let mut dep_names = vec![];
@@ -2895,8 +2927,33 @@ c:/foo/bar.rs:
 
     #[cfg(feature = "dist-client")]
     #[test]
-    fn test_parse_rustc_z_ls() {
+    fn test_parse_rustc_z_ls_pre_1_55() {
         let output = "=External Dependencies=
+1 lucet_runtime
+2 lucet_runtime_internals-1ff6232b6940e924
+3 lucet_runtime_macros-c18e1952b835769e
+
+
+";
+        let res = parse_rustc_z_ls(output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], "lucet_runtime");
+        assert_eq!(res[1], "lucet_runtime_internals");
+        assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls_post_1_55() {
+        // This was introduced in rust 1.55 by
+        // https://github.com/rust-lang/rust/commit/cef3ab75b12155e0582dd8b7710b7b901215fdd6
+        let output = "Crate info:
+name lucet_runtime
+hash 6c42566fc9757bba stable_crate_id StableCrateId(11157525371370257329)
+proc_macro false
+=External Dependencies=
 1 lucet_runtime
 2 lucet_runtime_internals-1ff6232b6940e924
 3 lucet_runtime_macros-c18e1952b835769e

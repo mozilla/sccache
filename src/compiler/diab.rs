@@ -32,7 +32,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 #[derive(Clone, Debug)]
-pub struct Diab;
+pub struct Diab {
+    pub version: Option<String>,
+}
 
 #[async_trait]
 impl CCompilerImpl for Diab {
@@ -41,6 +43,9 @@ impl CCompilerImpl for Diab {
     }
     fn plusplus(&self) -> bool {
         false
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn parse_arguments(
         &self,
