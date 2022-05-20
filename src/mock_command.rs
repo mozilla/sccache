@@ -104,8 +104,6 @@ pub trait RunCommand: fmt::Debug + Send {
     fn env_clear(&mut self) -> &mut Self;
     /// Set the working directory of the process to `dir`.
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self;
-    /// Create the proces without a visible console on Windows.
-    fn no_console(&mut self) -> &mut Self;
     /// Set the process' stdin from `cfg`.
     fn stdin(&mut self, cfg: Stdio) -> &mut Self;
     /// Set the process' stdout from `cfg`.
@@ -234,19 +232,6 @@ impl RunCommand for AsyncCommand {
     }
     fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut AsyncCommand {
         self.inner().current_dir(dir);
-        self
-    }
-
-    #[cfg(windows)]
-    fn no_console(&mut self) -> &mut AsyncCommand {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        self.inner().creation_flags(CREATE_NO_WINDOW);
-        self
-    }
-
-    #[cfg(unix)]
-    fn no_console(&mut self) -> &mut AsyncCommand {
         self
     }
 
@@ -472,9 +457,6 @@ impl RunCommand for MockCommand {
     }
     fn current_dir<P: AsRef<Path>>(&mut self, _dir: P) -> &mut MockCommand {
         //TODO: assert value of dir
-        self
-    }
-    fn no_console(&mut self) -> &mut MockCommand {
         self
     }
     fn stdin(&mut self, _cfg: Stdio) -> &mut MockCommand {

@@ -254,7 +254,6 @@ where
     C: RunCommand,
 {
     let child = command
-        .no_console()
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
