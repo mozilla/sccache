@@ -159,12 +159,18 @@ mod toolchain_imp {
             Ok(())
         }
 
-        pub fn into_compressed_tar<W: Write>(self, writer: W) -> Result<()> {
-            use flate2::write::GzEncoder;
-            let ToolchainPackageBuilder { dir_set, file_set } = self;
+        pub fn into_compressed_tar<W: Write + Send + 'static>(self, writer: W) -> Result<()> {
+            use gzp::{
+                deflate::Gzip,
+                par::compress::{Compression, ParCompress, ParCompressBuilder},
+            };
 
-            let mut builder =
-                tar::Builder::new(GzEncoder::new(writer, flate2::Compression::default()));
+            let ToolchainPackageBuilder { dir_set, file_set } = self;
+            let par: ParCompress<Gzip> = ParCompressBuilder::new()
+                .compression_level(Compression::default())
+                .from_writer(writer);
+            let mut builder = tar::Builder::new(par);
+
             for (tar_path, dir_path) in dir_set.into_iter() {
                 builder.append_dir(tar_path, dir_path)?
             }
