@@ -15,7 +15,9 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDesciptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
 use crate::dist;
@@ -247,7 +249,16 @@ mod test {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -260,7 +271,16 @@ mod test {
         );
         assert_eq!(Some("foo.cxx"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
         assert_eq!(ovec!["-arch", "xyz", "-fabc"], a.common_args);
     }

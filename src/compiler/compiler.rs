@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheWrite, DecompressionFailure, Storage};
+use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -30,7 +30,6 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 #[cfg(feature = "dist-client")]
@@ -256,8 +255,11 @@ where
         let duration = start.elapsed();
         let outputs = compilation
             .outputs()
-            .map(|(key, path)| (key.to_string(), cwd.join(path)))
-            .collect::<HashMap<_, _>>();
+            .map(|output| FileObjectSource {
+                path: cwd.join(output.path),
+                ..output
+            })
+            .collect::<Vec<_>>();
 
         let lookup = match cache_status.await {
             Ok(Ok(Cache::Hit(mut entry))) => {
@@ -461,7 +463,7 @@ where
         debug!("[{}]: Creating distributed compile request", out_pretty);
         let dist_output_paths = compilation
             .outputs()
-            .map(|(_key, path)| path_transformer.as_dist_abs(&cwd.join(path)))
+            .map(|output| path_transformer.as_dist_abs(&cwd.join(output.path)))
             .collect::<Option<_>>()
             .context("Failed to adapt an output path for distributed compile")?;
         let (inputs_packager, toolchain_packager, outputs_rewriter) =
@@ -650,7 +652,7 @@ pub trait Compilation: Send {
     ///
     /// Each item is a descriptive (and unique) name of the output paired with
     /// the path where it'll show up.
-    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a>;
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a>;
 }
 
 #[cfg(feature = "dist-client")]

@@ -15,7 +15,9 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDesciptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
 use crate::dist;
@@ -246,7 +248,16 @@ mod test {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -256,7 +267,16 @@ mod test {
         let a = parses!("-c", "foo.cu", "-o", "foo.o");
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -266,7 +286,16 @@ mod test {
         let a = parses!("-x", "cu", "-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -277,7 +306,16 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-dc"), a.compilation_flag.to_str());
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -298,7 +336,16 @@ mod test {
         );
         assert_eq!(Some("foo.cpp"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec![
                 "-Iinclude-file",
@@ -322,7 +369,16 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-c"), a.compilation_flag.to_str());
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
             a.dependency_args
@@ -343,7 +399,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(
             ovec!["--generate-code", "arch=compute_61,code=sm_61"],
@@ -370,7 +435,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec![
                 "-Xcompiler",
@@ -411,7 +485,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDesciptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["--expt-relaxed-constexpr", "-Xcompiler", "-pthread"],
             a.preprocessor_args

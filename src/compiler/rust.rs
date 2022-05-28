@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::FileObjectSource;
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
@@ -1727,8 +1728,12 @@ impl Compilation for RustCompilation {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a> {
-        Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
+        Box::new(self.outputs.iter().map(|(k, v)| FileObjectSource {
+            key: k.to_string(),
+            path: v.clone(),
+            optional: false,
+        }))
     }
 }
 
@@ -3123,11 +3128,7 @@ proc_macro false
         f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
-        let mut out = res
-            .compilation
-            .outputs()
-            .map(|(k, _)| k.to_owned())
-            .collect::<Vec<_>>();
+        let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
         out.sort();
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
