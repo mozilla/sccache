@@ -1,6 +1,6 @@
 use std::{env, ffi::OsString, fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use clap::{Arg, ArgGroup, Command as ClapCommand};
 use sccache::{config, dist::ServerId};
 use syslog::Facility;
@@ -17,11 +17,18 @@ impl TokenLength {
 
     fn from_bits(bits: &str) -> anyhow::Result<Self> {
         let bits: usize = bits.parse()?;
-        if bits % 8 != 0 || bits < 64 || bits > 4_096 {
-            bail!("Number of bits must be divisible by 8, greater than 64 and less than 4096")
-        }
 
-        Ok(Self(bits))
+        if bits & 0x7 != 0 {
+            Err(anyhow!("Number of bits must be divisible by 8"))
+        } else if bits < 64 {
+            Err(anyhow!(
+                "Number of bits must be greater than or equal to 64"
+            ))
+        } else if bits > 4_096 {
+            Err(anyhow!("Number of bits must be less than or equal to 4096"))
+        } else {
+            Ok(Self(bits))
+        }
     }
 }
 
