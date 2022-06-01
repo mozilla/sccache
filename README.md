@@ -180,6 +180,8 @@ sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` envi
 
 The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
 
+The local storage only supports a single concurrent build. Multiple concurrent builds will race and cause spurious build failures.
+
 ### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
 
