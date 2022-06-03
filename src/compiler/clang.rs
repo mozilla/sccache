@@ -184,6 +184,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
+    take_arg!("/winsysroot", PathBuf, CanBeSeparated, PassThroughPath),
 ]);
 
 // Maps the `-fprofile-use` argument to the actual path of the
@@ -250,14 +251,27 @@ mod test {
     #[test]
     fn test_parse_arguments_values() {
         let a = parses!(
-            "-c", "foo.cxx", "-arch", "xyz", "-fabc", "-I", "include", "-o", "foo.o", "-include",
-            "file"
+            "-c",
+            "foo.cxx",
+            "-arch",
+            "xyz",
+            "-fabc",
+            "-I",
+            "include",
+            "-o",
+            "foo.o",
+            "-include",
+            "file",
+            "/winsysroot../some/dir"
         );
         assert_eq!(Some("foo.cxx"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
         assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
-        assert_eq!(ovec!["-arch", "xyz", "-fabc"], a.common_args);
+        assert_eq!(
+            ovec!["-arch", "xyz", "-fabc", "/winsysroot", "../some/dir"],
+            a.common_args
+        );
     }
 
     #[test]

@@ -443,6 +443,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("w4", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("wd", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("we", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("winsysroot", PathBuf, CanBeSeparated, PassThroughWithPath),
     msvc_take_arg!("wo", OsString, Concatenated, PassThroughWithSuffix),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
@@ -1157,7 +1158,8 @@ mod test {
             "-imsvc",
             "/a/b/c",
             "-Fofoo.obj",
-            "/showIncludes"
+            "/showIncludes",
+            "/winsysroot../../some/dir"
         ];
         let ParsedArguments {
             input,
@@ -1177,7 +1179,7 @@ mod test {
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
         assert_eq!(preprocessor_args, ovec!["-FIfile", "-imsvc/a/b/c"]);
         assert_eq!(dependency_args, ovec!["/showIncludes"]);
-        assert!(common_args.is_empty());
+        assert_eq!(common_args, ovec!["/winsysroot../../some/dir"]);
         assert!(msvc_show_includes);
     }
 
