@@ -181,6 +181,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
+    flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
@@ -443,6 +444,12 @@ mod test {
     fn test_parse_xclang_verify() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-verify");
         assert_eq!(ovec!["-Xclang", "-verify"], a.preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_no_opaque_pointers() {
+        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-no-opaque-pointers");
+        assert_eq!(ovec!["-Xclang", "-no-opaque-pointers"], a.preprocessor_args);
     }
 
     #[test]
