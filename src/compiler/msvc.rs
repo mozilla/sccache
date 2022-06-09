@@ -461,7 +461,7 @@ pub fn parse_arguments(
     is_clang: bool,
 ) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
-    let mut input_arg: Option<OsString> = None;
+    let mut input_arg = None;
     let mut common_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
@@ -475,6 +475,8 @@ pub fn parse_arguments(
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
     let mut profile_generate = false;
+    let mut multiple_input = false;
+    let mut multiple_input_files = Vec::new();
 
     for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
@@ -517,12 +519,10 @@ pub fn parse_arguments(
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
-                        if let Some(ref input_arg) = input_arg {
+                        if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            cannot_cache!(
-                                "multiple input files or unknown argument: ",
-                                String::from(input_arg.to_string_lossy())
-                            );
+                            multiple_input = true;
+                            multiple_input_files.push(val.clone());
                         }
                         input_arg = Some(val.clone());
                     }
@@ -657,6 +657,13 @@ pub fn parse_arguments(
     // We only support compilation.
     if !compilation {
         return CompilerArguments::NotCompilation;
+    }
+    // Can't cache compilations with multiple inputs.
+    if multiple_input {
+        cannot_cache!(
+            "multiple input files",
+            format!("{:?}", multiple_input_files)
+        );
     }
     let (input, language) = match input_arg {
         Some(i) => match Language::from_file_name(Path::new(&i)) {
@@ -1450,13 +1457,21 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_too_many_inputs() {
+    fn test_parse_arguments_too_many_inputs_single() {
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
+            parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_many_inputs_multiple() {
         assert_eq!(
             CompilerArguments::CannotCache(
-                "multiple input files or unknown argument: ",
-                Some("foo.c".to_string())
+                "multiple input files",
+                Some("[\"bar.c\", \"baz.c\"]".to_string())
             ),
-            parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"])
+            parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c", "baz.c"])
         );
     }
 
