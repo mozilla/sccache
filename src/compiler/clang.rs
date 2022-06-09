@@ -448,7 +448,14 @@ mod test {
 
     #[test]
     fn test_parse_xclang_no_opaque_pointers() {
-        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-no-opaque-pointers");
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-no-opaque-pointers"
+        );
         assert_eq!(ovec!["-Xclang", "-no-opaque-pointers"], a.preprocessor_args);
     }
 
