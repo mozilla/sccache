@@ -859,7 +859,10 @@ pub mod server {
     }
 
     fn default_pot_clone_args() -> Vec<String> {
-        DEFAULT_POT_CLONE_ARGS.into_iter().map(|s| s.to_string()).collect()
+        DEFAULT_POT_CLONE_ARGS
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     #[derive(Debug, Serialize, Deserialize)]
