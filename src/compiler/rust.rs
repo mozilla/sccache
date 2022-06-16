@@ -1787,6 +1787,84 @@ fn test_can_trim_this() {
     assert!(!can_trim_this(&rlib_file));
 }
 
+fn extract_env_var_value(
+    env_vars: &[(OsString, OsString)],
+    name: &str) -> OsString {
+    env_vars
+            .iter()
+            .filter(|(k, _)| k == name)
+            .cloned()
+            .collect::<Vec<(OsString, OsString)>>()[0].1.clone()
+}
+
+#[cfg(feature = "dist-client")]
+fn cargo_package_files(
+    env_vars: &[(OsString, OsString)],
+) -> Result<Vec<String>> {
+    let cargo_pkg_name = extract_env_var_value(&env_vars, "CARGO_PKG_NAME");
+    trace!("Discovering package deps: {:?}", cargo_pkg_name);
+
+    let cargo_bin = extract_env_var_value(&env_vars, "CARGO");
+    let manifest_dir =  PathBuf::from(extract_env_var_value(&env_vars, "CARGO_MANIFEST_DIR"));
+    let cargo_toml = manifest_dir.join("Cargo.toml");
+
+    let mut cmd = process::Command::new(PathBuf::from(cargo_bin));
+    cmd.args(&["package", "--list", "--offline", "--frozen", "--manifest-path", cargo_toml.as_os_str().to_str().unwrap()])
+        .env_clear()
+        .envs(ref_env(env_vars));
+
+    trace!("[{:?}] cmd={:?}", cargo_pkg_name, cmd);
+
+    let process::Output {
+        status,
+        stdout,
+        stderr,
+    } = cmd.output()?;
+
+    if !status.success() {
+        bail!(format!("Failed to list package deps"))
+    }
+    if !stderr.is_empty() {
+        bail!(
+            "cargo package --list stderr non-empty: {:?}",
+            String::from_utf8_lossy(&stderr)
+        )
+    }
+
+    let stdout = String::from_utf8(stdout).context("Error parsing cargo package --list output")?;
+    let pkgs: Vec<_> = parse_cargo_package_list(&stdout)
+       .map(|pkgs| pkgs
+                    .into_iter()
+                    .map(|pkg| pkg
+                                .to_owned())
+                    .map(|pkg| manifest_dir.clone().join(pkg).into_os_string().into_string().unwrap())
+                    .collect()
+            )?;
+    trace!("[{:?}] pkgs={:?}", cargo_pkg_name, pkgs);
+    Ok(pkgs)
+}
+
+#[cfg(feature = "dist-client")]
+fn parse_cargo_package_list(stdout: &str) -> Result<Vec<&str>> {
+    let mut dep_names = vec![];
+    let mut lines = stdout.lines();
+    loop {
+        match lines.next() {
+            Some(s) => {
+                match s {
+                    "Cargo.lock" => {}
+                    "Cargo.toml" => {}
+                    "Cargo.toml.orig" => {}
+                    d => dep_names.push(d)
+                }
+            },
+            None => break,
+        }
+    }
+    trace!("parse_cargo_package_list: dep_names={:?}", dep_names);
+    Ok(dep_names)
+}
+
 #[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
@@ -1840,6 +1918,17 @@ impl pkg::InputsPackager for RustInputsPackager {
                 format!("unable to transform input path {}", input_path.display())
             })?;
             tar_inputs.push((input_path, dist_input_path))
+        }
+
+        if is_cargo {
+            let pkgs = cargo_package_files(&env_vars);
+            for path in pkgs.unwrap().into_iter() {
+                let input_path = pkg::simplify_path(Path::new(&path))?;
+                let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
+                    format!("unable to transform input path {}", input_path.display())
+                })?;
+                tar_inputs.push((input_path, dist_input_path))
+            }
         }
 
         if log_enabled!(Trace) {
