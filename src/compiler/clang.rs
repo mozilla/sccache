@@ -159,6 +159,10 @@ impl CCompilerImpl for Clang {
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
+    // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
+    take_arg!("-MF", PathBuf, CanBeSeparated, DepArgumentPath),
+    take_arg!("-MQ", OsString, CanBeSeparated, DepTarget),
+    take_arg!("-MT", OsString, CanBeSeparated, DepTarget),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
@@ -273,6 +277,26 @@ mod test {
             "foo.o"
         );
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
+    }
+
+    #[test]
+    fn test_parse_clang_short_dependency_arguments_can_be_separated() {
+        let args = vec!["-MF", "-MT", "-MQ"];
+        let formats = vec![
+            "foo.c.d",
+            "\"foo.c.d\"",
+            "=foo.c.d",
+            "./foo.c.d",
+            "/somewhere/foo.c.d",
+        ];
+
+        for arg in args {
+            for format in &formats {
+                let parsed_separated = parses!("-c", "foo.c", "-MD", arg, format);
+                let parsed = parses!("-c", "foo.c", "-MD", format!("{arg}{format}"));
+                assert_eq!(parsed.dependency_args, parsed_separated.dependency_args);
+            }
+        }
     }
 
     #[test]
