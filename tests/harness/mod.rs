@@ -633,7 +633,7 @@ fn make_container_name(tag: &str) -> String {
         "{}_{}_{}",
         CONTAINER_NAME_PREFIX,
         tag,
-        Uuid::new_v4().to_hyphenated_ref()
+        Uuid::new_v4().hyphenated()
     )
 }
 

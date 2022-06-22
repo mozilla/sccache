@@ -353,7 +353,7 @@ impl ProvideAwsCredentials for IamProvider {
                         .as_str()
                         .expect("AccessKeyId value was not a string")
                         .to_owned()
-                        .replace("\"", ""),
+                        .replace('\"', ""),
                 };
 
                 let secret_key = match body.get("SecretAccessKey") {
@@ -362,7 +362,7 @@ impl ProvideAwsCredentials for IamProvider {
                         .as_str()
                         .expect("SecretAccessKey value was not a string")
                         .to_owned()
-                        .replace("\"", ""),
+                        .replace('\"', ""),
                 };
 
                 let expiration = match body.get("Expiration") {
@@ -371,7 +371,7 @@ impl ProvideAwsCredentials for IamProvider {
                         .as_str()
                         .expect("Expiration value was not a string")
                         .to_owned()
-                        .replace("\"", ""),
+                        .replace('\"', ""),
                 };
 
                 let expiration_time = expiration
@@ -384,7 +384,7 @@ impl ProvideAwsCredentials for IamProvider {
                         .as_str()
                         .expect("Token value was not a string")
                         .to_owned()
-                        .replace("\"", ""),
+                        .replace('\"', ""),
                 };
 
                 Ok(AwsCredentials::new(

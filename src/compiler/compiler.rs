@@ -1868,7 +1868,7 @@ LLVM version: 6.0",
         assert_eq!(b"", res.stdout.as_slice());
         assert_eq!(PREPROCESSOR_STDERR, res.stderr.as_slice());
         // Errors in preprocessing should remove the object file.
-        assert!(!fs::metadata(&obj).is_ok());
+        assert!(fs::metadata(&obj).is_err());
     }
 
     #[test]

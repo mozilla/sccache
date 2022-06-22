@@ -162,7 +162,7 @@ fn run_server_process() -> Result<ServerStartup> {
 
     // Create a mini event loop and register our named pipe server
     let runtime = Runtime::new()?;
-    let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().to_simple_ref());
+    let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
 
     // Spawn a server which should come back and connect to us
     let exe_path = env::current_exe()?;
