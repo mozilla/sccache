@@ -189,7 +189,8 @@ where
             E: de::Error,
         {
             // -----BEGIN PRIVATE KEY-----\n<key_data_with_newlines>\n-----END PRIVATE KEY-----\n
-            let key_string = v.split("-----")
+            let key_string = v
+                .split("-----")
                 .nth(2)
                 .ok_or_else(|| E::custom("invalid private key format"))?;
 
