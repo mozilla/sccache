@@ -251,6 +251,12 @@ where
     let mut language_extensions = true; // by default, GCC allows extensions
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    enum DepArgumentRequirePath {
+        NotNeeded,
+        Missing,
+        Provided,
+    }
+    let mut need_explicit_dep_argument_path = DepArgumentRequirePath::NotNeeded;
     let mut language = None;
     let mut compilation_flag = OsString::new();
     let mut profile_generate = false;
@@ -317,13 +323,20 @@ where
                 };
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
-            Some(NeedDepTarget) => need_explicit_dep_target = true,
+            Some(NeedDepTarget) => {
+                need_explicit_dep_target = true;
+                if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
+                    need_explicit_dep_argument_path = DepArgumentRequirePath::Missing;
+                }
+            }
             Some(DepTarget(s)) => {
                 dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
                 dep_target = Some(s.clone());
             }
-            Some(DepArgumentPath(_))
-            | Some(ExtraHashFile(_))
+            Some(DepArgumentPath(_)) => {
+                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided
+            }
+            Some(ExtraHashFile(_))
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
@@ -512,6 +525,10 @@ where
     if need_explicit_dep_target {
         dependency_args.push(dep_flag);
         dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
+    }
+    if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
+        dependency_args.push(OsString::from("-MF"));
+        dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
     }
     outputs.insert("obj", output);
 
@@ -1307,6 +1324,32 @@ mod test {
         assert_eq!(Language::C, language);
         assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
         assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], dependency_args);
+        assert_eq!(ovec!["-fabc"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_dep_target_and_file_needed() {
+        let args = stringvec!["-c", "foo/bar.c", "-fabc", "-o", "foo/bar.o", "-MMD"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            dependency_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo/bar.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(outputs, ("obj", PathBuf::from("foo/bar.o")));
+        assert_eq!(
+            ovec!["-MMD", "-MT", "foo/bar.o", "-MF", "foo/bar.d"],
+            dependency_args
+        );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
