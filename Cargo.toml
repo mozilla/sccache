@@ -72,7 +72,7 @@ tar = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time", "net", "process", "macros"] }
 tokio-serde = "0.8"
-tokio-util = { version = "0.6", features = ["codec", "io"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = "0.4"
 toml = "0.5"
 url = { version = "2", optional = true }
