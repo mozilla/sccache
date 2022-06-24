@@ -301,18 +301,13 @@ impl DistSystem {
             || {
                 let status = self.scheduler_status();
                 if matches!(
-                <<<<<<< HEAD
-                                    self.scheduler_status(),
-                =======
-                                    status,
-                >>>>>>> master
-                                    SchedulerStatusResult {
-                                        num_servers: 0,
-                                        num_cpus: _,
-                                        in_progress: 0
-                                    }
-                                )
-                {
+                    status,
+                    SchedulerStatusResult {
+                        num_servers: 0,
+                        num_cpus: _,
+                        in_progress: 0
+                    }
+                ) {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
