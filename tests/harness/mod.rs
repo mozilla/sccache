@@ -260,7 +260,7 @@ impl DistSystem {
                 "-e",
                 "SCCACHE_NO_DAEMON=1",
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -294,8 +294,14 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 0, num_cpus: _, in_progress: 0 })
-                {
+                if matches!(
+                    self.scheduler_status(),
+                    SchedulerStatusResult {
+                        num_servers: 0,
+                        num_cpus: _,
+                        in_progress: 0
+                    }
+                ) {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
@@ -320,7 +326,7 @@ impl DistSystem {
                 "--name",
                 &server_name,
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -388,7 +394,7 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("RUST_LOG", "sccache=trace");
+                env::set_var("SCCACHE_LOG", "sccache=trace");
                 env_logger::try_init().unwrap();
                 void::unreachable(server.start().unwrap())
             }
@@ -428,8 +434,14 @@ impl DistSystem {
         wait_for(
             || {
                 let status = self.scheduler_status();
-                if matches!(self.scheduler_status(), SchedulerStatusResult { num_servers: 1, num_cpus: _, in_progress: 0 })
-                {
+                if matches!(
+                    self.scheduler_status(),
+                    SchedulerStatusResult {
+                        num_servers: 1,
+                        num_cpus: _,
+                        in_progress: 0
+                    }
+                ) {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))

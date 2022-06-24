@@ -231,7 +231,7 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
         .unwrap();
     let sccache_cached_config_path = conf_dir.path().join("sccache-cached-config");
     let envs = vec![
-        ("RUST_LOG", "sccache=trace".into()),
+        ("SCCACHE_LOG", "sccache=trace".into()),
         ("SCCACHE_CONF", sccache_config_path.into_os_string()),
         (
             "SCCACHE_CACHED_CONF",

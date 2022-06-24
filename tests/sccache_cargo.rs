@@ -55,7 +55,7 @@ fn test_rust_cargo_cmd(cmd: &str) {
                     record.args()
                 )
             })
-            .parse(&env::var("RUST_LOG").unwrap_or_default())
+            .parse(&env::var("SCCACHE_LOG").unwrap_or_default())
             .try_init(),
     );
     let cargo = env!("CARGO");

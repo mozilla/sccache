@@ -57,7 +57,7 @@ Start the scheduler by running:
 sccache-dist scheduler --config scheduler.conf
 ```
 
-Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `RUST_LOG=trace` when starting it to get useful diagnostics.
+Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `SCCACHE_LOG=trace` when starting it to get useful diagnostics.
 
 Configure a build server
 ------------------------
@@ -98,7 +98,7 @@ Due to bubblewrap requirements currently the build server *must* be run as root.
 sudo sccache-dist server --config server.conf
 ```
 
-As with the scheduler, if the build server fails to start you may need to set `RUST_LOG=trace` to get useful diagnostics.
+As with the scheduler, if the build server fails to start you may need to set `SCCACHE_LOG=trace` to get useful diagnostics.
 
 Configure a client
 ------------------

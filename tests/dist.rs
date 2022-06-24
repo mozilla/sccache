@@ -25,7 +25,7 @@ mod harness;
 fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) {
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUST_BACKTRACE", "1".as_ref()),
-        ("RUST_LOG", "sccache=trace".as_ref()),
+        ("SCCACHE_LOG", "sccache=trace".as_ref()),
         ("SCCACHE_CONF", sccache_cfg_path.as_ref()),
         ("SCCACHE_CACHED_CONF", sccache_cached_cfg_path.as_ref()),
     ];
