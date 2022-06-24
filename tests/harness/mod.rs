@@ -266,7 +266,7 @@ impl DistSystem {
                 "-e",
                 "SCCACHE_NO_DAEMON=1",
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -332,7 +332,7 @@ impl DistSystem {
                 "--name",
                 &server_name,
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -400,7 +400,7 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("RUST_LOG", "sccache=trace");
+                env::set_var("SCCACHE_LOG", "sccache=trace");
                 env_logger::try_init().unwrap();
                 void::unreachable(server.start().unwrap())
             }
