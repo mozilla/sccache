@@ -15,11 +15,11 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use flate2::read::GzDecoder;
 use libmount::Overlay;
-use lru_disk_cache::Error as LruError;
 use sccache::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
+use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{hash_map, HashMap};
 use std::fs;
 use std::io;
@@ -267,7 +267,7 @@ impl OverlayBuilder {
 
         crossbeam_utils::thread::scope(|scope| {
             scope
-                .spawn(|| {
+                .spawn(|_| {
                     // Now mounted filesystems will be automatically unmounted when this thread dies
                     // (and tmpfs filesystems will be completely destroyed)
                     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
@@ -369,7 +369,7 @@ impl OverlayBuilder {
                         .arg(cwd);
 
                     for (k, v) in env_vars {
-                        if k.contains("=") {
+                        if k.contains('=') {
                             warn!("Skipping environment variable: {:?}", k);
                             continue;
                         }
@@ -416,6 +416,7 @@ impl OverlayBuilder {
                 .join()
                 .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
         })
+        .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
@@ -476,7 +477,7 @@ fn docker_diff(cid: &str) -> Result<String> {
 // Force remove the container
 fn docker_rm(cid: &str) -> Result<()> {
     Command::new("docker")
-        .args(&["rm", "-f", &cid])
+        .args(&["rm", "-f", cid])
         .check_run()
         .context("Failed to force delete container")
 }
@@ -510,7 +511,7 @@ impl DockerBuilder {
             .args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
             .check_stdout_trim()
             .context("Unable to list all Docker containers")?;
-        if containers != "" {
+        if !containers.is_empty() {
             let mut containers_to_rm = vec![];
             for line in containers.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -540,7 +541,7 @@ impl DockerBuilder {
             .args(&["images", "--format", "{{.ID}} {{.Repository}}"])
             .check_stdout_trim()
             .context("Failed to list all docker images")?;
-        if images != "" {
+        if !images.is_empty() {
             let mut images_to_rm = vec![];
             for line in images.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -603,12 +604,12 @@ impl DockerBuilder {
     fn clean_container(&self, cid: &str) -> Result<()> {
         // Clean up any running processes
         Command::new("docker")
-            .args(&["exec", &cid, "/busybox", "kill", "-9", "-1"])
+            .args(&["exec", cid, "/busybox", "kill", "-9", "-1"])
             .check_run()
             .context("Failed to run kill on all processes in container")?;
 
-        let diff = docker_diff(&cid)?;
-        if diff != "" {
+        let diff = docker_diff(cid)?;
+        if !diff.is_empty() {
             let mut lastpath = None;
             for line in diff.split(|c| c == '\n') {
                 let mut iter = line.splitn(2, ' ');
@@ -640,9 +641,9 @@ impl DockerBuilder {
                         continue;
                     }
                 }
-                lastpath = Some(changepath.clone());
+                lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
-                    .args(&["exec", &cid, "/busybox", "rm", "-rf", changepath])
+                    .args(&["exec", cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
                 {
                     // We do a final check anyway, so just continue
@@ -650,9 +651,9 @@ impl DockerBuilder {
                 }
             }
 
-            let newdiff = docker_diff(&cid)?;
+            let newdiff = docker_diff(cid)?;
             // See note about changepath == "/tmp" above
-            if newdiff != "" && newdiff != "C /tmp" {
+            if !newdiff.is_empty() && newdiff != "C /tmp" {
                 bail!(
                     "Attempted to delete files, but container still has a diff: {:?}",
                     newdiff
@@ -803,7 +804,7 @@ impl DockerBuilder {
         let mut cmd = Command::new("docker");
         cmd.arg("exec");
         for (k, v) in env_vars {
-            if k.contains("=") {
+            if k.contains('=') {
                 warn!("Skipping environment variable: {:?}", k);
                 continue;
             }
@@ -812,8 +813,8 @@ impl DockerBuilder {
             env.push_str(&v);
             cmd.arg("-e").arg(env);
         }
-        let shell_cmd = format!("cd \"$1\" && shift && exec \"$@\"");
-        cmd.args(&[cid, "/busybox", "sh", "-c", &shell_cmd]);
+        let shell_cmd = "cd \"$1\" && shift && exec \"$@\"";
+        cmd.args(&[cid, "/busybox", "sh", "-c", shell_cmd]);
         cmd.arg(&executable);
         cmd.arg(cwd);
         cmd.arg(executable);

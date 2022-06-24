@@ -9,7 +9,6 @@ extern crate jsonwebtoken as jwt;
 extern crate libmount;
 #[macro_use]
 extern crate log;
-extern crate lru_disk_cache;
 extern crate nix;
 extern crate openssl;
 extern crate rand;
@@ -24,7 +23,7 @@ extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
 use clap::{App, Arg, ArgMatches, SubCommand};
-use rand::RngCore;
+use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
 };
@@ -89,7 +88,7 @@ fn main() {
                 println!("sccache-dist: caused by: {}", e);
             }
             get_app().print_help().unwrap();
-            println!("");
+            println!();
             1
         }
     });
@@ -216,7 +215,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-scheduler", &matches);
+            check_init_syslog("sccache-scheduler", matches);
             if let Some(config) = scheduler_config::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
@@ -229,7 +228,7 @@ fn parse() -> Result<Command> {
                     .value_of("config")
                     .expect("missing config in parsed subcommand"),
             );
-            check_init_syslog("sccache-buildserver", &matches);
+            check_init_syslog("sccache-buildserver", matches);
             if let Some(config) = server_config::from_path(config_path)? {
                 Command::Server(config)
             } else {
@@ -262,10 +261,19 @@ fn create_jwt_server_token(
     header: &jwt::Header,
     key: &[u8],
 ) -> Result<String> {
-    jwt::encode(&header, &ServerJwt { server_id }, key).map_err(Into::into)
+    let key = jwt::EncodingKey::from_secret(key);
+    jwt::encode(header, &ServerJwt { server_id }, &key).map_err(Into::into)
 }
-fn dangerous_unsafe_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
-    jwt::dangerous_unsafe_decode::<ServerJwt>(&server_token)
+fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
+    let validation = {
+        let mut validation = jwt::Validation::default();
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.insecure_disable_signature_validation();
+        validation
+    };
+    let dummy_key = jwt::DecodingKey::from_secret(b"secret");
+    jwt::decode::<ServerJwt>(server_token, &dummy_key, &validation)
         .map(|res| res.claims.server_id)
         .ok()
 }
@@ -274,7 +282,8 @@ fn check_jwt_server_token(
     key: &[u8],
     validation: &jwt::Validation,
 ) -> Option<ServerId> {
-    jwt::decode::<ServerJwt>(server_token, key, validation)
+    let key = jwt::DecodingKey::from_secret(key);
+    jwt::decode::<ServerJwt>(server_token, &key, validation)
         .map(|res| res.claims.server_id)
         .ok()
 }
@@ -283,9 +292,7 @@ fn run(command: Command) -> Result<i32> {
     match command {
         Command::Auth(AuthSubcommand::Base64 { num_bytes }) => {
             let mut bytes = vec![0; num_bytes];
-            let mut rng =
-                rand::OsRng::new().context("Failed to initialise a random number generator")?;
-            rng.fill_bytes(&mut bytes);
+            OsRng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
             println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
             Ok(0)
@@ -319,12 +326,8 @@ fn run(command: Command) -> Result<i32> {
                     issuer,
                     jwks_url,
                 } => Box::new(
-                    token_check::ValidJWTCheck::new(
-                        audience.to_owned(),
-                        issuer.to_owned(),
-                        &jwks_url,
-                    )
-                    .context("Failed to create a checker for valid JWTs")?,
+                    token_check::ValidJWTCheck::new(audience, issuer, &jwks_url)
+                        .context("Failed to create a checker for valid JWTs")?,
                 ),
                 scheduler_config::ClientAuth::Mozilla { required_groups } => {
                     Box::new(token_check::MozillaCheck::new(required_groups))
@@ -338,7 +341,7 @@ fn run(command: Command) -> Result<i32> {
                 scheduler_config::ServerAuth::Insecure => {
                     warn!("Scheduler starting with DANGEROUSLY_INSECURE server authentication");
                     let token = INSECURE_DIST_SERVER_TOKEN;
-                    Box::new(move |server_token| check_server_token(server_token, &token))
+                    Box::new(move |server_token| check_server_token(server_token, token))
                 }
                 scheduler_config::ServerAuth::Token { token } => {
                     Box::new(move |server_token| check_server_token(server_token, &token))
@@ -349,14 +352,12 @@ fn run(command: Command) -> Result<i32> {
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
                     }
-                    let validation = jwt::Validation {
-                        leeway: 0,
-                        validate_exp: false,
-                        validate_nbf: false,
-                        aud: None,
-                        iss: None,
-                        sub: None,
-                        algorithms: vec![jwt::Algorithm::HS256],
+                    let validation = {
+                        let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
+                        validation.leeway = 0;
+                        validation.validate_exp = false;
+                        validation.validate_nbf = false;
+                        validation
                     };
                     Box::new(move |server_token| {
                         check_jwt_server_token(server_token, &secret_key, &validation)
@@ -400,14 +401,14 @@ fn run(command: Command) -> Result<i32> {
             let scheduler_auth = match scheduler_auth {
                 server_config::SchedulerAuth::Insecure => {
                     warn!("Server starting with DANGEROUSLY_INSECURE scheduler authentication");
-                    create_server_token(server_id, &INSECURE_DIST_SERVER_TOKEN)
+                    create_server_token(server_id, INSECURE_DIST_SERVER_TOKEN)
                 }
                 server_config::SchedulerAuth::Token { token } => {
                     create_server_token(server_id, &token)
                 }
                 server_config::SchedulerAuth::JwtToken { token } => {
                     let token_server_id: ServerId =
-                        dangerous_unsafe_extract_jwt_server_token(&token)
+                        dangerous_insecure_extract_jwt_server_token(&token)
                             .context("Could not decode scheduler auth jwt")?;
                     if token_server_id != server_id {
                         bail!(
@@ -438,7 +439,7 @@ fn init_logging() {
     if env::var(sccache::LOGGING_ENV).is_ok() {
         match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!(format!("Failed to initalize logging: {:?}", e)),
+            Err(e) => panic!("Failed to initalize logging: {:?}", e),
         }
     }
 }
@@ -524,6 +525,12 @@ impl Scheduler {
                 }
             }
         }
+    }
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -712,7 +719,7 @@ impl SchedulerIncoming for Scheduler {
                     }
                 }
 
-                if stale_jobs.len() > 0 {
+                if !stale_jobs.is_empty() {
                     warn!(
                         "The following stale jobs will be de-allocated: {:?}",
                         stale_jobs
@@ -747,7 +754,7 @@ impl SchedulerIncoming for Scheduler {
             }
             Some(ref mut details) if details.server_nonce != server_nonce => {
                 for job_id in details.jobs_assigned.iter() {
-                    if jobs.remove(&job_id).is_none() {
+                    if jobs.remove(job_id).is_none() {
                         warn!(
                             "Unknown job found when replacing server {}: {}",
                             server_id.addr(),
@@ -941,6 +948,6 @@ impl ServerIncoming for Server {
         requester
             .do_update_job_state(job_id, JobState::Complete)
             .context("Updating job state failed")?;
-        return res;
+        res
     }
 }

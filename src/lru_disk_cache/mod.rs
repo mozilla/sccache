@@ -1,8 +1,3 @@
-#![deny(rust_2018_idioms)]
-
-#[macro_use]
-extern crate log;
-//extern crate lru_cache;
 pub mod lru_cache;
 
 use std::borrow::Borrow;
@@ -17,8 +12,8 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
-pub use crate::lru_cache::{LruCache, Meter};
 use filetime::{set_file_times, FileTime};
+pub use lru_cache::{LruCache, Meter};
 use walkdir::WalkDir;
 
 struct FileSize;
@@ -79,7 +74,11 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        match self {
+            Error::FileTooLarge => write!(f, "File too large"),
+            Error::FileNotInCache => write!(f, "File not in cache"),
+            Error::Io(ref e) => write!(f, "{}", e),
+        }
     }
 }
 
@@ -228,7 +227,7 @@ impl LruDiskCache {
             None => fs::metadata(path)?.len(),
         };
         self.add_file(AddFile::RelPath(rel_path), size)
-            .or_else(|e| {
+            .map_err(|e| {
                 error!(
                     "Failed to insert file `{}`: {}",
                     rel_path.to_string_lossy(),
@@ -236,7 +235,7 @@ impl LruDiskCache {
                 );
                 fs::remove_file(&self.rel_to_abs_path(rel_path))
                     .expect("Failed to remove file we just created!");
-                Err(e)
+                e
             })
     }
 
@@ -420,7 +419,7 @@ mod tests {
         set_mtime_back(f.create_file("file2", 10), 10);
         let mut c = LruDiskCache::new(f.tmp(), 25).unwrap();
         assert_eq!(c.size(), 20);
-        c.insert_bytes("file3", &vec![0; 10]).unwrap();
+        c.insert_bytes("file3", &[0; 10]).unwrap();
         assert_eq!(c.size(), 20);
         // The oldest file on disk should have been removed.
         assert!(!c.contains_key("file2"));
@@ -431,12 +430,12 @@ mod tests {
     fn test_insert_bytes() {
         let f = TestFixture::new();
         let mut c = LruDiskCache::new(f.tmp(), 25).unwrap();
-        c.insert_bytes("a/b/c", &vec![0; 10]).unwrap();
+        c.insert_bytes("a/b/c", &[0; 10]).unwrap();
         assert!(c.contains_key("a/b/c"));
-        c.insert_bytes("a/b/d", &vec![0; 10]).unwrap();
+        c.insert_bytes("a/b/d", &[0; 10]).unwrap();
         assert_eq!(c.size(), 20);
         // Adding this third file should put the cache above the limit.
-        c.insert_bytes("x/y/z", &vec![0; 10]).unwrap();
+        c.insert_bytes("x/y/z", &[0; 10]).unwrap();
         assert_eq!(c.size(), 20);
         // The least-recently-used file should have been removed.
         assert!(!c.contains_key("a/b/c"));
@@ -448,10 +447,10 @@ mod tests {
         // Test that files adding up to exactly the size limit works.
         let f = TestFixture::new();
         let mut c = LruDiskCache::new(f.tmp(), 20).unwrap();
-        c.insert_bytes("file1", &vec![1; 10]).unwrap();
-        c.insert_bytes("file2", &vec![2; 10]).unwrap();
+        c.insert_bytes("file1", &[1; 10]).unwrap();
+        c.insert_bytes("file2", &[2; 10]).unwrap();
         assert_eq!(c.size(), 20);
-        c.insert_bytes("file3", &vec![3; 10]).unwrap();
+        c.insert_bytes("file3", &[3; 10]).unwrap();
         assert_eq!(c.size(), 20);
         assert!(!c.contains_key("file1"));
     }
@@ -461,15 +460,15 @@ mod tests {
         let f = TestFixture::new();
         {
             let mut c = LruDiskCache::new(f.tmp(), 25).unwrap();
-            c.insert_bytes("file1", &vec![1; 10]).unwrap();
-            c.insert_bytes("file2", &vec![2; 10]).unwrap();
+            c.insert_bytes("file1", &[1; 10]).unwrap();
+            c.insert_bytes("file2", &[2; 10]).unwrap();
             // Get the file to bump its LRU status.
             assert_eq!(
                 read_all(&mut c.get("file1").unwrap()).unwrap(),
                 vec![1u8; 10]
             );
             // Adding this third file should put the cache above the limit.
-            c.insert_bytes("file3", &vec![3; 10]).unwrap();
+            c.insert_bytes("file3", &[3; 10]).unwrap();
             assert_eq!(c.size(), 20);
             // The least-recently-used file should have been removed.
             assert!(!c.contains_key("file2"));
@@ -492,7 +491,7 @@ mod tests {
             assert!(c.contains_key("file3"));
             assert_eq!(c.size(), 20);
             // Add another file to bump out the least-recently-used.
-            c.insert_bytes("file4", &vec![4; 10]).unwrap();
+            c.insert_bytes("file4", &[4; 10]).unwrap();
             assert_eq!(c.size(), 20);
             assert!(!c.contains_key("file3"));
             assert!(c.contains_key("file1"));
@@ -503,9 +502,9 @@ mod tests {
     fn test_insert_bytes_too_large() {
         let f = TestFixture::new();
         let mut c = LruDiskCache::new(f.tmp(), 1).unwrap();
-        match c.insert_bytes("a/b/c", &vec![0; 2]) {
-            Err(Error::FileTooLarge) => assert!(true),
-            x @ _ => panic!("Unexpected result: {:?}", x),
+        match c.insert_bytes("a/b/c", &[0; 2]) {
+            Err(Error::FileTooLarge) => {}
+            x => panic!("Unexpected result: {:?}", x),
         }
     }
 

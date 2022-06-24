@@ -143,7 +143,9 @@ impl HTTPUrl {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AzureCacheConfig;
+pub struct AzureCacheConfig {
+    pub key_prefix: String,
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,8 +178,10 @@ pub enum GCSCacheRWMode {
 #[serde(deny_unknown_fields)]
 pub struct GCSCacheConfig {
     pub bucket: String,
+    pub key_prefix: String,
     pub cred_path: Option<PathBuf>,
-    pub url: Option<String>,
+    pub oauth_url: Option<String>,
+    pub deprecated_url: Option<String>,
     pub rw_mode: GCSCacheRWMode,
 }
 
@@ -211,7 +215,7 @@ pub enum CacheType {
     S3(S3CacheConfig),
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
@@ -243,7 +247,7 @@ impl CacheConfigs {
             .chain(gcs.map(CacheType::GCS))
             .chain(azure.map(CacheType::Azure))
             .collect();
-        let fallback = disk.unwrap_or_else(Default::default);
+        let fallback = disk.unwrap_or_default();
 
         (caches, fallback)
     }
@@ -400,7 +404,7 @@ impl Default for DistConfig {
 }
 
 // TODO: fields only pub for tests
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
@@ -463,7 +467,7 @@ fn config_from_env() -> EnvConfig {
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
             .as_ref()
-            .map(|s| s.trim_end_matches("/"))
+            .map(|s| s.trim_end_matches('/'))
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
@@ -485,11 +489,19 @@ fn config_from_env() -> EnvConfig {
         .map(|url| MemcachedCacheConfig { url });
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
-        let url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+        let key_prefix = env::var("SCCACHE_GCS_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+        let deprecated_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+        let oauth_url = env::var("SCCACHE_GCS_OAUTH_URL").ok();
         let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
-        if url.is_some() && cred_path.is_some() {
-            warn!("Both SCCACHE_GCS_CREDENTIALS_URL and SCCACHE_GCS_KEY_PATH are set");
+        if oauth_url.is_some() && cred_path.is_some() {
+            warn!("Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set");
             warn!("You should set only one of them!");
             warn!("SCCACHE_GCS_KEY_PATH will take precedence");
         }
@@ -510,15 +522,24 @@ fn config_from_env() -> EnvConfig {
         };
         GCSCacheConfig {
             bucket,
+            key_prefix,
             cred_path,
-            url,
+            oauth_url,
+            deprecated_url,
             rw_mode,
         }
     });
 
-    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING")
-        .ok()
-        .map(|_| AzureCacheConfig);
+    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
+        let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+        AzureCacheConfig { key_prefix }
+    });
 
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -546,6 +567,29 @@ fn config_from_env() -> EnvConfig {
     EnvConfig { cache }
 }
 
+// The directories crate changed the location of `config_dir` on macos in version 3,
+// so we also check the config in `preference_dir` (new in that version), which
+// corresponds to the old location, for compatibility with older setups.
+fn config_file(env_var: &str, leaf: &str) -> PathBuf {
+    if let Some(env_value) = env::var_os(env_var) {
+        return env_value.into();
+    }
+    let dirs =
+        ProjectDirs::from("", ORGANIZATION, APP_NAME).expect("Unable to get config directory");
+    // If the new location exists, use that.
+    let path = dirs.config_dir().join(leaf);
+    if path.exists() {
+        return path;
+    }
+    // If the old location exists, use that.
+    let path = dirs.preference_dir().join(leaf);
+    if path.exists() {
+        return path;
+    }
+    // Otherwise, use the new location.
+    dirs.config_dir().join(leaf)
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Config {
     pub caches: Vec<CacheType>,
@@ -557,13 +601,7 @@ impl Config {
     pub fn load() -> Result<Config> {
         let env_conf = config_from_env();
 
-        let file_conf_path = env::var_os("SCCACHE_CONF")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
-                    .expect("Unable to get config directory");
-                dirs.config_dir().join("config")
-            });
+        let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
@@ -627,7 +665,7 @@ impl CachedConfig {
         let cached_file_config = CACHED_CONFIG.lock().unwrap();
         let cached_file_config = cached_file_config.as_ref().unwrap();
 
-        f(&cached_file_config)
+        f(cached_file_config)
     }
     pub fn with_mut<F: FnOnce(&mut CachedFileConfig)>(&self, f: F) -> Result<()> {
         let mut cached_file_config = CACHED_CONFIG.lock().unwrap();
@@ -641,13 +679,7 @@ impl CachedConfig {
     }
 
     fn file_config_path() -> PathBuf {
-        env::var_os("SCCACHE_CACHED_CONF")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let dirs = ProjectDirs::from("", ORGANIZATION, APP_NAME)
-                    .expect("Unable to get config directory");
-                dirs.config_dir().join("cached-config")
-            })
+        config_file("SCCACHE_CACHED_CONF", "cached-config")
     }
     fn load_file_config() -> Result<CachedFileConfig> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
@@ -667,7 +699,7 @@ impl CachedConfig {
                 )
             })?
         }
-        try_read_config_file(&file_conf_path)
+        try_read_config_file(file_conf_path)
             .context("Failed to load cached config file")?
             .with_context(|| format!("Failed to load from {}", file_conf_path.display()))
     }
@@ -730,7 +762,7 @@ pub mod scheduler {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).context("Failed to load scheduler config file")
+        super::try_read_config_file(conf_path).context("Failed to load scheduler config file")
     }
 }
 
@@ -785,7 +817,7 @@ pub mod server {
     }
 
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
-        super::try_read_config_file(&conf_path).context("Failed to load server config file")
+        super::try_read_config_file(conf_path).context("Failed to load server config file")
     }
 }
 
@@ -803,7 +835,9 @@ fn test_parse_size() {
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
-            azure: Some(AzureCacheConfig),
+            azure: Some(AzureCacheConfig {
+                key_prefix: "".to_owned(),
+            }),
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
@@ -842,7 +876,9 @@ fn config_overrides() {
                 CacheType::Memcached(MemcachedCacheConfig {
                     url: "memurl".to_owned()
                 }),
-                CacheType::Azure(AzureCacheConfig),
+                CacheType::Azure(AzureCacheConfig {
+                    key_prefix: "".to_owned()
+                }),
             ],
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -863,12 +899,12 @@ fn test_gcs_credentials_url() {
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
-            ref url,
+            ref deprecated_url,
             rw_mode,
             ..
         }) => {
             assert_eq!(bucket, "my-bucket");
-            match url {
+            match deprecated_url {
                 Some(ref url) => assert_eq!(url, "http://localhost/"),
                 None => panic!("URL can't be none"),
             };
@@ -876,4 +912,127 @@ fn test_gcs_credentials_url() {
         }
         None => unreachable!(),
     };
+}
+
+#[test]
+fn test_gcs_oauth_url() {
+    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
+    env::set_var("SCCACHE_GCS_OAUTH_URL", "http://localhost/");
+    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
+
+    let env_cfg = config_from_env();
+    match env_cfg.cache.gcs {
+        Some(GCSCacheConfig {
+            ref bucket,
+            ref oauth_url,
+            rw_mode,
+            ..
+        }) => {
+            assert_eq!(bucket, "my-bucket");
+            match oauth_url {
+                Some(ref url) => assert_eq!(url, "http://localhost/"),
+                None => panic!("URL can't be none"),
+            };
+            assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
+        }
+        None => unreachable!(),
+    };
+}
+
+#[test]
+fn full_toml_parse() {
+    const CONFIG_STR: &str = r#"
+[dist]
+# where to find the scheduler
+scheduler_url = "http://1.2.3.4:10600"
+# a set of prepackaged toolchains
+toolchains = []
+# the maximum size of the toolchain cache in bytes
+toolchain_cache_size = 5368709120
+cache_dir = "/home/user/.cache/sccache-dist-client"
+
+[dist.auth]
+type = "token"
+token = "secrettoken"
+
+
+#[cache.azure]
+# does not work as it appears
+
+[cache.disk]
+dir = "/tmp/.cache/sccache"
+size = 7516192768 # 7 GiBytes
+
+[cache.gcs]
+# optional url
+deprecated_url = "..."
+rw_mode = "READ_ONLY"
+# rw_mode = "READ_WRITE"
+cred_path = "/psst/secret/cred"
+bucket = "bucket"
+key_prefix = "prefix"
+
+[cache.memcached]
+url = "..."
+
+[cache.redis]
+url = "redis://user:passwd@1.2.3.4:6379/1"
+
+[cache.s3]
+bucket = "name"
+endpoint = "s3-us-east-1.amazonaws.com"
+use_ssl = true
+key_prefix = "s3prefix"
+"#;
+
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: CacheConfigs {
+                azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
+                disk: Some(DiskCacheConfig {
+                    dir: PathBuf::from("/tmp/.cache/sccache"),
+                    size: 7 * 1024 * 1024 * 1024,
+                }),
+                gcs: Some(GCSCacheConfig {
+                    oauth_url: None,
+                    deprecated_url: Some("...".to_owned()),
+                    bucket: "bucket".to_owned(),
+                    cred_path: Some(PathBuf::from("/psst/secret/cred")),
+                    rw_mode: GCSCacheRWMode::ReadOnly,
+                    key_prefix: "prefix".into(),
+                }),
+                redis: Some(RedisCacheConfig {
+                    url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                }),
+                memcached: Some(MemcachedCacheConfig {
+                    url: "...".to_owned(),
+                }),
+                s3: Some(S3CacheConfig {
+                    bucket: "name".to_owned(),
+                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
+                    use_ssl: true,
+                    key_prefix: "s3prefix".into()
+                }),
+            },
+            dist: DistConfig {
+                auth: DistAuth::Token {
+                    token: "secrettoken".to_owned()
+                },
+                #[cfg(any(feature = "dist-client", feature = "dist-server"))]
+                scheduler_url: Some(
+                    parse_http_url("http://1.2.3.4:10600")
+                        .map(|url| { HTTPUrl::from_url(url) })
+                        .expect("Scheduler url must be valid url str")
+                ),
+                #[cfg(not(any(feature = "dist-client", feature = "dist-server")))]
+                scheduler_url: Some("http://1.2.3.4:10600".to_owned()),
+                cache_dir: PathBuf::from("/home/user/.cache/sccache-dist-client"),
+                toolchains: vec![],
+                toolchain_cache_size: 5368709120,
+                rewrite_includes_only: false,
+            },
+        }
+    )
 }

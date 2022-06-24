@@ -16,7 +16,7 @@ use crate::errors::*;
 use crate::protocol::{Request, Response};
 use crate::util;
 use byteorder::{BigEndian, ByteOrder};
-use retry::retry;
+use retry::{delay::Fixed, retry};
 use std::io::{self, BufReader, BufWriter, Read};
 use std::net::TcpStream;
 
@@ -79,8 +79,8 @@ pub fn connect_with_retry(port: u16) -> io::Result<ServerConnection> {
     //   if the process exited.
     // * Send a pipe handle to the server process so it can notify
     //   us once it starts the server instead of us polling.
-    match retry(10, 500, || connect_to_server(port), |res| res.is_ok()) {
-        Ok(Ok(conn)) => Ok(conn),
+    match retry(Fixed::from_millis(500).take(10), || connect_to_server(port)) {
+        Ok(conn) => Ok(conn),
         _ => Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "Connection to server timed out",

@@ -23,8 +23,6 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
-use futures::Future;
-use futures_03::executor::ThreadPool;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -98,6 +96,8 @@ pub struct ParsedArguments {
     pub profile_generate: bool,
     /// The color mode.
     pub color_mode: ColorMode,
+    /// arguments are incompatible with rewrite_includes_only
+    pub suppress_rewrite_includes_only: bool,
 }
 
 impl ParsedArguments {
@@ -113,10 +113,18 @@ impl ParsedArguments {
 impl Language {
     pub fn from_file_name(file: &Path) -> Option<Self> {
         match file.extension().and_then(|e| e.to_str()) {
+            // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
             Some("c") => Some(Language::C),
-            Some("C") | Some("cc") | Some("cpp") | Some("cxx") => Some(Language::Cxx),
+            // TODO i
+            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
+            | Some("c++") => Some(Language::Cxx),
+            // TODO ii
+            // TODO H hh hp hpp HPP hxx h++
+            // TODO tcc
             Some("m") => Some(Language::ObjectiveC),
-            Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mi
+            Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mii
             Some("cu") => Some(Language::Cuda),
             e => {
                 trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
@@ -151,23 +159,26 @@ struct CCompilation<I: CCompilerImpl> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum CCompilerKind {
     /// GCC
-    GCC,
+    Gcc,
     /// clang
     Clang,
     /// Diab
     Diab,
     /// Microsoft Visual C++
-    MSVC,
+    Msvc,
     /// NVIDIA cuda compiler
-    NVCC,
+    Nvcc,
 }
 
 /// An interface to a specific C compiler.
-pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
+#[async_trait]
+pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     /// Return the kind of compiler.
     fn kind(&self) -> CCompilerKind;
     /// Return true iff this is g++ or clang++.
     fn plusplus(&self) -> bool;
+    /// Return the compiler version reported by the compiler executable.
+    fn version(&self) -> Option<String>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -176,7 +187,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
     ) -> CompilerArguments<ParsedArguments>;
     /// Run the C preprocessor with the specified set of arguments.
     #[allow(clippy::too_many_arguments)]
-    fn preprocess<T>(
+    async fn preprocess<T>(
         &self,
         creator: &T,
         executable: &Path,
@@ -185,7 +196,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + 'static {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-    ) -> SFuture<process::Output>
+    ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
     /// Generate a command that can be used to invoke the C compiler to perform
@@ -205,14 +216,27 @@ impl<I> CCompiler<I>
 where
     I: CCompilerImpl,
 {
-    pub fn new(compiler: I, executable: PathBuf, pool: &ThreadPool) -> SFuture<CCompiler<I>> {
-        Box::new(
-            Digest::file(executable.clone(), &pool).map(move |digest| CCompiler {
-                executable,
-                executable_digest: digest,
-                compiler,
-            }),
-        )
+    pub async fn new(
+        compiler: I,
+        executable: PathBuf,
+        pool: &tokio::runtime::Handle,
+    ) -> Result<CCompiler<I>> {
+        let digest = Digest::file(executable.clone(), pool).await?;
+
+        Ok(CCompiler {
+            executable,
+            executable_digest: {
+                if let Some(version) = compiler.version() {
+                    let mut m = Digest::new();
+                    m.update(digest.as_bytes());
+                    m.update(version.as_bytes());
+                    m.finish()
+                } else {
+                    digest
+                }
+            },
+            compiler,
+        })
     }
 }
 
@@ -231,14 +255,22 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
         &self,
         arguments: &[OsString],
         cwd: &Path,
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match self.compiler.parse_arguments(arguments, cwd) {
-            CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(CCompilerHasher {
-                parsed_args: args,
-                executable: self.executable.clone(),
-                executable_digest: self.executable_digest.clone(),
-                compiler: self.compiler.clone(),
-            })),
+            CompilerArguments::Ok(mut args) => {
+                for (k, v) in env_vars.iter() {
+                    if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
+                        args.extra_hash_files.extend(std::env::split_paths(&v))
+                    }
+                }
+                CompilerArguments::Ok(Box::new(CCompilerHasher {
+                    parsed_args: args,
+                    executable: self.executable.clone(),
+                    executable_digest: self.executable_digest.clone(),
+                    compiler: self.compiler.clone(),
+                }))
+            }
             CompilerArguments::CannotCache(why, extra_info) => {
                 CompilerArguments::CannotCache(why, extra_info)
             }
@@ -251,125 +283,121 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
 }
 
+#[async_trait]
 impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 where
     T: CommandCreatorSync,
     I: CCompilerImpl,
 {
-    fn generate_hash_key(
+    async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
         may_dist: bool,
-        pool: &ThreadPool,
+        pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
-    ) -> SFuture<HashResult> {
-        let me = *self;
+    ) -> Result<HashResult> {
         let CCompilerHasher {
             parsed_args,
             executable,
             executable_digest,
             compiler,
-        } = me;
-        let result = compiler.preprocess(
-            creator,
-            &executable,
-            &parsed_args,
-            &cwd,
-            &env_vars,
-            may_dist,
-            rewrite_includes_only,
-        );
+        } = *self;
+
+        let result = compiler
+            .preprocess(
+                creator,
+                &executable,
+                &parsed_args,
+                &cwd,
+                &env_vars,
+                may_dist,
+                rewrite_includes_only,
+            )
+            .await;
         let out_pretty = parsed_args.output_pretty().into_owned();
-        let result = result.map_err(move |e| {
+        let result = result.map_err(|e| {
             debug!("[{}]: preprocessor failed: {:?}", out_pretty, e);
             e
         });
-        let out_pretty = parsed_args.output_pretty().into_owned();
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone());
+
+        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
         let outputs = parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
 
-        Box::new(
-            result
-                .or_else(move |err| {
-                    // Errors remove all traces of potential output.
-                    debug!("removing files {:?}", &outputs);
+        let preprocessor_result = result.or_else(move |err| {
+            // Errors remove all traces of potential output.
+            debug!("removing files {:?}", &outputs);
 
-                    let v: std::result::Result<(), std::io::Error> =
-                        outputs.values().fold(Ok(()), |r, f| {
-                            r.and_then(|_| {
-                                let mut path = (&args_cwd).clone();
-                                path.push(&f);
-                                match fs::metadata(&path) {
-                                    // File exists, remove it.
-                                    Ok(_) => fs::remove_file(&path),
-                                    _ => Ok(()),
-                                }
-                            })
-                        });
-                    if v.is_err() {
-                        warn!("Could not remove files after preprocessing failed!\n");
-                    }
-
-                    match err.downcast::<ProcessError>() {
-                        Ok(ProcessError(output)) => {
-                            debug!(
-                                "[{}]: preprocessor returned error status {:?}",
-                                out_pretty,
-                                output.status.code()
-                            );
-                            // Drop the stdout since it's the preprocessor output,
-                            // just hand back stderr and the exit status.
-                            bail!(ProcessError(process::Output {
-                                stdout: vec!(),
-                                ..output
-                            }))
+            let v: std::result::Result<(), std::io::Error> =
+                outputs.values().fold(Ok(()), |r, f| {
+                    r.and_then(|_| {
+                        let mut path = (&args_cwd).clone();
+                        path.push(&f);
+                        match fs::metadata(&path) {
+                            // File exists, remove it.
+                            Ok(_) => fs::remove_file(&path),
+                            _ => Ok(()),
                         }
-                        Err(err) => Err(err),
-                    }
-                })
-                .and_then(move |preprocessor_result| {
-                    trace!(
-                        "[{}]: Preprocessor output is {} bytes",
-                        parsed_args.output_pretty(),
-                        preprocessor_result.stdout.len()
-                    );
+                    })
+                });
+            if v.is_err() {
+                warn!("Could not remove files after preprocessing failed!");
+            }
 
-                    Box::new(extra_hashes.and_then(move |extra_hashes| {
-                        let key = {
-                            hash_key(
-                                &executable_digest,
-                                parsed_args.language,
-                                &parsed_args.common_args,
-                                &extra_hashes,
-                                &env_vars,
-                                &preprocessor_result.stdout,
-                                compiler.plusplus(),
-                            )
-                        };
-                        // A compiler binary may be a symlink to another and so has the same digest, but that means
-                        // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
-                        // executable path to try and prevent this
-                        let weak_toolchain_key =
-                            format!("{}-{}", executable.to_string_lossy(), executable_digest);
-                        Ok(HashResult {
-                            key,
-                            compilation: Box::new(CCompilation {
-                                parsed_args,
-                                #[cfg(feature = "dist-client")]
-                                preprocessed_input: preprocessor_result.stdout,
-                                executable,
-                                compiler,
-                                cwd,
-                                env_vars,
-                            }),
-                            weak_toolchain_key,
-                        })
+            match err.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => {
+                    debug!(
+                        "[{}]: preprocessor returned error status {:?}",
+                        out_pretty,
+                        output.status.code()
+                    );
+                    // Drop the stdout since it's the preprocessor output,
+                    // just hand back stderr and the exit status.
+                    bail!(ProcessError(process::Output {
+                        stdout: vec!(),
+                        ..output
                     }))
-                }),
-        )
+                }
+                Err(err) => Err(err),
+            }
+        })?;
+
+        trace!(
+            "[{}]: Preprocessor output is {} bytes",
+            parsed_args.output_pretty(),
+            preprocessor_result.stdout.len()
+        );
+
+        let key = {
+            hash_key(
+                &executable_digest,
+                parsed_args.language,
+                &parsed_args.common_args,
+                &extra_hashes,
+                &env_vars,
+                &preprocessor_result.stdout,
+                compiler.plusplus(),
+            )
+        };
+        // A compiler binary may be a symlink to another and so has the same digest, but that means
+        // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
+        // executable path to try and prevent this
+        let weak_toolchain_key = format!("{}-{}", executable.to_string_lossy(), executable_digest);
+        Ok(HashResult {
+            key,
+            compilation: Box::new(CCompilation {
+                parsed_args,
+                #[cfg(feature = "dist-client")]
+                preprocessed_input: preprocessor_result.stdout,
+                executable,
+                compiler,
+                cwd,
+                env_vars,
+            }),
+            weak_toolchain_key,
+        })
     }
 
     fn color_mode(&self) -> ColorMode {
@@ -598,7 +626,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 }
             }
 
-            CCompilerKind::GCC => {
+            CCompilerKind::Gcc => {
                 // Various external programs / files which may be needed by gcc
                 add_named_prog(&mut package_builder, "cc1")?;
                 add_named_prog(&mut package_builder, "cc1plus")?;
@@ -606,7 +634,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "liblto_plugin.so")?;
             }
 
-            CCompilerKind::NVCC => {
+            CCompilerKind::Nvcc => {
                 // Various programs called by the nvcc front end.
                 // presumes the underlying host compiler is consistent
                 add_named_file(&mut package_builder, "cudafe++")?;
@@ -629,8 +657,17 @@ pub const CACHE_VERSION: &[u8] = b"10";
 lazy_static! {
     /// Environment variables that are factored into the cache key.
     static ref CACHED_ENV_VARS: HashSet<&'static OsStr> = [
+        // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
+        // serving as a way for the user to factor custom data into the hash.
+        // One can set it to different values for different invocations
+        // to prevent cache reuse between them.
+        "SCCACHE_C_CUSTOM_CACHE_BUSTER",
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
+        "TVOS_DEPLOYMENT_TARGET",
+        "WATCHOS_DEPLOYMENT_TARGET",
+        "SDKROOT",
+        "CCC_OVERRIDE_OPTIONS",
     ].iter().map(OsStr::new).collect();
 }
 
@@ -679,8 +716,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_eq!(
-            hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED, false)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false)
         );
     }
 
@@ -689,8 +726,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED, false),
-            hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED, true)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, true)
         );
     }
 
@@ -699,8 +736,8 @@ mod test {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key("abcd", Language::C, &args, &[], &[], &PREPROCESSED, false),
-            hash_key("wxyz", Language::C, &args, &[], &[], &PREPROCESSED, false)
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key("wxyz", Language::C, &args, &[], &[], PREPROCESSED, false)
         );
     }
 
@@ -713,18 +750,18 @@ mod test {
         let a = ovec!["a"];
         const PREPROCESSED: &[u8] = b"hello world";
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED, false),
-            hash_key(digest, Language::C, &xyz, &[], &[], &PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
+            hash_key(digest, Language::C, &xyz, &[], &[], PREPROCESSED, false)
         );
 
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED, false),
-            hash_key(digest, Language::C, &ab, &[], &[], &PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
+            hash_key(digest, Language::C, &ab, &[], &[], PREPROCESSED, false)
         );
 
         assert_neq!(
-            hash_key(digest, Language::C, &abc, &[], &[], &PREPROCESSED, false),
-            hash_key(digest, Language::C, &a, &[], &[], &PREPROCESSED, false)
+            hash_key(digest, Language::C, &abc, &[], &[], PREPROCESSED, false),
+            hash_key(digest, Language::C, &a, &[], &[], PREPROCESSED, false)
         );
     }
 
@@ -751,11 +788,11 @@ mod test {
         let digest = "abcd";
         const PREPROCESSED: &[u8] = b"hello world";
         for var in CACHED_ENV_VARS.iter() {
-            let h1 = hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED, false);
+            let h1 = hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false);
             let vars = vec![(OsString::from(var), OsString::from("something"))];
-            let h2 = hash_key(digest, Language::C, &args, &[], &vars, &PREPROCESSED, false);
+            let h2 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
             let vars = vec![(OsString::from(var), OsString::from("something else"))];
-            let h3 = hash_key(digest, Language::C, &args, &[], &vars, &PREPROCESSED, false);
+            let h3 = hash_key(digest, Language::C, &args, &[], &vars, PREPROCESSED, false);
             assert_neq!(h1, h2);
             assert_neq!(h2, h3);
         }
@@ -775,10 +812,54 @@ mod test {
                 &args,
                 &extra_data,
                 &[],
-                &PREPROCESSED,
+                PREPROCESSED,
                 false
             ),
-            hash_key(digest, Language::C, &args, &[], &[], &PREPROCESSED, false)
+            hash_key(digest, Language::C, &args, &[], &[], PREPROCESSED, false)
         );
+    }
+
+    #[test]
+    fn test_language_from_file_name() {
+        fn t(extension: &str, expected: Language) {
+            let path_str = format!("input.{}", extension);
+            let path = Path::new(&path_str);
+            let actual = Language::from_file_name(path);
+            assert_eq!(actual, Some(expected));
+        }
+
+        t("c", Language::C);
+
+        t("C", Language::Cxx);
+        t("cc", Language::Cxx);
+        t("cp", Language::Cxx);
+        t("cpp", Language::Cxx);
+        t("CPP", Language::Cxx);
+        t("cxx", Language::Cxx);
+        t("c++", Language::Cxx);
+
+        t("m", Language::ObjectiveC);
+
+        t("M", Language::ObjectiveCxx);
+        t("mm", Language::ObjectiveCxx);
+
+        t("cu", Language::Cuda);
+    }
+
+    #[test]
+    fn test_language_from_file_name_none() {
+        fn t(extension: &str) {
+            let path_str = format!("input.{}", extension);
+            let path = Path::new(&path_str);
+            let actual = Language::from_file_name(path);
+            let expected = None;
+            assert_eq!(actual, expected);
+        }
+
+        // gcc parses file-extensions as case-sensitive
+        t("Cp");
+        t("Cpp");
+        t("Mm");
+        t("Cu");
     }
 }

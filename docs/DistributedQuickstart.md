@@ -107,7 +107,7 @@ A client uses `sccache` to wrap compile commands, communicates with the schedule
 
 Clients that are not targeting linux64 require the `icecc-create-env` script or should be provided with an archive. `icecc-create-env` is part of `icecream` for packaging toolchains. You can install icecream to get this script (`apt install icecc` on Ubuntu), or download it from the git repository and place it in your `PATH`: `curl https://raw.githubusercontent.com/icecc/icecream/master/client/icecc-create-env.in > icecc-create-env && chmod +x icecc-create-env`. See [using custom toolchains](#using-custom-toolchains).
 
-Create a client config file in `~/.config/sccache/config` (on Linux), `~/Library/Preferences/Mozilla.sccache/config` (on macOS), or `%APPDATA%\Mozilla\sccache\config\config` (on Windows). A minimal example looks like:
+Create a client config file in `~/.config/sccache/config` (on Linux), `~/Library/Application Support/Mozilla.sccache/config` (on macOS), or `%APPDATA%\Mozilla\sccache\config\config` (on Windows). A minimal example looks like:
 ```toml
 [dist]
 # The URL used to connect to the scheduler (should use https, given an ideal
@@ -206,7 +206,7 @@ may be required:
 - An explicit toolchain archive will need to be configured, as described above.
   In case rust is being cached, the same version of `rustc` will need to be used
   for local compiles as is found in the distributed archive.
-- The client config will be read from `~/Library/Preferences/Mozilla.sccache/config`,
+- The client config will be read from `~/Library/Application Support/Mozilla.sccache/config`,
   not `~/.config/sccache/config`.
 - Some cross compilers may not understand some intrinsics used in more recent macOS
   SDKs. The 10.11 SDK is known to work.

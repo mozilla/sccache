@@ -1,7 +1,6 @@
 #![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
 
-use selenium_rs::webdriver::{Browser, Selector, WebDriver};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -9,6 +8,7 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use thirtyfour_sync::prelude::*;
 
 const LOCAL_AUTH_BASE_URL: &str = "http://localhost:12731/";
 
@@ -85,7 +85,7 @@ trait DriverExt {
 impl DriverExt for WebDriver {
     fn wait_for_element(&self, selector: &str) -> Result<(), ()> {
         retry(BROWSER_RETRY_WAIT, BROWSER_MAX_WAIT, || {
-            self.find_element(Selector::CSS, selector).ok()
+            self.find_element(By::Css(selector)).ok()
         })
         .map(|_| ())
         .ok_or(())
@@ -93,8 +93,8 @@ impl DriverExt for WebDriver {
     fn wait_on_url<F: Fn(&str) -> bool>(&self, condition: F) -> Result<(), ()> {
         let start = Instant::now();
         while start.elapsed() < BROWSER_MAX_WAIT {
-            match self.get_current_url() {
-                Ok(ref url) if condition(&url) => return Ok(()),
+            match self.current_url() {
+                Ok(ref url) if condition(url) => return Ok(()),
                 Ok(_) | Err(_) => thread::sleep(BROWSER_RETRY_WAIT),
             }
         }
@@ -107,17 +107,17 @@ fn auth0_login(driver: &WebDriver, email: &str, password: &str) {
     driver.wait_for_element(USERNAME_SELECTOR).unwrap();
     thread::sleep(Duration::from_secs(1)); // Give the element time to get ready
     driver
-        .find_element(Selector::CSS, USERNAME_SELECTOR)
+        .find_element(By::Css(USERNAME_SELECTOR))
         .unwrap()
-        .type_text(email)
+        .send_keys(email)
         .unwrap();
     driver
-        .find_element(Selector::CSS, PASSWORD_SELECTOR)
+        .find_element(By::Css(PASSWORD_SELECTOR))
         .unwrap()
-        .type_text(password)
+        .send_keys(password)
         .unwrap();
     driver
-        .find_element(Selector::CSS, LOGIN_SELECTOR)
+        .find_element(By::Css(LOGIN_SELECTOR))
         .unwrap()
         .click()
         .unwrap();
@@ -271,11 +271,11 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
 }
 
 fn login() {
-    let mut driver = WebDriver::new(Browser::Chrome);
-    driver.start_session().unwrap();
+    let caps = DesiredCapabilities::chrome();
+    let driver = WebDriver::new("http://localhost:4444/wd/hub", &caps).unwrap();
     println!("Started browser session");
 
-    driver.navigate(LOCAL_AUTH_BASE_URL).unwrap();
+    driver.get(LOCAL_AUTH_BASE_URL).unwrap();
     driver
         .wait_on_url(|url| url != LOCAL_AUTH_BASE_URL)
         .unwrap();
@@ -285,4 +285,6 @@ fn login() {
         .unwrap();
     // Let any final JS complete
     thread::sleep(Duration::from_secs(1));
+
+    let _ = driver.quit();
 }

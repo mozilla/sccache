@@ -6,16 +6,15 @@ use std::ascii::AsciiExt;
 use std::fmt;
 
 use crate::simples3::credential::*;
-use futures::{Future, Stream};
 use hmac::{Hmac, Mac};
 use hyper::header::HeaderValue;
 use hyper::Method;
 use hyperx::header;
-use reqwest::r#async::{Client, Request};
+use reqwest::{Client, Request};
 use sha1::Sha1;
 
 use crate::errors::*;
-use crate::util::HeadersExt;
+use crate::util::{DateTimeExt, HeadersExt};
 
 #[derive(Debug, Copy, Clone)]
 #[allow(dead_code)]
@@ -39,14 +38,14 @@ fn base_url(endpoint: &str, ssl: Ssl) -> String {
 }
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut hmac = Hmac::<Sha1>::new_varkey(key).expect("HMAC can take key of any size");
-    hmac.input(data);
-    hmac.result().code().iter().copied().collect::<Vec<u8>>()
+    let mut hmac = Hmac::<Sha1>::new_from_slice(key).expect("HMAC can take key of any size");
+    hmac.update(data);
+    hmac.finalize().into_bytes().as_slice().to_vec()
 }
 
 fn signature(string_to_sign: &str, signing_key: &str) -> String {
     let s = hmac(signing_key.as_bytes(), string_to_sign.as_bytes());
-    base64::encode_config::<Vec<u8>>(&s, base64::STANDARD)
+    base64::encode_config(&s, base64::STANDARD)
 }
 
 /// An S3 bucket.
@@ -64,7 +63,7 @@ impl fmt::Display for Bucket {
 
 impl Bucket {
     pub fn new(name: &str, endpoint: &str, ssl: Ssl) -> Result<Bucket> {
-        let base_url = base_url(&endpoint, ssl);
+        let base_url = base_url(endpoint, ssl);
         Ok(Bucket {
             name: name.to_owned(),
             base_url,
@@ -72,7 +71,7 @@ impl Bucket {
         })
     }
 
-    pub fn get(&self, key: &str, creds: Option<&AwsCredentials>) -> SFuture<Vec<u8>> {
+    pub async fn get(&self, key: &str, creds: Option<&AwsCredentials>) -> Result<Vec<u8>> {
         let url = format!("{}{}", self.base_url, key);
         debug!("GET {}", url);
         let url2 = url.clone();
@@ -88,7 +87,7 @@ impl Bucket {
                 canonical_headers
                     .push_str(format!("{}:{}\n", "x-amz-security-token", token).as_ref());
             }
-            let date = time::now_utc().rfc822().to_string();
+            let date = chrono::offset::Utc::now().to_rfc7231();
             let auth = self.auth("GET", &date, key, "", &canonical_headers, "", creds);
             request.headers_mut().insert(
                 "Date",
@@ -100,52 +99,29 @@ impl Bucket {
             );
         }
 
-        Box::new(
-            self.client
-                .execute(request)
-                .fwith_context(move || format!("failed GET: {}", url))
-                .and_then(|res| {
-                    if res.status().is_success() {
-                        let content_length = res
-                            .headers()
-                            .get_hyperx::<header::ContentLength>()
-                            .map(|header::ContentLength(len)| len);
-                        Ok((res.into_body(), content_length))
-                    } else {
-                        Err(BadHttpStatusError(res.status()).into())
-                    }
-                })
-                .and_then(|(body, content_length)| {
-                    body.fold(Vec::new(), |mut body, chunk| {
-                        body.extend_from_slice(&chunk);
-                        Ok::<_, reqwest::Error>(body)
-                    })
-                    .fcontext("failed to read HTTP body")
-                    .and_then(move |bytes| {
-                        if let Some(len) = content_length {
-                            if len != bytes.len() as u64 {
-                                bail!(format!(
-                                    "Bad HTTP body size read: {}, expected {}",
-                                    bytes.len(),
-                                    len
-                                ));
-                            } else {
-                                info!("Read {} bytes from {}", bytes.len(), url2);
-                            }
-                        }
-                        Ok(bytes)
-                    })
-                }),
-        )
+        let res = self
+            .client
+            .execute(request)
+            .await
+            .with_context(move || format!("failed GET: {}", url))?;
+
+        if res.status().is_success() {
+            let body = res.bytes().await.context("failed to read HTTP body")?;
+            info!("Read {} bytes from {}", body.len(), url2);
+
+            Ok(body.into_iter().collect())
+        } else {
+            Err(BadHttpStatusError(res.status()).into())
+        }
     }
 
-    pub fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials) -> SFuture<()> {
+    pub async fn put(&self, key: &str, content: Vec<u8>, creds: &AwsCredentials) -> Result<()> {
         let url = format!("{}{}", self.base_url, key);
         debug!("PUT {}", url);
         let mut request = Request::new(Method::PUT, url.parse().unwrap());
 
         let content_type = "application/octet-stream";
-        let date = time::now_utc().rfc822().to_string();
+        let date = chrono::offset::Utc::now().to_rfc7231();
         let mut canonical_headers = String::new();
         let token = creds.token().as_ref().map(|s| s.as_str());
         // Keep the list of header values sorted!
@@ -189,7 +165,7 @@ impl Bucket {
         );
         *request.body_mut() = Some(content.into());
 
-        Box::new(self.client.execute(request).then(|result| match result {
+        match self.client.execute(request).await {
             Ok(res) => {
                 if res.status().is_success() {
                     trace!("PUT succeeded");
@@ -203,7 +179,7 @@ impl Bucket {
                 trace!("PUT failed with error: {:?}", e);
                 Err(e.into())
             }
-        }))
+        }
     }
 
     // http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
@@ -219,13 +195,14 @@ impl Bucket {
         creds: &AwsCredentials,
     ) -> String {
         let string = format!(
-            "{verb}\n{md5}\n{ty}\n{date}\n{headers}{resource}",
+            "{verb}\n{md5}\n{ty}\n{date}\n{headers}/{name}/{path}",
             verb = verb,
             md5 = md5,
             ty = content_type,
             date = date,
             headers = headers,
-            resource = format!("/{}/{}", self.name, path)
+            name = self.name,
+            path = path,
         );
         let signature = signature(&string, creds.aws_secret_access_key());
         format!("AWS {}:{}", creds.aws_access_key_id(), signature)

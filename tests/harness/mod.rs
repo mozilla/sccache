@@ -2,7 +2,6 @@
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
-#[cfg(feature = "dist-server")]
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -54,7 +53,7 @@ const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    sccache_command()
+    let _ = sccache_command()
         .arg("--start-server")
         .env("SCCACHE_CONF", cfg_path)
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
@@ -109,11 +108,16 @@ pub fn write_source(path: &Path, filename: &str, contents: &str) {
     f.write_all(contents.as_bytes()).unwrap();
 }
 
-// Override any environment variables that could adversely affect test execution.
+// Prune any environment variables that could adversely affect test execution.
 pub fn sccache_command() -> Command {
+    use sccache::util::OsStrExt;
+
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("sccache"));
-    cmd.env("SCCACHE_CONF", "nonexistent_conf_path")
-        .env("SCCACHE_CACHED_CONF", "nonexistent_cached_conf_path");
+    for (var, _) in env::vars_os() {
+        if var.starts_with("SCCACHE_") {
+            cmd.env_remove(var);
+        }
+    }
     cmd
 }
 
@@ -128,8 +132,10 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
-    let mut disk_cache: sccache::config::DiskCacheConfig = Default::default();
-    disk_cache.dir = tmpdir.join(cache_relpath);
+    let disk_cache = sccache::config::DiskCacheConfig {
+        dir: tmpdir.join(cache_relpath),
+        ..Default::default()
+    };
     sccache::config::FileConfig {
         cache: sccache::config::CacheConfigs {
             azure: None,
@@ -295,13 +301,18 @@ impl DistSystem {
             || {
                 let status = self.scheduler_status();
                 if matches!(
-                    self.scheduler_status(),
-                    SchedulerStatusResult {
-                        num_servers: 0,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
+                <<<<<<< HEAD
+                                    self.scheduler_status(),
+                =======
+                                    status,
+                >>>>>>> master
+                                    SchedulerStatusResult {
+                                        num_servers: 0,
+                                        num_cpus: _,
+                                        in_progress: 0
+                                    }
+                                )
+                {
                     Ok(())
                 } else {
                     Err(format!("{:?}", status))
@@ -388,7 +399,7 @@ impl DistSystem {
         let server =
             dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
                 .unwrap();
-        let pid = match nix::unistd::fork().unwrap() {
+        let pid = match unsafe { nix::unistd::fork() }.unwrap() {
             ForkResult::Parent { child } => {
                 self.server_pids.push(child);
                 child
@@ -435,7 +446,7 @@ impl DistSystem {
             || {
                 let status = self.scheduler_status();
                 if matches!(
-                    self.scheduler_status(),
+                    status,
                     SchedulerStatusResult {
                         num_servers: 1,
                         num_cpus: _,
@@ -459,7 +470,7 @@ impl DistSystem {
     }
 
     fn scheduler_status(&self) -> SchedulerStatusResult {
-        let res = reqwest::get(dist::http::urls::scheduler_status(
+        let res = reqwest::blocking::get(dist::http::urls::scheduler_status(
             &self.scheduler_url().to_url(),
         ))
         .unwrap();
@@ -627,7 +638,7 @@ fn make_container_name(tag: &str) -> String {
         "{}_{}_{}",
         CONTAINER_NAME_PREFIX,
         tag,
-        Uuid::new_v4().to_hyphenated_ref()
+        Uuid::new_v4().hyphenated()
     )
 }
 
@@ -644,8 +655,9 @@ fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
     // TODO: after upgrading to reqwest >= 0.9, use 'danger_accept_invalid_certs' and stick with that rather than tcp
     wait_for(
         || {
-            //match reqwest::get(url.to_url()) {
-            match net::TcpStream::connect(url.to_url()) {
+            let url = url.to_url();
+            let url = url.socket_addrs(|| None).unwrap();
+            match net::TcpStream::connect(url.as_slice()) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.to_string()),
             }

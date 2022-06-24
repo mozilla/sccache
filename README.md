@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/mozilla/sccache.svg?branch=master)](https://travis-ci.org/mozilla/sccache) [![Build status](https://ci.appveyor.com/api/projects/status/h4yqo430634pmfmt?svg=true)](https://ci.appveyor.com/project/luser/sccache2)
+[![Build Status](https://github.com/mozilla/sccache/workflows/ci/badge.svg)](https://github.com/mozilla/sccache/actions?query=workflow%3Aci)
 
 sccache - Shared Compilation Cache
 ==================================
@@ -73,7 +73,7 @@ sccache gcc -o foo.o -c foo.c
 
 If you want to use sccache for caching Rust builds you can define `build.rustc-wrapper` in the
 [cargo configuration file](https://doc.rust-lang.org/cargo/reference/config.html).  For example, you can set it globally
-in `$HOME/.cargo/config` by adding:
+in `$HOME/.cargo/config.toml` by adding:
 
 ```toml
 [build]
@@ -85,7 +85,8 @@ Note that you need to use cargo 1.40 or newer for this to work.
 Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 
 ```bash
-RUSTC_WRAPPER=/path/to/sccache cargo build
+export RUSTC_WRAPPER=/path/to/sccache
+cargo build
 ```
 
 sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
@@ -107,12 +108,29 @@ To use sccache with cmake, provide the following command line arguments to cmake
 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 ```
 
+To generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
+
+```
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+  string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+  string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+  string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+  string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+  string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+endif()
+```
+
+By default, sccache will fail your build if it fails to successfully communicate with its associated server. To have sccache instead gracefully failover to the local compiler without stopping, set the environment variable `SCCACHE_IGNORE_SERVER_IO_ERROR=1`.
+
 ---
 
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.41.1**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.58.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -120,45 +138,28 @@ Build
 If you are building sccache for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
 
 ```bash
-cargo build --release [--features=all|s3|redis|gcs|memcached|azure]
+cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure]
 ```
 
-By default, `sccache` supports a local disk cache and S3. Use the `--features` flag to build `sccache` with support for other storage options. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
 ### Building portable binaries
 
-When building with the `gcs` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the steps below before building with `cargo`.
+When building with the `dist-server` feature, `sccache` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
 
 #### Linux
-
-You will need to download and build OpenSSL with `-fPIC` in order to statically link against it.
-
-```bash
-./config -fPIC --prefix=/usr/local --openssldir=/usr/local/ssl
-make
-make install
-export OPENSSL_LIB_DIR=/usr/local/lib
-export OPENSSL_INCLUDE_DIR=/usr/local/include
-export OPENSSL_STATIC=yes
-```
 
 Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### macOS
 
-Just setting the below environment variable will enable static linking.
-
-```bash
-export OPENSSL_STATIC=yes
-```
-
 Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
 
 #### Windows
 
-On Windows it is fairly straightforward to just ship the required `libcrypto` and `libssl` DLLs with `sccache.exe`, but the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
+On Windows, the binary might also depend on a few MSVC CRT DLLs that are not available on older Windows versions.
 
-It is possible to statically link against the CRT using a `.cargo/config` file with the following contents.
+It is possible to statically link against the CRT using a `.cargo/config.toml` file with the following contents.
 
 ```toml
 [target.x86_64-pc-windows-msvc]
@@ -167,17 +168,7 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
 
-In order to statically link against both the CRT and OpenSSL, you will need to either build OpenSSL static libraries (with a statically linked CRT) yourself or get a pre-built distribution that provides these.
-
-Then you can set environment variables which get picked up by the `openssl-sys` crate.
-
-See the following example for using pre-built libraries from [Shining Light Productions](https://slproweb.com/products/Win32OpenSSL.html), assuming an installation in `C:\OpenSSL-Win64`:
-
-```
-set OPENSSL_LIB_DIR=C:\OpenSSL-Win64\lib\VC\static
-set OPENSSL_INCLUDE_DIR=C:\OpenSSL-Win64\include
-set OPENSSL_LIBS=libcrypto64MT:libssl64MT
-```
+When statically linking with OpenSSL, you will need Perl available in your `$PATH`.
 
 ---
 
@@ -188,6 +179,8 @@ Storage Options
 sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
 
 The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
+
+The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
 ### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
@@ -202,34 +195,68 @@ You can also define a prefix that will be prepended to the keys of all cache obj
 ### Redis
 Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance. Redis can be configured as a LRU (least recently used) cache with a fixed maximum cache size. Set `maxmemory` and `maxmemory-policy` according to the [Redis documentation](https://redis.io/topics/lru-cache). The `allkeys-lru` policy which discards the *least recently accessed or modified* key fits well for the sccache use case.
 
+Redis over TLS is supported. Use the [`rediss://`](https://www.iana.org/assignments/uri-schemes/prov/rediss) url scheme (note `rediss` vs `redis`). Append `#insecure` the the url to disable hostname verification and accept self-signed certificates (dangerous!). Note that this also disables [SNI](https://en.wikipedia.org/wiki/Server_Name_Indication).
+
 ### Memcached
 Set `SCCACHE_MEMCACHED` to a [Memcached](https://memcached.org/) url in format `tcp://<hostname>:<port> ...` to store the cache in a Memcached instance.
 
 ### Google Cloud Storage
 To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
-If you're using authentication, either set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials or `SCCACHE_GCS_CREDENTIALS_URL` with
-a URL that returns the oauth token.
+
+If you're using authentication, either:
+- Set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials
+- (Deprecated) Set `SCCACHE_GCS_CREDENTIALS_URL` to a URL returning an OAuth token in non-standard `{"accessToken": "...", "expireTime": "..."}` format.
+- Set `SCCACHE_GCS_OAUTH_URL` to a URL returning an OAuth token. If you are running on a Google Cloud instance, this is of the form `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/${YOUR_SERVICE_ACCOUNT}/token`
+
 By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
+
+You can also define a prefix that will be prepended to the keys of all cache objects created and read within the GCS bucket, effectively creating a scope. To do that use the `SCCACHE_GCS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
 ### Azure
 To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
 environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
 the container for you - you'll need to do that yourself.
 
+You can also define a prefix that will be prepended to the keys of all cache objects created and read within the container, effectively creating a scope. To do that use the `SCCACHE_AZURE_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
+
 **Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
+
+---
+
+Separating caches between invocations
+-------------------------------------
+
+In situations where several different compilation invocations
+should not reuse the cached results from each other,
+one can set `SCCACHE_C_CUSTOM_CACHE_BUSTER` to a unique value
+that'll be mixed into the hash.
+`MACOSX_DEPLOYMENT_TARGET` and `IPHONEOS_DEPLOYMENT_TARGET` variables
+already exhibit such reuse-suppression behaviour.
+There are currently no such variables for compiling Rust.
+
+---
+
+Overwriting the cache
+---------------------
+
+In situations where the cache contains broken build artifacts, it can be necessary to overwrite the contents in the cache. That can be achieved by setting the `SCCACHE_RECACHE` environment variable.
 
 ---
 
 Debugging
 ---------
 
-You can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example
-
-    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
-
-Alternately, you can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
+You can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
 
     SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=debug sccache
+
+You can also set these environment variables for your build system, for example
+
+    SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=debug cmake --build /path/to/cmake/build/directory
+
+Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
+
+    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
 
 ---
 
@@ -247,7 +274,7 @@ Known Caveats
 
 ### General
 
-* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in $HOME) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
+* Absolute paths to files must match to get a cache hit. This means that even if you are using a shared cache, everyone will have to build at the same absolute path (i.e. not in `$HOME`) in order to benefit each other. In Rust this includes the source for third party crates which are stored in `$HOME/.cargo/registry/cache` by default.
 
 ### Rust
 
@@ -255,3 +282,7 @@ Known Caveats
 * Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 
 [More details on Rust caveats](/docs/Rust.md)
+
+### Symbolic links
+
+* Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`

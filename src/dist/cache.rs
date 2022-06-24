@@ -1,7 +1,7 @@
 use crate::dist::Toolchain;
+use crate::lru_disk_cache::Result as LruResult;
+use crate::lru_disk_cache::{LruDiskCache, ReadSeek};
 use anyhow::{anyhow, Result};
-use lru_disk_cache::Result as LruResult;
-use lru_disk_cache::{LruDiskCache, ReadSeek};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,8 +16,8 @@ mod client {
     use crate::config;
     use crate::dist::pkg::ToolchainPackager;
     use crate::dist::Toolchain;
+    use crate::lru_disk_cache::Error as LruError;
     use anyhow::{bail, Context, Error, Result};
-    use lru_disk_cache::Error as LruError;
     use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
@@ -497,7 +497,7 @@ impl TcCache {
 
     #[cfg(feature = "dist-client")]
     fn insert_file(&mut self, path: &Path) -> Result<Toolchain> {
-        let archive_id = path_key(&path)?;
+        let archive_id = path_key(path)?;
         self.inner
             .insert_file(make_lru_key_path(&archive_id), path)?;
         Ok(Toolchain { archive_id })
