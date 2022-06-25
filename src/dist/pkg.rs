@@ -195,7 +195,7 @@ mod toolchain_imp {
     //         /lib64/ld-linux-x86-64.so.2 (0x00007f6878171000)
     //         libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f68774f4000)
     //
-    // Elf executables can be statically or dynamically linked, and position independant (PIE) or not:
+    // Elf executables can be statically or dynamically linked, and position independent (PIE) or not:
     // - dynamic + PIE = ET_DYN, ldd stdouts something like the list above and exits with code 0
     // - dynamic + non-PIE = ET_EXEC, ldd stdouts something like the list above and exits with code 0
     // - static + PIE = ET_DYN, ldd stdouts something like "\tstatically linked" or

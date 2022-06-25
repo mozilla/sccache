@@ -242,7 +242,7 @@ mod client {
                         // not strictly wrong, but it is a bit odd
                         if old_path != custom_tc.archive {
                             warn!(
-                                "Detected interchangable toolchain archives at {} and {}",
+                                "Detected interchangeable toolchain archives at {} and {}",
                                 old_path.display(),
                                 custom_tc.archive.display()
                             )
@@ -347,13 +347,13 @@ mod client {
                         archive: ct1.clone(),
                         archive_compiler_executable: "/my/compiler/in_archive".into(),
                     },
-                    // Uses the same archive, but a maps a different external compiler to a different achive compiler
+                    // Uses the same archive, but a maps a different external compiler to a different archive compiler
                     config::DistToolchainConfig::PathOverride {
                         compiler_executable: "/my/compiler2".into(),
                         archive: ct1.clone(),
                         archive_compiler_executable: "/my/compiler2/in_archive".into(),
                     },
-                    // Uses the same archive, but a maps a different external compiler to the same achive compiler as the first
+                    // Uses the same archive, but a maps a different external compiler to the same archive compiler as the first
                     config::DistToolchainConfig::PathOverride {
                         compiler_executable: "/my/compiler3".into(),
                         archive: ct1.clone(),

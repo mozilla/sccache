@@ -60,7 +60,7 @@ configuration variables
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
-* `SCCACHE_MAX_FRAME_LENGTH` how much data can be transfered between client and server
+* `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
 
 ### cache configs

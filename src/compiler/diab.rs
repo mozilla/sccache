@@ -408,7 +408,7 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
             let file = self.cwd.join(&value);
             let res = File::open(&file).and_then(|mut f| f.read_to_string(&mut contents));
             if res.is_err() {
-                // Failed to read the file, so return the argumet as it is.
+                // Failed to read the file, so return the argument as it is.
                 // This will result in a CannotCache.
                 return Some(arg);
             }

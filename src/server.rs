@@ -552,7 +552,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // 2. An RPC indicating the server should shut down
         // 3. A period of inactivity (no requests serviced)
         //
-        // These are all encapsulated wih the future that we're creating below.
+        // These are all encapsulated with the future that we're creating below.
         // The `ShutdownOrInactive` indicates the RPC or the period of
         // inactivity, and this is then select'd with the `shutdown` future
         // passed to this function.
@@ -863,7 +863,7 @@ where
     /// Handle a compile request from a client.
     ///
     /// This will handle a compile request entirely, generating a response with
-    /// the inital information and an optional body which will eventually
+    /// the initial information and an optional body which will eventually
     /// contain the results of the compilation.
     async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
         let exe = compile.exe;

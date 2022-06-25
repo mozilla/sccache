@@ -102,7 +102,7 @@ pub enum NormalizedDisposition {
 
 impl<T: ArgumentValue> Argument<T> {
     /// For arguments that allow both a concatenated or separated disposition,
-    /// normalize a parsed argument to a prefered disposition.
+    /// normalize a parsed argument to a preferred disposition.
     pub fn normalize(self, disposition: NormalizedDisposition) -> Self {
         match self {
             Argument::WithValue(s, v, ArgDisposition::CanBeConcatenated(d))
