@@ -505,7 +505,7 @@ impl DistSystem {
     }
 }
 
-// If you want containers to hang around (e.g. for debugging), commend out the "rm -f" lines
+// If you want containers to hang around (e.g. for debugging), comment out the "rm -f" lines
 #[cfg(feature = "dist-server")]
 impl Drop for DistSystem {
     fn drop(&mut self) {

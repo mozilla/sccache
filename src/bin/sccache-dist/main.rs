@@ -439,7 +439,7 @@ fn init_logging() {
     if env::var(sccache::LOGGING_ENV).is_ok() {
         match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!("Failed to initalize logging: {:?}", e),
+            Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
     }
 }
@@ -795,7 +795,7 @@ impl SchedulerIncoming for Scheduler {
             let job_detail = entry.get();
             if job_detail.server_id != server_id {
                 bail!(
-                    "Job id {} is not registed on server {:?}",
+                    "Job id {} is not registered on server {:?}",
                     job_id,
                     server_id
                 )

@@ -363,7 +363,7 @@ mod server {
             .context("failed to build EKU extension for x509")?;
         builder
             .append_extension(ext_key_usage)
-            .context("failes to append EKU extension for x509")?;
+            .context("fails to append EKU extension for x509")?;
 
         // Finish the certificate
         builder
