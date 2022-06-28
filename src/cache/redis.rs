@@ -17,6 +17,7 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use redis::aio::Connection;
 use redis::{cmd, Client, InfoDict};
+use rredis as redis;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
