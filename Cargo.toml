@@ -99,7 +99,7 @@ chrono = "0.4"
 itertools = "0.10"
 predicates = "=2.1.1"
 thirtyfour_sync = "0.27"
-once_cell = "1.12"
+once_cell = "1.13"
 serial_test = "0.8"
 wiremock = "0.5.13"
 
