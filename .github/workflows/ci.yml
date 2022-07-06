@@ -281,14 +281,12 @@ jobs:
       matrix:
         job:
           - { os: macos-10.15 , features: "dist-client,dist-server" } ## GHA MacOS-11.0 VM won't have VirtualBox; refs: <https://github.com/actions/virtual-environments/issues/4060> , <https://github.com/actions/virtual-environments/pull/4010>
-    env:
-      mem: 2048
     steps:
     - uses: actions/checkout@v3
-    - uses: Swatinem/rust-cache@v1
     - name: Prepare, build and test
       uses: vmactions/freebsd-vm@v0.1.6
       with:
+        mem: 8192
         usesh: true
         prepare: pkg install -y curl gmake gtar pot
         run: |
@@ -461,6 +459,7 @@ jobs:
           ### Start sccache server ###########################################
           SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=info \
             RUST_LOG=info sccache --start-server
+          sleep 10
           #
           ### First build with sccache-dist ##################################
           RUSTC_WRAPPER=sccache cargo build
