@@ -280,23 +280,26 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - { os: macos-10.15 , features: "dist-client,dist-server" } ## GHA MacOS-11.0 VM won't have VirtualBox; refs: <https://github.com/actions/virtual-environments/issues/4060> , <https://github.com/actions/virtual-environments/pull/4010>
+          - { os: macos-12, features: "dist-client,dist-server" }
     steps:
     - uses: actions/checkout@v3
     - name: Prepare, build and test
-      uses: vmactions/freebsd-vm@v0.1.6
+      uses: vmactions/freebsd-vm@b528c16ee726e448eda5b1a78a96b7dc81899b02
       with:
         mem: 8192
         usesh: true
         prepare: pkg install -y curl gmake gtar pot
         run: |
-          ## Prepare, build, and test
-          # implementation modelled after ref: <https://github.com/rust-lang/rustup/pull/2783>
-          # and https://github.com/uutils/coreutils/commit/86c610a84b8b6c
-          # * NOTE: All steps need to be run in this block, otherwise, we are operating back on the mac host
+          #####################################################################################
+          ###  Prepare, build, and test
+          #####################################################################################
+          ###  based on ref: <https://github.com/rust-lang/rustup/pull/2783>
+          ###  and on ref: <https://github.com/uutils/coreutils/commit/86c610a84b8b6c>
+          ###  * NOTE: All steps need to be run in this block, otherwise, we are operating back
+          ###    on the mac host
           set -exo pipefail
           #
-          ### Basic user setup ##############################################
+          ### Basic user setup ################################################################
           TEST_USER=tester
           TEST_USER_HOME="/opt/$TEST_USER"
           REPO_NAME=${GITHUB_WORKSPACE##*/}
@@ -312,7 +315,7 @@ jobs:
           chown -R "$TEST_USER":"$TEST_USER" "/$WORKSPACE_PARENT"/
           whoami
           #
-          ### Install rust stable from rustup  ##############################
+          ### Install rust stable from rustup  ################################################
           su "$TEST_USER" -c "/bin/sh -exo pipefail" <<"EOH"
           whoami
           echo "$HOME"
@@ -320,7 +323,7 @@ jobs:
           sh /tmp/rustup.sh -y --profile=minimal
           . "$HOME/.cargo/env"
           #
-          ### Output some information about the environment  ################
+          ### Output some information about the environment  ##################################
           # environment
           echo "## environment"
           env | sort
@@ -328,25 +331,25 @@ jobs:
           echo "## tooling info"
           cargo -V
           rustc -V
+          echo "## installed packages"
           pkg info
           #
-          ### Build project and run unit tests ##############################
+          ### Build project and run unit tests ################################################
           cd "$WORKSPACE"
           FAULT=0
-          RUSTFLAGS="-C debuginfo=0" \
-            cargo build --features "${{ matrix.job.features }}" || FAULT=1
-          RUSTFLAGS="-C debuginfo=0" \
-            cargo test --features "${{ matrix.job.features }}" || FAULT=1
+          export RUSTFLAGS="-C debuginfo=0"
+          cargo build --features "${{ matrix.job.features }}" || FAULT=1
+          cargo test --features "${{ matrix.job.features }}" || FAULT=1
+          unset RUSTFLAGS
           if [ "$FAULT" -eq 0 ]; then
             # save build time by avoiding "cargo install"
-            cp -a target/debug/sccache target/debug/sccache-dist \
-              "$HOME/.cargo/bin/."
+            cp -a target/debug/sccache target/debug/sccache-dist "$HOME/.cargo/bin/."
           fi
           # Clean to avoid to rsync back the files
           cargo clean
           if [ $FAULT -ne 0 ]; then exit 1; fi
           #
-          ### Prepare sccache-dist tests ####################################
+          ### Prepare sccache-dist tests ######################################################
           echo "Prepare sccache-dist tests"
           #
           SECRET_KEY="$(sccache-dist auth generate-jwt-hs256-key)"
@@ -404,8 +407,7 @@ jobs:
           EOF
           #
           echo "Creating toolchain tarballs"
-          gtar cvf - --files-from /dev/null | gzip -n \
-            >"$HOME/.config/sccache/empty.tar.gz"
+          gtar cvf - --files-from /dev/null | gzip -n >"$HOME/.config/sccache/empty.tar.gz"
           gtar cf - --sort=name --mtime='2022-06-28 17:35Z' "$HOME/.rustup"  | \
             gzip -n >"$HOME/.config/sccache/rust-toolchain.tgz"
           #
@@ -416,23 +418,21 @@ jobs:
           #
           whoami
           #
-          ### Create ZFS pool and configure pot ##############################
+          ### Create ZFS pool and configure pot ###############################################
           dd if=/dev/zero of=/zfs1 bs=1 count=1 seek=2G
           zdev=$(mdconfig -a -t vnode -S 4096 -f /zfs1)
           zpool create -f potpool "$zdev"
           sysrc -f /usr/local/etc/pot/pot.conf POT_ZFS_ROOT=potpool/pot
           sysrc -f /usr/local/etc/pot/pot.conf POT_EXTIF="$PUB_INTF"
           pot init
-          pot create -p sccache-template -N alias -i "lo0|127.0.0.2" \
-            -t single -b "$OS_VERSION"
+          pot create -p sccache-template -N alias -i "lo0|127.0.0.2" -t single -b "$OS_VERSION"
           pot set-cmd -p sccache-template -c /usr/bin/true
           pot set-attr -p sccache-template -A no-rc-script -V YES
           pot snapshot -p sccache-template
           #
           echo "Starting build-server (as root)"
           SCCACHE_DIST_LOG=debug RUST_LOG=info \
-            $TEST_USER_HOME/.cargo/bin/sccache-dist server \
-            --config /tmp/server.conf &
+            $TEST_USER_HOME/.cargo/bin/sccache-dist server --config /tmp/server.conf &
           BUILD_SERVER_PID=$!
           #
           su "$TEST_USER" -c "/bin/sh -exo pipefail" <<"EOH"
@@ -451,27 +451,24 @@ jobs:
             sleep 5
           done
           #
-          ### Create test project to test sccache-dist with ##################
+          ### Create test project to test sccache-dist with ###################################
           cargo init buildtest
           cd buildtest
           echo 'chrono = "0.4"' >>Cargo.toml
           #
-          ### Start sccache server ###########################################
-          SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=info \
-            RUST_LOG=info sccache --start-server
+          ### Start sccache server ############################################################
+          SCCACHE_ERROR_LOG=/tmp/sccache_log.txt SCCACHE_LOG=info RUST_LOG=info \
+            sccache --start-server
           sleep 10
           #
-          ### First build with sccache-dist ##################################
+          ### First build with sccache-dist ###################################################
           RUSTC_WRAPPER=sccache cargo build
           STATS="$(sccache -s)"
           echo "Statistics of first buildtest"
           echo "$STATS"
-          CACHE_HITS="$(echo "$STATS" \
-            | grep "Cache hits" | grep -v Rust | awk '{ print $3 }')"
-          FAILED_DIST="$(echo "$STATS" \
-            | grep "Failed distributed compilations" | awk '{ print $4 }')"
-          SUCCEEDED_DIST="$(echo "$STATS" \
-            | (grep -F "127.0.0.1:10501" || true) | awk '{ print $2 }')"
+          CACHE_HITS="$(echo "$STATS" | grep "Cache hits" | grep -v Rust | awk '{ print $3 }')"
+          FAILED_DIST="$(echo "$STATS" | grep "Failed distributed compilations" | awk '{ print $4 }')"
+          SUCCEEDED_DIST="$(echo "$STATS" | (grep -F "127.0.0.1:10501" || true) | awk '{ print $2 }')"
           #
           if [ "$CACHE_HITS" -ne 0 ]; then
             2>&1 echo "Unexpected cache hits"
@@ -486,19 +483,16 @@ jobs:
             exit 1
           fi
           #
-          ### Second build with sccache-dist #################################
+          ### Second build with sccache-dist ##################################################
           sccache -z
           cargo clean
           RUSTC_WRAPPER=sccache cargo build
           STATS="$(sccache -s)"
           echo "Statistics of second buildtest"
           echo "$STATS"
-          CACHE_HITS="$(echo "$STATS" \
-            | grep "Cache hits" | grep -v Rust | awk '{ print $3 }')"
-          FAILED_DIST="$(echo "$STATS" \
-            | grep "Failed distributed compilations" | awk '{ print $4 }')"
-          SUCCEEDED_DIST="$(echo "$STATS" \
-            | (grep -F "127.0.0.1:10501" || true) | awk '{ print $2 }')"
+          CACHE_HITS="$(echo "$STATS" | grep "Cache hits" | grep -v Rust | awk '{ print $3 }')"
+          FAILED_DIST="$(echo "$STATS" | grep "Failed distributed compilations" | awk '{ print $4 }')"
+          SUCCEEDED_DIST="$(echo "$STATS" | (grep -F "127.0.0.1:10501" || true) | awk '{ print $2 }')"
           #
           if [ "$CACHE_HITS" -eq 0 ]; then
             2>&1 echo "No cache hits when there should be some"
@@ -513,14 +507,14 @@ jobs:
             exit 1
           fi
           #
-          ### Test user cleanup
+          ### Test user cleanup ###############################################################
           sccache --stop-server
           killall sccache-dist || true
           EOH
           #
-          ### root user cleanup
+          ### root user cleanup################################################################
           killall sccache-dist || true
           wait $BUILD_SERVER_PID || true
           #
-          ### Finished
+          ### Finished ########################################################################
           echo "Done"
