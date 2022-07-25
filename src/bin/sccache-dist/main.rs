@@ -254,6 +254,7 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerJwt {
+    exp: u64,
     server_id: ServerId,
 }
 fn create_jwt_server_token(
@@ -262,9 +263,9 @@ fn create_jwt_server_token(
     key: &[u8],
 ) -> Result<String> {
     let key = jwt::EncodingKey::from_secret(key);
-    jwt::encode(header, &ServerJwt { server_id }, &key).map_err(Into::into)
+    jwt::encode(header, &ServerJwt { exp: 0, server_id }, &key).map_err(Into::into)
 }
-fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
+fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Result<ServerId> {
     let validation = {
         let mut validation = jwt::Validation::default();
         validation.validate_exp = false;
@@ -275,7 +276,7 @@ fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<Ser
     let dummy_key = jwt::DecodingKey::from_secret(b"secret");
     jwt::decode::<ServerJwt>(server_token, &dummy_key, &validation)
         .map(|res| res.claims.server_id)
-        .ok()
+        .map_err(Into::into)
 }
 fn check_jwt_server_token(
     server_token: &str,
