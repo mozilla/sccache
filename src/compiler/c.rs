@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::FileObjectSource;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult,
@@ -68,6 +69,15 @@ pub enum Language {
     Cuda,
 }
 
+/// Artifact produced by a C/C++ compiler.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtifactDesciptor {
+    /// Path to the artifact.
+    pub path: PathBuf,
+    /// Whether the artifact is an optional object file.
+    pub optional: bool,
+}
+
 /// The results of parsing a compiler commandline.
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone)]
@@ -80,8 +90,8 @@ pub struct ParsedArguments {
     pub compilation_flag: OsString,
     /// The file in which to generate dependencies.
     pub depfile: Option<PathBuf>,
-    /// Output files, keyed by a simple name, like "obj".
-    pub outputs: HashMap<&'static str, PathBuf>,
+    /// Output files and whether it's optional, keyed by a simple name, like "obj".
+    pub outputs: HashMap<&'static str, ArtifactDesciptor>,
     /// Commandline arguments for dependency generation.
     pub dependency_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor (not including common_args).
@@ -104,7 +114,7 @@ impl ParsedArguments {
     pub fn output_pretty(&self) -> Cow<'_, str> {
         self.outputs
             .get("obj")
-            .and_then(|o| o.file_name())
+            .and_then(|o| o.path.file_name())
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
@@ -331,10 +341,10 @@ where
             debug!("removing files {:?}", &outputs);
 
             let v: std::result::Result<(), std::io::Error> =
-                outputs.values().fold(Ok(()), |r, f| {
+                outputs.values().fold(Ok(()), |r, output| {
                     r.and_then(|_| {
                         let mut path = (&args_cwd).clone();
-                        path.push(&f);
+                        path.push(&output.path);
                         match fs::metadata(&path) {
                             // File exists, remove it.
                             Ok(_) => fs::remove_file(&path),
@@ -467,8 +477,17 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a> {
-        Box::new(self.parsed_args.outputs.iter().map(|(k, v)| (*k, &**v)))
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
+        Box::new(
+            self.parsed_args
+                .outputs
+                .iter()
+                .map(|(k, output)| FileObjectSource {
+                    key: k.to_string(),
+                    path: output.path.clone(),
+                    optional: output.optional,
+                }),
+        )
     }
 }
 

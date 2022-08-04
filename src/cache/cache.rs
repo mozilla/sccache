@@ -65,6 +65,18 @@ fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Cache object sourced by a file.
+#[derive(Clone)]
+pub struct FileObjectSource {
+    /// Identifier for this object. Should be unique within a compilation unit.
+    /// Note that a compilation unit is a single source file in C/C++ and a crate in Rust.
+    pub key: String,
+    /// Absolute path to the file.
+    pub path: PathBuf,
+    /// Whether the file must be present on disk and is essential for the compilation.
+    pub optional: bool,
+}
+
 /// Result of a cache lookup.
 pub enum Cache {
     /// Result was found in cache.
@@ -155,10 +167,15 @@ impl CacheRead {
         pool: &tokio::runtime::Handle,
     ) -> Result<()>
     where
-        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
         pool.spawn_blocking(move || {
-            for (key, path) in objects {
+            for FileObjectSource {
+                key,
+                path,
+                optional,
+            } in objects
+            {
                 let dir = match path.parent() {
                     Some(d) => d,
                     None => bail!("Output file without a parent directory!"),
@@ -167,10 +184,16 @@ impl CacheRead {
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
                 let mut tmp = NamedTempFile::new_in(dir)?;
-                let mode = self.get_object(&key, &mut tmp)?;
-                tmp.persist(&path)?;
-                if let Some(mode) = mode {
-                    set_file_mode(&path, mode)?;
+                match (self.get_object(&key, &mut tmp), optional) {
+                    (Ok(mode), _) => {
+                        tmp.persist(&path)?;
+                        if let Some(mode) = mode {
+                            set_file_mode(&path, mode)?;
+                        }
+                    }
+                    (Err(e), false) => return Err(e),
+                    // skip if no object found and it's optional
+                    (Err(_), true) => continue,
                 }
             }
             Ok(())
@@ -195,17 +218,28 @@ impl CacheWrite {
     /// Create a new cache entry populated with the contents of `objects`.
     pub async fn from_objects<T>(objects: T, pool: &tokio::runtime::Handle) -> Result<CacheWrite>
     where
-        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
         pool.spawn_blocking(move || {
             let mut entry = CacheWrite::new();
-            for (key, path) in objects {
-                let mut f = fs::File::open(&path)
-                    .with_context(|| format!("failed to open file `{:?}`", path))?;
-                let mode = get_file_mode(&f)?;
-                entry
-                    .put_object(&key, &mut f, mode)
-                    .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
+            for FileObjectSource {
+                key,
+                path,
+                optional,
+            } in objects
+            {
+                let f = fs::File::open(&path)
+                    .with_context(|| format!("failed to open file `{:?}`", path));
+                match (f, optional) {
+                    (Ok(mut f), _) => {
+                        let mode = get_file_mode(&f)?;
+                        entry.put_object(&key, &mut f, mode).with_context(|| {
+                            format!("failed to put object `{:?}` in cache entry", path)
+                        })?;
+                    }
+                    (Err(e), false) => return Err(e),
+                    (Err(_), true) => continue,
+                }
             }
             Ok(entry)
         })
