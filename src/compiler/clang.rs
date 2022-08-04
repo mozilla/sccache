@@ -21,7 +21,7 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use semver::Version;
+use semver::{BuildMetadata, Prerelease, Version};
 use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
@@ -69,8 +69,8 @@ impl Clang {
                 major,
                 minor: 0,
                 patch: 0,
-                pre: vec![],
-                build: vec![],
+                pre: Prerelease::default(),
+                build: BuildMetadata::default(),
             })
     }
 }
