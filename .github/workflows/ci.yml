@@ -57,7 +57,7 @@ jobs:
             allow_failure: true
             extra_args: --features=unstable
           - os: ubuntu-22.04
-          - os: macOS-10.15
+          - os: macOS-11
           - os: windows-2019
             rustc: 1.58.0 # Oldest supported version, keep in sync with README.md
           - os: windows-2019
@@ -99,16 +99,16 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-musl
-          - os: macOS-10.15
+          - os: macOS-11
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
-            developer_dir: /Applications/Xcode_10.3.app
-            sdkroot: /Applications/Xcode_10.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.14.sdk
-          - os: macOS-10.15
+            developer_dir: /Applications/Xcode_11.7.app
+            sdkroot: /Applications/Xcode_11.7.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk
+          - os: macOS-11
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
-            developer_dir: /Applications/Xcode_12.2.app
-            sdkroot: /Applications/Xcode_12.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.0.sdk
+            developer_dir: /Applications/Xcode_13.2.1.app
+            sdkroot: /Applications/Xcode_13.2.1.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX12.1.sdk
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
@@ -176,7 +176,7 @@ jobs:
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-          - os: macOS-10.15
+          - os: macOS-11
             rustc: nightly
 # Disable on Windows for now as it fails with:
 # found invalid metadata files for crate `vte_generate_state_changes`
