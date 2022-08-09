@@ -56,7 +56,7 @@ number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
 rand = "0.8.4"
-regex = "1"
+regex = "1.5.5"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream"], optional = true }
 retry = "1"
 ring = { version = "0.16", optional = true, features = ["std"] }
