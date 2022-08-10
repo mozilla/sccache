@@ -220,7 +220,7 @@ jobs:
           echo ::set-output name=report::${COVERAGE_REPORT_FILE}
 
       - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v3
         with:
           file: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
