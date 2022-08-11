@@ -680,13 +680,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let runtime = Runtime::new()?;
             let jobserver = unsafe { Client::new() };
             let creator = ProcessCommandCreator::new(&jobserver);
+            let args: Vec<_> = env::args_os().collect();
             let env: Vec<_> = env::vars_os().collect();
             let out_file = File::create(out)?;
             let cwd = env::current_dir().expect("A current working dir should exist");
 
             let pool = runtime.handle().clone();
             runtime.block_on(async move {
-                compiler::get_compiler_info(creator, &executable, &cwd, &env, &pool, None)
+                compiler::get_compiler_info(creator, &executable, &cwd, &args, &env, &pool, None)
                     .await
                     .map(|compiler| compiler.0.get_toolchain_packager())
                     .and_then(|packager| packager.write_pkg(out_file))

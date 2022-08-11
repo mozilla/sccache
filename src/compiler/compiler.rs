@@ -31,7 +31,7 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
 use std::borrow::Cow;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 #[cfg(feature = "dist-client")]
 use std::fs;
@@ -865,6 +865,7 @@ async fn detect_compiler<T>(
     creator: T,
     executable: &Path,
     cwd: &Path,
+    args: &[OsString],
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
@@ -881,32 +882,53 @@ where
     };
     let filename = filename.to_string_lossy().to_lowercase();
 
-    let rustc_vv = if filename == "rustc" || filename == "clippy-driver" {
-        // Sanity check that it's really rustc.
-        let executable = executable.to_path_buf();
-        let mut child = creator.clone().new_command_sync(executable);
-        child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+    // Detect the secnario where cargo is used with sccache as a RUSTC_WRAPPER and another tool as a
+    // RUSTC_WORKSPACE_WRAPPER. In that case "rustc" will be the first argument rather than the command.
+    // As a guardrail against false positives, also check for the CARGO environment variable which
+    // cargo sets for any process it runs.
+    // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
+    let using_rustc_workspace_wrapper = env.iter().any(|(k, _)| k == OsStr::new("CARGO"))
+        && filename != "rustc"
+        && args.iter().next().map(|arg1| arg1.as_os_str()) == Some(OsStr::new("rustc"));
 
-        run_input_output(child, None).await.map(|output| {
-            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-                if stdout.starts_with("rustc ") {
-                    return Some(Ok(stdout));
-                }
+    let rustc_vv =
+        if filename == "rustc" || filename == "clippy-driver" || using_rustc_workspace_wrapper {
+            // Sanity check that it's really rustc.
+            let executable = executable.to_path_buf();
+            let mut child = creator.clone().new_command_sync(executable);
+            // rustc workspace wrappers expect rustc as the first argument
+            if using_rustc_workspace_wrapper {
+                child.arg("rustc");
             }
-            Some(Err(ProcessError(output)))
-        })?
-    } else {
-        None
-    };
+
+            child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+
+            run_input_output(child, None).await.map(|output| {
+                if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+                    if stdout.starts_with("rustc ") {
+                        return Some(Ok(stdout));
+                    }
+                }
+                Some(Err(ProcessError(output)))
+            })?
+        } else {
+            None
+        };
 
     let creator1 = creator.clone();
     let executable = executable.to_owned();
-    let executable2 = executable.clone();
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     match rustc_vv {
         Some(Ok(rustc_verbose_version)) => {
             debug!("Found rustc");
+
+            let executable = if using_rustc_workspace_wrapper {
+                PathBuf::from("rustc")
+            } else {
+                executable.to_owned()
+            };
+            let executable2 = executable.clone();
 
             let proxy = RustupProxy::find_proxy_executable::<T>(
                 &executable2,
@@ -1160,6 +1182,7 @@ pub async fn get_compiler_info<T>(
     creator: T,
     executable: &Path,
     cwd: &Path,
+    args: &[OsString],
     env: &[(OsString, OsString)],
     pool: &tokio::runtime::Handle,
     dist_archive: Option<PathBuf>,
@@ -1168,7 +1191,7 @@ where
     T: CommandCreatorSync,
 {
     let pool = pool.clone();
-    detect_compiler(creator, executable, cwd, env, &pool, dist_archive).await
+    detect_compiler(creator, executable, cwd, args, env, &pool, dist_archive).await
 }
 
 #[cfg(test)]
@@ -1192,7 +1215,7 @@ mod test {
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "\n\ngcc", "")));
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1206,7 +1229,7 @@ mod test {
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\n", "")));
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1234,7 +1257,7 @@ mod test {
             &creator,
             Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
         );
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1248,7 +1271,7 @@ mod test {
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "nvcc\n", "")));
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1265,9 +1288,21 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        populate_rustc_command_mock(&creator, &f);
+        let c = detect_compiler(creator, &rustc, f.tempdir.path(), &[], &[], pool, None)
+            .wait()
+            .unwrap()
+            .0;
+        assert_eq!(CompilerKind::Rust, c.kind());
+    }
+
+    fn populate_rustc_command_mock(
+        creator: &Arc<std::sync::Mutex<MockCommandCreator>>,
+        f: &TestFixture,
+    ) {
         // rustc --vV
         next_command(
-            &creator,
+            creator,
             Ok(MockChild::new(
                 exit_status(0),
                 "\
@@ -1283,14 +1318,65 @@ LLVM version: 6.0",
         );
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
-        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        next_command(&creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        let c = detect_compiler(creator, &rustc, f.tempdir.path(), &[], pool, None)
-            .wait()
-            .unwrap()
-            .0;
+        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_rustc_workspace_wrapper() {
+        let f = TestFixture::new();
+        // Windows uses bin, everything else uses lib. Just create both.
+        fs::create_dir(f.tempdir.path().join("lib")).unwrap();
+        fs::create_dir(f.tempdir.path().join("bin")).unwrap();
+        let rustc = f.mk_bin("rustc-workspace-wrapper").unwrap();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        populate_rustc_command_mock(&creator, &f);
+        let c = detect_compiler(
+            creator,
+            &rustc,
+            f.tempdir.path(),
+            &[OsString::from("rustc")],
+            &[(OsString::from("CARGO"), OsString::from("CARGO"))],
+            pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
         assert_eq!(CompilerKind::Rust, c.kind());
+
+        // Test we don't detect rustc if the first arg is not rustc
+        let creator = new_creator();
+        populate_rustc_command_mock(&creator, &f);
+        assert!(detect_compiler(
+            creator,
+            &rustc,
+            f.tempdir.path(),
+            &[OsString::from("not-rustc")],
+            &[(OsString::from("CARGO"), OsString::from("CARGO"))],
+            pool,
+            None,
+        )
+        .wait()
+        .is_err());
+
+        // Test we don't detect rustc if the CARGO env is not defined
+        let creator = new_creator();
+        populate_rustc_command_mock(&creator, &f);
+        assert!(detect_compiler(
+            creator,
+            &rustc,
+            f.tempdir.path(),
+            &[OsString::from("rustc")],
+            &[],
+            pool,
+            None,
+        )
+        .wait()
+        .is_err());
     }
 
     #[test]
@@ -1300,7 +1386,7 @@ LLVM version: 6.0",
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "\ndiab\n", "")));
-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1322,6 +1408,7 @@ LLVM version: 6.0",
             "/foo/bar".as_ref(),
             f.tempdir.path(),
             &[],
+            &[],
             pool,
             None
         )
@@ -1340,6 +1427,7 @@ LLVM version: 6.0",
             creator,
             "/foo/bar".as_ref(),
             f.tempdir.path(),
+            &[],
             &[],
             pool,
             None
@@ -1366,6 +1454,7 @@ LLVM version: 6.0",
                     creator.clone(),
                     &f.bins[0],
                     f.tempdir.path(),
+                    &[],
                     &[],
                     pool,
                     None,
@@ -1399,7 +1488,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
-        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], pool, None)
+        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1422,6 +1511,7 @@ LLVM version: 6.0",
             creator.clone(),
             &f.bins[0],
             f.tempdir.path(),
+            &[],
             &[],
             &pool,
             None,
@@ -1533,6 +1623,7 @@ LLVM version: 6.0",
             &f.bins[0],
             f.tempdir.path(),
             &[],
+            &[],
             &pool,
             None,
         )
@@ -1639,6 +1730,7 @@ LLVM version: 6.0",
             &f.bins[0],
             f.tempdir.path(),
             &[],
+            &[],
             &pool,
             None,
         )
@@ -1715,6 +1807,7 @@ LLVM version: 6.0",
             creator.clone(),
             &f.bins[0],
             f.tempdir.path(),
+            &[],
             &[],
             &pool,
             None,
@@ -1833,6 +1926,7 @@ LLVM version: 6.0",
             &f.bins[0],
             f.tempdir.path(),
             &[],
+            &[],
             &pool,
             None,
         )
@@ -1904,6 +1998,7 @@ LLVM version: 6.0",
             creator.clone(),
             &f.bins[0],
             f.tempdir.path(),
+            &[],
             &[],
             &pool,
             None,
