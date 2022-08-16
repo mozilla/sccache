@@ -79,7 +79,7 @@ impl CompileCommand {
 }
 
 /// Supported compilers.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CompilerKind {
     /// A C compiler.
     C(CCompilerKind),
@@ -691,7 +691,7 @@ pub struct HashResult {
 }
 
 /// Possible results of parsing compiler arguments.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CompilerArguments<T> {
     /// Commandline can be handled.
     Ok(T),
@@ -720,7 +720,7 @@ macro_rules! try_or_cannot_cache {
 }
 
 /// Specifics about distributed compilation.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DistType {
     /// Distribution was not enabled.
     NoDist,
@@ -731,7 +731,7 @@ pub enum DistType {
 }
 
 /// Specifics about cache misses.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MissType {
     /// The compilation was not found in the cache, nothing more.
     Normal,
@@ -772,7 +772,7 @@ pub enum CompileResult {
 }
 
 /// The state of `--color` options passed to a compiler.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorMode {
     Off,
     On,
@@ -818,14 +818,14 @@ impl PartialEq<CompileResult> for CompileResult {
 }
 
 /// Can this result be stored in cache?
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cacheable {
     Yes,
     No,
 }
 
 /// Control of caching behavior.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CacheControl {
     /// Default caching behavior.
     Default,

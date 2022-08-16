@@ -36,7 +36,7 @@ use crate::errors::*;
 /// A struct on which to implement `CCompilerImpl`.
 ///
 /// Needs a little bit of state just to persist `includes_prefix`.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
