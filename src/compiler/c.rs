@@ -60,7 +60,7 @@ where
     compiler: I,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
     C,
     Cxx,
@@ -70,7 +70,7 @@ pub enum Language {
 }
 
 /// Artifact produced by a C/C++ compiler.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactDesciptor {
     /// Path to the artifact.
     pub path: PathBuf,
@@ -80,7 +80,7 @@ pub struct ArtifactDesciptor {
 
 /// The results of parsing a compiler commandline.
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ParsedArguments {
     /// The input source file.
     pub input: PathBuf,
@@ -166,7 +166,7 @@ struct CCompilation<I: CCompilerImpl> {
 }
 
 /// Supported C compilers.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CCompilerKind {
     /// GCC
     Gcc,

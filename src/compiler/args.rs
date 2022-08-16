@@ -11,7 +11,7 @@ pub type ArgParseResult<T> = StdResult<T, ArgParseError>;
 pub type ArgToStringResult = StdResult<String, ArgToStringError>;
 pub type PathTransformerFn<'a> = &'a mut dyn FnMut(&Path) -> Option<String>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ArgParseError {
     UnexpectedEndOfArgs,
     InvalidUnicode(OsString),
@@ -35,7 +35,7 @@ impl Error for ArgParseError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ArgToStringError {
     FailedPathTransform(PathBuf),
     InvalidUnicode(OsString),
@@ -69,7 +69,7 @@ pub type Delimiter = Option<u8>;
 /// on the different kinds of argument). `Flag`s may contain a simple
 /// variant which influences how to do caching, whereas `WithValue`s could
 /// be a struct variant with parsed data from the value.
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Argument<T> {
     /// Unknown non-flag argument ; e.g. "foo"
     Raw(OsString),
@@ -83,7 +83,7 @@ pub enum Argument<T> {
 }
 
 /// How a value is passed to an argument with a value.
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum ArgDisposition {
     /// As "-arg value"
     Separated,
@@ -299,7 +299,7 @@ macro_rules! ArgData {
 
     // PartialEq necessary for tests
     { pub $( $tok:tt )+ } => {
-        #[derive(Clone, Debug, PartialEq)]
+        #[derive(Clone, Debug, PartialEq, Eq)]
         pub enum ArgData {
             $($tok)+
         }
@@ -387,7 +387,7 @@ pub fn split_os_string_arg(val: OsString, split: &str) -> ArgParseResult<(String
 }
 
 /// The description of how an argument may be parsed
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum ArgInfo<T> {
     /// An simple flag argument, of the form "-foo"
     Flag(&'static str, T),

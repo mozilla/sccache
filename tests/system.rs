@@ -89,7 +89,7 @@ const OUTPUT: &str = "test.o";
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
 fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
     for f in inputs {
-        let original_source_file = Path::new(file!()).parent().unwrap().join(&*f);
+        let original_source_file = Path::new(file!()).parent().unwrap().join(f);
         let source_file = tempdir.join(f);
         trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
         fs::copy(&original_source_file, &source_file).unwrap();

@@ -180,7 +180,7 @@ pub struct RustCompilation {
 }
 
 // The selection of crate types for this compilation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateTypes {
     rlib: bool,
     staticlib: bool,
@@ -3148,7 +3148,8 @@ proc_macro false
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         // Just use empty files for sources.
-        for src in ["foo.rs"].iter() {
+        {
+            let src = &"foo.rs";
             let s = format!("Failed to create {}", src);
             f.touch(src).expect(&s);
         }
