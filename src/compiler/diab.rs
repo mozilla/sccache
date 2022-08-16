@@ -18,7 +18,7 @@ use crate::compiler::args::{
     NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
 };
 use crate::compiler::c::{
-    ArtifactDesciptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
 use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments};
 use crate::dist;
@@ -276,7 +276,7 @@ where
     let mut outputs = HashMap::new();
     outputs.insert(
         "obj",
-        ArtifactDesciptor {
+        ArtifactDescriptor {
             path: output,
             optional: false,
         },
@@ -434,7 +434,7 @@ mod test {
     use super::{
         dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments, ARGS,
     };
-    use crate::compiler::c::ArtifactDesciptor;
+    use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
@@ -467,7 +467,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -499,7 +499,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -531,7 +531,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -565,7 +565,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -607,7 +607,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -721,7 +721,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -743,7 +743,7 @@ mod test {
             depfile: None,
             outputs: vec![(
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false,
                 },

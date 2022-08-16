@@ -71,7 +71,7 @@ pub enum Language {
 
 /// Artifact produced by a C/C++ compiler.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArtifactDesciptor {
+pub struct ArtifactDescriptor {
     /// Path to the artifact.
     pub path: PathBuf,
     /// Whether the artifact is an optional object file.
@@ -91,7 +91,7 @@ pub struct ParsedArguments {
     /// The file in which to generate dependencies.
     pub depfile: Option<PathBuf>,
     /// Output files and whether it's optional, keyed by a simple name, like "obj".
-    pub outputs: HashMap<&'static str, ArtifactDesciptor>,
+    pub outputs: HashMap<&'static str, ArtifactDescriptor>,
     /// Commandline arguments for dependency generation.
     pub dependency_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor (not including common_args).

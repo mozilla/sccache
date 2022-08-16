@@ -14,7 +14,7 @@
 
 use crate::compiler::args::*;
 use crate::compiler::c::{
-    ArtifactDesciptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
 use crate::compiler::{
     clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
@@ -666,7 +666,7 @@ pub fn parse_arguments(
         None => {
             outputs.insert(
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: Path::new(&input).with_extension("obj"),
                     optional: false,
                 },
@@ -676,7 +676,7 @@ pub fn parse_arguments(
             if o.extension().is_none() && compilation {
                 outputs.insert(
                     "obj",
-                    ArtifactDesciptor {
+                    ArtifactDescriptor {
                         path: o.with_extension("obj"),
                         optional: false,
                     },
@@ -684,7 +684,7 @@ pub fn parse_arguments(
             } else {
                 outputs.insert(
                     "obj",
-                    ArtifactDesciptor {
+                    ArtifactDescriptor {
                         path: o,
                         optional: false,
                     },
@@ -698,7 +698,7 @@ pub fn parse_arguments(
         match pdb {
             Some(p) => outputs.insert(
                 "pdb",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: p,
                     optional: false,
                 },
@@ -1018,7 +1018,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1052,7 +1052,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1084,7 +1084,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1116,7 +1116,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1208,7 +1208,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1251,7 +1251,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1284,14 +1284,14 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
             ),
             (
                 "pdb",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.pdb"),
                     optional: false
                 }
@@ -1333,7 +1333,7 @@ mod test {
             outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: PathBuf::from("foo.obj"),
                     optional: false
                 }
@@ -1383,7 +1383,7 @@ mod test {
                 outputs,
                 (
                     "obj",
-                    ArtifactDesciptor {
+                    ArtifactDescriptor {
                         path: PathBuf::from("foo.obj"),
                         optional: false
                     }
@@ -1504,7 +1504,7 @@ mod test {
             depfile: None,
             outputs: vec![(
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.obj".into(),
                     optional: false,
                 },
@@ -1555,14 +1555,14 @@ mod test {
             outputs: vec![
                 (
                     "obj",
-                    ArtifactDesciptor {
+                    ArtifactDescriptor {
                         path: "foo.obj".into(),
                         optional: false,
                     },
                 ),
                 (
                     "pdb",
-                    ArtifactDesciptor {
+                    ArtifactDescriptor {
                         path: pdb,
                         optional: false,
                     },

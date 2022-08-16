@@ -16,7 +16,7 @@
 
 use crate::compiler::args::*;
 use crate::compiler::c::{
-    ArtifactDesciptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
@@ -252,7 +252,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -271,7 +271,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -290,7 +290,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -310,7 +310,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -340,7 +340,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -373,7 +373,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -403,7 +403,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -439,7 +439,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
@@ -489,7 +489,7 @@ mod test {
             a.outputs,
             (
                 "obj",
-                ArtifactDesciptor {
+                ArtifactDescriptor {
                     path: "foo.o".into(),
                     optional: false
                 }
