@@ -417,6 +417,14 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
                 Some(io_err) if io::ErrorKind::AddrInUse == io_err.kind() => {
                     notify_server_startup(&notify, ServerStartup::AddrInUse)?;
                 }
+                Some(io_err) if cfg!(windows) && Some(10013) == io_err.raw_os_error() => {
+                    // 10013 is the "WSAEACCES" error, which can occur if the requested port
+                    // has been allocated for other purposes, such as winNAT or Hyper-V.
+                    let windows_help_message =
+                        "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
+                    let reason: String = format!("{windows_help_message}\n{e}");
+                    notify_server_startup(&notify, ServerStartup::Err { reason })?;
+                }
                 _ => {
                     let reason = e.to_string();
                     notify_server_startup(&notify, ServerStartup::Err { reason })?;
