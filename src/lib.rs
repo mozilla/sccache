@@ -20,8 +20,6 @@
 extern crate async_trait;
 #[macro_use]
 extern crate clap;
-#[macro_use]
-extern crate counted_array;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
 #[macro_use]

@@ -361,12 +361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "counted-array"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384f8c53175c890920b6e0127b730709d2a173ca6c4dfdc81618ac9b46f648fe"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1971,7 +1965,6 @@ dependencies = [
  "cc",
  "chrono",
  "clap",
- "counted-array",
  "crossbeam-utils",
  "daemonize",
  "directories",
