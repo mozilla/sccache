@@ -20,9 +20,9 @@ use crate::compiler::c::{
 };
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
-use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
+use crate::{counted_array, dist};
 use semver::{BuildMetadata, Prerelease, Version};
 use std::ffi::OsString;
 use std::fs::File;

@@ -17,9 +17,9 @@ use crate::compiler::c::{
     ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
 use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
-use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
+use crate::{counted_array, dist};
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;

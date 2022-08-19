@@ -20,7 +20,6 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
-use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
@@ -28,6 +27,7 @@ use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
+use crate::{counted_array, dist};
 use filetime::FileTime;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
