@@ -13,11 +13,11 @@ macro_rules! counted_array {
     // according to <https://github.com/rust-lang/lang-team/issues/28>
     (@count ) => { 0usize };
     (@count $($arg:expr,)*) => {
-        0_usize $( + counted_array!(@plusone $arg ))*
+        <[()]>::len(&[ $( counted_array!( @nil $arg ), )*])
     };
 
-    (@plusone $orig:expr) => {
-        1_usize
+    (@nil $orig:expr) => {
+        ()
     };
 }
 
