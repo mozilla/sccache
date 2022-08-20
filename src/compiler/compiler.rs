@@ -860,6 +860,18 @@ pub async fn write_temp_file(
     .context("failed to write temporary file")
 }
 
+/// Returns true if the given path looks like a program known to have
+/// a rustc compatible interface.
+fn is_rustc_like<P: AsRef<Path>>(p: P) -> bool {
+    matches!(
+        p.as_ref()
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .as_deref(),
+        Some("rustc") | Some("clippy-driver")
+    )
+}
+
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
 async fn detect_compiler<T>(
     creator: T,
@@ -876,58 +888,58 @@ where
     trace!("detect_compiler: {}", executable.display());
 
     // First, see if this looks like rustc.
-    let filename = match executable.file_stem() {
-        None => bail!("could not determine compiler kind"),
-        Some(f) => f,
-    };
-    let filename = filename.to_string_lossy().to_lowercase();
 
-    // Detect the secnario where cargo is used with sccache as a RUSTC_WRAPPER and another tool as a
-    // RUSTC_WORKSPACE_WRAPPER. In that case "rustc" will be the first argument rather than the command.
-    // As a guardrail against false positives, also check for the CARGO environment variable which
-    // cargo sets for any process it runs.
-    // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
-    let using_rustc_workspace_wrapper = env.iter().any(|(k, _)| k == OsStr::new("CARGO"))
-        && filename != "rustc"
-        && args.iter().next().map(|arg1| arg1.as_os_str()) == Some(OsStr::new("rustc"));
-
-    let rustc_vv =
-        if filename == "rustc" || filename == "clippy-driver" || using_rustc_workspace_wrapper {
-            // Sanity check that it's really rustc.
-            let executable = executable.to_path_buf();
-            let mut child = creator.clone().new_command_sync(executable);
-            // rustc workspace wrappers expect rustc as the first argument
-            if using_rustc_workspace_wrapper {
-                child.arg("rustc");
+    let rustc_executable = if is_rustc_like(executable) {
+        Some(executable.to_path_buf())
+    } else if env.iter().any(|(k, _)| k == OsStr::new("CARGO")) {
+        // If not, detect the scenario where cargo is configured to wrap rustc with something other than sccache.
+        // This happens when sccache is used as a RUSTC_WRAPPER and another tool is used as a
+        // RUSTC_WORKSPACE_WRAPPER. In that case rustc will be the first argument rather than the command.
+        //
+        // The check for the CARGO env acts as a guardrail against false positives.
+        // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
+        args.iter().next().and_then(|arg1| {
+            if is_rustc_like(arg1) {
+                Some(PathBuf::from(arg1))
+            } else {
+                None
             }
+        })
+    } else {
+        None
+    };
 
-            child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+    let rustc_vv = if let Some(rustc_executable) = &rustc_executable {
+        // Sanity check that it's really rustc.
+        let mut child = creator.clone().new_command_sync(executable);
+        // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
+        // expects rustc as the first argument.
+        if rustc_executable != executable {
+            child.arg(rustc_executable);
+        }
 
-            run_input_output(child, None).await.map(|output| {
-                if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-                    if stdout.starts_with("rustc ") {
-                        return Some(Ok(stdout));
-                    }
+        child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+
+        run_input_output(child, None).await.map(|output| {
+            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+                if stdout.starts_with("rustc ") {
+                    return Some(Ok(stdout));
                 }
-                Some(Err(ProcessError(output)))
-            })?
-        } else {
-            None
-        };
+            }
+            Some(Err(ProcessError(output)))
+        })?
+    } else {
+        None
+    };
 
     let creator1 = creator.clone();
-    let executable = executable.to_owned();
     let pool = pool.clone();
     let cwd = cwd.to_owned();
     match rustc_vv {
         Some(Ok(rustc_verbose_version)) => {
             debug!("Found rustc");
 
-            let executable = if using_rustc_workspace_wrapper {
-                PathBuf::from("rustc")
-            } else {
-                executable.to_owned()
-            };
+            let executable = rustc_executable.unwrap();
             let executable2 = executable.clone();
 
             let proxy = RustupProxy::find_proxy_executable::<T>(
@@ -997,6 +1009,7 @@ where
         }
         Some(Err(e)) => Err(e).context("Failed to launch subprocess for compiler determination"),
         None => {
+            let executable = executable.to_owned();
             let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
             cc.map(|c| (c, None))
         }
@@ -1284,7 +1297,7 @@ mod test {
         // Windows uses bin, everything else uses lib. Just create both.
         fs::create_dir(f.tempdir.path().join("lib")).unwrap();
         fs::create_dir(f.tempdir.path().join("bin")).unwrap();
-        let rustc = f.mk_bin("rustc").unwrap();
+        let rustc = f.mk_bin("rustc.exe").unwrap();
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
@@ -1294,6 +1307,15 @@ mod test {
             .unwrap()
             .0;
         assert_eq!(CompilerKind::Rust, c.kind());
+    }
+
+    #[test]
+    fn test_is_rustc_like() {
+        assert!(is_rustc_like("rustc"));
+        assert!(is_rustc_like("rustc.exe"));
+        assert!(is_rustc_like("/path/to/rustc.exe"));
+        assert!(is_rustc_like("/path/to/clippy-driver.exe"));
+        assert!(!is_rustc_like("rust"));
     }
 
     fn populate_rustc_command_mock(
@@ -1338,7 +1360,8 @@ LLVM version: 6.0",
             creator,
             &rustc,
             f.tempdir.path(),
-            &[OsString::from("rustc")],
+            // Specifying an extension tests the ignoring
+            &[OsString::from("rustc.exe")],
             &[(OsString::from("CARGO"), OsString::from("CARGO"))],
             pool,
             None,
