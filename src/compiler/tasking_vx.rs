@@ -22,7 +22,7 @@ use crate::{
         c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments},
         Cacheable, ColorMode, CompileCommand, CompilerArguments,
     },
-    dist,
+    counted_array, dist,
     errors::*,
     mock_command::{CommandCreatorSync, RunCommand},
     util::run_input_output,
