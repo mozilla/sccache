@@ -519,7 +519,11 @@ pub fn parse_arguments(
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            cannot_cache!("multiple input files or unknown argument: ", String::from(input_arg.unwrap().to_string_lossy()));
+                            if let Some(input_arg) = input_arg {
+                                cannot_cache!("multiple input files or unknown argument: ", String::from(input_arg.to_string_lossy()));
+                            } else {
+                                cannot_cache!("multiple input files");
+                            }
                         }
                         input_arg = Some(val.clone());
                     }
