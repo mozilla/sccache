@@ -364,6 +364,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
+    msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("ZI", DebugInfo), // Implies /FC, which puts absolute paths in error messages -> TooHardFlag?
     msvc_flag!("ZW", PassThrough),
     msvc_flag!("Za", PassThrough),
@@ -378,6 +379,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Zp4", PassThrough),
     msvc_flag!("Zp8", PassThrough),
     msvc_flag!("Zs", SuppressCompilation),
+    msvc_flag!("analyze", PassThrough),
     msvc_flag!("analyze-", PassThrough),
     msvc_take_arg!("analyze:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("arch:", OsString, Concatenated, PassThroughWithSuffix),
@@ -394,6 +396,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
     msvc_take_arg!("errorReport:", OsString, Concatenated, PassThroughWithSuffix), // Deprecated.
     msvc_take_arg!("execution-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("experimental:deterministic", PassThrough),
     msvc_flag!("experimental:external", PassThrough),
     msvc_flag!("experimental:module", TooHardFlag),
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
@@ -450,7 +453,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /ZH, /Zm
+// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -458,7 +461,7 @@ pub fn parse_arguments(
     is_clang: bool,
 ) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
-    let mut input_arg = None;
+    let mut input_arg: Option<OsString> = None;
     let mut common_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
@@ -514,9 +517,12 @@ pub fn parse_arguments(
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
-                        if input_arg.is_some() {
+                        if let Some(ref input_arg) = input_arg {
                             // Can't cache compilations with multiple inputs.
-                            cannot_cache!("multiple input files");
+                            cannot_cache!(
+                                "multiple input files or unknown argument: ",
+                                String::from(input_arg.to_string_lossy())
+                            );
                         }
                         input_arg = Some(val.clone());
                     }
@@ -1446,7 +1452,10 @@ mod test {
     #[test]
     fn test_parse_arguments_too_many_inputs() {
         assert_eq!(
-            CompilerArguments::CannotCache("multiple input files", None),
+            CompilerArguments::CannotCache(
+                "multiple input files or unknown argument: ",
+                Some("foo.c".to_string())
+            ),
             parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"])
         );
     }
