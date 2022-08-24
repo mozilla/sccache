@@ -517,7 +517,7 @@ pub fn parse_arguments(
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
-                        if input_arg.is_some() {
+                        if let Some(ref input_arg) = input_arg {
                             // Can't cache compilations with multiple inputs.
                             cannot_cache!("multiple input files or unknown argument: ", input_arg.to_string_lossy());
                         }
