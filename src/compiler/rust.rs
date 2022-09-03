@@ -984,6 +984,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cfg", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--check-cfg", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
     take_arg!("--color", String, CanBeSeparated('='), Color),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
