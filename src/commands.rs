@@ -55,6 +55,7 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+#[cfg(not(windows))]
 fn communication_socket_path_fallback() -> Result<PathBuf> {
     Ok(tempfile::Builder::new()
         .prefix("sccache")
@@ -64,6 +65,7 @@ fn communication_socket_path_fallback() -> Result<PathBuf> {
 }
 
 /// Obtain dispatcher and client communication socket path
+#[cfg(not(windows))]
 fn communication_socket_path() -> Result<PathBuf> {
     Ok(match env::var("SCCACHE_STARTUP_NOTIFY") {
         Ok(s) if s.is_empty() => {
