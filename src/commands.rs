@@ -53,6 +53,25 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+fn communication_socket_path_fallback() -> Result<PathBuf> {
+    Ok(tempfile::Builder::new().prefix("sccache").tempdir()?)
+}
+
+/// Obtain dispatchter and client communication socket path
+fn communication_socket_path() -> Result<PathBuf> {
+    match env::var("SCCACHE_STARTUP_NOTIFY") {
+        Ok(s) if path.is_empty() => {
+            warn!("Retrieving SCCACHE_STARTUP_NOTIFY was empty, but must be valid path");
+            communication_socket_path_fallback()
+        }
+        Ok(s) => Ok(PathBuf::from(s)),
+        Err(_err) => {
+            debug!("Could not retrieve SCCACHE_STARTUP_NOTIFY {:?}");
+            communication_socket_path_fallback()
+        }
+    }
+}
+
 /// Check if ignoring all response errors
 fn ignore_all_server_io_errors() -> bool {
     match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
@@ -82,8 +101,8 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::time::Duration;
 
     trace!("run_server_process");
-    let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
-    let socket_path = tempdir.path().join("sock");
+    let socket_dir = communication_socket_path()?;
+    let socket_path = socket_dir.path().join("sock");
     let runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
