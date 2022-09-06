@@ -893,10 +893,10 @@ where
         Some(executable.to_path_buf())
     } else if env.iter().any(|(k, _)| k == OsStr::new("CARGO")) {
         // If not, detect the scenario where cargo is configured to wrap rustc with something other than sccache.
-        // This happens when sccache is used as a RUSTC_WRAPPER and another tool is used as a
-        // RUSTC_WORKSPACE_WRAPPER. In that case rustc will be the first argument rather than the command.
+        // This happens when sccache is used as a `RUSTC_WRAPPER` and another tool is used as a
+        // `RUSTC_WORKSPACE_WRAPPER`. In that case rustc will be the first argument rather than the command.
         //
-        // The check for the CARGO env acts as a guardrail against false positives.
+        // The check for the `CARGO` env acts as a guardrail against false positives.
         // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
         args.iter().next().and_then(|arg1| {
             if is_rustc_like(arg1) {
@@ -909,110 +909,106 @@ where
         None
     };
 
-    let rustc_vv = if let Some(rustc_executable) = &rustc_executable {
+    let creator1 = creator.clone();
+    let pool = pool.clone();
+    let cwd = cwd.to_owned();
+    if let Some(rustc_executable) = rustc_executable {
         // Sanity check that it's really rustc.
         let mut child = creator.clone().new_command_sync(executable);
         // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
         // expects rustc as the first argument.
         if rustc_executable != executable {
-            child.arg(rustc_executable);
+            child.arg(&rustc_executable);
         }
 
         child.env_clear().envs(ref_env(env)).args(&["-vV"]);
 
-        run_input_output(child, None).await.map(|output| {
+        let rustc_vv = run_input_output(child, None).await.map(|output| {
             if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
                 if stdout.starts_with("rustc ") {
-                    return Some(Ok(stdout));
+                    return Ok(stdout);
                 }
             }
-            Some(Err(ProcessError(output)))
-        })?
-    } else {
-        None
-    };
+            Err(ProcessError(output))
+        })?;
 
-    let creator1 = creator.clone();
-    let pool = pool.clone();
-    let cwd = cwd.to_owned();
-    match rustc_vv {
-        Some(Ok(rustc_verbose_version)) => {
-            debug!("Found rustc");
+        match rustc_vv {
+            Ok(rustc_verbose_version) => {
+                debug!("Found rustc");
 
-            let executable = rustc_executable.unwrap();
-            let executable2 = executable.clone();
+                let rustc_executable2 = rustc_executable.clone();
 
-            let proxy = RustupProxy::find_proxy_executable::<T>(
-                &executable2,
-                "rustup",
-                creator.clone(),
-                env,
-            );
-            use futures::TryFutureExt;
-            let res = proxy.and_then(move |proxy| async move {
-                match proxy {
-                    Ok(Some(proxy)) => {
-                        trace!("Found rustup proxy executable");
-                        // take the pathbuf for rustc as resolved by the proxy
-                        match proxy.resolve_proxied_executable(creator1, cwd, env).await {
-                            Ok((resolved_path, _time)) => {
-                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                                Ok((Some(proxy), resolved_path))
-                            }
-                            Err(e) => {
-                                trace!("Could not resolve compiler with rustup proxy: {}", e);
-                                Ok((None, executable))
+                let proxy = RustupProxy::find_proxy_executable::<T>(
+                    &rustc_executable2,
+                    "rustup",
+                    creator.clone(),
+                    env,
+                );
+                use futures::TryFutureExt;
+                let res = proxy.and_then(move |proxy| async move {
+                    match proxy {
+                        Ok(Some(proxy)) => {
+                            trace!("Found rustup proxy executable");
+                            // take the pathbuf for rustc as resolved by the proxy
+                            match proxy.resolve_proxied_executable(creator1, cwd, env).await {
+                                Ok((resolved_path, _time)) => {
+                                    trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                    Ok((Some(proxy), resolved_path))
+                                }
+                                Err(e) => {
+                                    trace!("Could not resolve compiler with rustup proxy: {}", e);
+                                    Ok((None, rustc_executable))
+                                }
                             }
                         }
+                        Ok(None) => {
+                            trace!("Did not find rustup");
+                            Ok((None, rustc_executable))
+                        }
+                        Err(e) => {
+                            trace!("Did not find rustup due to {}, compiling without proxy", e);
+                            Ok((None, rustc_executable))
+                        }
                     }
-                    Ok(None) => {
-                        trace!("Did not find rustup");
-                        Ok((None, executable))
-                    }
-                    Err(e) => {
-                        trace!("Did not find rustup due to {}, compiling without proxy", e);
-                        Ok((None, executable))
-                    }
-                }
-            });
-
-            let (proxy, resolved_rustc) = res
-                .await
-                .map(|(proxy, resolved_compiler_executable)| {
-                    (
-                        proxy
-                            .map(Box::new)
-                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
-                        resolved_compiler_executable,
-                    )
-                })
-                .unwrap_or_else(|_e| {
-                    trace!("Compiling rust without proxy");
-                    (None, executable2)
                 });
 
-            Rust::new(
-                creator,
-                resolved_rustc,
-                env,
-                &rustc_verbose_version,
-                dist_archive,
-                pool,
-            )
-            .await
-            .map(|c| {
-                (
-                    Box::new(c) as Box<dyn Compiler<T>>,
-                    proxy as Option<Box<dyn CompilerProxy<T>>>,
+                let (proxy, resolved_rustc) = res
+                    .await
+                    .map(|(proxy, resolved_compiler_executable)| {
+                        (
+                            proxy
+                                .map(Box::new)
+                                .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+                            resolved_compiler_executable,
+                        )
+                    })
+                    .unwrap_or_else(|_e| {
+                        trace!("Compiling rust without proxy");
+                        (None, rustc_executable2)
+                    });
+
+                Rust::new(
+                    creator,
+                    resolved_rustc,
+                    env,
+                    &rustc_verbose_version,
+                    dist_archive,
+                    pool,
                 )
-            })
+                .await
+                .map(|c| {
+                    (
+                        Box::new(c) as Box<dyn Compiler<T>>,
+                        proxy as Option<Box<dyn CompilerProxy<T>>>,
+                    )
+                })
+            }
+            Err(e) => Err(e).context("Failed to launch subprocess for compiler determination"),
         }
-        Some(Err(e)) => Err(e).context("Failed to launch subprocess for compiler determination"),
-        None => {
-            let executable = executable.to_owned();
-            let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
-            cc.map(|c| (c, None))
-        }
+    } else {
+        let executable = executable.to_owned();
+        let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
+        cc.map(|c| (c, None))
     }
 }
 
@@ -1314,8 +1310,15 @@ mod test {
         assert!(is_rustc_like("rustc"));
         assert!(is_rustc_like("rustc.exe"));
         assert!(is_rustc_like("/path/to/rustc.exe"));
+        assert!(is_rustc_like("/path/to/rustc"));
+        assert!(is_rustc_like("/PATH/TO/RUSTC.EXE"));
+        assert!(is_rustc_like("/Path/To/RustC.Exe"));
+        assert!(is_rustc_like("/path/to/clippy-driver"));
         assert!(is_rustc_like("/path/to/clippy-driver.exe"));
+        assert!(is_rustc_like("/PATH/TO/CLIPPY-DRIVER.EXE"));
+        assert!(is_rustc_like("/Path/To/Clippy-Driver.Exe"));
         assert!(!is_rustc_like("rust"));
+        assert!(!is_rustc_like("RUST"));
     }
 
     fn populate_rustc_command_mock(
