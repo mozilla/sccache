@@ -31,6 +31,8 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::process;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
@@ -54,22 +56,30 @@ fn get_port() -> u16 {
 }
 
 fn communication_socket_path_fallback() -> Result<PathBuf> {
-    Ok(tempfile::Builder::new().prefix("sccache").tempdir()?)
+    Ok(tempfile::Builder::new()
+        .prefix("sccache")
+        .tempdir()?
+        .path()
+        .to_owned())
 }
 
-/// Obtain dispatchter and client communication socket path
+/// Obtain dispatcher and client communication socket path
 fn communication_socket_path() -> Result<PathBuf> {
-    match env::var("SCCACHE_STARTUP_NOTIFY") {
-        Ok(s) if path.is_empty() => {
-            warn!("Retrieving SCCACHE_STARTUP_NOTIFY was empty, but must be valid path");
-            communication_socket_path_fallback()
+    Ok(match env::var("SCCACHE_STARTUP_NOTIFY") {
+        Ok(s) if s.is_empty() => {
+            warn!("Retrieving env var SCCACHE_STARTUP_NOTIFY was empty, but must be valid path");
+            communication_socket_path_fallback()?
         }
-        Ok(s) => Ok(PathBuf::from(s)),
-        Err(_err) => {
-            debug!("Could not retrieve SCCACHE_STARTUP_NOTIFY {:?}");
-            communication_socket_path_fallback()
+        Ok(s) => PathBuf::from(s),
+        Err(err) => {
+            debug!(
+                "Could not retrieve env var SCCACHE_STARTUP_NOTIFY: {:?}",
+                err
+            );
+            communication_socket_path_fallback()?
         }
     }
+    .join("sock"))
 }
 
 /// Check if ignoring all response errors
@@ -101,8 +111,7 @@ fn run_server_process() -> Result<ServerStartup> {
     use std::time::Duration;
 
     trace!("run_server_process");
-    let socket_dir = communication_socket_path()?;
-    let socket_path = socket_dir.path().join("sock");
+    let socket_path = communication_socket_path()?;
     let runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
