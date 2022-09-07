@@ -354,7 +354,10 @@ mod test {
             ])
         );
         assert_eq!(
-            CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
+            CompilerArguments::CannotCache(
+                "Can't handle UnknownFlag arguments with -Xclang",
+                Some("-broken".to_string())
+            ),
             parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"
             ])

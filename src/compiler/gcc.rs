@@ -440,8 +440,11 @@ where
             None => match arg {
                 Argument::Raw(_) if follows_plugin_arg => &mut common_args,
                 Argument::Raw(_) => cannot_cache!("Can't handle Raw arguments with -Xclang"),
-                Argument::UnknownFlag(_) => {
-                    cannot_cache!("Can't handle UnknownFlag arguments with -Xclang")
+                Argument::UnknownFlag(arg) => {
+                    cannot_cache!(
+                        "Can't handle UnknownFlag arguments with -Xclang",
+                        arg.into_string().unwrap()
+                    )
                 }
                 _ => unreachable!(),
             },
