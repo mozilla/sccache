@@ -1,5 +1,4 @@
 use std::io;
-use std::process::Command;
 use std::sync::Arc;
 
 use futures::channel::mpsc;
@@ -10,30 +9,30 @@ use crate::errors::*;
 
 #[derive(Clone)]
 pub struct Client {
-    helper: Option<Arc<jobserver::HelperThread>>,
-    tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobserver::Acquired>>>>,
-    inner: jobserver::Client,
+    helper: Option<Arc<jobslot::HelperThread>>,
+    tx: Option<mpsc::UnboundedSender<oneshot::Sender<io::Result<jobslot::Acquired>>>>,
+    inner: jobslot::Client,
 }
 
 pub struct Acquired {
-    _token: Option<jobserver::Acquired>,
+    _token: Option<jobslot::Acquired>,
 }
 
 impl Client {
     // unsafe because `from_env` is unsafe (can use the wrong fds)
     pub unsafe fn new() -> Client {
-        match jobserver::Client::from_env() {
+        match jobslot::Client::from_env() {
             Some(c) => Client::_new(c, true),
             None => Client::new_num(num_cpus::get()),
         }
     }
 
     pub fn new_num(num: usize) -> Client {
-        let inner = jobserver::Client::new(num).expect("failed to create jobserver");
+        let inner = jobslot::Client::new(num).expect("failed to create jobserver");
         Client::_new(inner, false)
     }
 
-    fn _new(inner: jobserver::Client, inherited: bool) -> Client {
+    fn _new(inner: jobslot::Client, inherited: bool) -> Client {
         let (helper, tx) = if inherited {
             (None, None)
         } else {
@@ -58,8 +57,14 @@ impl Client {
     }
 
     /// Configures this jobserver to be inherited by the specified command
-    pub fn configure(&self, cmd: &mut Command) {
-        self.inner.configure(cmd)
+    pub fn configure_and_run<Cmd, F, T>(&self, cmd: Cmd, f: F) -> io::Result<T>
+    where
+        // Cmd can be {std, tokio}::process::Command or
+        // alias of them.
+        Cmd: jobslot::Command,
+        F: FnOnce(&mut Cmd) -> io::Result<T>,
+    {
+        self.inner.configure_make_and_run(cmd, f)
     }
 
     /// Returns a future that represents an acquired jobserver token.

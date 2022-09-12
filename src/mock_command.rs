@@ -248,17 +248,13 @@ impl RunCommand for AsyncCommand {
         self
     }
     async fn spawn(&mut self) -> Result<Child> {
-        let mut inner = self.inner.take().unwrap();
-        inner.env_remove("MAKEFLAGS");
-        inner.env_remove("MFLAGS");
-        inner.env_remove("CARGO_MAKEFLAGS");
-        self.jobserver.configure(&mut inner);
+        let mut cmd = tokio::process::Command::from(self.inner.take().unwrap());
 
         let token = self.jobserver.acquire().await?;
-        let mut inner = tokio::process::Command::from(inner);
-        let child = inner
-            .spawn()
-            .with_context(|| format!("failed to spawn {:?}", inner))?;
+        let child = self
+            .jobserver
+            .configure_and_run(&mut cmd, |cmd| cmd.spawn())
+            .with_context(|| format!("failed to spawn {:?}", cmd))?;
 
         Ok(Child {
             inner: child,

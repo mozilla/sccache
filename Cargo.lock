@@ -1065,6 +1065,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobslot"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b52a1ef21d9c8e2b6ce68167f987a722c01f4d65b1760c495f8cd2b760f609d1"
+dependencies = [
+ "cfg-if 1.0.0",
+ "libc",
+ "scopeguard",
+ "tokio",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1980,7 +1992,7 @@ dependencies = [
  "hyper",
  "hyperx",
  "itertools",
- "jobserver",
+ "jobslot",
  "jsonwebtoken",
  "lazy_static",
  "libc",
