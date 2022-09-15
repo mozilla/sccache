@@ -880,7 +880,9 @@ where
         let env_vars = compile.env_vars;
         let me = self.clone();
 
-        let info = self.compiler_info(exe.into(), cwd.clone(), &env_vars).await;
+        let info = self
+            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
+            .await;
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
@@ -890,6 +892,7 @@ where
         &self,
         path: PathBuf,
         cwd: PathBuf,
+        args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> Result<Box<dyn Compiler<C>>> {
         trace!("compiler_info");
@@ -981,6 +984,7 @@ where
                     me.creator.clone(),
                     &path1,
                     &cwd,
+                    args,
                     env.as_slice(),
                     &me.rt,
                     dist_info.clone().map(|(p, _)| p),
