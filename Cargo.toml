@@ -57,7 +57,7 @@ percent-encoding = { version = "2", optional = true }
 rand = "0.8.4"
 regex = "1.5.5"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream"], optional = true }
-retry = "1"
+retry = "2"
 ring = { version = "0.16", optional = true, features = ["std"] }
 rredis = { package = "redis", version = "0.21", optional = true, default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
 semver = "1.0"
