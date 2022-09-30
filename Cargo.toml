@@ -29,7 +29,7 @@ blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
 chrono = { version = "0.4.22", optional = true }
-clap = "2.23.0"
+clap = "4.0.6"
 directories = "4.0.1"
 env_logger = "0.9"
 filetime = "0.2"
