@@ -118,6 +118,9 @@ fn get_clap_command() -> clap::Command<'static> {
             "    GCS:       ",
             cfg!(feature = "gcs"),
             "\n",
+            "    GHA:       ",
+            cfg!(feature = "gha"),
+            "\n",
             "    Azure:     ",
             cfg!(feature = "azure"),
             "\n"
