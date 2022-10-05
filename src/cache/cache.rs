@@ -15,6 +15,8 @@
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+#[cfg(feature = "gha")]
+use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
@@ -415,6 +417,25 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                         }
                         Err(e) => warn!("Failed to create GCS Cache: {:?}", e),
                     }
+                }
+            }
+            CacheType::GHA(config::GHACacheConfig {
+                ref url,
+                ref token,
+                ref cache_to,
+                ref cache_from,
+            }) => {
+                debug!(
+                    "Trying GHA Cache ({url}, {}***, {cache_to:?}, {cache_from:?})",
+                    &token[..usize::min(3, token.len())]
+                );
+                #[cfg(feature = "gha")]
+                match GHACache::new(url, token, cache_to.clone(), cache_from.clone()) {
+                    Ok(s) => {
+                        trace!("Using GHA Cache: {}", url);
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create GHA Cache: {:?}", e),
                 }
             }
             CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {

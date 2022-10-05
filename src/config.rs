@@ -189,6 +189,15 @@ pub struct GCSCacheConfig {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GHACacheConfig {
+    pub url: String,
+    pub token: String,
+    pub cache_to: Option<String>,
+    pub cache_from: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
@@ -214,6 +223,7 @@ pub struct S3CacheConfig {
 pub enum CacheType {
     Azure(AzureCacheConfig),
     GCS(GCSCacheConfig),
+    GHA(GHACacheConfig),
     Memcached(MemcachedCacheConfig),
     Redis(RedisCacheConfig),
     S3(S3CacheConfig),
@@ -225,6 +235,7 @@ pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
     pub disk: Option<DiskCacheConfig>,
     pub gcs: Option<GCSCacheConfig>,
+    pub gha: Option<GHACacheConfig>,
     pub memcached: Option<MemcachedCacheConfig>,
     pub redis: Option<RedisCacheConfig>,
     pub s3: Option<S3CacheConfig>,
@@ -238,6 +249,7 @@ impl CacheConfigs {
             azure,
             disk,
             gcs,
+            gha,
             memcached,
             redis,
             s3,
@@ -249,6 +261,7 @@ impl CacheConfigs {
             .chain(redis.map(CacheType::Redis))
             .chain(memcached.map(CacheType::Memcached))
             .chain(gcs.map(CacheType::GCS))
+            .chain(gha.map(CacheType::GHA))
             .chain(azure.map(CacheType::Azure))
             .collect();
         let fallback = disk.unwrap_or_default();
@@ -262,6 +275,7 @@ impl CacheConfigs {
             azure,
             disk,
             gcs,
+            gha,
             memcached,
             redis,
             s3,
@@ -275,6 +289,9 @@ impl CacheConfigs {
         }
         if gcs.is_some() {
             self.gcs = gcs
+        }
+        if gha.is_some() {
+            self.gha = gha
         }
         if memcached.is_some() {
             self.memcached = memcached
@@ -553,6 +570,25 @@ fn config_from_env() -> Result<EnvConfig> {
         }
     });
 
+    // ======= GHA =======
+    let gha = if let (Some(url), Some(token)) = (
+        env::var("SCCACHE_GHA_CACHE_URL")
+            .ok()
+            .or_else(|| env::var("ACTIONS_CACHE_URL").ok()),
+        env::var("SCCACHE_GHA_RUNTIME_TOKEN")
+            .ok()
+            .or_else(|| env::var("ACTIONS_RUNTIME_TOKEN").ok()),
+    ) {
+        Some(GHACacheConfig {
+            url,
+            token,
+            cache_to: env::var("SCCACHE_GHA_CACHE_TO").ok(),
+            cache_from: env::var("SCCACHE_GHA_CACHE_FROM").ok(),
+        })
+    } else {
+        None
+    };
+
     // ======= Azure =======
     let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
         let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
@@ -584,6 +620,7 @@ fn config_from_env() -> Result<EnvConfig> {
         azure,
         disk,
         gcs,
+        gha,
         memcached,
         redis,
         s3,
@@ -1017,6 +1054,12 @@ cred_path = "/psst/secret/cred"
 bucket = "bucket"
 key_prefix = "prefix"
 
+[cache.gha]
+url = "http://localhost"
+token = "secret"
+cache_to = "sccache-latest"
+cache_from = "sccache-"
+
 [cache.memcached]
 url = "..."
 
@@ -1049,6 +1092,12 @@ no_credentials = true
                     cred_path: Some(PathBuf::from("/psst/secret/cred")),
                     rw_mode: GCSCacheRWMode::ReadOnly,
                     key_prefix: "prefix".into(),
+                }),
+                gha: Some(GHACacheConfig {
+                    url: "http://localhost".to_owned(),
+                    token: "secret".to_owned(),
+                    cache_to: Some("sccache-latest".to_owned()),
+                    cache_from: Some("sccache-".to_owned()),
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
