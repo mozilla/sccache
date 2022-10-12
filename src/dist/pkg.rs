@@ -265,7 +265,7 @@ mod toolchain_imp {
                 continue;
             }
 
-            let libpath = match (parts.get(0), parts.get(1), parts.get(2)) {
+            let libpath = match (parts.first(), parts.get(1), parts.get(2)) {
                 // "linux-vdso.so.1 =>  (0x00007ffeb41f6000)"
                 (Some(_libname), Some(&"=>"), None) => continue,
                 // "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6877b85000)"
