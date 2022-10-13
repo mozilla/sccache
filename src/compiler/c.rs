@@ -345,7 +345,7 @@ where
             let v: std::result::Result<(), std::io::Error> =
                 outputs.values().fold(Ok(()), |r, output| {
                     r.and_then(|_| {
-                        let mut path = (&args_cwd).clone();
+                        let mut path = args_cwd.clone();
                         path.push(&output.path);
                         match fs::metadata(&path) {
                             // File exists, remove it.
