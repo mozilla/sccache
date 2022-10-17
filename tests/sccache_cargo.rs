@@ -165,17 +165,23 @@ fn test_rust_cargo_build_nightly() -> Result<()> {
     )
 }
 
-/// Test that building a simple Rust crate with cargo using sccache results in a cache hit
-/// when built a second time and a cache miss, when the environment variable referenced via
-/// env! is changed.
-fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
-    // `cargo clean` first, just to be sure there's no leftover build objects.
+fn cargo_clean(test_info: &SccacheTest) -> Result<()> {
     Command::new(CARGO.as_os_str())
         .args(&["clean"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
         .try_success()?;
+    Ok(())
+}
+
+/// Test that building a simple Rust crate with cargo using sccache results in a cache hit
+/// when built a second time and a cache miss, when the environment variable referenced via
+/// env! is changed.
+fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
+    // `cargo clean` first, just to be sure there's no leftover build objects.
+    cargo_clean(&test_info)?;
+
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
         .args(&[cmd, "--color=never"])
@@ -185,12 +191,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
         .try_stderr(predicates::str::contains("\x1b[").from_utf8().not())?
         .try_success()?;
     // Clean it so we can build it again.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
     Command::new(CARGO.as_os_str())
         .args(&[cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
@@ -208,13 +209,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
 }
 
 fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
-    // `cargo clean` first, just to be sure there's no leftover build objects.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
         .args(&["run", "--color=never"])
@@ -225,12 +220,8 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
         .try_stdout(predicates::str::contains("Env var: 1"))?
         .try_success()?;
     // Clean it so we can build it again.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
+
     Command::new(CARGO.as_os_str())
         .args(&["run", "--color=always"])
         .envs(test_info.env.iter().cloned())
