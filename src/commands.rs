@@ -131,13 +131,28 @@ fn redirect_stderr(f: File) {
     }
 }
 
-/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
-fn redirect_error_log() -> Result<()> {
+/// Create the log file and return an error if cannot be created
+fn create_error_log() -> Result<File> {
+    trace!("Create the log file");
     let name = match env::var("SCCACHE_ERROR_LOG") {
         Ok(filename) if !filename.is_empty() => filename,
-        _ => return Ok(()),
+        _ => {
+            bail!("Cannot read variable 'SCCACHE_ERROR_LOG'");
+        }
     };
-    let f = OpenOptions::new().create(true).append(true).open(name)?;
+
+    let f = match OpenOptions::new().create(true).append(true).open(&name) {
+        Ok(f) => f,
+        Err(_) => {
+            bail!("Cannot open/write log file '{}'", &name);
+        }
+    };
+    Ok(f)
+}
+
+/// If `SCCACHE_ERROR_LOG` is set, redirect stderr to it.
+fn redirect_error_log(f: File) -> Result<()> {
+    debug!("redirecting stderr into {:?}", f);
     redirect_stderr(f);
     Ok(())
 }
@@ -576,9 +591,15 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
-            // Can't report failure here, we're already daemonized.
-            daemonize()?;
-            redirect_error_log()?;
+            if env::var("SCCACHE_ERROR_LOG").is_ok() {
+                let f = create_error_log()?;
+                // Can't report failure here, we're already daemonized.
+                daemonize()?;
+                redirect_error_log(f)?;
+            } else {
+                // We aren't asking for a log file
+                daemonize()?;
+            }
             server::start_server(config, get_port())?;
         }
         Command::StartServer => {

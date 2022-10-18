@@ -137,6 +137,44 @@ fn test_rust_cargo_build() -> Result<()> {
     test_rust_cargo_cmd("build", SccacheTest::new(None)?)
 }
 
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_run_log_no_perm() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("gcc")
+        .env("SCCACHE_ERROR_LOG", "/no-perm.log") // Should not work
+        .env("SCCACHE_LOG", "debug");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "Cannot open/write log file '/no-perm.log'",
+    ));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_run_log() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test_rust_cargo")
+        .tempdir()
+        .context("Failed to create tempdir")?;
+    let tmppath = tempdir.path().join("perm.log");
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--show-stats")
+        .env("SCCACHE_ERROR_LOG", &tmppath) // Should not work
+        .env("SCCACHE_LOG", "debug");
+
+    cmd.assert().success();
+    assert!(Path::new(&tmppath).is_file());
+    Ok(())
+}
+
 /// This test checks that changing an environment variable reference by env! is detected by
 /// sccache, causes a rebuild and is correctly printed to stdout.
 #[test]
