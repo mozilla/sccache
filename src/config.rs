@@ -449,7 +449,8 @@ pub struct EnvConfig {
     cache: CacheConfigs,
 }
 
-fn config_from_env() -> EnvConfig {
+fn config_from_env() -> Result<EnvConfig> {
+    // ======= AWS =======
     let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
         let endpoint = match env::var("SCCACHE_ENDPOINT") {
             Ok(endpoint) => format!("{}/{}", endpoint, bucket),
@@ -480,13 +481,26 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
+    // ======= redis =======
     let redis = env::var("SCCACHE_REDIS")
         .ok()
         .map(|url| RedisCacheConfig { url });
 
+    // ======= memcached =======
     let memcached = env::var("SCCACHE_MEMCACHED")
         .ok()
         .map(|url| MemcachedCacheConfig { url });
+
+    // ======= GCP/GCS =======
+    if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
+        || env::var("SCCACHE_GCS_OAUTH_URL").is_ok()
+        || env::var("SCCACHE_GCS_KEY_PATH").is_ok())
+        && env::var("SCCACHE_GCS_BUCKET").is_err()
+    {
+        bail!(
+            "If setting GCS credentials, SCCACHE_GCS_BUCKET and an auth mechanism need to be set."
+        );
+    }
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
         let key_prefix = env::var("SCCACHE_GCS_KEY_PREFIX")
@@ -505,7 +519,11 @@ fn config_from_env() -> EnvConfig {
             warn!("You should set only one of them!");
             warn!("SCCACHE_GCS_KEY_PATH will take precedence");
         }
-
+        if let Some(p) = &cred_path {
+            if !p.is_file() {
+                warn!("Could not find SCCACHE_GCS_KEY_PATH file '{:?}'", p);
+            }
+        }
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
@@ -530,6 +548,7 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
+    // ======= Azure =======
     let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
         let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
             .ok()
@@ -541,6 +560,7 @@ fn config_from_env() -> EnvConfig {
         AzureCacheConfig { key_prefix }
     });
 
+    // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
         .ok()
@@ -564,7 +584,7 @@ fn config_from_env() -> EnvConfig {
         s3,
     };
 
-    EnvConfig { cache }
+    Ok(EnvConfig { cache })
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -599,7 +619,7 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Config> {
-        let env_conf = config_from_env();
+        let env_conf = config_from_env()?;
 
         let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
@@ -895,7 +915,7 @@ fn test_gcs_credentials_url() {
     env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
-    let env_cfg = config_from_env();
+    let env_cfg = config_from_env().unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
@@ -920,7 +940,7 @@ fn test_gcs_oauth_url() {
     env::set_var("SCCACHE_GCS_OAUTH_URL", "http://localhost/");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
-    let env_cfg = config_from_env();
+    let env_cfg = config_from_env().unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
