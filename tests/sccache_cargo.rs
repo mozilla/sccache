@@ -281,3 +281,57 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     drop(test_info);
     Ok(())
 }
+
+#[test]
+#[serial]
+fn test_gcp_arg_check() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "If setting GCS credentials, SCCACHE_GCS_BUCKET",
+    ));
+
+    stop_sccache()?;
+
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_OAUTH_URL", "http://foobar");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "If setting GCS credentials, SCCACHE_GCS_BUCKET",
+    ));
+
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_BUCKET", "b")
+        .env("SCCACHE_GCS_OAUTH_URL", "http://foobar")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    // This is just a warning
+    cmd.assert().success().stderr(predicate::str::contains(
+        "Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set",
+    ));
+
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_BUCKET", "b")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    // This is just a warning
+    cmd.assert().success().stderr(predicate::str::contains(
+        "Could not find SCCACHE_GCS_KEY_PATH file",
+    ));
+
+    Ok(())
+}
