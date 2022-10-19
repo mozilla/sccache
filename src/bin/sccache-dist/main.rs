@@ -105,7 +105,6 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
 struct ServerJwt {
     exp: u64,
     server_id: ServerId,
-    exp: usize,
 }
 fn create_jwt_server_token(
     server_id: ServerId,
@@ -113,7 +112,7 @@ fn create_jwt_server_token(
     key: &[u8],
 ) -> Result<String> {
     let key = jwt::EncodingKey::from_secret(key);
-    jwt::encode(header, &ServerJwt { server_id, exp: 0 }, &key).map_err(Into::into)
+    jwt::encode(header, &ServerJwt { exp: 0, server_id }, &key).map_err(Into::into)
 }
 fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Result<ServerId> {
     let validation = {
