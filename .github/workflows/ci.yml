@@ -297,7 +297,7 @@ jobs:
           ###  based on ref: <https://github.com/rust-lang/rustup/pull/2783>
           ###  and on ref: <https://github.com/uutils/coreutils/commit/86c610a84b8b6c>
           ###  * NOTE: All steps need to be run in this block, otherwise, we are operating back
-          ###    on the mac host
+          ###    on the mac host.
           set -exo pipefail
           #
           ### Basic user setup ################################################################
