@@ -1658,8 +1658,6 @@ mod test {
         assert_eq!(Some("foo.cpp"), input.to_str());
 
         env::remove_var("SCCACHE_ENABLE_MULTIPLE_ARCH");
-
-        assert_eq!("a", "b");
     }
 
     #[test]
