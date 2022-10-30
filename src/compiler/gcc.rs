@@ -1647,17 +1647,17 @@ mod test {
 
         env::set_var("SCCACHE_ENABLE_MULTIPLE_ARCH", "true");
 
-        let ParsedArguments {
-            input,
-            ..
-        } = match parse_arguments_(stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"], false) {
+        let ParsedArguments { input, .. } = match parse_arguments_(
+            stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            false,
+        ) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         assert_eq!(Some("foo.cpp"), input.to_str());
 
         env::remove_var("SCCACHE_ENABLE_MULTIPLE_ARCH");
-        
+
         assert_eq!("a", "b");
     }
 
