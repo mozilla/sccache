@@ -272,6 +272,8 @@ where
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
 
+    let enable_multiple_arch = env::var("SCCACHE_ENABLE_MULTIPLE_ARCH").is_ok();
+
     for arg in ArgsIter::new(it, arg_info) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
@@ -356,10 +358,13 @@ where
                 };
             }
             Some(Arch(arch)) => {
-                match seen_arch {
-                    Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
-                    _ => {}
-                };
+                // see https://github.com/mozilla/sccache/issues/847
+                if !enable_multiple_arch {
+                    match seen_arch {
+                        Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
+                        _ => {}
+                    };
+                }
                 seen_arch = Some(arch.clone());
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
@@ -1639,6 +1644,19 @@ mod test {
                 false
             )
         );
+
+        env::set_var("SCCACHE_ENABLE_MULTIPLE_ARCH", "true");
+
+        let ParsedArguments {
+            input,
+            ..
+        } = match parse_arguments_(stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"], false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+
+        env::remove_var("SCCACHE_ENABLE_MULTIPLE_ARCH");
     }
 
     #[test]
