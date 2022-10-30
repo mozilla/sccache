@@ -392,9 +392,12 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
-            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
+            Some(Arch(_)) => {
+                // Skip -arch arguments
+                continue;
+            }
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
