@@ -1649,7 +1649,7 @@ mod test {
         env::set_var("SCCACHE_ENABLE_MULTIPLE_ARCH", "true");
 
         let ParsedArguments { input, .. } = match parse_arguments_(
-            stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+            stringvec!["-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"],
             false,
         ) {
             CompilerArguments::Ok(args) => args,
