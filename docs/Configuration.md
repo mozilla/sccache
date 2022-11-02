@@ -46,6 +46,8 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+rw_mode = "READ_ONLY"
+# rw_mode = "READ_WRITE"
 ```
 
 ## env
@@ -76,6 +78,7 @@ configuration variables
 * `SCCACHE_ENDPOINT` s3 endpoint
 * `SCCACHE_REGION` s3 region
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
+* `SCCACHE_S3_RW_MODE`
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If `SCCACHE_REGION` is undefined, it will default to `us-east-1`.

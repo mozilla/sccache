@@ -197,6 +197,15 @@ pub struct RedisCacheConfig {
     pub url: String,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum S3CacheRWMode {
+    #[serde(rename = "READ_ONLY")]
+    ReadOnly,
+    #[serde(rename = "READ_WRITE")]
+    ReadWrite,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
@@ -204,6 +213,7 @@ pub struct S3CacheConfig {
     pub endpoint: String,
     pub use_ssl: bool,
     pub key_prefix: String,
+    pub rw_mode: S3CacheRWMode,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -472,12 +482,25 @@ fn config_from_env() -> Result<EnvConfig> {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
+        let rw_mode = match env::var("SCCACHE_S3_RW_MODE").as_ref().map(String::as_str) {
+            Ok("READ_ONLY") => S3CacheRWMode::ReadOnly,
+            Ok("READ_WRITE") => S3CacheRWMode::ReadWrite,
+            Ok(_) => {
+                warn!("Invalid SCCACHE_S3_RW_MODE-- defaulting to READ_WRITE.");
+                S3CacheRWMode::ReadWrite
+            }
+            _ => {
+                warn!("No SCCACHE_S3_RW_MODE specified-- defaulting to READ_WRITE.");
+                S3CacheRWMode::ReadWrite
+            }
+        };
 
         S3CacheConfig {
             bucket,
             endpoint,
             use_ssl,
             key_prefix,
+            rw_mode,
         }
     });
 
@@ -1003,6 +1026,8 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+rw_mode = "READ_WRITE"
+# rw_mode = "READ_ONLY"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1033,7 +1058,8 @@ key_prefix = "s3prefix"
                     bucket: "name".to_owned(),
                     endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
                     use_ssl: true,
-                    key_prefix: "s3prefix".into()
+                    key_prefix: "s3prefix".into(),
+                    rw_mode: S3CacheRWMode::ReadWrite,
                 }),
             },
             dist: DistConfig {

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::config::S3CacheRWMode;
 use crate::simples3::{
     AutoRefreshingProvider, Bucket, ChainProvider, ProfileProvider, ProvideAwsCredentials, Ssl,
 };
@@ -31,11 +32,19 @@ pub struct S3Cache {
     provider: AutoRefreshingProvider<ChainProvider>,
     /// Prefix to be used for bucket keys.
     key_prefix: String,
+    /// Whether to read-only or read-write
+    rw_mode: S3CacheRWMode,
 }
 
 impl S3Cache {
     /// Create a new `S3Cache` storing data in `bucket`.
-    pub fn new(bucket: &str, endpoint: &str, use_ssl: bool, key_prefix: &str) -> Result<S3Cache> {
+    pub fn new(
+        bucket: &str,
+        endpoint: &str,
+        use_ssl: bool,
+        key_prefix: &str,
+        rw_mode: S3CacheRWMode,
+    ) -> Result<S3Cache> {
         let user_dirs = UserDirs::new().context("Couldn't get user directories")?;
         let home = user_dirs.home_dir();
 
@@ -54,6 +63,7 @@ impl S3Cache {
             bucket,
             provider,
             key_prefix: key_prefix.to_owned(),
+            rw_mode,
         })
     }
 
@@ -96,6 +106,9 @@ impl Storage for S3Cache {
     }
 
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        if let S3CacheRWMode::ReadOnly = self.rw_mode {
+            return Ok(Duration::new(0, 0));
+        }
         let key = self.normalize_key(key);
         let start = Instant::now();
         let data = entry.finish()?;
