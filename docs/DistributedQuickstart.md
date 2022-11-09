@@ -7,7 +7,7 @@ macOS and Windows clients are supported but have seen significantly less testing
 Get sccache binaries
 --------------------
 
-Either download pre-built sccache binaries (not currently available), or build sccache locally with the `dist-client` and `dist-server` features enabled:
+Either [install pre-built sccache binaries](https://github.com/mozilla/sccache#installation), or build sccache locally with the `dist-client` and `dist-server` features enabled:
 ```
 cargo build --release --features="dist-client dist-server"
 ```
@@ -19,7 +19,7 @@ If you're only planning to use the client, it is enabled by default, so just `ca
 Configure a scheduler
 ---------------------
 
-If you're adding a server to a cluster that has already be set up, skip ahead to [configuring a build server](#configure-a-build-server).
+If you're adding a server to a cluster that has already been set up, skip ahead to [configuring a build server](#configure-a-build-server).
 
 The scheduler is a daemon that manages compile request from clients and parcels them out to build servers. You only need one of these per sccache setup. Currently only Linux is supported for running the scheduler.
 
