@@ -49,7 +49,7 @@ linked-hash-map = "0.5"
 log = "0.4"
 md-5 = { version = "0.10.5", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
-num_cpus = "1.0"
+num_cpus = "1.14"
 number_prefix = "0.4"
 openssl = { version = "0.10", optional = true }
 percent-encoding = { version = "2", optional = true }
