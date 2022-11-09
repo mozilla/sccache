@@ -7,7 +7,7 @@ macOS and Windows clients are supported but have seen significantly less testing
 Get sccache binaries
 --------------------
 
-Either [install](https://github.com/mozilla/sccache#installation) pre-built sccache binaries, or build sccache locally with the `dist-client` and `dist-server` features enabled:
+Either [install pre-built sccache binaries](https://github.com/mozilla/sccache#installation), or build sccache locally with the `dist-client` and `dist-server` features enabled:
 ```
 cargo build --release --features="dist-client dist-server"
 ```
