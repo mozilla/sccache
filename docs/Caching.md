@@ -1,7 +1,7 @@
 # How caching works
 
-To know if the storage contains the artificat we need, we are
-computing some hashs to make sure the input is the same.
+To know if the storage contains the artifact we need, we are
+computing some hashes to make sure the input is the same.
 
 Because the configuration and environnement matter, the hash
 computation takes a few parameters into account.
