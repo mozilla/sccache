@@ -1,4 +1,11 @@
 [![Build Status](https://github.com/mozilla/sccache/workflows/ci/badge.svg)](https://github.com/mozilla/sccache/actions?query=workflow%3Aci)
+[![Crates.io](https://img.shields.io/crates/v/sccache.svg)](https://crates.io/crates/sccache)
+[![Matrix](https://img.shields.io/matrix/#sccache:mozilla.org)](https://chat.mozilla.org/#/room/#sccache:mozilla.org)
+![Crates.io](https://img.shields.io/crates/l/sccache)
+[![dependency status](https://deps.rs/repo/github/mozilla/sccache/status.svg)](https://deps.rs/repo/github/mozilla/sccache)
+
+[![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/master/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
+
 
 sccache - Shared Compilation Cache
 ==================================
