@@ -90,7 +90,6 @@ const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
 const OUTPUT: &str = "test.o";
-const OUTPUT_BC: &str = "test.bc";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
 fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
@@ -146,59 +145,6 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
-    });
-}
-
-fn test_basic_compile_bc(compiler: Compiler, tempdir: &Path) {
-    let Compiler {
-        name,
-        exe,
-        env_vars,
-    } = compiler;
-    trace!("run_sccache_command_test: {}", name);
-    // Compile a source file.
-    copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
-
-    let out_file = tempdir.join(OUTPUT);
-    trace!("compile");
-    sccache_command()
-        .args(&compile_cmdline(
-            name,
-            &exe,
-            INPUT,
-            OUTPUT_BC,
-            vec!["-emit-llvm".into()],
-        ))
-        .current_dir(tempdir)
-        .envs(env_vars.clone())
-        .assert()
-        .success();
-    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
-    trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(5, info.stats.compile_requests);
-        assert_eq!(5, info.stats.requests_executed);
-        assert_eq!(1, info.stats.cache_hits.all());
-        assert_eq!(4, info.stats.cache_misses.all());
-        assert_eq!(&4, info.stats.cache_misses.get("C/C++").unwrap());
-    });
-    trace!("compile");
-    fs::remove_file(&out_file).unwrap();
-    sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
-        .current_dir(tempdir)
-        .envs(env_vars)
-        .assert()
-        .success();
-    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
-    trace!("request stats");
-    get_stats(|info| {
-        assert_eq!(6, info.stats.compile_requests);
-        assert_eq!(6, info.stats.requests_executed);
-        assert_eq!(2, info.stats.cache_hits.all());
-        assert_eq!(4, info.stats.cache_misses.all());
-        assert_eq!(&2, info.stats.cache_hits.get("C/C++").unwrap());
-        assert_eq!(&4, info.stats.cache_misses.get("C/C++").unwrap());
     });
 }
 
@@ -421,11 +367,8 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
 }
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
-    println!("Testing with {}", compiler.name);
-
     test_basic_compile(compiler.clone(), tempdir);
     test_compile_with_define(compiler.clone(), tempdir);
-
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
     }
@@ -439,9 +382,6 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
     if compiler.name == "clang" {
-        // needs -emit-llvm
-        test_basic_compile_bc(compiler.clone(), tempdir);
-
         let version_cmd = Command::new(compiler.name)
             .arg("--version")
             .output()
