@@ -77,6 +77,10 @@ jobs:
         with:
           toolchain: ${{ matrix.rustc }}
 
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
+
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
 
@@ -192,6 +196,10 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' }}
 
       - name: "`grcov` ~ install"
         run: cargo install grcov
