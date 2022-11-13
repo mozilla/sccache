@@ -263,7 +263,7 @@ jobs:
       - name: Create release
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          for f in sccache-*.tar.gz* sccache-*.zip*; do 
+          for f in sccache-*.tar.gz* sccache-*.zip*; do
               if [[ -f "$f" ]]; then
                 files="$files -a $f";
               fi
