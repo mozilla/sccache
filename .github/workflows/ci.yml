@@ -156,7 +156,7 @@ jobs:
       - name: Id
         id: id
         shell: bash
-        run: echo "::set-output name=id::${ID#refs/tags/}"
+        run: echo "id=${ID#refs/tags/}" >> $GITHUB_OUTPUT
         env:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
@@ -225,7 +225,7 @@ jobs:
           grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
           # generate coverage report
           grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
-          echo ::set-output name=report::${COVERAGE_REPORT_FILE}
+          echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
       - name: Upload coverage results (to Codecov.io)
         uses: codecov/codecov-action@v3
