@@ -18,6 +18,8 @@ use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
+#[cfg(test)]
+use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -912,6 +914,7 @@ fn config_overrides() {
 }
 
 #[test]
+#[serial]
 fn test_s3_no_credentials() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
@@ -923,6 +926,11 @@ fn test_s3_no_credentials() {
         "If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.",
         error.to_string()
     );
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+    env::remove_var("AWS_ACCESS_KEY_ID");
+    env::remove_var("AWS_SECRET_ACCESS_KEY");
 }
 
 #[test]
