@@ -146,7 +146,7 @@ dependencies = [
  "http",
  "hyper",
  "ring",
- "time 0.3.7",
+ "time 0.3.17",
  "tokio",
  "tower",
  "tracing",
@@ -287,7 +287,7 @@ dependencies = [
  "percent-encoding",
  "regex",
  "ring",
- "time 0.3.7",
+ "time 0.3.17",
  "tracing",
 ]
 
@@ -319,7 +319,7 @@ dependencies = [
  "http-body",
  "md-5",
  "pin-project-lite",
- "sha1 0.10.5",
+ "sha1",
  "sha2",
  "tracing",
 ]
@@ -424,7 +424,7 @@ dependencies = [
  "itoa 1.0.1",
  "num-integer",
  "ryu",
- "time 0.3.7",
+ "time 0.3.17",
 ]
 
 [[package]]
@@ -2262,9 +2262,9 @@ dependencies = [
 
 [[package]]
 name = "rouille"
-version = "3.5.0"
+version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18b2380c42510ef4a28b5f228a174c801e0dec590103e215e60812e2e2f34d05"
+checksum = "4f86e4c51a773f953f02bbab5fd049f004bfd384341d62da2a079aff812ab176"
 dependencies = [
  "base64",
  "chrono",
@@ -2276,9 +2276,9 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "sha1 0.6.1",
+ "sha1",
  "threadpool",
- "time 0.3.7",
+ "time 0.3.17",
  "tiny_http",
  "url",
 ]
@@ -2624,15 +2624,6 @@ dependencies = [
 
 [[package]]
 name = "sha1"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1da05c97445caa12d05e848c4a4fcbbea29e748ac28f7e80e9b010392063770"
-dependencies = [
- "sha1_smol",
-]
-
-[[package]]
-name = "sha1"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f04293dc80c3993519f2d7f6f511707ee7094fe0c6d3406feb330cdb3540eba3"
@@ -2641,12 +2632,6 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
-
-[[package]]
-name = "sha1_smol"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae1a47186c03a32177042e55dbc5fd5aee900b8e0069a8d70fba96a9375cd012"
 
 [[package]]
 name = "sha2"
@@ -2677,7 +2662,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "thiserror",
- "time 0.3.7",
+ "time 0.3.17",
 ]
 
 [[package]]
@@ -2768,7 +2753,7 @@ dependencies = [
  "hostname",
  "libc",
  "log",
- "time 0.3.7",
+ "time 0.3.17",
 ]
 
 [[package]]
@@ -2908,35 +2893,46 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.7"
+version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "004cbc98f30fa233c61a38bc77e96a9106e65c88f2d3bef182ae952027e5753d"
+checksum = "a561bf4617eebd33bca6434b988f39ed798e527f51a1e797d0ee4f61c0a38376"
 dependencies = [
  "itoa 1.0.1",
  "libc",
  "num_threads",
  "quickcheck",
+ "serde",
+ "time-core",
  "time-macros",
 ]
 
 [[package]]
-name = "time-macros"
-version = "0.2.3"
+name = "time-core"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25eb0ca3468fc0acc11828786797f6ef9aa1555e4a211a60d64cc8e4d1be47d6"
+checksum = "2e153e1f1acaef8acc537e68b44906d2db6436e2b35ac2c6b42640fff91f00fd"
+
+[[package]]
+name = "time-macros"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d967f99f534ca7e495c575c62638eebc2898a8c84c119b89e250477bc4ba16b2"
+dependencies = [
+ "time-core",
+]
 
 [[package]]
 name = "tiny_http"
-version = "0.8.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ce51b50006056f590c9b7c3808c3bd70f0d1101666629713866c227d6e58d39"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
 dependencies = [
  "ascii",
- "chrono",
  "chunked_transfer",
+ "httpdate",
  "log",
  "openssl",
- "url",
+ "zeroize",
 ]
 
 [[package]]
