@@ -90,11 +90,11 @@ syslog = { version = "6", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
-aws-config = { version = "0.3", optional = true }
-aws-sdk-s3 = { version = "0.3", optional = true }
-aws-types = { version = "0.3", optional = true }
-aws-smithy-client = { version = "0.33", features = ["rustls"], optional = true }
-aws-sig-auth = { version = "0.3", optional = true }
+aws-config = { version = "0.51", optional = true }
+aws-sdk-s3 = { version = "0.21", optional = true }
+aws-types = { version = "0.51", optional = true }
+aws-smithy-client = { version = "0.51", features = ["rustls"], optional = true }
+aws-sig-auth = { version = "0.51", optional = true }
 
 [dev-dependencies]
 assert_cmd = "=2.0.5"

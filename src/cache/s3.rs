@@ -139,7 +139,10 @@ impl S3Client {
             op.properties_mut().insert(signing_config);
         }
 
-        let client = aws_smithy_client::Builder::dyn_https()
+        let client = aws_smithy_client::Builder::new()
+            .dyn_https_connector(
+                aws_smithy_client::http_connector::ConnectorSettings::builder().build(),
+            )
             .middleware(DefaultMiddleware::new())
             .build();
 
@@ -156,7 +159,10 @@ impl S3Client {
             .make_operation(&self.config)
             .await?;
 
-        let client = aws_smithy_client::Builder::dyn_https()
+        let client = aws_smithy_client::Builder::new()
+            .dyn_https_connector(
+                aws_smithy_client::http_connector::ConnectorSettings::builder().build(),
+            )
             .middleware(DefaultMiddleware::new())
             .build();
 
