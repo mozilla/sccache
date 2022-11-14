@@ -464,6 +464,10 @@ fn config_from_env() -> Result<EnvConfig> {
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
 
+        if env::var_os("SCCACHE_S3_USE_SSL").is_some() {
+            warn!("setting SCCACHE_S3_USE_SSL is useless, SSL is always required");
+        }
+
         S3CacheConfig {
             bucket,
             region,
@@ -472,6 +476,12 @@ fn config_from_env() -> Result<EnvConfig> {
             endpoint,
         }
     });
+    if s3.as_ref().map(|s3| s3.no_credentials).unwrap_or_default()
+        && (env::var_os("AWS_ACCESS_KEY_ID").is_some()
+            || env::var_os("AWS_SECRET_ACCESS_KEY").is_some())
+    {
+        bail!("If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.");
+    }
 
     // ======= redis =======
     let redis = env::var("SCCACHE_REDIS")
@@ -898,6 +908,20 @@ fn config_overrides() {
             },
             dist: Default::default(),
         }
+    );
+}
+
+#[test]
+fn test_s3_no_credentials() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+    env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
+    env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
+
+    let error = config_from_env().unwrap_err();
+    assert_eq!(
+        "If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.",
+        error.to_string()
     );
 }
 

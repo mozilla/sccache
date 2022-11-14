@@ -169,3 +169,20 @@ impl S3Client {
         Ok(client.call(op).await?)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_normalize_key() {
+        assert_eq!(
+            normalize_key("prefix", "0123456789abcdef0123456789abcdef"),
+            "prefix0/1/2/0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            normalize_key("prefix/", "0123456789abcdef0123456789abcdef"),
+            "prefix/0/1/2/0123456789abcdef0123456789abcdef"
+        );
+    }
+}
