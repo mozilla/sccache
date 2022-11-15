@@ -37,11 +37,12 @@ impl S3Cache {
         key_prefix: &str,
         no_credentials: bool,
         endpoint: Option<&str>,
+        use_ssl: bool,
     ) -> Result<S3Cache> {
         Ok(S3Cache {
             key_prefix: key_prefix.to_owned(),
             no_credentials,
-            client: S3Client::new(bucket, region, endpoint).await?,
+            client: S3Client::new(bucket, region, endpoint, use_ssl).await?,
         })
     }
 }
@@ -106,7 +107,12 @@ struct S3Client {
 }
 
 impl S3Client {
-    async fn new(bucket: &str, region: Option<&str>, endpoint: Option<&str>) -> Result<S3Client> {
+    async fn new(
+        bucket: &str,
+        region: Option<&str>,
+        endpoint: Option<&str>,
+        use_ssl: bool,
+    ) -> Result<S3Client> {
         let region_provider =
             RegionProviderChain::first_try(region.map(|r| Region::new(r.to_owned())))
                 .or_default_provider();
@@ -114,7 +120,19 @@ impl S3Client {
         let shared_config = aws_config::from_env().region(region_provider).load().await;
         let mut builder = aws_sdk_s3::config::Builder::from(&shared_config);
         if let Some(endpoint) = endpoint {
-            builder = builder.endpoint_resolver(Endpoint::mutable(endpoint.try_into().unwrap()));
+            let endpoint_uri: http::Uri = endpoint.try_into().unwrap();
+            let mut parts = endpoint_uri.into_parts();
+            if use_ssl {
+                parts.scheme = Some(http::uri::Scheme::HTTPS);
+            } else {
+                parts.scheme = Some(http::uri::Scheme::HTTP);
+            }
+            // path_and_query is required when scheme is set
+            if parts.path_and_query.is_none() {
+                parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+            }
+            builder =
+                builder.endpoint_resolver(Endpoint::mutable(http::Uri::from_parts(parts).unwrap()));
         }
         let config = builder.build();
 

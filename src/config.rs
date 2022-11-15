@@ -207,6 +207,7 @@ pub struct S3CacheConfig {
     pub key_prefix: String,
     pub no_credentials: bool,
     pub endpoint: Option<String>,
+    pub use_ssl: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -457,6 +458,10 @@ fn config_from_env() -> Result<EnvConfig> {
     let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
         let region = env::var("SCCACHE_REGION").ok();
         let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
+        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
+            .ok()
+            .filter(|value| value != "off")
+            .is_some();
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
@@ -466,16 +471,13 @@ fn config_from_env() -> Result<EnvConfig> {
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
 
-        if env::var_os("SCCACHE_S3_USE_SSL").is_some() {
-            warn!("setting SCCACHE_S3_USE_SSL is useless, SSL is always required");
-        }
-
         S3CacheConfig {
             bucket,
             region,
             no_credentials,
             key_prefix,
             endpoint,
+            use_ssl,
         }
     });
     if s3.as_ref().map(|s3| s3.no_credentials).unwrap_or_default()
@@ -1026,6 +1028,7 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 bucket = "name"
 region = "us-east-2"
 endpoint = "s3-us-east-1.amazonaws.com"
+use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
 "#;
@@ -1058,6 +1061,7 @@ no_credentials = true
                     bucket: "name".to_owned(),
                     region: Some("us-east-2".to_owned()),
                     endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
+                    use_ssl: true,
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
                 }),

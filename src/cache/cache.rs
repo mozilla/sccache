@@ -448,6 +448,7 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                     &c.key_prefix,
                     c.no_credentials,
                     c.endpoint.as_deref(),
+                    c.use_ssl,
                 )) {
                     Ok(s) => {
                         trace!("Using S3Cache");
