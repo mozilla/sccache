@@ -510,7 +510,7 @@ pub trait DateTimeExt {
     fn to_rfc7231(&self) -> String;
 }
 
-#[cfg(any(feature = "azure", feature = "gcs", feature = "s3"))]
+#[cfg(any(feature = "azure", feature = "gcs"))]
 impl<Tz: chrono::TimeZone> DateTimeExt for chrono::DateTime<Tz>
 where
     Tz::Offset: core::fmt::Display,
