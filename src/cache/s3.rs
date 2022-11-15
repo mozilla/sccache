@@ -37,7 +37,7 @@ impl S3Cache {
         key_prefix: &str,
         no_credentials: bool,
         endpoint: Option<&str>,
-        use_ssl: bool,
+        use_ssl: Option<bool>,
     ) -> Result<S3Cache> {
         Ok(S3Cache {
             key_prefix: key_prefix.to_owned(),
@@ -101,6 +101,29 @@ fn normalize_key(prefix: &str, key: &str) -> String {
     )
 }
 
+fn endpoint_resolver(endpoint: &str, use_ssl: Option<bool>) -> Endpoint {
+    let endpoint_uri: http::Uri = endpoint.try_into().unwrap();
+    let mut parts = endpoint_uri.into_parts();
+    match use_ssl {
+        Some(true) => {
+            parts.scheme = Some(http::uri::Scheme::HTTPS);
+        }
+        Some(false) => {
+            parts.scheme = Some(http::uri::Scheme::HTTP);
+        }
+        None => {
+            if parts.scheme.is_none() {
+                parts.scheme = Some(http::uri::Scheme::HTTP);
+            }
+        }
+    }
+    // path_and_query is required when scheme is set
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+    }
+    Endpoint::mutable(http::Uri::from_parts(parts).unwrap())
+}
+
 struct S3Client {
     bucket: String,
     config: Config,
@@ -111,7 +134,7 @@ impl S3Client {
         bucket: &str,
         region: Option<&str>,
         endpoint: Option<&str>,
-        use_ssl: bool,
+        use_ssl: Option<bool>,
     ) -> Result<S3Client> {
         let region_provider =
             RegionProviderChain::first_try(region.map(|r| Region::new(r.to_owned())))
@@ -120,19 +143,7 @@ impl S3Client {
         let shared_config = aws_config::from_env().region(region_provider).load().await;
         let mut builder = aws_sdk_s3::config::Builder::from(&shared_config);
         if let Some(endpoint) = endpoint {
-            let endpoint_uri: http::Uri = endpoint.try_into().unwrap();
-            let mut parts = endpoint_uri.into_parts();
-            if use_ssl {
-                parts.scheme = Some(http::uri::Scheme::HTTPS);
-            } else {
-                parts.scheme = Some(http::uri::Scheme::HTTP);
-            }
-            // path_and_query is required when scheme is set
-            if parts.path_and_query.is_none() {
-                parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
-            }
-            builder =
-                builder.endpoint_resolver(Endpoint::mutable(http::Uri::from_parts(parts).unwrap()));
+            builder = builder.endpoint_resolver(endpoint_resolver(endpoint, use_ssl));
         }
         let config = builder.build();
 
@@ -202,5 +213,17 @@ mod test {
             normalize_key("prefix/", "0123456789abcdef0123456789abcdef"),
             "prefix/0/1/2/0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn test_endpoint_resolver() {
+        let endpoint = endpoint_resolver("s3-us-east-1.amazonaws.com", None);
+        assert_eq!(endpoint.uri().scheme_str(), Some("http"));
+
+        let endpoint = endpoint_resolver("s3-us-east-1.amazonaws.com", Some(true));
+        assert_eq!(endpoint.uri().scheme_str(), Some("https"));
+
+        let endpoint = endpoint_resolver("s3-us-east-1.amazonaws.com", Some(false));
+        assert_eq!(endpoint.uri().scheme_str(), Some("http"));
     }
 }
