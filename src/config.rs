@@ -207,7 +207,7 @@ pub struct S3CacheConfig {
     pub key_prefix: String,
     pub no_credentials: bool,
     pub endpoint: Option<String>,
-    pub use_ssl: bool,
+    pub use_ssl: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -460,8 +460,7 @@ fn config_from_env() -> Result<EnvConfig> {
         let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
-            .filter(|value| value != "off")
-            .is_some();
+            .map(|value| value != "off");
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
@@ -1061,7 +1060,7 @@ no_credentials = true
                     bucket: "name".to_owned(),
                     region: Some("us-east-2".to_owned()),
                     endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
-                    use_ssl: true,
+                    use_ssl: Some(true),
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
                 }),
