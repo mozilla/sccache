@@ -18,10 +18,10 @@ use std::{
 struct StopServer;
 impl Drop for StopServer {
     fn drop(&mut self) {
-        Command::cargo_bin("sccache")
+        let _ = Command::cargo_bin("sccache")
             .unwrap()
             .arg("--stop-server")
-            .unwrap();
+            .ok();
     }
 }
 
