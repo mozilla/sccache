@@ -196,7 +196,9 @@ Credentials are resolved using the default AWS provider chain, including the `AW
 
 If you do not want to use credentials at all, you can set the `SCCACHE_S3_NO_CREDENTIALS` environment variable. This requires the bucket to allow public readonly access, and can be useful to implement a readonly cache for pull requests, which typically can't be given access to credentials for security reasons.
 
-You can configure the region using the `SCCACHE_REGION` environment variable, or specify the `region` key in `~/.aws/credentials`. Alternatively you can specify the endpoint URL using the `SCCACHE_ENDPOINT` environment variable. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`. If your endpoint requires TLS, set `SCCACHE_S3_USE_SSL=true`. If you don't need a secure network layer, http might be better for performance.
+You can configure the region using the `SCCACHE_REGION` environment variable, or specify the `region` key in `~/.aws/credentials`. Alternatively you can specify the endpoint URL using the `SCCACHE_ENDPOINT` environment variable. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`. 
+
+If your endpoint requires HTTPS/TLS, set `SCCACHE_S3_USE_SSL=true`. If you don't need a secure network layer, HTTP (`SCCACHE_S3_USE_SSL=false`) might be better for performance.
 
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the S3 bucket, effectively creating a scope. To do that use the `SCCACHE_S3_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
