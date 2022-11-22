@@ -101,6 +101,10 @@ skip = [
     { name = "tokio-util", version = "=0.6.10" },
 # chrono
     { name = "time", version = "=0.1.43" },
+# libmount
+    { name = "nix", version = "=0.14.1" },
+# rouille
+    { name = "sha1", version = "=0.6.1" },
 ]
 
 
