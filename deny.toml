@@ -31,6 +31,7 @@ allow = [
     "CC0-1.0",
     "Zlib",
     "OpenSSL",
+    "Unicode-DFS-2016",
 ]
 # List of explicitly disallowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
@@ -100,7 +101,15 @@ skip = [
 # combine
     { name = "tokio-util", version = "=0.6.10" },
 # chrono
-    { name = "time", version = "=0.1.43" },
+    { name = "time", version = "=0.1.45" },
+# libmount
+    { name = "nix", version = "=0.14.1" },
+# rouille
+    { name = "sha1", version = "=0.6.1" },
+# rouille
+    { name = "sha1", version = "=0.6.1" },
+# num_cpus & atty
+    { name = "hermit-abi", version = "=0.1.19" },
 ]
 
 
