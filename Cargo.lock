@@ -2425,7 +2425,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "serial_test",
- "sha-1",
+ "sha1 0.10.5",
  "sha2",
  "strip-ansi-escapes",
  "syslog",
@@ -2609,17 +2609,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "sha-1"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "028f48d513f9678cda28f6e4064755b3fbb2af6acd672f2c209b62323f7aea0f"
-dependencies = [
- "cfg-if 1.0.0",
- "cpufeatures",
- "digest",
 ]
 
 [[package]]
