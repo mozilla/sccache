@@ -16,6 +16,7 @@ use aws_sdk_s3::operation::{GetObject, PutObject};
 use aws_sdk_s3::output::{GetObjectOutput, PutObjectOutput};
 use aws_sdk_s3::{Config, Endpoint, Region};
 use aws_sig_auth::signer::{OperationSigningConfig, SigningRequirements};
+use aws_smithy_client::erase::DynConnector;
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use std::convert::TryInto;
@@ -125,6 +126,7 @@ fn endpoint_resolver(endpoint: &str, use_ssl: Option<bool>) -> Endpoint {
 }
 
 struct S3Client {
+    client: aws_smithy_client::Client<DynConnector, DefaultMiddleware>,
     bucket: String,
     config: Config,
 }
@@ -147,7 +149,16 @@ impl S3Client {
         }
         let config = builder.build();
 
+        // Keep the client around for connection reuse
+        let client = aws_smithy_client::Builder::new()
+            .dyn_https_connector(
+                aws_smithy_client::http_connector::ConnectorSettings::builder().build(),
+            )
+            .middleware(DefaultMiddleware::new())
+            .build();
+
         Ok(S3Client {
+            client,
             bucket: bucket.to_owned(),
             config,
         })
@@ -168,14 +179,7 @@ impl S3Client {
             op.properties_mut().insert(signing_config);
         }
 
-        let client = aws_smithy_client::Builder::new()
-            .dyn_https_connector(
-                aws_smithy_client::http_connector::ConnectorSettings::builder().build(),
-            )
-            .middleware(DefaultMiddleware::new())
-            .build();
-
-        Ok(client.call(op).await?)
+        Ok(self.client.call(op).await?)
     }
 
     async fn put_object(&self, key: &str, data: Vec<u8>) -> Result<PutObjectOutput> {
@@ -188,14 +192,7 @@ impl S3Client {
             .make_operation(&self.config)
             .await?;
 
-        let client = aws_smithy_client::Builder::new()
-            .dyn_https_connector(
-                aws_smithy_client::http_connector::ConnectorSettings::builder().build(),
-            )
-            .middleware(DefaultMiddleware::new())
-            .build();
-
-        Ok(client.call(op).await?)
+        Ok(self.client.call(op).await?)
     }
 }
 
