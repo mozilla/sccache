@@ -99,8 +99,6 @@ skip = [
     { name = "getrandom", version = "=0.1.16" },
 # combine
     { name = "tokio-util", version = "=0.6.10" },
-# libmount
-    { name = "nix", version = "=0.14.1" },
 # chrono
     { name = "time", version = "=0.1.43" },
 ]
