@@ -9,7 +9,7 @@ readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 keywords = ["ccache"]
 edition = "2018"
-rust-version = "1.58"
+rust-version = "1.60"
 
 [[bin]]
 name = "sccache"
