@@ -236,13 +236,6 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
 
-  cargo-deny:
-    name: Style/cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - uses: EmbarkStudios/cargo-deny-action@v1
-
   release:
     name: release
     runs-on: ubuntu-latest
