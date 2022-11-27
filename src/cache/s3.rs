@@ -43,28 +43,7 @@ impl S3Cache {
             builder.disable_credential_loader();
         }
         if let Some(endpoint) = endpoint {
-            let endpoint_uri: http::Uri = endpoint
-                .try_into()
-                .map_err(|err| anyhow!("input endpoint {endpoint} is invalid: {:?}", err))?;
-            let mut parts = endpoint_uri.into_parts();
-            match use_ssl {
-                Some(true) => {
-                    parts.scheme = Some(http::uri::Scheme::HTTPS);
-                }
-                Some(false) => {
-                    parts.scheme = Some(http::uri::Scheme::HTTP);
-                }
-                None => {
-                    if parts.scheme.is_none() {
-                        parts.scheme = Some(http::uri::Scheme::HTTP);
-                    }
-                }
-            }
-            // path_and_query is required when scheme is set
-            if parts.path_and_query.is_none() {
-                parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
-            }
-            builder.endpoint(&http::Uri::from_parts(parts)?.to_string());
+            builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
         Ok(S3Cache {
@@ -116,6 +95,33 @@ fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
 
+/// Resolve given endpoint along with use_ssl settings.
+fn endpoint_resolver(endpoint: &str, use_ssl: Option<bool>) -> Result<String> {
+    let endpoint_uri: http::Uri = endpoint
+        .try_into()
+        .map_err(|err| anyhow!("input endpoint {endpoint} is invalid: {:?}", err))?;
+    let mut parts = endpoint_uri.into_parts();
+    match use_ssl {
+        Some(true) => {
+            parts.scheme = Some(http::uri::Scheme::HTTPS);
+        }
+        Some(false) => {
+            parts.scheme = Some(http::uri::Scheme::HTTP);
+        }
+        None => {
+            if parts.scheme.is_none() {
+                parts.scheme = Some(http::uri::Scheme::HTTP);
+            }
+        }
+    }
+    // path_and_query is required when scheme is set
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+    }
+
+    Ok(http::Uri::from_parts(parts)?.to_string())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -126,5 +132,72 @@ mod test {
             normalize_key("0123456789abcdef0123456789abcdef"),
             "0/1/2/0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn test_endpoint_resolver() -> Result<()> {
+        let cases = vec![
+            (
+                "no scheme without use_ssl",
+                "s3-us-east-1.amazonaws.com",
+                None,
+                "http://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "http without use_ssl",
+                "http://s3-us-east-1.amazonaws.com",
+                None,
+                "http://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "https without use_ssl",
+                "https://s3-us-east-1.amazonaws.com",
+                None,
+                "https://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "no scheme with use_ssl",
+                "s3-us-east-1.amazonaws.com",
+                Some(true),
+                "https://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "http with use_ssl",
+                "http://s3-us-east-1.amazonaws.com",
+                Some(true),
+                "https://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "https with use_ssl",
+                "https://s3-us-east-1.amazonaws.com",
+                Some(true),
+                "https://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "no scheme with not use_ssl",
+                "s3-us-east-1.amazonaws.com",
+                Some(false),
+                "http://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "http with not use_ssl",
+                "http://s3-us-east-1.amazonaws.com",
+                Some(false),
+                "http://s3-us-east-1.amazonaws.com/",
+            ),
+            (
+                "https with not use_ssl",
+                "https://s3-us-east-1.amazonaws.com",
+                Some(false),
+                "http://s3-us-east-1.amazonaws.com/",
+            ),
+        ];
+
+        for (name, endpoint, use_ssl, expected) in cases {
+            let actual = endpoint_resolver(endpoint, use_ssl)?;
+            assert_eq!(actual, expected, "{}", name);
+        }
+
+        Ok(())
     }
 }
