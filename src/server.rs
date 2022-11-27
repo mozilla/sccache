@@ -1149,9 +1149,10 @@ where
                 color_mode,
                 ..Default::default()
             };
+
+            let mut stats = me.stats.write().await;
             match result {
                 Ok((compiled, out)) => {
-                    let mut stats = me.stats.write().await;
                     match compiled {
                         CompileResult::Error => {
                             stats.cache_errors.increment(&kind);
@@ -1209,7 +1210,6 @@ where
                     res.stderr = stderr;
                 }
                 Err(err) => {
-                    let mut stats = me.stats.write().await;
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
                             debug!("Compilation failed: {:?}", output);
@@ -1250,6 +1250,9 @@ where
                     }
                 }
             };
+            // Make sure the write lock has been dropped before going further.
+            drop(stats);
+
             let send = tx
                 .send(Ok(Response::CompileFinished(res)))
                 .map_err(|e| anyhow!("send on finish failed").context(e));
