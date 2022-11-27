@@ -44,7 +44,7 @@ jobs:
         include:
           - os: ubuntu-20.04
             rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-20.04
+          - os: ubuntu-18.04
             rustc: 1.60.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
