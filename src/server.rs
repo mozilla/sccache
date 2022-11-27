@@ -32,7 +32,6 @@ use filetime::FileTime;
 use futures::channel::mpsc;
 use futures::future::FutureExt;
 use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
-use futures_locks::RwLock;
 use number_prefix::NumberPrefix;
 use std::collections::HashMap;
 use std::env;
@@ -54,6 +53,7 @@ use std::time::Duration;
 #[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
+use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
@@ -724,7 +724,9 @@ where
             match req.into_inner() {
                 Request::Compile(compile) => {
                     debug!("handle_client: compile");
-                    me.stats.write().await.compile_requests += 1;
+                    {
+                        me.stats.write().await.compile_requests += 1;
+                    }
                     me.handle_compile(compile).await
                 }
                 Request::GetStats => {

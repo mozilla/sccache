@@ -25,6 +25,7 @@ use hyperx::header::{Authorization, Bearer, ContentLength, ContentType};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use reqwest::{Client, Request};
 use serde::de;
+use tokio::sync::Mutex;
 use url::form_urlencoded;
 
 /// Lifted from the url crate
@@ -160,7 +161,7 @@ impl Bucket {
 pub struct GCSCredentialProvider {
     rw_mode: RWMode,
     sa_info: ServiceAccountInfo,
-    cached_credentials: futures_locks::Mutex<Option<GCSCredential>>,
+    cached_credentials: Mutex<Option<GCSCredential>>,
 }
 
 /// ServiceAccountInfo either contains a URL to fetch the oauth token
@@ -332,7 +333,7 @@ impl GCSCredentialProvider {
         GCSCredentialProvider {
             rw_mode,
             sa_info,
-            cached_credentials: futures_locks::Mutex::new(None),
+            cached_credentials: Mutex::new(None),
         }
     }
 

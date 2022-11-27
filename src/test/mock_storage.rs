@@ -15,9 +15,9 @@
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
 use futures::channel::mpsc;
-use futures_locks::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
