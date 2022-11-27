@@ -644,9 +644,14 @@ mod tests {
     #[test]
     fn rfc7231_format() {
         use crate::util::DateTimeExt;
-        use chrono::{DateTime, NaiveDateTime, Utc};
+        use chrono::{DateTime, Utc};
 
-        let time = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc);
+        let zero_datetime = match chrono::NaiveDateTime::from_timestamp_opt(0, 0) {
+            Some(v) => v,
+            _ => panic!("zero date time from_timetamp_opt"),
+        };
+
+        let time = DateTime::<Utc>::from_utc(zero_datetime, Utc);
 
         assert_eq!(time.to_rfc7231(), "Thu, 01 Jan 1970 00:00:00 GMT");
     }
