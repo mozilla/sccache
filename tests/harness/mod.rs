@@ -154,6 +154,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             toolchain_cache_size: TC_CACHE_SIZE,
             rewrite_includes_only: false, // TODO
         },
+        server_startup_timeout_ms: None,
     }
 }
 #[cfg(feature = "dist-server")]

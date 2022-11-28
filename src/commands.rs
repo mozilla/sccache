@@ -32,6 +32,7 @@ use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process;
+use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::Runtime;
@@ -43,7 +44,7 @@ use crate::errors::*;
 pub const DEFAULT_PORT: u16 = 4226;
 
 /// The number of milliseconds to wait for server startup.
-const SERVER_STARTUP_TIMEOUT_MS: u32 = 10000;
+const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
@@ -78,9 +79,7 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
-fn run_server_process() -> Result<ServerStartup> {
-    use std::time::Duration;
-
+fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
@@ -101,7 +100,7 @@ fn run_server_process() -> Result<ServerStartup> {
         read_server_startup_status(socket).await
     };
 
-    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
     runtime.block_on(async move {
         match tokio::time::timeout(timeout, startup).await {
             Ok(result) => result,
@@ -159,12 +158,11 @@ fn redirect_error_log(f: File) -> Result<()> {
 
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
-fn run_server_process() -> Result<ServerStartup> {
+fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
     use futures::StreamExt;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
-    use std::time::Duration;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
     use winapi::um::handleapi::CloseHandle;
@@ -256,7 +254,7 @@ fn run_server_process() -> Result<ServerStartup> {
         read_server_startup_status(socket?).await
     };
 
-    let timeout = Duration::from_millis(SERVER_STARTUP_TIMEOUT_MS.into());
+    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
     runtime.block_on(async move {
         match tokio::time::timeout(timeout, startup).await {
             Ok(result) => result,
@@ -266,7 +264,10 @@ fn run_server_process() -> Result<ServerStartup> {
 }
 
 /// Attempt to connect to an sccache server listening on `port`, or start one if no server is running.
-fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
+fn connect_or_start_server(
+    port: u16,
+    startup_timeout: Option<Duration>,
+) -> Result<ServerConnection> {
     trace!("connect_or_start_server({})", port);
     match connect_to_server(port) {
         Ok(server) => Ok(server),
@@ -276,7 +277,7 @@ fn connect_or_start_server(port: u16) -> Result<ServerConnection> {
         {
             // If the connection was refused we probably need to start
             // the server.
-            match run_server_process()? {
+            match run_server_process(startup_timeout)? {
                 ServerStartup::Ok { port: actualport } => {
                     if port != actualport {
                         // bail as the next connect_with_retry will fail
@@ -578,11 +579,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     // Config isn't required for all commands, but if it's broken then we should flag
     // it early and loudly.
     let config = &Config::load()?;
+    let startup_timeout = config.server_startup_timeout;
 
     match cmd {
         Command::ShowStats(fmt) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let srv = connect_or_start_server(get_port())?;
+            let srv = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_stats(srv).context("failed to get stats from server")?;
             match fmt {
                 StatsFormat::Text => stats.print(),
@@ -605,7 +607,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StartServer => {
             trace!("Command::StartServer");
             println!("sccache: Starting the server...");
-            let startup = run_server_process().context("failed to start server process")?;
+            let startup =
+                run_server_process(startup_timeout).context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { port } => {
                     if port != DEFAULT_PORT {
@@ -626,7 +629,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            let conn = connect_or_start_server(get_port())?;
+            let conn = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_zero_stats(conn).context("couldn't zero stats on server")?;
             stats.print();
         }
@@ -688,7 +691,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         ),
         Command::DistStatus => {
             trace!("Command::DistStatus");
-            let srv = connect_or_start_server(get_port())?;
+            let srv = connect_or_start_server(get_port(), startup_timeout)?;
             let status =
                 request_dist_status(srv).context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
@@ -726,7 +729,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         } => {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             let jobserver = unsafe { Client::new() };
-            let conn = connect_or_start_server(get_port())?;
+            let conn = connect_or_start_server(get_port(), startup_timeout)?;
             let mut runtime = Runtime::new()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
