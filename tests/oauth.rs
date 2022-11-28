@@ -59,6 +59,7 @@ fn config_with_dist_auth(
             toolchain_cache_size: 0,
             rewrite_includes_only: true,
         },
+        server_startup_timeout_ms: None,
     }
 }
 
