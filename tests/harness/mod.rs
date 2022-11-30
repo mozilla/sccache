@@ -141,6 +141,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             azure: None,
             disk: Some(disk_cache),
             gcs: None,
+            gha: None,
             memcached: None,
             redis: None,
             s3: None,

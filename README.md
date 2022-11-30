@@ -32,6 +32,7 @@ Table of Contents (ToC)
   * [Memcached](#memcached)
   * [Google Cloud Storage](#google-cloud-storage)
   * [Azure](#azure)
+  * [GitHub Actions](#github-actions)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
@@ -245,6 +246,24 @@ the container for you - you'll need to do that yourself.
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the container, effectively creating a scope. To do that use the `SCCACHE_AZURE_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
 **Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
+
+### GitHub Actions
+To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set the `SCCACHE_GHA_CACHE_URL`/`ACTIONS_CACHE_URL` and `SCCACHE_GHA_RUNTIME_TOKEN`/`ACTIONS_RUNTIME_TOKEN` environmental variables. The `SCCACHE_` prefixed environmental variables override the variables without the prefix.
+
+In a GitHub Actions workflow, you can set these environmental variables using the following step.
+
+```yaml
+- name: Configure sccache
+  uses: actions/github-script@v6
+  with:
+    script: |
+      core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+      core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+```
+
+To write to the cache, set `SCCACHE_GHA_CACHE_TO` to a cache key, for example
+`sccache-latest`. To read from cache key prefixes, set `SCCACHE_GHA_CACHE_FROM`
+to a comma-separated list of cache key prefixes, for example `sccache-`.
 
 ---
 

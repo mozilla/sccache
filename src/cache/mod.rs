@@ -19,6 +19,8 @@ pub mod cache;
 pub mod disk;
 #[cfg(feature = "gcs")]
 pub mod gcs;
+#[cfg(feature = "gha")]
+pub mod gha;
 #[cfg(feature = "memcached")]
 pub mod memcached;
 #[cfg(feature = "redis")]
