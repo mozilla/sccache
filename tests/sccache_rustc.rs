@@ -124,8 +124,8 @@ while (( "$#" )); do
     shift
 done
 
-if (( build )); then
-    echo $(($(cat counter) + 1)) > counter
+if (( $build )); then
+    echo $(("$(cat counter)" + 1)) > counter
     cp counter RUST_FILE
 fi
 "#,
