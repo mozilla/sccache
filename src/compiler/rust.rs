@@ -401,7 +401,7 @@ impl Rust {
                     e.ok().and_then(|e| {
                         e.file_type().ok().and_then(|t| {
                             let p = e.path();
-                            if (t.is_file() || t.is_symlink() && p.is_file())
+                            if t.is_file()
                                 && p.extension().map(|e| e == DLL_EXTENSION).unwrap_or(false)
                             {
                                 Some(p)
