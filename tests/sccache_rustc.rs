@@ -98,9 +98,6 @@ while (( "$#" )); do
             echo rustc 1.0.0
             exec echo "host: unknown"
             ;;
-        +stable)
-            exit 1
-            ;;
         --print=sysroot)
             exec echo {}
             ;;
