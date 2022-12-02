@@ -59,7 +59,6 @@ fn test_symlinks() {
     let out_file = root.join("RUST_FILE");
 
     symlink(root.join("rust1"), &rust).unwrap();
-    drop(StopServer);
     let _stop_server = StopServer;
     run_sccache(root, &bin);
     let output1 = fs::read(&out_file).unwrap();
@@ -147,7 +146,7 @@ fn run_sccache(root: &Path, path: &Path) {
         .env("SCCACHE_DIR", root.join("sccache"))
         .arg("rustc")
         .arg("RUST_FILE.rs")
-        .arg("--crate-name=sccache_rustc_tests")
+        .arg("--crate-name=sccache-rustc-tests")
         .arg("--crate-type=lib")
         .arg("--emit=link")
         .arg("--out-dir")
