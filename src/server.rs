@@ -939,10 +939,6 @@ where
             }
         };
 
-        let resolved_compiler_path = resolved_compiler_path
-            .canonicalize()
-            .unwrap_or(resolved_compiler_path);
-
         let dist_info = match me1.dist_client.get_client().await {
             Ok(Some(ref client)) => {
                 if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
