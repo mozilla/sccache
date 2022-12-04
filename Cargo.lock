@@ -2439,7 +2439,6 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sig-auth",
  "aws-smithy-client",
- "aws-types",
  "base64",
  "bincode",
  "blake3",
