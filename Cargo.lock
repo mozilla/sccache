@@ -1541,9 +1541,9 @@ checksum = "86f0b0d4bf799edbc74508c1e8bf170ff5f41238e5f8225603ca7caaae2b7860"
 
 [[package]]
 name = "opendal"
-version = "0.21.2"
+version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b897fbc34f29b7975b7856aaa6d2199c9df6469245146e20d19c031d4db9d2"
+checksum = "23c49b040a9a4357d22f0b5f637214ab759d8e19fea2d90f42844ac44249ea5b"
 dependencies = [
  "anyhow",
  "async-compat",
@@ -1569,6 +1569,7 @@ dependencies = [
  "time 0.3.17",
  "tokio",
  "ureq",
+ "uuid",
 ]
 
 [[package]]
@@ -1968,9 +1969,9 @@ dependencies = [
 
 [[package]]
 name = "reqsign"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d34ea360414ee77ddab3a8360a0c241fc77ab5e27892dcde1d2cfcc29d4e0f55"
+checksum = "2d544686c7cb5a31f085ae9f5c4e40a30dcba72d0b1d77656329dc4f90433cd6"
 dependencies = [
  "anyhow",
  "backon",
@@ -3095,6 +3096,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "422ee0de9031b5b948b97a8fc04e3aa35230001a722ddd27943e0be31564ce4c"
 dependencies = [
  "getrandom 0.2.8",
+ "serde",
 ]
 
 [[package]]
