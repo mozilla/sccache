@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::FileObjectSource;
 use crate::compiler::args::*;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
@@ -19,7 +20,6 @@ use crate::compiler::{
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
-use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
@@ -27,6 +27,7 @@ use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
+use crate::{counted_array, dist};
 use filetime::FileTime;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
@@ -119,7 +120,7 @@ pub struct RustupProxy {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedArguments {
-    /// The full commandline, with all parsed aguments
+    /// The full commandline, with all parsed arguments
     arguments: Vec<Argument<ArgData>>,
     /// The location of compiler outputs.
     output_dir: PathBuf,
@@ -179,7 +180,7 @@ pub struct RustCompilation {
 }
 
 // The selection of crate types for this compilation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateTypes {
     rlib: bool,
     staticlib: bool,
@@ -400,7 +401,7 @@ impl Rust {
                     e.ok().and_then(|e| {
                         e.file_type().ok().and_then(|t| {
                             let p = e.path();
-                            if t.is_file()
+                            if (t.is_file() || t.is_symlink() && p.is_file())
                                 && p.extension().map(|e| e == DLL_EXTENSION).unwrap_or(false)
                             {
                                 Some(p)
@@ -609,7 +610,7 @@ impl RustupProxy {
         // `rustc +stable` returns retcode 1 (!=0) if it is installed via i.e. rpm packages
 
         // verify rustc is proxy
-        let mut child = creator.new_command_sync(compiler_executable.to_owned());
+        let mut child = creator.new_command_sync(compiler_executable);
         child.env_clear().envs(ref_env(env)).args(&["+stable"]);
         let state = run_input_output(child, None).await.map(move |output| {
             if output.status.success() {
@@ -625,7 +626,7 @@ impl RustupProxy {
             Ok(ProxyPath::Candidate(_)) => unreachable!("Q.E.D."),
             Ok(ProxyPath::ToBeDiscovered) => {
                 // simple check: is there a rustup in the same parent dir as rustc?
-                // that would be the prefered one
+                // that would be the preferred one
                 Ok(match compiler_executable.parent().map(Path::to_owned) {
                     Some(parent) => {
                         let proxy_candidate = parent.join(proxy_name);
@@ -672,7 +673,7 @@ impl RustupProxy {
             Ok(ProxyPath::None) => Ok(Ok(None)),
             Ok(ProxyPath::Candidate(proxy_executable)) => {
                 // verify the candidate is a rustup
-                let mut child = creator.new_command_sync(proxy_executable.to_owned());
+                let mut child = creator.new_command_sync(&proxy_executable);
                 child.env_clear().envs(ref_env(env)).args(&["--version"]);
                 let rustup_candidate_check = run_input_output(child, None).await?;
 
@@ -983,6 +984,7 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--allow", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cap-lints", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--cfg", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--check-cfg", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--codegen", ArgCodegen, CanBeSeparated('='), CodeGen),
     take_arg!("--color", String, CanBeSeparated('='), Color),
     take_arg!("--crate-name", String, CanBeSeparated('='), CrateName),
@@ -1727,8 +1729,12 @@ impl Compilation for RustCompilation {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a> {
-        Box::new(self.outputs.iter().map(|(k, v)| (k.as_str(), &**v)))
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
+        Box::new(self.outputs.iter().map(|(k, v)| FileObjectSource {
+            key: k.to_string(),
+            path: v.clone(),
+            optional: false,
+        }))
     }
 }
 
@@ -1750,6 +1756,41 @@ struct RustInputsPackager {
     inputs: Vec<PathBuf>,
     path_transformer: dist::PathTransformer,
     rlib_dep_reader: Option<Arc<RlibDepReader>>,
+}
+
+#[cfg(feature = "dist-client")]
+fn can_trim_this(input_path: &Path) -> bool {
+    trace!("can_trim_this: input_path={:?}", input_path);
+    let mut ar_path = input_path.to_path_buf();
+    ar_path.set_extension("a");
+    // Check if the input path exists with both a .rlib and a .a, in which case
+    // we want to refuse to trim, otherwise triggering
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1760743
+    input_path
+        .extension()
+        .map(|e| e == RLIB_EXTENSION)
+        .unwrap_or(false)
+        && !ar_path.exists()
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_can_trim_this() {
+    use crate::test::utils::create_file;
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test")
+        .tempdir()
+        .unwrap();
+    let tempdir = tempdir.path();
+
+    // With only one rlib file we should be fine
+    let rlib_file = create_file(tempdir, "libtest.rlib", |_f| Ok(())).unwrap();
+    assert!(can_trim_this(&rlib_file));
+
+    // Adding an ar from a staticlib (i.e., crate-type = ["staticlib", "rlib"]
+    // we need to refuse to allow trimming
+    let _ar_file = create_file(tempdir, "libtest.a", |_f| Ok(())).unwrap();
+    assert!(!can_trim_this(&rlib_file));
 }
 
 #[cfg(feature = "dist-client")]
@@ -1903,12 +1944,7 @@ impl pkg::InputsPackager for RustInputsPackager {
         for (input_path, dist_input_path) in all_tar_inputs.iter() {
             let mut file_header = pkg::make_tar_header(input_path, dist_input_path)?;
             let file = fs::File::open(input_path)?;
-            if can_trim_rlibs
-                && input_path
-                    .extension()
-                    .map(|e| e == RLIB_EXTENSION)
-                    .unwrap_or(false)
-            {
+            if can_trim_rlibs && can_trim_this(input_path) {
                 let mut archive = ar::Archive::new(file);
 
                 while let Some(entry_result) = archive.next_entry() {
@@ -2174,7 +2210,7 @@ impl RlibDepReader {
         }
 
         // The goal of this cache is to avoid repeated lookups when building a single project. Let's budget 3MB.
-        // Allowing for a 100 byte path, 50 dependecies per rlib and 20 characters per crate name, this roughly
+        // Allowing for a 100 byte path, 50 dependencies per rlib and 20 characters per crate name, this roughly
         // approximates to `path_size + path + vec_size + num_deps * (systemtime_size + string_size + crate_name_len)`
         //                 `   3*8    +  100 +   3*8    +    50    * (      8         +     3*8     +       20      )`
         //                 `2748` bytes per crate
@@ -2276,10 +2312,12 @@ impl RlibDepReader {
 #[cfg(feature = "dist-client")]
 fn parse_rustc_z_ls(stdout: &str) -> Result<Vec<&str>> {
     let mut lines = stdout.lines();
-    match lines.next() {
-        Some("=External Dependencies=") => {}
-        Some(s) => bail!("Unknown first line from rustc -Z ls: {}", s),
-        None => bail!("No output from rustc -Z ls"),
+    loop {
+        match lines.next() {
+            Some("=External Dependencies=") => break,
+            Some(_s) => {}
+            None => bail!("No output from rustc -Z ls"),
+        }
     }
 
     let mut dep_names = vec![];
@@ -2895,8 +2933,33 @@ c:/foo/bar.rs:
 
     #[cfg(feature = "dist-client")]
     #[test]
-    fn test_parse_rustc_z_ls() {
+    fn test_parse_rustc_z_ls_pre_1_55() {
         let output = "=External Dependencies=
+1 lucet_runtime
+2 lucet_runtime_internals-1ff6232b6940e924
+3 lucet_runtime_macros-c18e1952b835769e
+
+
+";
+        let res = parse_rustc_z_ls(output);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], "lucet_runtime");
+        assert_eq!(res[1], "lucet_runtime_internals");
+        assert_eq!(res[2], "lucet_runtime_macros");
+    }
+
+    #[cfg(feature = "dist-client")]
+    #[test]
+    fn test_parse_rustc_z_ls_post_1_55() {
+        // This was introduced in rust 1.55 by
+        // https://github.com/rust-lang/rust/commit/cef3ab75b12155e0582dd8b7710b7b901215fdd6
+        let output = "Crate info:
+name lucet_runtime
+hash 6c42566fc9757bba stable_crate_id StableCrateId(11157525371370257329)
+proc_macro false
+=External Dependencies=
 1 lucet_runtime
 2 lucet_runtime_internals-1ff6232b6940e924
 3 lucet_runtime_macros-c18e1952b835769e
@@ -3066,11 +3129,7 @@ c:/foo/bar.rs:
         f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
-        let mut out = res
-            .compilation
-            .outputs()
-            .map(|(k, _)| k.to_owned())
-            .collect::<Vec<_>>();
+        let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
         out.sort();
         assert_eq!(out, vec!["foo.a", "foo.rlib", "foo.rmeta"]);
     }
@@ -3090,7 +3149,8 @@ c:/foo/bar.rs:
             o => panic!("Got unexpected parse result: {:?}", o),
         };
         // Just use empty files for sources.
-        for src in ["foo.rs"].iter() {
+        {
+            let src = &"foo.rs";
             let s = format!("Failed to create {}", src);
             f.touch(src).expect(&s);
         }

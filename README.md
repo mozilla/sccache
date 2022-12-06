@@ -1,4 +1,11 @@
 [![Build Status](https://github.com/mozilla/sccache/workflows/ci/badge.svg)](https://github.com/mozilla/sccache/actions?query=workflow%3Aci)
+[![Crates.io](https://img.shields.io/crates/v/sccache.svg)](https://crates.io/crates/sccache)
+[![Matrix](https://img.shields.io/matrix/sccache:mozilla.org)](https://chat.mozilla.org/#/room/#sccache:mozilla.org)
+![Crates.io](https://img.shields.io/crates/l/sccache)
+[![dependency status](https://deps.rs/repo/github/mozilla/sccache/status.svg)](https://deps.rs/repo/github/mozilla/sccache)
+
+[![CodeCov](https://codecov.io/gh/mozilla/sccache/branch/master/graph/badge.svg)](https://codecov.io/gh/mozilla/sccache)
+
 
 sccache - Shared Compilation Cache
 ==================================
@@ -25,6 +32,7 @@ Table of Contents (ToC)
   * [Memcached](#memcached)
   * [Google Cloud Storage](#google-cloud-storage)
   * [Azure](#azure)
+  * [GitHub Actions](#github-actions)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
@@ -130,7 +138,7 @@ By default, sccache will fail your build if it fails to successfully communicate
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.48.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.60.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
@@ -180,12 +188,18 @@ sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` envi
 
 The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
 
+The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
+
 ### S3
 If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
 
-You can use `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` to set the S3 credentials.  Alternately, you can set `AWS_IAM_CREDENTIALS_URL` to a URL that returns credentials in the format supported by the [EC2 metadata service](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#instance-metadata-security-credentials), and credentials will be fetched from that location as needed. In the absence of either of these options, credentials for the instance's IAM role will be fetched from the EC2 metadata service directly.
+Credentials are resolved using the default AWS provider chain, including the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables, the `~/.aws/credentials` file, etc. For more details see https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credentials.html. If multiple profiles are available, you can pick one using the `AWS_PROFILE` environment variable.
 
-If you need to override the default endpoint you can set `SCCACHE_ENDPOINT`. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`. If your endpoint requires TLS, set `SCCACHE_S3_USE_SSL=true`.
+If you do not want to use credentials at all, you can set the `SCCACHE_S3_NO_CREDENTIALS` environment variable. This requires the bucket to allow public readonly access, and can be useful to implement a readonly cache for pull requests, which typically can't be given access to credentials for security reasons.
+
+You can configure the region using the `SCCACHE_REGION` environment variable, or specify the `region` key in `~/.aws/credentials`. Alternatively you can specify the endpoint URL using the `SCCACHE_ENDPOINT` environment variable. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`. 
+
+If your endpoint requires HTTPS/TLS, set `SCCACHE_S3_USE_SSL=true`. If you don't need a secure network layer, HTTP (`SCCACHE_S3_USE_SSL=false`) might be better for performance.
 
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the S3 bucket, effectively creating a scope. To do that use the `SCCACHE_S3_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
@@ -210,6 +224,20 @@ By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_R
 
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the GCS bucket, effectively creating a scope. To do that use the `SCCACHE_GCS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
+To create such account, in GCP, go in `APIs and Services` => `Cloud Storage` => `Create credentials` => `Service account`. Then, once created, click on the account then `Keys` => `Add key` => `Create new key`. Select the JSON format and here it is. This JSON file is what `SCCACHE_GCS_KEY_PATH` expects.
+The service account needs `Storage Object Admin` permissions on the bucket (otherwise, sccache will fail with a simple `Permission denied`).
+
+To verify that it works, run:
+
+```
+export SCCACHE_GCS_BUCKET=<bucket name in GCP>
+export SCCACHE_GCS_KEY_PATH=secret-gcp-storage.json
+./sccache --show-stats
+# you should see
+[...]
+Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), key_prefix: (none)
+```
+
 ### Azure
 To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
 environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
@@ -218,6 +246,34 @@ the container for you - you'll need to do that yourself.
 You can also define a prefix that will be prepended to the keys of all cache objects created and read within the container, effectively creating a scope. To do that use the `SCCACHE_AZURE_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
 **Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
+
+### GitHub Actions
+To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set the `SCCACHE_GHA_CACHE_URL`/`ACTIONS_CACHE_URL` and `SCCACHE_GHA_RUNTIME_TOKEN`/`ACTIONS_RUNTIME_TOKEN` environmental variables. The `SCCACHE_` prefixed environmental variables override the variables without the prefix.
+
+In a GitHub Actions workflow, you can set these environmental variables using the following step.
+
+```yaml
+- name: Configure sccache
+  uses: actions/github-script@v6
+  with:
+    script: |
+      core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+      core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+```
+
+To write to the cache, set `SCCACHE_GHA_CACHE_TO` to a cache key, for example
+`sccache-latest`. To read from cache key prefixes, set `SCCACHE_GHA_CACHE_FROM`
+to a comma-separated list of cache key prefixes, for example `sccache-`.
+
+In contrast to the [`@actions/cache`](https://github.com/actions/cache) action, which saves a single large archive per cache key, `sccache` with GHA cache storage saves each cache entry separately.
+
+GHA cache storage will create many small caches with the same cache key, e.g. `SCCACHE_GHA_CACHE_TO` and `SCCACHE_GHA_CACHE_FROM`. These GHA caches are differentiated by their [_version_](https://github.com/actions/cache#cache-version). The GHA cache implementation in `sccache` calculates the cache version from the [`sccache` entry key](docs/Caching.md), e.g. the source file path.
+
+For example, if a cache entry has the version `main.rs` and has GHA cache entries for the `sccache-1` and `sccache-2` keys, then `SCCACHE_GHA_CACHE_FROM=sccache-` will match both and [return the most recent entry](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#matching-a-cache-key).
+
+This behavior is useful for scoping caches from different versions of Rust or for cross-platform builds (`rust-sdk-{RUST_TOOLKIT}-{TARGET_TRIPLE}-`), and to allow newer commits to override older caches by adding the Git SHA as a suffix (`-{GITHUB_SHA}`), as in the following screenshot.
+
+<img width="718" src="https://user-images.githubusercontent.com/19253212/205356799-deedc465-e534-4ef6-a249-fc15121fdfd9.png">
 
 ---
 

@@ -19,6 +19,8 @@ use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::{Serialize, Serializer};
+#[cfg(test)]
+use serial_test::serial;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -219,6 +221,15 @@ pub struct GCSCacheConfig {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GHACacheConfig {
+    pub url: String,
+    pub token: String,
+    pub cache_to: Option<String>,
+    pub cache_from: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
 }
@@ -233,15 +244,18 @@ pub struct RedisCacheConfig {
 #[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
-    pub endpoint: String,
-    pub use_ssl: bool,
+    pub region: Option<String>,
     pub key_prefix: String,
+    pub no_credentials: bool,
+    pub endpoint: Option<String>,
+    pub use_ssl: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
     GCS(GCSCacheConfig),
+    GHA(GHACacheConfig),
     Memcached(MemcachedCacheConfig),
     Redis(RedisCacheConfig),
     S3(S3CacheConfig),
@@ -253,6 +267,7 @@ pub struct CacheConfigs {
     pub azure: Option<AzureCacheConfig>,
     pub disk: Option<DiskCacheConfig>,
     pub gcs: Option<GCSCacheConfig>,
+    pub gha: Option<GHACacheConfig>,
     pub memcached: Option<MemcachedCacheConfig>,
     pub redis: Option<RedisCacheConfig>,
     pub s3: Option<S3CacheConfig>,
@@ -266,6 +281,7 @@ impl CacheConfigs {
             azure,
             disk,
             gcs,
+            gha,
             memcached,
             redis,
             s3,
@@ -277,6 +293,7 @@ impl CacheConfigs {
             .chain(redis.map(CacheType::Redis))
             .chain(memcached.map(CacheType::Memcached))
             .chain(gcs.map(CacheType::GCS))
+            .chain(gha.map(CacheType::GHA))
             .chain(azure.map(CacheType::Azure))
             .collect();
         let fallback = disk.unwrap_or_default();
@@ -290,6 +307,7 @@ impl CacheConfigs {
             azure,
             disk,
             gcs,
+            gha,
             memcached,
             redis,
             s3,
@@ -303,6 +321,9 @@ impl CacheConfigs {
         }
         if gcs.is_some() {
             self.gcs = gcs
+        }
+        if gha.is_some() {
+            self.gha = gha
         }
         if memcached.is_some() {
             self.memcached = memcached
@@ -442,6 +463,7 @@ impl Default for DistConfig {
 pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
+    pub server_startup_timeout_ms: Option<u64>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -481,21 +503,15 @@ pub struct EnvConfig {
     cache: CacheConfigs,
 }
 
-fn config_from_env() -> EnvConfig {
+fn config_from_env() -> Result<EnvConfig> {
+    // ======= AWS =======
     let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
-        let endpoint = match env::var("SCCACHE_ENDPOINT") {
-            Ok(endpoint) => format!("{}/{}", endpoint, bucket),
-            _ => match env::var("SCCACHE_REGION") {
-                Ok(ref region) if region != "us-east-1" => {
-                    format!("{}.s3-{}.amazonaws.com", bucket, region)
-                }
-                _ => format!("{}.s3.amazonaws.com", bucket),
-            },
-        };
+        let region = env::var("SCCACHE_REGION").ok();
+        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
-            .filter(|value| value != "off")
-            .is_some();
+            .map(|value| value != "off");
+        let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
             .as_ref()
@@ -506,19 +522,40 @@ fn config_from_env() -> EnvConfig {
 
         S3CacheConfig {
             bucket,
+            region,
+            no_credentials,
+            key_prefix,
             endpoint,
             use_ssl,
-            key_prefix,
         }
     });
+    if s3.as_ref().map(|s3| s3.no_credentials).unwrap_or_default()
+        && (env::var_os("AWS_ACCESS_KEY_ID").is_some()
+            || env::var_os("AWS_SECRET_ACCESS_KEY").is_some())
+    {
+        bail!("If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.");
+    }
 
+    // ======= redis =======
     let redis = env::var("SCCACHE_REDIS")
         .ok()
         .map(|url| RedisCacheConfig { url });
 
+    // ======= memcached =======
     let memcached = env::var("SCCACHE_MEMCACHED")
         .ok()
         .map(|url| MemcachedCacheConfig { url });
+
+    // ======= GCP/GCS =======
+    if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
+        || env::var("SCCACHE_GCS_OAUTH_URL").is_ok()
+        || env::var("SCCACHE_GCS_KEY_PATH").is_ok())
+        && env::var("SCCACHE_GCS_BUCKET").is_err()
+    {
+        bail!(
+            "If setting GCS credentials, SCCACHE_GCS_BUCKET and an auth mechanism need to be set."
+        );
+    }
 
     let gcs = env::var("SCCACHE_GCS_BUCKET").ok().map(|bucket| {
         let key_prefix = env::var("SCCACHE_GCS_KEY_PREFIX")
@@ -537,7 +574,11 @@ fn config_from_env() -> EnvConfig {
             warn!("You should set only one of them!");
             warn!("SCCACHE_GCS_KEY_PATH will take precedence");
         }
-
+        if let Some(p) = &cred_path {
+            if !p.is_file() {
+                warn!("Could not find SCCACHE_GCS_KEY_PATH file '{:?}'", p);
+            }
+        }
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
@@ -562,6 +603,26 @@ fn config_from_env() -> EnvConfig {
         }
     });
 
+    // ======= GHA =======
+    let gha = if let (Some(url), Some(token)) = (
+        env::var("SCCACHE_GHA_CACHE_URL")
+            .ok()
+            .or_else(|| env::var("ACTIONS_CACHE_URL").ok()),
+        env::var("SCCACHE_GHA_RUNTIME_TOKEN")
+            .ok()
+            .or_else(|| env::var("ACTIONS_RUNTIME_TOKEN").ok()),
+    ) {
+        Some(GHACacheConfig {
+            url,
+            token,
+            cache_to: env::var("SCCACHE_GHA_CACHE_TO").ok(),
+            cache_from: env::var("SCCACHE_GHA_CACHE_FROM").ok(),
+        })
+    } else {
+        None
+    };
+
+    // ======= Azure =======
     let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
         let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
             .ok()
@@ -573,6 +634,7 @@ fn config_from_env() -> EnvConfig {
         AzureCacheConfig { key_prefix }
     });
 
+    // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
         .ok()
@@ -591,12 +653,13 @@ fn config_from_env() -> EnvConfig {
         azure,
         disk,
         gcs,
+        gha,
         memcached,
         redis,
         s3,
     };
 
-    EnvConfig { cache }
+    Ok(EnvConfig { cache })
 }
 
 // The directories crate changed the location of `config_dir` on macos in version 3,
@@ -627,34 +690,43 @@ pub struct Config {
     pub caches: Vec<CacheType>,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
+    pub server_startup_timeout: Option<std::time::Duration>,
 }
 
 impl Config {
-    pub fn load() -> Result<Config> {
-        let env_conf = config_from_env();
+    pub fn load() -> Result<Self> {
+        let env_conf = config_from_env()?;
 
         let file_conf_path = config_file("SCCACHE_CONF", "config");
         let file_conf = try_read_config_file(&file_conf_path)
             .context("Failed to load config file")?
             .unwrap_or_default();
 
-        Ok(Config::from_env_and_file_configs(env_conf, file_conf))
+        Ok(Self::from_env_and_file_configs(env_conf, file_conf))
     }
 
-    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
+    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Self {
         let mut conf_caches: CacheConfigs = Default::default();
 
-        let FileConfig { cache, dist } = file_conf;
+        let FileConfig {
+            cache,
+            dist,
+            server_startup_timeout_ms,
+        } = file_conf;
         conf_caches.merge(cache);
+
+        let server_startup_timeout =
+            server_startup_timeout_ms.map(std::time::Duration::from_millis);
 
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
-        Config {
+        Self {
             caches,
             fallback_cache,
             dist,
+            server_startup_timeout,
         }
     }
 }
@@ -896,6 +968,7 @@ fn config_overrides() {
             ..Default::default()
         },
         dist: Default::default(),
+        server_startup_timeout_ms: None,
     };
 
     assert_eq!(
@@ -917,6 +990,7 @@ fn config_overrides() {
                 size: 5,
             },
             dist: Default::default(),
+            server_startup_timeout: None,
         }
     );
 }
@@ -941,6 +1015,25 @@ fn test_disk_config_parsing() {
         }),
         res
     }
+
+#[test]
+#[serial]
+fn test_s3_no_credentials() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+    env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
+    env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
+
+    let error = config_from_env().unwrap_err();
+    assert_eq!(
+        "If setting S3 credentials, SCCACHE_S3_NO_CREDENTIALS must not be set.",
+        error.to_string()
+    );
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+    env::remove_var("AWS_ACCESS_KEY_ID");
+    env::remove_var("AWS_SECRET_ACCESS_KEY");
 }
 
 #[test]
@@ -949,7 +1042,7 @@ fn test_gcs_credentials_url() {
     env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
-    let env_cfg = config_from_env();
+    let env_cfg = config_from_env().unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
@@ -974,7 +1067,7 @@ fn test_gcs_oauth_url() {
     env::set_var("SCCACHE_GCS_OAUTH_URL", "http://localhost/");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
-    let env_cfg = config_from_env();
+    let env_cfg = config_from_env().unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
@@ -996,6 +1089,8 @@ fn test_gcs_oauth_url() {
 #[test]
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
+server_startup_timeout_ms = 10000
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -1026,6 +1121,12 @@ cred_path = "/psst/secret/cred"
 bucket = "bucket"
 key_prefix = "prefix"
 
+[cache.gha]
+url = "http://localhost"
+token = "secret"
+cache_to = "sccache-latest"
+cache_from = "sccache-"
+
 [cache.memcached]
 url = "..."
 
@@ -1034,9 +1135,11 @@ url = "redis://user:passwd@1.2.3.4:6379/1"
 
 [cache.s3]
 bucket = "name"
+region = "us-east-2"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+no_credentials = true
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1057,6 +1160,12 @@ key_prefix = "s3prefix"
                     rw_mode: GCSCacheRWMode::ReadOnly,
                     key_prefix: "prefix".into(),
                 }),
+                gha: Some(GHACacheConfig {
+                    url: "http://localhost".to_owned(),
+                    token: "secret".to_owned(),
+                    cache_to: Some("sccache-latest".to_owned()),
+                    cache_from: Some("sccache-".to_owned()),
+                }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
                 }),
@@ -1065,9 +1174,11 @@ key_prefix = "s3prefix"
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
-                    endpoint: "s3-us-east-1.amazonaws.com".to_owned(),
-                    use_ssl: true,
-                    key_prefix: "s3prefix".into()
+                    region: Some("us-east-2".to_owned()),
+                    endpoint: Some("s3-us-east-1.amazonaws.com".to_owned()),
+                    use_ssl: Some(true),
+                    key_prefix: "s3prefix".into(),
+                    no_credentials: true,
                 }),
             },
             dist: DistConfig {
@@ -1087,6 +1198,7 @@ key_prefix = "s3prefix"
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
             },
+            server_startup_timeout_ms: Some(10000),
         }
     )
 }

@@ -141,6 +141,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             azure: None,
             disk: Some(disk_cache),
             gcs: None,
+            gha: None,
             memcached: None,
             redis: None,
             s3: None,
@@ -153,6 +154,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             toolchain_cache_size: TC_CACHE_SIZE,
             rewrite_includes_only: false, // TODO
         },
+        server_startup_timeout_ms: None,
     }
 }
 #[cfg(feature = "dist-server")]
@@ -266,7 +268,7 @@ impl DistSystem {
                 "-e",
                 "SCCACHE_NO_DAEMON=1",
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -332,7 +334,7 @@ impl DistSystem {
                 "--name",
                 &server_name,
                 "-e",
-                "RUST_LOG=sccache=trace",
+                "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
                 "-v",
@@ -400,7 +402,7 @@ impl DistSystem {
                 child
             }
             ForkResult::Child => {
-                env::set_var("RUST_LOG", "sccache=trace");
+                env::set_var("SCCACHE_LOG", "sccache=trace");
                 env_logger::try_init().unwrap();
                 void::unreachable(server.start().unwrap())
             }
@@ -505,7 +507,7 @@ impl DistSystem {
     }
 }
 
-// If you want containers to hang around (e.g. for debugging), commend out the "rm -f" lines
+// If you want containers to hang around (e.g. for debugging), comment out the "rm -f" lines
 #[cfg(feature = "dist-server")]
 impl Drop for DistSystem {
     fn drop(&mut self) {
@@ -633,7 +635,7 @@ fn make_container_name(tag: &str) -> String {
         "{}_{}_{}",
         CONTAINER_NAME_PREFIX,
         tag,
-        Uuid::new_v4().to_hyphenated_ref()
+        Uuid::new_v4().hyphenated()
     )
 }
 

@@ -137,6 +137,44 @@ fn test_rust_cargo_build() -> Result<()> {
     test_rust_cargo_cmd("build", SccacheTest::new(None)?)
 }
 
+#[test]
+#[serial]
+#[cfg(unix)]
+fn test_run_log_no_perm() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("gcc")
+        .env("SCCACHE_ERROR_LOG", "/no-perm.log") // Should not work
+        .env("SCCACHE_LOG", "debug");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "Cannot open/write log file '/no-perm.log'",
+    ));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_run_log() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test_rust_cargo")
+        .tempdir()
+        .context("Failed to create tempdir")?;
+    let tmppath = tempdir.path().join("perm.log");
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--show-stats")
+        .env("SCCACHE_ERROR_LOG", &tmppath) // Should not work
+        .env("SCCACHE_LOG", "debug");
+
+    cmd.assert().success();
+    assert!(Path::new(&tmppath).is_file());
+    Ok(())
+}
+
 /// This test checks that changing an environment variable reference by env! is detected by
 /// sccache, causes a rebuild and is correctly printed to stdout.
 #[test]
@@ -165,17 +203,23 @@ fn test_rust_cargo_build_nightly() -> Result<()> {
     )
 }
 
-/// Test that building a simple Rust crate with cargo using sccache results in a cache hit
-/// when built a second time and a cache miss, when the environment variable referenced via
-/// env! is changed.
-fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
-    // `cargo clean` first, just to be sure there's no leftover build objects.
+fn cargo_clean(test_info: &SccacheTest) -> Result<()> {
     Command::new(CARGO.as_os_str())
         .args(&["clean"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
         .try_success()?;
+    Ok(())
+}
+
+/// Test that building a simple Rust crate with cargo using sccache results in a cache hit
+/// when built a second time and a cache miss, when the environment variable referenced via
+/// env! is changed.
+fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
+    // `cargo clean` first, just to be sure there's no leftover build objects.
+    cargo_clean(&test_info)?;
+
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
         .args(&[cmd, "--color=never"])
@@ -185,12 +229,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
         .try_stderr(predicates::str::contains("\x1b[").from_utf8().not())?
         .try_success()?;
     // Clean it so we can build it again.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
     Command::new(CARGO.as_os_str())
         .args(&[cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
@@ -208,13 +247,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
 }
 
 fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
-    // `cargo clean` first, just to be sure there's no leftover build objects.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
         .args(&["run", "--color=never"])
@@ -225,12 +258,8 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
         .try_stdout(predicates::str::contains("Env var: 1"))?
         .try_success()?;
     // Clean it so we can build it again.
-    Command::new(CARGO.as_os_str())
-        .args(&["clean"])
-        .envs(test_info.env.iter().cloned())
-        .current_dir(CRATE_DIR.as_os_str())
-        .assert()
-        .try_success()?;
+    cargo_clean(&test_info)?;
+
     Command::new(CARGO.as_os_str())
         .args(&["run", "--color=always"])
         .envs(test_info.env.iter().cloned())
@@ -250,5 +279,59 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
         .try_success()?;
 
     drop(test_info);
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_gcp_arg_check() -> Result<()> {
+    trace!("sccache with log");
+    stop_sccache()?;
+
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "If setting GCS credentials, SCCACHE_GCS_BUCKET",
+    ));
+
+    stop_sccache()?;
+
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_OAUTH_URL", "http://foobar");
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "If setting GCS credentials, SCCACHE_GCS_BUCKET",
+    ));
+
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_BUCKET", "b")
+        .env("SCCACHE_GCS_OAUTH_URL", "http://foobar")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    // This is just a warning
+    cmd.assert().success().stderr(predicate::str::contains(
+        "Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set",
+    ));
+
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_BUCKET", "b")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    // This is just a warning
+    cmd.assert().success().stderr(predicate::str::contains(
+        "Could not find SCCACHE_GCS_KEY_PATH file",
+    ));
+
     Ok(())
 }

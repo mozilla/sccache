@@ -1,3 +1,4 @@
+// Copyright 2022 <LovecraftianHorror@pm.me>
 // Copyright 2016 Mozilla Foundation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +13,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod credential;
-mod s3;
+use sccache::{config, dist::ServerId};
 
-pub use crate::simples3::credential::*;
-pub use crate::simples3::s3::*;
+mod parse;
+
+pub use parse::try_parse_from;
+
+#[derive(Debug)]
+pub enum Command {
+    Auth(AuthSubcommand),
+    Scheduler(config::scheduler::Config),
+    Server(config::server::Config),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AuthSubcommand {
+    Base64 {
+        num_bytes: usize,
+    },
+    JwtHS256ServerToken {
+        secret_key: String,
+        server_id: ServerId,
+    },
+}

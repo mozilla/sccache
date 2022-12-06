@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+};
 use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
-use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
+use crate::{counted_array, dist};
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -32,6 +34,7 @@ use crate::errors::*;
 #[derive(Clone, Debug)]
 pub struct Gcc {
     pub gplusplus: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
@@ -42,12 +45,15 @@ impl CCompilerImpl for Gcc {
     fn plusplus(&self) -> bool {
         self.gplusplus
     }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus)
+        parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus, self.kind())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -73,6 +79,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
+            vec!["-P".to_string()],
         )
         .await
     }
@@ -129,6 +136,8 @@ ArgData! { pub
     // Only valid for clang, but this needs to be here since clang shares gcc's arg parsing.
     XClang(OsString),
     Arch(OsString),
+    PedanticFlag,
+    Standard(OsString),
 }
 
 use self::ArgData::*;
@@ -160,6 +169,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-P", TooHardFlag),
     take_arg!("-U", OsString, CanBeSeparated, PassThrough),
     take_arg!("-V", OsString, Separated, PassThrough),
+    flag!("-Werror=pedantic", PedanticFlag),
+    flag!("-Wpedantic", PedanticFlag),
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
     take_arg!("-Xpreprocessor", OsString, Separated, PreprocessorArgument),
@@ -196,8 +207,11 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-nostdinc", PreprocessorArgumentFlag),
     flag!("-nostdinc++", PreprocessorArgumentFlag),
     take_arg!("-o", PathBuf, CanBeSeparated, Output),
+    flag!("-pedantic", PedanticFlag),
+    flag!("-pedantic-errors", PedanticFlag),
     flag!("-remap", PreprocessorArgumentFlag),
     flag!("-save-temps", TooHardFlag),
+    take_arg!("-std", OsString, Concatenated('='), Standard),
     take_arg!("-stdlib", OsString, Concatenated('='), PreprocessorArgument),
     flag!("-trigraphs", PreprocessorArgumentFlag),
     take_arg!("-u", OsString, CanBeSeparated, PassThrough),
@@ -220,6 +234,7 @@ pub fn parse_arguments<S>(
     cwd: &Path,
     arg_info: S,
     plusplus: bool,
+    kind: CCompilerKind,
 ) -> CompilerArguments<ParsedArguments>
 where
     S: SearchableArgInfo<ArgData>,
@@ -234,8 +249,17 @@ where
     let mut extra_hash_files = vec![];
     let mut compilation = false;
     let mut multiple_input = false;
+    let mut multiple_input_files = Vec::new();
+    let mut pedantic_flag = false;
+    let mut language_extensions = true; // by default, GCC allows extensions
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    enum DepArgumentRequirePath {
+        NotNeeded,
+        Missing,
+        Provided,
+    }
+    let mut need_explicit_dep_argument_path = DepArgumentRequirePath::NotNeeded;
     let mut language = None;
     let mut compilation_flag = OsString::new();
     let mut profile_generate = false;
@@ -274,6 +298,9 @@ where
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
+            Some(PedanticFlag) => pedantic_flag = true,
+            // standard values vary, but extension values all start with "gnu"
+            Some(Standard(version)) => language_extensions = version.starts_with("gnu"),
             Some(SplitDwarf) => split_dwarf = true,
             Some(DoCompilation) => {
                 compilation = true;
@@ -299,13 +326,20 @@ where
                 };
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
-            Some(NeedDepTarget) => need_explicit_dep_target = true,
+            Some(NeedDepTarget) => {
+                need_explicit_dep_target = true;
+                if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
+                    need_explicit_dep_argument_path = DepArgumentRequirePath::Missing;
+                }
+            }
             Some(DepTarget(s)) => {
                 dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
                 dep_target = Some(s.clone());
             }
-            Some(DepArgumentPath(_))
-            | Some(ExtraHashFile(_))
+            Some(DepArgumentPath(_)) => {
+                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided
+            }
+            Some(ExtraHashFile(_))
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
@@ -333,6 +367,7 @@ where
                 Argument::Raw(ref val) => {
                     if input_arg.is_some() {
                         multiple_input = true;
+                        multiple_input_files.push(val.clone());
                     }
                     input_arg = Some(val.clone());
                 }
@@ -342,6 +377,8 @@ where
         }
         let args = match arg.get_data() {
             Some(SplitDwarf)
+            | Some(PedanticFlag)
+            | Some(Standard(_))
             | Some(ProfileGenerate)
             | Some(ClangProfileUse(_))
             | Some(TestCoverage)
@@ -386,6 +423,8 @@ where
         let arg = try_or_cannot_cache!(arg, "argument parse");
         let args = match arg.get_data() {
             Some(SplitDwarf)
+            | Some(PedanticFlag)
+            | Some(Standard(_))
             | Some(ProfileGenerate)
             | Some(ClangProfileUse(_))
             | Some(TestCoverage)
@@ -447,7 +486,10 @@ where
     }
     // Can't cache compilations with multiple inputs.
     if multiple_input {
-        cannot_cache!("multiple input files");
+        cannot_cache!(
+            "multiple input files",
+            format!("{:?}", multiple_input_files)
+        );
     }
     let input = match input_arg {
         Some(i) => i,
@@ -476,18 +518,45 @@ where
     };
     if split_dwarf {
         let dwo = output.with_extension("dwo");
-        outputs.insert("dwo", dwo);
+        // -gsplit-dwarf doesn't guarantee .dwo file if no -g is specified
+        outputs.insert(
+            "dwo",
+            ArtifactDescriptor {
+                path: dwo,
+                optional: true,
+            },
+        );
     }
+    let suppress_rewrite_includes_only = match kind {
+        CCompilerKind::Gcc => language_extensions && pedantic_flag,
+        _ => false,
+    };
     if outputs_gcno {
         let gcno = output.with_extension("gcno");
-        outputs.insert("gcno", gcno);
+        outputs.insert(
+            "gcno",
+            ArtifactDescriptor {
+                path: gcno,
+                optional: false,
+            },
+        );
         profile_generate = true;
     }
     if need_explicit_dep_target {
         dependency_args.push(dep_flag);
         dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
     }
-    outputs.insert("obj", output);
+    if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
+        dependency_args.push(OsString::from("-MF"));
+        dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
+    }
+    outputs.insert(
+        "obj",
+        ArtifactDescriptor {
+            path: output,
+            optional: false,
+        },
+    );
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
@@ -502,7 +571,62 @@ where
         msvc_show_includes: false,
         profile_generate,
         color_mode,
+        suppress_rewrite_includes_only,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preprocess_cmd<T>(
+    cmd: &mut T,
+    parsed_args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+    may_dist: bool,
+    kind: CCompilerKind,
+    rewrite_includes_only: bool,
+    ignorable_whitespace_flags: Vec<String>,
+) where
+    T: RunCommand,
+{
+    let language = match parsed_args.language {
+        Language::C => "c",
+        Language::Cxx => "c++",
+        Language::ObjectiveC => "objective-c",
+        Language::ObjectiveCxx => "objective-c++",
+        Language::Cuda => "cu",
+    };
+    cmd.arg("-x").arg(language).arg("-E");
+    // When performing distributed compilation, line number info is important for error
+    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
+    // fails due to exceptions transitively included in the stdlib).
+    // With -fprofile-generate line number information is important, so don't use -P.
+    if !may_dist && !parsed_args.profile_generate {
+        cmd.args(&ignorable_whitespace_flags);
+    }
+    if rewrite_includes_only {
+        if parsed_args.suppress_rewrite_includes_only {
+            if log_enabled!(Trace) {
+                trace!("preprocess: pedantic arguments disable rewrite_includes_only");
+            }
+        } else {
+            match kind {
+                CCompilerKind::Clang => {
+                    cmd.arg("-frewrite-includes");
+                }
+                CCompilerKind::Gcc => {
+                    cmd.arg("-fdirectives-only");
+                }
+                _ => {}
+            }
+        }
+    }
+    cmd.arg(&parsed_args.input)
+        .args(&parsed_args.preprocessor_args)
+        .args(&parsed_args.dependency_args)
+        .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .current_dir(cwd);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -515,46 +639,23 @@ pub async fn preprocess<T>(
     may_dist: bool,
     kind: CCompilerKind,
     rewrite_includes_only: bool,
+    ignorable_whitespace_flags: Vec<String>,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
 {
     trace!("preprocess");
-    let language = match parsed_args.language {
-        Language::C => "c",
-        Language::Cxx => "c++",
-        Language::ObjectiveC => "objective-c",
-        Language::ObjectiveCxx => "objective-c++",
-        Language::Cuda => "cu",
-    };
     let mut cmd = creator.clone().new_command_sync(executable);
-    cmd.arg("-x").arg(language).arg("-E");
-    // When performing distributed compilation, line number info is important for error
-    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
-    // fails due to exceptions transitively included in the stdlib).
-    // With -fprofile-generate line number information is important, so don't use -P.
-    if !may_dist && !parsed_args.profile_generate {
-        cmd.arg("-P");
-    }
-    if rewrite_includes_only {
-        match kind {
-            CCompilerKind::Clang => {
-                cmd.arg("-frewrite-includes");
-            }
-            CCompilerKind::Gcc => {
-                cmd.arg("-fdirectives-only");
-            }
-            _ => {}
-        }
-    }
-    cmd.arg(&parsed_args.input)
-        .args(&parsed_args.preprocessor_args)
-        .args(&parsed_args.dependency_args)
-        .args(&parsed_args.common_args)
-        .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(cwd);
-
+    preprocess_cmd(
+        &mut cmd,
+        parsed_args,
+        cwd,
+        env_vars,
+        may_dist,
+        kind,
+        rewrite_includes_only,
+        ignorable_whitespace_flags,
+    );
     if log_enabled!(Trace) {
         trace!("preprocess: {:?}", cmd);
     }
@@ -581,7 +682,7 @@ pub fn generate_compile_commands(
     trace!("compile");
 
     let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => obj,
+        Some(obj) => &obj.path,
         None => return Err(anyhow!("Missing object file output")),
     };
 
@@ -652,7 +753,7 @@ pub fn generate_compile_commands(
             //     -fdirectives-only.
             //
             // Which is exactly what we do :-)
-            if rewrite_includes_only {
+            if rewrite_includes_only && !parsed_args.suppress_rewrite_includes_only {
                 arguments.push("-fdirectives-only".into());
             }
             arguments.push("-fpreprocessed".into());
@@ -753,7 +854,7 @@ mod test {
         plusplus: bool,
     ) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&args, ".".as_ref(), &ARGS[..], plusplus)
+        parse_arguments(&args, ".".as_ref(), &ARGS[..], plusplus, CCompilerKind::Gcc)
     }
 
     #[test]
@@ -775,7 +876,16 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_eq!(Some("-c"), compilation_flag.to_str());
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -798,7 +908,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -811,7 +930,16 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
     }
 
     #[test]
@@ -833,8 +961,20 @@ mod test {
         assert_eq!(Language::Cxx, language);
         assert_map_contains!(
             outputs,
-            ("obj", PathBuf::from("foo.o")),
-            ("dwo", PathBuf::from("foo.dwo"))
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "dwo",
+                ArtifactDescriptor {
+                    path: "foo.dwo".into(),
+                    optional: true
+                }
+            )
         );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-gsplit-dwarf"], common_args);
@@ -870,7 +1010,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert_eq!(3, common_args.len());
         assert!(!msvc_show_includes);
@@ -896,8 +1045,20 @@ mod test {
         assert_eq!(Language::Cxx, language);
         assert_map_contains!(
             outputs,
-            ("obj", PathBuf::from("foo.o")),
-            ("gcno", PathBuf::from("foo.gcno"))
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "gcno",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.gcno"),
+                    optional: false
+                }
+            )
         );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["--coverage"], common_args);
@@ -925,8 +1086,20 @@ mod test {
         assert_eq!(Language::Cxx, language);
         assert_map_contains!(
             outputs,
-            ("obj", PathBuf::from("foo.o")),
-            ("gcno", PathBuf::from("foo.gcno"))
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            ),
+            (
+                "gcno",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.gcno"),
+                    optional: false
+                }
+            )
         );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-ftest-coverage"], common_args);
@@ -952,7 +1125,16 @@ mod test {
         };
         assert_eq!(Some("foo.cpp"), input.to_str());
         assert_eq!(Language::Cxx, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-fprofile-generate"], common_args);
         assert!(!msvc_show_includes);
@@ -976,7 +1158,16 @@ mod test {
         };
         assert_eq!(Some("foo.cc"), input.to_str());
         assert_eq!(Language::Cxx, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-fabc", "-mxyz"], common_args);
         assert!(!msvc_show_includes);
@@ -1001,7 +1192,16 @@ mod test {
         };
         assert_eq!(Some("foo.cxx"), input.to_str());
         assert_eq!(Language::Cxx, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(ovec!["-Iinclude", "-include", "file"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -1036,7 +1236,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(ovec!["-MF", "file"], dependency_args);
         assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
@@ -1061,7 +1270,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(ovec!["-MF", "file"], dependency_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -1087,7 +1305,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["-MF", "file", "-MD", "-MT", "depfile"],
             dependency_args
@@ -1117,7 +1344,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["-MF", "file", "-MD", "-MQ", "depfile"],
             dependency_args
@@ -1156,6 +1392,81 @@ mod test {
     }
 
     #[test]
+    fn pedantic_default() {
+        let args = stringvec!["-pedantic", "-c", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        // disable with extensions enabled
+        assert!(!cmd.args.contains(&"-fdirectives-only".into()));
+    }
+
+    #[test]
+    fn pedantic_std() {
+        let args = stringvec!["-pedantic-errors", "-c", "-std=c++14", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        // no reason to disable it with no extensions enabled
+        assert!(cmd.args.contains(&"-fdirectives-only".into()));
+    }
+
+    #[test]
+    fn pedantic_gnu() {
+        let args = stringvec!["-pedantic-errors", "-c", "-std=gnu++14", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        // disable with extensions enabled
+        assert!(!cmd.args.contains(&"-fdirectives-only".into()));
+    }
+
+    #[test]
     fn test_parse_arguments_dep_target_needed() {
         let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
         let ParsedArguments {
@@ -1172,8 +1483,52 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], dependency_args);
+        assert_eq!(ovec!["-fabc"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_dep_target_and_file_needed() {
+        let args = stringvec!["-c", "foo/bar.c", "-fabc", "-o", "foo/bar.o", "-MMD"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            dependency_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo/bar.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo/bar.o"),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(
+            ovec!["-MMD", "-MT", "foo/bar.o", "-MF", "foo/bar.d"],
+            dependency_args
+        );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1195,10 +1550,24 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_too_many_inputs() {
+    fn test_parse_arguments_too_many_inputs_single() {
         assert_eq!(
-            CompilerArguments::CannotCache("multiple input files", None),
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"], false)
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_many_inputs_multiple() {
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "multiple input files",
+                Some("[\"bar.c\", \"baz.c\"]".to_string())
+            ),
+            parse_arguments_(
+                stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c", "baz.c"],
+                false
+            )
         );
     }
 
@@ -1301,7 +1670,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -1316,7 +1694,15 @@ mod test {
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,
-            outputs: vec![("obj", "foo.o".into())].into_iter().collect(),
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
             dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
@@ -1324,6 +1710,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -1368,7 +1755,16 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::Cxx, language);
         assert_eq!(Some("-c"), compilation_flag.to_str());
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);

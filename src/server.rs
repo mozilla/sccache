@@ -10,7 +10,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.
+// limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
@@ -137,7 +137,7 @@ fn get_signal(_status: ExitStatus) -> i32 {
 pub struct DistClientContainer {
     // The actual dist client state
     #[cfg(feature = "dist-client")]
-    state: Mutex<DistClientState>,
+    state: futures::lock::Mutex<DistClientState>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -179,13 +179,13 @@ impl DistClientContainer {
         Self {}
     }
 
-    pub fn reset_state(&self) {}
+    pub async fn reset_state(&self) {}
 
     pub async fn get_status(&self) -> DistInfo {
         DistInfo::Disabled("dist-client feature not selected".to_string())
     }
 
-    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+    async fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
         Ok(None)
     }
 }
@@ -203,21 +203,21 @@ impl DistClientContainer {
             rewrite_includes_only: config.dist.rewrite_includes_only,
         };
         let state = Self::create_state(config);
+        let state = pool.block_on(state);
         Self {
-            state: Mutex::new(state),
+            state: futures::lock::Mutex::new(state),
         }
     }
 
     pub fn new_disabled() -> Self {
         Self {
-            state: Mutex::new(DistClientState::Disabled),
+            state: futures::lock::Mutex::new(DistClientState::Disabled),
         }
     }
 
-    pub fn reset_state(&self) {
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
+    pub async fn reset_state(&self) {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
         match mem::replace(state, DistClientState::Disabled) {
             DistClientState::Some(cfg, _)
             | DistClientState::FailWithMessage(cfg, _)
@@ -230,48 +230,39 @@ impl DistClientContainer {
         }
     }
 
-    pub fn get_status(&self) -> impl Future<Output = DistInfo> {
-        // This function can't be wholly async because we can't hold mutex guard
-        // across the yield point - instead, either return an immediately ready
-        // future or perform async query with the client cloned beforehand.
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
+    pub async fn get_status(&self) -> DistInfo {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
         let (client, scheduler_url) = match state {
-            DistClientState::Disabled => {
-                return Either::Left(future::ready(DistInfo::Disabled("disabled".to_string())))
-            }
+            DistClientState::Disabled => return DistInfo::Disabled("disabled".to_string()),
             DistClientState::FailWithMessage(cfg, _) => {
-                return Either::Left(future::ready(DistInfo::NotConnected(
+                return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, auth not configured".to_string(),
-                )))
+                )
             }
             DistClientState::RetryCreateAt(cfg, _) => {
-                return Either::Left(future::ready(DistInfo::NotConnected(
+                return DistInfo::NotConnected(
                     cfg.scheduler_url.clone(),
                     "enabled, not connected, will retry".to_string(),
-                )))
+                )
             }
             DistClientState::Some(cfg, client) => (Arc::clone(client), cfg.scheduler_url.clone()),
         };
 
-        Either::Right(Box::pin(async move {
-            match client.do_get_status().await {
-                Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
-                Err(_) => DistInfo::NotConnected(
-                    scheduler_url.clone(),
-                    "could not communicate with scheduler".to_string(),
-                ),
-            }
-        }))
+        match client.do_get_status().await {
+            Ok(res) => DistInfo::SchedulerStatus(scheduler_url.clone(), res),
+            Err(_) => DistInfo::NotConnected(
+                scheduler_url.clone(),
+                "could not communicate with scheduler".to_string(),
+            ),
+        }
     }
 
-    fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
-        let mut guard = self.state.lock();
-        let state = guard.as_mut().unwrap();
-        let state: &mut DistClientState = &mut **state;
-        Self::maybe_recreate_state(state);
+    async fn get_client(&self) -> Result<Option<Arc<dyn dist::Client>>> {
+        let mut guard = self.state.lock().await;
+        let state = &mut *guard;
+        Self::maybe_recreate_state(state).await;
         let res = match state {
             DistClientState::Some(_, dc) => Ok(Some(dc.clone())),
             DistClientState::Disabled | DistClientState::RetryCreateAt(_, _) => Ok(None),
@@ -290,7 +281,7 @@ impl DistClientContainer {
         res
     }
 
-    fn maybe_recreate_state(state: &mut DistClientState) {
+    async fn maybe_recreate_state(state: &mut DistClientState) {
         if let DistClientState::RetryCreateAt(_, instant) = *state {
             if instant > Instant::now() {
                 return;
@@ -300,12 +291,12 @@ impl DistClientContainer {
                 _ => unreachable!(),
             };
             info!("Attempting to recreate the dist client");
-            *state = Self::create_state(*config)
+            *state = Self::create_state(*config).await
         }
     }
 
     // Attempt to recreate the dist client
-    fn create_state(config: DistClientConfig) -> DistClientState {
+    async fn create_state(config: DistClientConfig) -> DistClientState {
         macro_rules! try_or_retry_later {
             ($v:expr) => {{
                 match $v {
@@ -363,7 +354,7 @@ impl DistClientContainer {
                 let dist_client =
                     try_or_retry_later!(dist_client.context("failure during dist client creation"));
                 use crate::dist::Client;
-                match config.pool.block_on(dist_client.do_get_status()) {
+                match dist_client.do_get_status().await {
                     Ok(res) => {
                         info!(
                             "Successfully created dist client with {:?} cores across {:?} servers",
@@ -425,6 +416,14 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
             match e.downcast_ref::<io::Error>() {
                 Some(io_err) if io::ErrorKind::AddrInUse == io_err.kind() => {
                     notify_server_startup(&notify, ServerStartup::AddrInUse)?;
+                }
+                Some(io_err) if cfg!(windows) && Some(10013) == io_err.raw_os_error() => {
+                    // 10013 is the "WSAEACCES" error, which can occur if the requested port
+                    // has been allocated for other purposes, such as winNAT or Hyper-V.
+                    let windows_help_message =
+                        "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
+                    let reason: String = format!("{windows_help_message}\n{e}");
+                    notify_server_startup(&notify, ServerStartup::Err { reason })?;
                 }
                 _ => {
                     let reason = e.to_string();
@@ -561,7 +560,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // 2. An RPC indicating the server should shut down
         // 3. A period of inactivity (no requests serviced)
         //
-        // These are all encapsulated wih the future that we're creating below.
+        // These are all encapsulated with the future that we're creating below.
         // The `ShutdownOrInactive` indicates the RPC or the period of
         // inactivity, and this is then select'd with the `shutdown` future
         // passed to this function.
@@ -811,7 +810,7 @@ where
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {
-                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is  not a valid number, using default");
+                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
             }
         }
         let io = builder.new_framed(socket);
@@ -872,7 +871,7 @@ where
     /// Handle a compile request from a client.
     ///
     /// This will handle a compile request entirely, generating a response with
-    /// the inital information and an optional body which will eventually
+    /// the initial information and an optional body which will eventually
     /// contain the results of the compilation.
     async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
         let exe = compile.exe;
@@ -881,7 +880,9 @@ where
         let env_vars = compile.env_vars;
         let me = self.clone();
 
-        let info = self.compiler_info(exe.into(), cwd.clone(), &env_vars).await;
+        let info = self
+            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
+            .await;
         Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
     }
 
@@ -891,6 +892,7 @@ where
         &self,
         path: PathBuf,
         cwd: PathBuf,
+        args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> Result<Box<dyn Compiler<C>>> {
         trace!("compiler_info");
@@ -937,7 +939,16 @@ where
             }
         };
 
-        let dist_info = match me1.dist_client.get_client() {
+        // canonicalize the path to follow symlinks
+        // don't canonicalize if the file name differs so it works with clang's multicall
+        let resolved_compiler_path = match resolved_compiler_path.canonicalize() {
+            Ok(path) if matches!(path.file_name(), Some(name) if resolved_compiler_path.file_name() == Some(name)) => {
+                path
+            }
+            _ => resolved_compiler_path,
+        };
+
+        let dist_info = match me1.dist_client.get_client().await {
             Ok(Some(ref client)) => {
                 if let Some(archive) = client.get_custom_toolchain(&resolved_compiler_path) {
                     match metadata(&archive)
@@ -982,6 +993,7 @@ where
                     me.creator.clone(),
                     &path1,
                     &cwd,
+                    args,
                     env.as_slice(),
                     &me.rt,
                     dist_info.clone().map(|(p, _)| p),
@@ -1112,12 +1124,12 @@ where
         let color_mode = hasher.color_mode();
         let me = self.clone();
         let kind = compiler.kind();
-        let dist_client = self.dist_client.get_client();
         let creator = self.creator.clone();
         let storage = self.storage.clone();
         let pool = self.rt.clone();
 
         let task = async move {
+            let dist_client = me.dist_client.get_client().await;
             let result = match dist_client {
                 Ok(client) => {
                     hasher
@@ -1214,7 +1226,7 @@ where
                         }
                         Err(err) => match err.downcast::<HttpClientError>() {
                             Ok(HttpClientError(msg)) => {
-                                me.dist_client.reset_state();
+                                me.dist_client.reset_state().await;
                                 let errmsg =
                                     format!("[{:?}] http error status: {}", out_pretty, msg);
                                 error!("{}", errmsg);

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::FileObjectSource;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult,
@@ -59,7 +60,7 @@ where
     compiler: I,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
     C,
     Cxx,
@@ -68,9 +69,18 @@ pub enum Language {
     Cuda,
 }
 
+/// Artifact produced by a C/C++ compiler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactDescriptor {
+    /// Path to the artifact.
+    pub path: PathBuf,
+    /// Whether the artifact is an optional object file.
+    pub optional: bool,
+}
+
 /// The results of parsing a compiler commandline.
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ParsedArguments {
     /// The input source file.
     pub input: PathBuf,
@@ -80,8 +90,8 @@ pub struct ParsedArguments {
     pub compilation_flag: OsString,
     /// The file in which to generate dependencies.
     pub depfile: Option<PathBuf>,
-    /// Output files, keyed by a simple name, like "obj".
-    pub outputs: HashMap<&'static str, PathBuf>,
+    /// Output files and whether it's optional, keyed by a simple name, like "obj".
+    pub outputs: HashMap<&'static str, ArtifactDescriptor>,
     /// Commandline arguments for dependency generation.
     pub dependency_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor (not including common_args).
@@ -96,13 +106,15 @@ pub struct ParsedArguments {
     pub profile_generate: bool,
     /// The color mode.
     pub color_mode: ColorMode,
+    /// arguments are incompatible with rewrite_includes_only
+    pub suppress_rewrite_includes_only: bool,
 }
 
 impl ParsedArguments {
     pub fn output_pretty(&self) -> Cow<'_, str> {
         self.outputs
             .get("obj")
-            .and_then(|o| o.file_name())
+            .and_then(|o| o.path.file_name())
             .map(|s| s.to_string_lossy())
             .unwrap_or(Cow::Borrowed("Unknown filename"))
     }
@@ -154,7 +166,7 @@ struct CCompilation<I: CCompilerImpl> {
 }
 
 /// Supported C compilers.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CCompilerKind {
     /// GCC
     Gcc,
@@ -166,6 +178,8 @@ pub enum CCompilerKind {
     Msvc,
     /// NVIDIA cuda compiler
     Nvcc,
+    /// Tasking VX
+    TaskingVX,
 }
 
 /// An interface to a specific C compiler.
@@ -175,6 +189,8 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     fn kind(&self) -> CCompilerKind;
     /// Return true iff this is g++ or clang++.
     fn plusplus(&self) -> bool;
+    /// Return the compiler version reported by the compiler executable.
+    fn version(&self) -> Option<String>;
     /// Determine whether `arguments` are supported by this compiler.
     fn parse_arguments(
         &self,
@@ -215,7 +231,6 @@ where
     pub async fn new(
         compiler: I,
         executable: PathBuf,
-        version: Option<String>,
         pool: &tokio::runtime::Handle,
     ) -> Result<CCompiler<I>> {
         let digest = Digest::file(executable.clone(), pool).await?;
@@ -223,7 +238,7 @@ where
         Ok(CCompiler {
             executable,
             executable_digest: {
-                if let Some(version) = version {
+                if let Some(version) = compiler.version() {
                     let mut m = Digest::new();
                     m.update(digest.as_bytes());
                     m.update(version.as_bytes());
@@ -328,10 +343,10 @@ where
             debug!("removing files {:?}", &outputs);
 
             let v: std::result::Result<(), std::io::Error> =
-                outputs.values().fold(Ok(()), |r, f| {
+                outputs.values().fold(Ok(()), |r, output| {
                     r.and_then(|_| {
-                        let mut path = (&args_cwd).clone();
-                        path.push(&f);
+                        let mut path = args_cwd.clone();
+                        path.push(&output.path);
                         match fs::metadata(&path) {
                             // File exists, remove it.
                             Ok(_) => fs::remove_file(&path),
@@ -464,8 +479,17 @@ impl<I: CCompilerImpl> Compilation for CCompilation<I> {
         Ok((inputs_packager, toolchain_packager, outputs_rewriter))
     }
 
-    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Path)> + 'a> {
-        Box::new(self.parsed_args.outputs.iter().map(|(k, v)| (*k, &**v)))
+    fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
+        Box::new(
+            self.parsed_args
+                .outputs
+                .iter()
+                .map(|(k, output)| FileObjectSource {
+                    key: k.to_string(),
+                    path: output.path.clone(),
+                    optional: output.optional,
+                }),
+        )
     }
 }
 

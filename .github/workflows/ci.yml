@@ -18,13 +18,13 @@ jobs:
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
-          toolchain: 1.58.1
+          toolchain: 1.60.0
 
       - name: clippy version
         run: cargo clippy --version
@@ -42,23 +42,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-20.04
+            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
           - os: ubuntu-18.04
-            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-18.04
-            rustc: 1.48.0
+            rustc: 1.60.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: stable
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: beta
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-          - os: macOS-10.15
+          - os: ubuntu-22.04
+          - os: macOS-11
           - os: windows-2019
-            rustc: 1.48.0 # Oldest supported version, keep in sync with README.md
+            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
           - os: windows-2019
             rustc: nightly
             allow_failure: true
@@ -69,12 +70,16 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
@@ -98,22 +103,22 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-musl
-          - os: macOS-10.15
+          - os: macOS-11
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
-            developer_dir: /Applications/Xcode_10.3.app
-            sdkroot: /Applications/Xcode_10.3.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.14.sdk
-          - os: macOS-10.15
+            developer_dir: /Applications/Xcode_11.7.app
+            sdkroot: /Applications/Xcode_11.7.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk
+          - os: macOS-11
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
-            developer_dir: /Applications/Xcode_12.2.app
-            sdkroot: /Applications/Xcode_12.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX11.0.sdk
+            developer_dir: /Applications/Xcode_13.2.1.app
+            sdkroot: /Applications/Xcode_13.2.1.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX12.1.sdk
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -131,10 +136,10 @@ jobs:
           echo deb [arch=arm64] http://azure.ports.ubuntu.com/ubuntu-ports/ $(lsb_release -c -s) main restricted universe multiverse | sudo tee /etc/apt/sources.list.d/99ports.list > /dev/null
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
-          sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross
           apt-get download musl-tools:arm64
           sudo dpkg-deb -x musl-tools_*_arm64.deb /
-          sed 2iREALGCC=aarch64-linux-gnu-gcc /usr/bin/musl-gcc | sudo tee /usr/bin/aarch64-linux-musl-gcc > /dev/null
+          sed 2iREALGCC=aarch64-linux-gnu-gcc-10 /usr/bin/musl-gcc | sudo tee /usr/bin/aarch64-linux-musl-gcc > /dev/null
           sudo chmod +x /usr/bin/aarch64-linux-musl-gcc
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
 
@@ -151,12 +156,12 @@ jobs:
       - name: Id
         id: id
         shell: bash
-        run: echo "::set-output name=id::${ID#refs/tags/}"
+        run: echo "id=${ID#refs/tags/}" >> $GITHUB_OUTPUT
         env:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
@@ -166,16 +171,16 @@ jobs:
     name: coverage ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-18.04
+          - os: ubuntu-20.04
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-          - os: macOS-10.15
+          - os: macOS-11
             rustc: nightly
 # Disable on Windows for now as it fails with:
 # found invalid metadata files for crate `vte_generate_state_changes`
@@ -185,12 +190,16 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' }}
 
       - name: "`grcov` ~ install"
         run: cargo install grcov
@@ -216,10 +225,10 @@ jobs:
           grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
           # generate coverage report
           grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
-          echo ::set-output name=report::${COVERAGE_REPORT_FILE}
+          echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
       - name: Upload coverage results (to Codecov.io)
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v3
         with:
           file: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
@@ -234,22 +243,32 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Get artifacts
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v3
 
       - name: Create release assets
         run: |
           for d in sccache-*; do
-            cp README.md LICENSE $d/
-            tar -zcvf $d.tar.gz $d
-            echo -n $(shasum -ba 256 $d.tar.gz | cut -d " " -f 1) > $d.tar.gz.sha256
+            chmod +x "$d/sccache"*
+            cp README.md LICENSE "$d/"
+            tar -zcvf "$d.tar.gz" "$d"
+            echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
+            if [[ $d =~ (sccache-)(.*)?(x86_64-pc-windows)(.*)? ]]; then
+              zip -r "$d.zip" "$d"
+              echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
+            fi
           done
 
       - name: Create release
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          hub release create -m $tag_name $tag_name $(for f in sccache-*.tar.gz*; do echo "-a $f"; done)
+          for f in sccache-*.tar.gz* sccache-*.zip*; do
+              if [[ -f "$f" ]]; then
+                files="$files -a $f";
+              fi
+          done
+          hub release create -m $tag_name $tag_name $files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

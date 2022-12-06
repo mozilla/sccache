@@ -159,12 +159,18 @@ mod toolchain_imp {
             Ok(())
         }
 
-        pub fn into_compressed_tar<W: Write>(self, writer: W) -> Result<()> {
-            use flate2::write::GzEncoder;
-            let ToolchainPackageBuilder { dir_set, file_set } = self;
+        pub fn into_compressed_tar<W: Write + Send + 'static>(self, writer: W) -> Result<()> {
+            use gzp::{
+                deflate::Gzip,
+                par::compress::{Compression, ParCompress, ParCompressBuilder},
+            };
 
-            let mut builder =
-                tar::Builder::new(GzEncoder::new(writer, flate2::Compression::default()));
+            let ToolchainPackageBuilder { dir_set, file_set } = self;
+            let par: ParCompress<Gzip> = ParCompressBuilder::new()
+                .compression_level(Compression::default())
+                .from_writer(writer);
+            let mut builder = tar::Builder::new(par);
+
             for (tar_path, dir_path) in dir_set.into_iter() {
                 builder.append_dir(tar_path, dir_path)?
             }
@@ -189,7 +195,7 @@ mod toolchain_imp {
     //         /lib64/ld-linux-x86-64.so.2 (0x00007f6878171000)
     //         libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f68774f4000)
     //
-    // Elf executables can be statically or dynamically linked, and position independant (PIE) or not:
+    // Elf executables can be statically or dynamically linked, and position independent (PIE) or not:
     // - dynamic + PIE = ET_DYN, ldd stdouts something like the list above and exits with code 0
     // - dynamic + non-PIE = ET_EXEC, ldd stdouts something like the list above and exits with code 0
     // - static + PIE = ET_DYN, ldd stdouts something like "\tstatically linked" or
@@ -259,7 +265,7 @@ mod toolchain_imp {
                 continue;
             }
 
-            let libpath = match (parts.get(0), parts.get(1), parts.get(2)) {
+            let libpath = match (parts.first(), parts.get(1), parts.get(2)) {
                 // "linux-vdso.so.1 =>  (0x00007ffeb41f6000)"
                 (Some(_libname), Some(&"=>"), None) => continue,
                 // "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6877b85000)"

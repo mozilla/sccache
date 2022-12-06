@@ -11,3 +11,9 @@ target
 /snap/.snapcraft
 /stage
 /*.snap
+
+# Ignore lockfiles of test crates used in the integration tests
+tests/**/Cargo.lock
+
+# VSCode Workspace files
+**.code-workspace

@@ -22,15 +22,15 @@ use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
-pub struct AzureBlobCache {
-    container: Arc<BlobContainer>,
+pub struct AzureBlobCache<ConcreteBlobContainer: BlobContainer> {
+    container: Arc<ConcreteBlobContainer>,
     credentials: AzureCredentials,
     key_prefix: String,
 }
 
-impl AzureBlobCache {
-    pub fn new(credentials: AzureCredentials, key_prefix: &str) -> Result<AzureBlobCache> {
-        let container = match BlobContainer::new(
+impl AzureBlobCache<HttpBlobContainer> {
+    pub fn new(credentials: AzureCredentials, key_prefix: &str) -> Result<Self> {
+        let container = match HttpBlobContainer::new(
             credentials.azure_blob_endpoint(),
             credentials.blob_container_name(),
         ) {
@@ -38,13 +38,15 @@ impl AzureBlobCache {
             Err(e) => bail!("Error instantiating BlobContainer: {:?}", e),
         };
 
-        Ok(AzureBlobCache {
+        Ok(Self {
             container: Arc::new(container),
             credentials,
             key_prefix: key_prefix.to_owned(),
         })
     }
+}
 
+impl<ConcreteBlobContainer: BlobContainer> AzureBlobCache<ConcreteBlobContainer> {
     fn normalize_key(&self, key: &str) -> String {
         if self.key_prefix.is_empty() {
             key.to_string()
@@ -55,7 +57,7 @@ impl AzureBlobCache {
 }
 
 #[async_trait]
-impl Storage for AzureBlobCache {
+impl<ConcreteBlobContainer: BlobContainer> Storage for AzureBlobCache<ConcreteBlobContainer> {
     async fn get(&self, key: &str) -> Result<Cache> {
         let key = self.normalize_key(key);
         match self.container.get(&key, &self.credentials).await {
@@ -104,40 +106,138 @@ impl Storage for AzureBlobCache {
     }
 }
 
-#[test]
-fn normalize_key() {
-    let credentials = AzureCredentials::new(
-        "blob endpoint",
-        "account name",
-        None,
-        String::from("container name"),
-    );
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::cell::RefCell;
+    use std::fmt;
+    use std::sync::Mutex;
 
-    let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
-    assert_eq!(cache.normalize_key("key"), String::from("key"));
+    struct MockBlobContainer {
+        last_key: Mutex<RefCell<String>>,
+    }
 
-    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
-    assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
-}
+    impl MockBlobContainer {
+        pub fn new() -> Self {
+            Self {
+                last_key: Mutex::new(RefCell::new(String::new())),
+            }
+        }
 
-#[test]
-fn location() {
-    let credentials = AzureCredentials::new(
-        "blob endpoint",
-        "account name",
-        None,
-        String::from("container name"),
-    );
+        pub fn get_last_key(&self) -> String {
+            let cell_guard = self.last_key.lock().unwrap();
+            let last_key = cell_guard.borrow();
+            last_key.clone()
+        }
 
-    let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
-    assert_eq!(
-        cache.location(),
-        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: (none)")
-    );
+        pub fn set_last_key(&self, key: String) {
+            let last_key = self.last_key.lock().unwrap();
+            last_key.replace(key);
+        }
+    }
 
-    let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
-    assert_eq!(
-        cache.location(),
-        String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: prefix")
-    );
+    impl fmt::Display for MockBlobContainer {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "MockBlobContainer")
+        }
+    }
+
+    #[async_trait]
+    impl BlobContainer for MockBlobContainer {
+        async fn get(&self, key: &str, _creds: &AzureCredentials) -> Result<Vec<u8>> {
+            self.set_last_key(key.to_owned());
+            Err(BadHttpStatusError(http::StatusCode::NOT_FOUND).into())
+        }
+
+        async fn put(&self, key: &str, _content: Vec<u8>, _creds: &AzureCredentials) -> Result<()> {
+            self.set_last_key(key.to_owned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn normalize_key() {
+        let credentials = AzureCredentials::new(
+            "blob endpoint",
+            "account name",
+            None,
+            String::from("container name"),
+        );
+
+        let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
+        assert_eq!(cache.normalize_key("key"), String::from("key"));
+
+        let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
+        assert_eq!(cache.normalize_key("key"), String::from("prefix/key"));
+    }
+
+    #[test]
+    fn location() {
+        let credentials = AzureCredentials::new(
+            "blob endpoint",
+            "account name",
+            None,
+            String::from("container name"),
+        );
+
+        let cache = AzureBlobCache::new(credentials.clone(), "").unwrap();
+        assert_eq!(
+            cache.location(),
+            String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: (none)")
+        );
+
+        let cache = AzureBlobCache::new(credentials, "prefix").unwrap();
+        assert_eq!(
+            cache.location(),
+            String::from("Azure, container: BlobContainer(url=blob endpoint/container name/), key_prefix: prefix")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_with_key_prefix() -> Result<()> {
+        let credentials = AzureCredentials::new(
+            "endpoint",
+            "account name",
+            None,
+            String::from("container name"),
+        );
+        let container = Arc::new(MockBlobContainer::new());
+        let cache = AzureBlobCache {
+            container: container.clone(),
+            credentials,
+            key_prefix: String::from("prefix"),
+        };
+
+        let result = cache.get("foo/bar").await;
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Cache::Miss => (),
+            x => bail!("Result {:?} is not Cache::Miss", x),
+        }
+        assert_eq!(container.get_last_key(), "prefix/foo/bar");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn put_with_key_prefix() -> Result<()> {
+        let credentials = AzureCredentials::new(
+            "endpoint",
+            "account name",
+            None,
+            String::from("container name"),
+        );
+        let container = Arc::new(MockBlobContainer::new());
+        let cache = AzureBlobCache {
+            container: container.clone(),
+            credentials,
+            key_prefix: String::from("prefix"),
+        };
+
+        let result = cache.put("foo/bar", CacheWrite::new()).await;
+        assert!(result.is_ok());
+        assert_eq!(container.get_last_key(), "prefix/foo/bar");
+
+        Ok(())
+    }
 }

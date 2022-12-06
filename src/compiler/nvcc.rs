@@ -15,12 +15,14 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
-use crate::dist;
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
+use crate::{counted_array, dist};
 use log::Level::Trace;
 use std::ffi::OsString;
 use std::fs::File;
@@ -33,7 +35,9 @@ use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
-pub struct Nvcc;
+pub struct Nvcc {
+    pub version: Option<String>,
+}
 
 #[async_trait]
 impl CCompilerImpl for Nvcc {
@@ -43,12 +47,21 @@ impl CCompilerImpl for Nvcc {
     fn plusplus(&self) -> bool {
         false
     }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
+    }
     fn parse_arguments(
         &self,
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(arguments, cwd, (&gcc::ARGS[..], &ARGS[..]), false)
+        gcc::parse_arguments(
+            arguments,
+            cwd,
+            (&gcc::ARGS[..], &ARGS[..]),
+            false,
+            self.kind(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -168,6 +181,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
 
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--compiler-bindir", PathBuf, CanBeSeparated('='), ExtraHashFile),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -190,6 +204,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-ccbin", PathBuf, CanBeSeparated('='), ExtraHashFile),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
@@ -216,7 +231,7 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        Nvcc.parse_arguments(&arguments, ".".as_ref())
+        Nvcc { version: None }.parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
@@ -233,7 +248,16 @@ mod test {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -243,7 +267,16 @@ mod test {
         let a = parses!("-c", "foo.cu", "-o", "foo.o");
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -253,7 +286,16 @@ mod test {
         let a = parses!("-x", "cu", "-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -264,7 +306,16 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-dc"), a.compilation_flag.to_str());
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
@@ -285,7 +336,16 @@ mod test {
         );
         assert_eq!(Some("foo.cpp"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec![
                 "-Iinclude-file",
@@ -309,7 +369,16 @@ mod test {
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_eq!(Some("-c"), a.compilation_flag.to_str());
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["-MD", "-MF", "foo.o.d", "-MT", "foo.o"],
             a.dependency_args
@@ -330,7 +399,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(
             ovec!["--generate-code", "arch=compute_61,code=sm_61"],
@@ -357,7 +435,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec![
                 "-Xcompiler",
@@ -398,7 +485,16 @@ mod test {
         );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
-        assert_map_contains!(a.outputs, ("obj", PathBuf::from("foo.o")));
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(
             ovec!["--expt-relaxed-constexpr", "-Xcompiler", "-pthread"],
             a.preprocessor_args

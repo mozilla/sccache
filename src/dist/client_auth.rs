@@ -513,7 +513,7 @@ pub fn get_token_oauth2_code_grant_pkce(
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
-    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
+    let auth_state_value = Uuid::new_v4().as_simple().to_string();
     let (verifier, challenge) = code_grant_pkce::generate_verifier_and_challenge()?;
     code_grant_pkce::finish_url(
         client_id,
@@ -567,7 +567,7 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     let port = server.local_addr().port();
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
-    let auth_state_value = Uuid::new_v4().to_simple_ref().to_string();
+    let auth_state_value = Uuid::new_v4().as_simple().to_string();
     implicit::finish_url(client_id, &mut auth_url, &redirect_uri, &auth_state_value);
 
     info!("Listening on http://localhost:{} with 1 thread.", port);

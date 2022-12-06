@@ -35,6 +35,12 @@ cred_path = "/psst/secret/cred"
 bucket = "bucket"
 key_prefix = "prefix"
 
+[cache.gha]
+url = "http://localhost"
+token = "secret"
+cache_to = "sccache-latest"
+cache_from = "sccache-"
+
 [cache.memcached]
 url = "..."
 
@@ -60,7 +66,7 @@ configuration variables
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
-* `SCCACHE_MAX_FRAME_LENGTH` how much data can be transfered between client and server
+* `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
 
 ### cache configs
@@ -100,3 +106,10 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/1`.
 #### azure
 
 * `SCCACHE_AZURE_CONNECTION_STRING`
+
+#### gha
+
+* `SCCACHE_GHA_CACHE_URL` / `ACTIONS_CACHE_URL` GitHub Actions cache API URL
+* `SCCACHE_GHA_RUNTIME_TOKEN` / `ACTIONS_RUNTIME_TOKEN` GitHub Actions access token
+* `SCCACHE_GHA_CACHE_TO` cache key to write
+* `SCCACHE_GHA_CACHE_FROM` comma separated list of cache keys to read from

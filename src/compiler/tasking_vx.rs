@@ -1,5 +1,5 @@
 // Copyright 2018 Mozilla Foundation
-// Copyright 2018 Felix Obenhuber <felix@obenhuber.de>
+// Copyright 2019 ESRLabs AG
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,42 +13,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::compiler::args::{
-    ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
-    NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
+use crate::{
+    compiler::{
+        args::{
+            ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
+            NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
+        },
+        c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments},
+        Cacheable, ColorMode, CompileCommand, CompilerArguments,
+    },
+    counted_array, dist,
+    errors::*,
+    mock_command::{CommandCreatorSync, RunCommand},
+    util::run_input_output,
 };
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
-use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments};
-use crate::errors::*;
-use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
-use crate::{counted_array, dist};
+use async_trait::async_trait;
+use futures::TryFutureExt;
 use log::Level::Trace;
-use std::collections::HashMap;
-use std::ffi::OsString;
-use std::fs::File;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process;
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process,
+};
 
 #[derive(Clone, Debug)]
-pub struct Diab {
-    pub version: Option<String>,
-}
+pub struct TaskingVX;
 
 #[async_trait]
-impl CCompilerImpl for Diab {
+impl CCompilerImpl for TaskingVX {
     fn kind(&self) -> CCompilerKind {
-        CCompilerKind::Diab
+        CCompilerKind::TaskingVX
     }
+
     fn plusplus(&self) -> bool {
         false
     }
+
     fn version(&self) -> Option<String> {
-        self.version.clone()
+        None
     }
+
     fn parse_arguments(
         &self,
         arguments: &[OsString],
@@ -57,7 +62,6 @@ impl CCompilerImpl for Diab {
         parse_arguments(arguments, cwd, &ARGS[..])
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn preprocess<T>(
         &self,
         creator: &T,
@@ -66,12 +70,21 @@ impl CCompilerImpl for Diab {
         cwd: &Path,
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
-        _rewrite_includes_only: bool,
+        rewrite_includes_only: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
-        preprocess(creator, executable, parsed_args, cwd, env_vars, may_dist).await
+        preprocess(
+            creator,
+            executable,
+            parsed_args,
+            cwd,
+            env_vars,
+            may_dist,
+            rewrite_includes_only,
+        )
+        .await
     }
 
     fn generate_compile_commands(
@@ -89,13 +102,13 @@ impl CCompilerImpl for Diab {
 
 ArgData! { pub
     DoCompilation,
+    NotCompilationFlag,
+    NotCompilation(OsString),
     Output(PathBuf),
     PassThrough(OsString),
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
-    DepArgumentFlag,
-    DepArgument(OsString),
-    DepArgumentPath(PathBuf),
+    DepFile(PathBuf),
     TooHardFlag,
     TooHard(OsString),
 }
@@ -103,47 +116,31 @@ ArgData! { pub
 use self::ArgData::*;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    flag!("-", TooHardFlag),
-    flag!("-##", TooHardFlag),
-    flag!("-###", TooHardFlag),
-    take_arg!("-@", OsString, Concatenated, TooHard),
+    take_arg!("--define", OsString, Concatenated('='), PreprocessorArgument),
+    take_arg!("--dep-file", PathBuf, Concatenated('='), DepFile),
+    flag!("--dry-run", TooHardFlag),
+    take_arg!("--help", OsString, Concatenated('='), NotCompilation),
+    take_arg!("--include-directory", PathBuf, Concatenated('='), PreprocessorArgumentPath),
+    take_arg!("--include-file", PathBuf, Concatenated('='), PreprocessorArgumentPath),
+    take_arg!("--library-directory", OsString, Concatenated('='), PassThrough),
+    take_arg!("--mil-split", OsString, Concatenated('='), TooHard),
+    take_arg!("--option-file", OsString, Concatenated('='), TooHard),
+    take_arg!("--output", PathBuf, Concatenated('='), Output),
+    take_arg!("--preprocess", OsString, Concatenated('='), TooHard),
+    take_arg!("--undefine", OsString, Separated, PreprocessorArgument), // ok
+    flag!("--version", NotCompilationFlag),
+    flag!("-?", NotCompilationFlag),
     take_arg!("-D", OsString, CanBeSeparated, PreprocessorArgument),
     flag!("-E", TooHardFlag),
+    take_arg!("-H", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-I", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
-    take_arg!("-L", OsString, Separated, PassThrough),
-    flag!("-P", TooHardFlag),
-    flag!("-S", TooHardFlag),
+    take_arg!("-L", OsString, CanBeSeparated, PassThrough),
     take_arg!("-U", OsString, CanBeSeparated, PreprocessorArgument),
-    flag!("-V", TooHardFlag),
-    flag!("-VV", TooHardFlag),
-    take_arg!("-W", OsString, Separated, PassThrough),
-    flag!("-Xmake-dependency", DepArgumentFlag),
-    flag!(
-        "-Xmake-dependency-canonicalize-path-off",
-        DepArgumentFlag
-    ),
-    take_arg!(
-        "-Xmake-dependency-savefile",
-        PathBuf,
-        Concatenated('='),
-        DepArgumentPath
-    ),
-    take_arg!(
-        "-Xmake-dependency-target",
-        OsString,
-        Concatenated('='),
-        DepArgument
-    ),
+    flag!("-V", NotCompilationFlag),
     flag!("-c", DoCompilation),
-    take_arg!(
-        "-include",
-        PathBuf,
-        CanBeSeparated,
-        PreprocessorArgumentPath
-    ),
-    take_arg!("-l", OsString, Separated, PassThrough),
+    take_arg!("-f", OsString, Separated, TooHard),
+    flag!("-n", TooHardFlag),
     take_arg!("-o", PathBuf, Separated, Output),
-    take_arg!("-t", OsString, Separated, PassThrough),
 ]);
 
 /// Parse `arguments`, determining whether it is supported.
@@ -155,9 +152,9 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
 /// Otherwise, return `CompilerArguments::Ok(ParsedArguments)`, with
 /// the `ParsedArguments` struct containing information parsed from
 /// `arguments`.
-pub fn parse_arguments<S>(
+fn parse_arguments<S>(
     arguments: &[OsString],
-    cwd: &Path,
+    _cwd: &Path,
     arg_info: S,
 ) -> CompilerArguments<ParsedArguments>
 where
@@ -165,52 +162,25 @@ where
 {
     let mut common_args = vec![];
     let mut compilation = false;
-    let mut compilation_flag = OsString::new();
     let mut input_arg = None;
     let mut multiple_input = false;
     let mut output_arg = None;
     let mut preprocessor_args = vec![];
-    let mut dependency_args = vec![];
+    let mut depfile = None;
 
-    // Custom iterator to expand `@` arguments which stand for reading a file
-    // and interpreting it as a list of more arguments.
-    let it = ExpandAtArgs::new(cwd, arguments);
-
-    for arg in ArgsIter::new(it, arg_info) {
+    for arg in ArgsIter::new(arguments.iter().cloned(), arg_info) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
-        // Check if the value part of this argument begins with '@'. If so, we either
-        // failed to expand it, or it was a concatenated argument - either way, bail.
-        // We refuse to cache concatenated arguments (like "-include@foo") because they're a
-        // mess. See https://github.com/mozilla/sccache/issues/150#issuecomment-318586953
-        match arg {
-            Argument::WithValue(_, ref v, ArgDisposition::Separated)
-            | Argument::WithValue(_, ref v, ArgDisposition::CanBeConcatenated(_))
-            | Argument::WithValue(_, ref v, ArgDisposition::CanBeSeparated(_)) => {
-                if v.clone().into_arg_os_string().starts_with("@") {
-                    cannot_cache!("@");
-                }
-            }
-            // Empirically, concatenated arguments appear not to interpret '@' as
-            // an include directive, so just continue.
-            Argument::WithValue(_, _, ArgDisposition::Concatenated(_))
-            | Argument::Raw(_)
-            | Argument::UnknownFlag(_)
-            | Argument::Flag(_, _) => {}
-        }
 
         match arg.get_data() {
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
-
-            Some(DepArgument(_)) | Some(DepArgumentFlag) | Some(DepArgumentPath(_)) => {}
-
-            Some(DoCompilation) => {
-                compilation = true;
-                compilation_flag =
-                    OsString::from(arg.flag_str().expect("Compilation flag expected"));
+            Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
+                return CompilerArguments::NotCompilation
             }
+            Some(DoCompilation) => compilation = true,
             Some(Output(p)) => output_arg = Some(p.clone()),
+            Some(DepFile(d)) => depfile = Some(d.clone()),
             Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
             | Some(PassThrough(_)) => {}
@@ -227,14 +197,15 @@ where
         }
         let args = match arg.get_data() {
             Some(PassThrough(_)) => &mut common_args,
-            Some(DepArgument(_)) | Some(DepArgumentFlag) | Some(DepArgumentPath(_)) => {
-                &mut dependency_args
-            }
+            Some(DepFile(_)) => continue,
             Some(PreprocessorArgument(_)) | Some(PreprocessorArgumentPath(_)) => {
                 &mut preprocessor_args
             }
             Some(DoCompilation) | Some(Output(_)) => continue,
-            Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
+            Some(TooHardFlag)
+            | Some(TooHard(_))
+            | Some(NotCompilationFlag)
+            | Some(NotCompilation(_)) => unreachable!(),
             None => match arg {
                 Argument::Raw(_) => continue,
                 Argument::UnknownFlag(_) => &mut common_args,
@@ -269,11 +240,21 @@ where
         None => cannot_cache!("unknown source language"),
     };
 
+    // --dep-file without any argument is valid too and uses the source file name
+    // with extension .d as depfile name
+    depfile = depfile.map(|d| {
+        if d.as_os_str().is_empty() {
+            Path::new(&input).with_extension("d")
+        } else {
+            d
+        }
+    });
+
     let output = output_arg
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(&input).with_extension("o"));
 
-    let mut outputs = HashMap::new();
+    let mut outputs = HashMap::with_capacity(1);
     outputs.insert(
         "obj",
         ArtifactDescriptor {
@@ -285,36 +266,36 @@ where
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
         language,
-        compilation_flag,
-        depfile: None,
+        compilation_flag: "-c".into(),
+        depfile,
         outputs,
-        dependency_args,
+        dependency_args: vec![],
         preprocessor_args,
         common_args,
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
-        // FIXME: Implement me.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
     })
 }
 
-pub async fn preprocess<T>(
+async fn preprocess<T>(
     creator: &T,
     executable: &Path,
     parsed_args: &ParsedArguments,
     cwd: &Path,
     env_vars: &[(OsString, OsString)],
     _may_dist: bool,
+    _rewrite_includes_only: bool,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(&executable);
-    cmd.arg("-E")
+    let mut preprocess = creator.clone().new_command_sync(&executable);
+    preprocess
+        .arg("-E")
         .arg(&parsed_args.input)
-        .args(&parsed_args.dependency_args)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
@@ -322,13 +303,47 @@ where
         .current_dir(cwd);
 
     if log_enabled!(Trace) {
-        trace!("preprocess: {:?}", cmd);
+        trace!("preprocess: {:?}", preprocess);
     }
-    run_input_output(cmd, None).await
+
+    let preprocess = run_input_output(preprocess, None);
+
+    // Tasking can produce a dep file while preprocessing, BUT if this is
+    // enabled the preprocessor output is discarded. Run depfile generation
+    // first and preprocessing for hash generation afterwards.
+    //
+    // From: TASKING  VX-toolset for TriCore User Guide
+    // With --preprocess=+make the compiler
+    // will generate dependency lines that can be used in a Makefile. The
+    // preprocessor output is discarded. The default target name is the basename
+    // of the input file, with the extension .o. With the option --make-target
+    // you can specify a target name which overrules the default target name.
+
+    if let Some(ref depfile) = parsed_args.depfile {
+        let mut generate_depfile = creator.clone().new_command_sync(&executable);
+        generate_depfile
+            .arg("-Em")
+            .arg("-o")
+            .arg(depfile)
+            .arg(&parsed_args.input)
+            .args(&parsed_args.preprocessor_args)
+            .args(&parsed_args.common_args)
+            .env_clear()
+            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+            .current_dir(cwd);
+
+        if log_enabled!(Trace) {
+            trace!("dep file generation: {:?}", generate_depfile);
+        }
+        let generate_depfile = run_input_output(generate_depfile, None);
+        generate_depfile.and_then(|_| preprocess).await
+    } else {
+        preprocess.await
+    }
 }
 
-pub fn generate_compile_commands(
-    _path_transformer: &mut dist::PathTransformer,
+fn generate_compile_commands(
+    _: &mut dist::PathTransformer,
     executable: &Path,
     parsed_args: &ParsedArguments,
     cwd: &Path,
@@ -337,7 +352,7 @@ pub fn generate_compile_commands(
     trace!("compile");
 
     let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => &obj.path,
+        Some(obj) => obj,
         None => return Err(anyhow!("Missing object file output")),
     };
 
@@ -345,7 +360,7 @@ pub fn generate_compile_commands(
         parsed_args.compilation_flag.clone(),
         parsed_args.input.clone().into(),
         "-o".into(),
-        out_file.into(),
+        out_file.path.as_os_str().into(),
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
@@ -359,87 +374,16 @@ pub fn generate_compile_commands(
     Ok((command, None, Cacheable::Yes))
 }
 
-pub struct ExpandAtArgs<'a> {
-    cwd: &'a Path,
-    stack: Vec<OsString>,
-}
-
-impl<'a> ExpandAtArgs<'a> {
-    pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
-        ExpandAtArgs {
-            stack: args.iter().rev().map(|a| a.to_owned()).collect(),
-            cwd,
-        }
-    }
-}
-
-impl<'a> Iterator for ExpandAtArgs<'a> {
-    type Item = OsString;
-
-    fn next(&mut self) -> Option<OsString> {
-        loop {
-            let arg = self.stack.pop()?;
-
-            // Just return non @ arguments
-            if !arg.starts_with("-@") {
-                return Some(arg);
-            }
-
-            let value = match arg.split_prefix("-@") {
-                Some(arg) => arg,
-                None => return Some(arg),
-            };
-
-            // Return options that produce additional output and are not cacheable
-            if value.starts_with("E") || value.starts_with("O") || value.starts_with("@") {
-                return Some(arg);
-            }
-
-            // According to diab [1], @file means:
-            // Read command line options from either a file or an environment
-            // variable. When -@name is encountered on the command line, the
-            // driver first looks for an environment variable with the given
-            // name and substitutes its value. If an environment variable is
-            // not found then the driver tries to open a file with given name
-            // and substitutes the contents of the file. If neither an
-            // environment variable or a file can be found, an error message
-            // is issued and the driver terminates.
-            //
-            // [1]: http://www.vxdev.com/docs/vx55man/diab5.0ppc/c-invoke.htm#3000619
-            //
-            // The environment variable feature is *not* supported by sccache
-            // since this would raise the need for the clients environment
-            // and not just env::var. This is technically possible, but
-            // considered as a unneeded edge case for now.
-
-            let mut contents = String::new();
-            let file = self.cwd.join(&value);
-            let res = File::open(&file).and_then(|mut f| f.read_to_string(&mut contents));
-            if res.is_err() {
-                // Failed to read the file, so return the argument as it is.
-                // This will result in a CannotCache.
-                return Some(arg);
-            }
-            if contents.contains('"') || contents.contains('\'') {
-                return Some(arg);
-            }
-            let new_args = contents.split_whitespace().collect::<Vec<_>>();
-            self.stack.extend(new_args.iter().rev().map(|s| s.into()));
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::{
-        dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments, ARGS,
+        dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
+        PathBuf, ARGS,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use std::fs::File;
-    use std::io::Write;
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -468,7 +412,7 @@ mod test {
             (
                 "obj",
                 ArtifactDescriptor {
-                    path: "foo.o".into(),
+                    path: PathBuf::from("foo.o"),
                     optional: false
                 }
             )
@@ -500,7 +444,7 @@ mod test {
             (
                 "obj",
                 ArtifactDescriptor {
-                    path: "foo.o".into(),
+                    path: PathBuf::from("foo.o"),
                     optional: false
                 }
             )
@@ -532,7 +476,7 @@ mod test {
             (
                 "obj",
                 ArtifactDescriptor {
-                    path: "foo.o".into(),
+                    path: PathBuf::from("foo.o"),
                     optional: false
                 }
             )
@@ -544,9 +488,8 @@ mod test {
 
     #[test]
     fn test_parse_arguments_values() {
-        let args = stringvec![
-            "-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-include", "file"
-        ];
+        let args =
+            stringvec!["-c", "foo.cxx", "-fabc", "-I", "include", "-o", "foo.o", "-H", "file"];
         let ParsedArguments {
             input,
             language,
@@ -566,12 +509,12 @@ mod test {
             (
                 "obj",
                 ArtifactDescriptor {
-                    path: "foo.o".into(),
+                    path: PathBuf::from("foo.o"),
                     optional: false
                 }
             )
         );
-        assert_eq!(ovec!["-Iinclude", "-include", "file"], preprocessor_args);
+        assert_eq!(ovec!["-Iinclude", "-Hfile"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -582,10 +525,8 @@ mod test {
             "-c",
             "foo.c",
             "-fabc",
-            "-Xmake-dependency",
-            "-Xmake-dependency-canonicalize-path-off",
-            "-Xmake-dependency-savefile=bar",
-            "-Xmake-dependency-target=foo",
+            "--include-directory=bar",
+            "--include-file=foo",
             "-o",
             "foo.o"
         ];
@@ -593,7 +534,7 @@ mod test {
             input,
             language,
             outputs,
-            dependency_args,
+            preprocessor_args,
             msvc_show_includes,
             common_args,
             ..
@@ -608,20 +549,83 @@ mod test {
             (
                 "obj",
                 ArtifactDescriptor {
-                    path: "foo.o".into(),
+                    path: PathBuf::from("foo.o"),
                     optional: false
                 }
             )
         );
         assert_eq!(
-            ovec![
-                "-Xmake-dependency",
-                "-Xmake-dependency-canonicalize-path-off",
-                "-Xmake-dependency-savefile=bar",
-                "-Xmake-dependency-target=foo"
-            ],
-            dependency_args
+            ovec!["--include-directory=bar", "--include-file=foo"],
+            preprocessor_args
         );
+        assert_eq!(ovec!["-fabc"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_explicit_dep_target() {
+        let args = stringvec!["-c", "foo.c", "--dep-file=depfile", "-fabc", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_eq!(Some("depfile"), depfile.unwrap().to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fabc"], common_args);
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_implicit_dep_target() {
+        let args = stringvec!["-c", "foo.c", "--dep-file", "-fabc", "-o", "foo.o"];
+        let ParsedArguments {
+            input,
+            language,
+            depfile,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments_(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_eq!(Some("foo.d"), depfile.unwrap().to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -651,85 +655,21 @@ mod test {
     fn test_parse_arguments_link() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(stringvec!["-shared", "foo.o", "-o", "foo.so", "bar.o"])
+            parse_arguments_(stringvec!["--link-only", "foo.o", "-o", "foo.so", "bar.o"])
         );
     }
 
     #[test]
     fn test_parse_dry_run() {
         assert_eq!(
-            CompilerArguments::CannotCache("-##", None),
-            parse_arguments_(stringvec!["-##", "-c", "foo.c"])
+            CompilerArguments::CannotCache("--dry-run", None),
+            parse_arguments_(stringvec!["--dry-run", "-c", "foo.c"])
         );
 
         assert_eq!(
-            CompilerArguments::CannotCache("-###", None),
-            parse_arguments_(stringvec!["-###", "-c", "foo.c"])
+            CompilerArguments::CannotCache("-n", None),
+            parse_arguments_(stringvec!["-n", "-c", "foo.c"])
         );
-    }
-
-    #[test]
-    fn test_at_signs() {
-        let cannot_cache = CompilerArguments::CannotCache("-@", None);
-        assert_eq!(parse_arguments_(vec!["-@@foo".into()]), cannot_cache);
-        assert_eq!(parse_arguments_(vec!["-@E=foo".into()]), cannot_cache);
-        assert_eq!(parse_arguments_(vec!["-@E+foo".into()]), cannot_cache);
-        assert_eq!(parse_arguments_(vec!["-@O=foo".into()]), cannot_cache);
-        assert_eq!(parse_arguments_(vec!["-@O+foo".into()]), cannot_cache);
-    }
-
-    #[test]
-    fn test_at_signs_file_not_readable() {
-        let td = tempfile::Builder::new()
-            .prefix("sccache")
-            .tempdir()
-            .unwrap();
-        let arg = format!("-@{}", td.path().join("foo").display());
-        // File foo doesn't exist.
-        assert_eq!(
-            parse_arguments_(vec![arg]),
-            CompilerArguments::CannotCache("-@", None)
-        );
-    }
-
-    #[test]
-    fn test_at_signs_file() {
-        let td = tempfile::Builder::new()
-            .prefix("sccache")
-            .tempdir()
-            .unwrap();
-        File::create(td.path().join("foo"))
-            .unwrap()
-            .write_all(b"-c foo.c -o foo.o")
-            .unwrap();
-        let arg = format!("-@{}", td.path().join("foo").display());
-        let ParsedArguments {
-            input,
-            language,
-            outputs,
-            preprocessor_args,
-            msvc_show_includes,
-            common_args,
-            ..
-        } = match parse_arguments_(vec![arg]) {
-            CompilerArguments::Ok(args) => args,
-            o => panic!("Got unexpected parse result: {:?}", o),
-        };
-        assert_eq!(Some("foo.c"), input.to_str());
-        assert_eq!(Language::C, language);
-        assert_map_contains!(
-            outputs,
-            (
-                "obj",
-                ArtifactDescriptor {
-                    path: "foo.o".into(),
-                    optional: false
-                }
-            )
-        );
-        assert!(preprocessor_args.is_empty());
-        assert!(common_args.is_empty());
-        assert!(!msvc_show_includes);
     }
 
     #[test]

@@ -15,6 +15,8 @@
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+#[cfg(feature = "gha")]
+use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
@@ -23,7 +25,7 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 #[cfg(feature = "azure")]
-use crate::{azure, azure::AzureCredentialsProvider, cache::azure::AzureBlobCache};
+use crate::{azure, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -63,6 +65,18 @@ fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
 #[allow(clippy::unnecessary_wraps)]
 fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
+}
+
+/// Cache object sourced by a file.
+#[derive(Clone)]
+pub struct FileObjectSource {
+    /// Identifier for this object. Should be unique within a compilation unit.
+    /// Note that a compilation unit is a single source file in C/C++ and a crate in Rust.
+    pub key: String,
+    /// Absolute path to the file.
+    pub path: PathBuf,
+    /// Whether the file must be present on disk and is essential for the compilation.
+    pub optional: bool,
 }
 
 /// Result of a cache lookup.
@@ -155,10 +169,15 @@ impl CacheRead {
         pool: &tokio::runtime::Handle,
     ) -> Result<()>
     where
-        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
         pool.spawn_blocking(move || {
-            for (key, path) in objects {
+            for FileObjectSource {
+                key,
+                path,
+                optional,
+            } in objects
+            {
                 let dir = match path.parent() {
                     Some(d) => d,
                     None => bail!("Output file without a parent directory!"),
@@ -167,10 +186,16 @@ impl CacheRead {
                 // move it to its final location so that other rustc invocations
                 // happening in parallel don't see a partially-written file.
                 let mut tmp = NamedTempFile::new_in(dir)?;
-                let mode = self.get_object(&key, &mut tmp)?;
-                tmp.persist(&path)?;
-                if let Some(mode) = mode {
-                    set_file_mode(&path, mode)?;
+                match (self.get_object(&key, &mut tmp), optional) {
+                    (Ok(mode), _) => {
+                        tmp.persist(&path)?;
+                        if let Some(mode) = mode {
+                            set_file_mode(&path, mode)?;
+                        }
+                    }
+                    (Err(e), false) => return Err(e),
+                    // skip if no object found and it's optional
+                    (Err(_), true) => continue,
                 }
             }
             Ok(())
@@ -195,17 +220,28 @@ impl CacheWrite {
     /// Create a new cache entry populated with the contents of `objects`.
     pub async fn from_objects<T>(objects: T, pool: &tokio::runtime::Handle) -> Result<CacheWrite>
     where
-        T: IntoIterator<Item = (String, PathBuf)> + Send + Sync + 'static,
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
         pool.spawn_blocking(move || {
             let mut entry = CacheWrite::new();
-            for (key, path) in objects {
-                let mut f = fs::File::open(&path)
-                    .with_context(|| format!("failed to open file `{:?}`", path))?;
-                let mode = get_file_mode(&f)?;
-                entry
-                    .put_object(&key, &mut f, mode)
-                    .with_context(|| format!("failed to put object `{:?}` in cache entry", path))?;
+            for FileObjectSource {
+                key,
+                path,
+                optional,
+            } in objects
+            {
+                let f = fs::File::open(&path)
+                    .with_context(|| format!("failed to open file `{:?}`", path));
+                match (f, optional) {
+                    (Ok(mut f), _) => {
+                        let mode = get_file_mode(&f)?;
+                        entry.put_object(&key, &mut f, mode).with_context(|| {
+                            format!("failed to put object `{:?}` in cache entry", path)
+                        })?;
+                    }
+                    (Err(e), false) => return Err(e),
+                    (Err(_), true) => continue,
+                }
             }
             Ok(entry)
         })
@@ -299,7 +335,7 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
                 debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match azure::EnvironmentProvider.provide_credentials() {
+                match azure::credentials_from_environment() {
                     Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
                         Ok(storage) => {
                             trace!("Using AzureBlobCache");
@@ -383,6 +419,25 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                     }
                 }
             }
+            CacheType::GHA(config::GHACacheConfig {
+                ref url,
+                ref token,
+                ref cache_to,
+                ref cache_from,
+            }) => {
+                debug!(
+                    "Trying GHA Cache ({url}, {}***, {cache_to:?}, {cache_from:?})",
+                    &token[..usize::min(3, token.len())]
+                );
+                #[cfg(feature = "gha")]
+                match GHACache::new(url, token, cache_to.clone(), cache_from.clone()) {
+                    Ok(s) => {
+                        trace!("Using GHA Cache: {}", url);
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create GHA Cache: {:?}", e),
+                }
+            }
             CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
                 debug!("Trying Memcached({})", url);
                 #[cfg(feature = "memcached")]
@@ -406,9 +461,16 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 }
             }
             CacheType::S3(ref c) => {
-                debug!("Trying S3Cache({}, {})", c.bucket, c.endpoint);
+                debug!("Trying S3Cache({:?})", c);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&c.bucket, &c.endpoint, c.use_ssl, &c.key_prefix) {
+                match pool.block_on(S3Cache::new(
+                    &c.bucket,
+                    c.region.as_deref(),
+                    &c.key_prefix,
+                    c.no_credentials,
+                    c.endpoint.as_deref(),
+                    c.use_ssl,
+                )) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);

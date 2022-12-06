@@ -26,6 +26,7 @@ use crate::harness::{
 use assert_cmd::prelude::*;
 use log::Level::Trace;
 use predicates::prelude::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -48,11 +49,11 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
-const COMPILERS: &[&str] = &["clang"];
+const COMPILERS: &[&str] = &["clang", "clang++"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -69,15 +70,23 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     exe: T,
     input: &str,
     output: &str,
+    mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
-    match compiler {
-        "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+    let mut arg = match compiler {
+        "gcc" | "clang" | "clang++" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
+    };
+    if !extra_args.is_empty() {
+        arg.append(&mut extra_args)
     }
+    arg
 }
 
 const INPUT: &str = "test.c";
+const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
+const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
+const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
@@ -86,7 +95,7 @@ const OUTPUT: &str = "test.o";
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
 fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
     for f in inputs {
-        let original_source_file = Path::new(file!()).parent().unwrap().join(&*f);
+        let original_source_file = Path::new(file!()).parent().unwrap().join(f);
         let source_file = tempdir.join(f);
         trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
         fs::copy(&original_source_file, &source_file).unwrap();
@@ -106,7 +115,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -123,7 +132,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -175,7 +184,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     // Check that -deps works.
     trace!("compile with -deps");
-    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new());
     args.push("-depstest.d".into());
     sccache_command()
         .args(&args)
@@ -206,7 +215,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         env_vars,
     } = compiler;
     trace!("test -MP with -Werror");
-    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT, Vec::new());
     args.extend(vec_from!(
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
@@ -246,7 +255,7 @@ int main(int argc, char** argv) {
 }
 ",
     );
-    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT, Vec::new());
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
     sccache_command()
@@ -320,7 +329,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT)[..],
+                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-Wunreachable-code")[..],
             ]
             .concat(),
@@ -346,7 +355,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT)[..],
+                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-DSCCACHE_TEST_DEFINE")[..],
             ]
             .concat(),
@@ -359,7 +368,9 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
 }
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_basic_compile(compiler.clone(), tempdir);
+    if compiler.name != "clang++" {
+        test_basic_compile(compiler.clone(), tempdir);
+    }
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
@@ -369,7 +380,129 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         test_gcc_fprofile_generate_source_changes(compiler.clone(), tempdir);
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
-        test_gcc_clang_no_warnings_from_macro_expansion(compiler, tempdir);
+        test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang++" {
+        test_clang_multicall(compiler.clone(), tempdir);
+    }
+
+    // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
+    if compiler.name == "clang" {
+        let version_cmd = Command::new(compiler.name)
+            .arg("--version")
+            .output()
+            .expect("Failure when getting compiler version");
+        assert!(version_cmd.status.success());
+
+        let version_output = match str::from_utf8(&version_cmd.stdout) {
+            Ok(v) => v,
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+        };
+
+        // Apple clang would match "Apple LLVM version"
+        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        let (major, is_appleclang) = match re.captures(version_output) {
+            Some(c) => (
+                c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
+                c.name("apple") == None,
+            ),
+            None => panic!(
+                "Version info not found in --version output: {}",
+                version_output
+            ),
+        };
+        test_clang_cache_whitespace_normalization(compiler, tempdir, !is_appleclang && major >= 14);
+    } else {
+        test_clang_cache_whitespace_normalization(compiler, tempdir, false);
+    }
+}
+
+fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_clang_multicall: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_CLANG_MULTICALL], tempdir);
+
+    println!("compile clang_multicall");
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            &exe,
+            INPUT_CLANG_MULTICALL,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+}
+
+fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("run_sccache_command_test: {}", name);
+    println!("expecting hit: {}", hit);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_WITH_WHITESPACE, INPUT_WITH_WHITESPACE_ALT], tempdir);
+    zero_stats();
+
+    println!("compile whitespace");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_WITH_WHITESPACE,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    println!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+    });
+
+    println!("compile whitespace_alt");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_WITH_WHITESPACE_ALT,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    println!("request stats (expecting cache hit)");
+    if hit {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(1, info.stats.cache_hits.all());
+            assert_eq!(1, info.stats.cache_misses.all());
+        });
+    } else {
+        get_stats(|info| {
+            assert_eq!(2, info.stats.compile_requests);
+            assert_eq!(2, info.stats.requests_executed);
+            assert_eq!(0, info.stats.cache_hits.all());
+            assert_eq!(2, info.stats.cache_misses.all());
+        });
     }
 }
 
@@ -378,16 +511,14 @@ fn find_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
     COMPILERS
         .iter()
-        .filter_map(|c| match which_in(c, env::var_os("PATH"), &cwd) {
-            Ok(full_path) => match full_path.canonicalize() {
-                Ok(full_path_canon) => Some(Compiler {
+        .filter_map(|c| {
+            which_in(c, env::var_os("PATH"), &cwd)
+                .ok()
+                .map(|full_path| Compiler {
                     name: *c,
-                    exe: full_path_canon.into_os_string(),
+                    exe: full_path.into(),
                     env_vars: vec![],
-                }),
-                Err(_) => None,
-            },
-            Err(_) => None,
+                })
         })
         .collect::<Vec<_>>()
 }

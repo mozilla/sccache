@@ -13,18 +13,49 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{App, AppSettings, Arg};
+use clap::{Arg, ArgGroup, ErrorKind};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::str::FromStr;
 use which::which_in;
 
-arg_enum! {
-    #[derive(Debug)]
-    #[allow(non_camel_case_types)]
-    pub enum StatsFormat {
-        text,
-        json
+const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
+
+#[derive(Debug, Clone)]
+pub enum StatsFormat {
+    Text,
+    Json,
+}
+
+impl StatsFormat {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+
+    fn values() -> &'static [Self] {
+        &[Self::Text, Self::Json]
+    }
+}
+
+impl FromStr for StatsFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            _ => bail!("Unrecognized stats format: {:?}", s),
+        }
+    }
+}
+
+impl Default for StatsFormat {
+    fn default() -> Self {
+        Self::Text
     }
 }
 
@@ -59,50 +90,88 @@ pub enum Command {
     },
 }
 
-/// Get the `App` used for argument parsing.
-pub fn get_app<'a, 'b>() -> App<'a, 'b> {
-    App::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .setting(AppSettings::TrailingVarArg)
-        .after_help(concat!(
-                "Enabled features:\n",
-                "    S3:        ", cfg!(feature = "s3"), "\n",
-                "    Redis:     ", cfg!(feature = "redis"), "\n",
-                "    Memcached: ", cfg!(feature = "memcached"), "\n",
-                "    GCS:       ", cfg!(feature = "gcs"), "\n",
-                "    Azure:     ", cfg!(feature = "azure"), "\n")
-                )
-        .args_from_usage(
-            "-s --show-stats  'show cache statistics'
-             --start-server   'start background server'
-             --stop-server    'stop background server'
-             -z, --zero-stats 'zero statistics counters'
-             --dist-auth      'authenticate for distributed compilation'
-             --dist-status    'show status of the distributed client'"
-                )
-        .arg(Arg::from_usage("--package-toolchain <executable> <out> 'package toolchain for distributed compilation'")
-             .required(false))
-        .arg(Arg::from_usage("--stats-format  'set output format of statistics'")
-             .possible_values(&StatsFormat::variants())
-             .default_value("text"))
-        .arg(
-            Arg::with_name("cmd")
-                .multiple(true)
-                .use_delimiter(false)
-                )
+fn flag_infer_long_and_short(name: &'static str) -> Arg<'static> {
+    flag_infer_long(name).short(name.chars().next().expect("Name needs at least one char"))
 }
 
-/// Parse the commandline into a `Command` to execute.
-pub fn parse() -> Result<Command> {
+fn flag_infer_long(name: &'static str) -> Arg<'static> {
+    Arg::new(name).long(name)
+}
+
+/// Get the [`clap::Command`] used for argument parsing.
+fn get_clap_command() -> clap::Command<'static> {
+    clap::Command::new(env!("CARGO_PKG_NAME"))
+        .version(env!("CARGO_PKG_VERSION"))
+        .trailing_var_arg(true)
+        .max_term_width(110)
+        .after_help(concat!(
+            "Enabled features:\n",
+            "    S3:        ",
+            cfg!(feature = "s3"),
+            "\n",
+            "    Redis:     ",
+            cfg!(feature = "redis"),
+            "\n",
+            "    Memcached: ",
+            cfg!(feature = "memcached"),
+            "\n",
+            "    GCS:       ",
+            cfg!(feature = "gcs"),
+            "\n",
+            "    GHA:       ",
+            cfg!(feature = "gha"),
+            "\n",
+            "    Azure:     ",
+            cfg!(feature = "azure"),
+            "\n"
+        ))
+        .args(&[
+            flag_infer_long_and_short("show-stats").help("show cache statistics"),
+            flag_infer_long("start-server").help("start background server"),
+            flag_infer_long("stop-server").help("stop background server"),
+            flag_infer_long_and_short("zero-stats").help("zero statistics counters"),
+            flag_infer_long("dist-auth").help("authenticate for distributed compilation"),
+            flag_infer_long("dist-status").help("show status of the distributed client"),
+            flag_infer_long("package-toolchain")
+                .help("package toolchain for distributed compilation")
+                .number_of_values(2)
+                .value_names(&["EXE", "OUT"]),
+            flag_infer_long("stats-format")
+                .help("set output format of statistics")
+                .value_name("FMT")
+                .possible_values(StatsFormat::values().iter().map(StatsFormat::as_str))
+                .default_value(StatsFormat::default().as_str()),
+            Arg::new("CMD")
+                .multiple_occurrences(true)
+                .use_value_delimiter(false),
+        ])
+        .group(
+            ArgGroup::new("one_and_only_one")
+                .args(&[
+                    "dist-auth",
+                    "dist-status",
+                    "show-stats",
+                    "start-server",
+                    "stop-server",
+                    "zero-stats",
+                    "package-toolchain",
+                    "CMD",
+                ])
+                .required(true),
+        )
+}
+
+/// Parse the commandline args into a `Result<Command>` to execute.
+pub fn try_parse() -> Result<Command> {
     trace!("parse");
+
     let cwd =
         env::current_dir().context("sccache: Couldn't determine current working directory")?;
-    // The internal start server command is passed in the environment.
-    let internal_start_server = match env::var("SCCACHE_START_SERVER") {
-        Ok(val) => val == "1",
-        Err(_) => false,
-    };
+
+    // We only care if it's `1`
+    let internal_start_server = env::var(ENV_VAR_INTERNAL_START_SERVER).as_deref() == Ok("1");
     let mut args: Vec<_> = env::args_os().collect();
+
     if !internal_start_server {
         if let Ok(exe) = env::current_exe() {
             match exe
@@ -141,86 +210,77 @@ pub fn parse() -> Result<Command> {
             }
         }
     }
-    let matches = get_app().get_matches_from(args);
 
-    let show_stats = matches.is_present("show-stats");
-    let start_server = matches.is_present("start-server");
-    let stop_server = matches.is_present("stop-server");
-    let zero_stats = matches.is_present("zero-stats");
-    let dist_auth = matches.is_present("dist-auth");
-    let dist_status = matches.is_present("dist-status");
-    let package_toolchain = matches.is_present("package-toolchain");
-    let cmd = matches.values_of_os("cmd");
-    // Ensure that we've only received one command to run.
-    fn is_some<T>(x: &Option<T>) -> bool {
-        x.is_some()
-    }
-    if [
-        internal_start_server,
-        show_stats,
-        start_server,
-        stop_server,
-        zero_stats,
-        package_toolchain,
-        is_some(&cmd),
-    ]
-    .iter()
-    .filter(|&&x| x)
-    .count()
-        > 1
-    {
-        bail!("Too many commands specified");
-    }
-    if internal_start_server {
-        Ok(Command::InternalStartServer)
-    } else if show_stats {
-        let fmt =
-            value_t!(matches.value_of("stats-format"), StatsFormat).unwrap_or_else(|e| e.exit());
-        Ok(Command::ShowStats(fmt))
-    } else if start_server {
-        Ok(Command::StartServer)
-    } else if stop_server {
-        Ok(Command::StopServer)
-    } else if zero_stats {
-        Ok(Command::ZeroStats)
-    } else if dist_auth {
-        Ok(Command::DistAuth)
-    } else if dist_status {
-        Ok(Command::DistStatus)
-    } else if package_toolchain {
-        let mut values = matches
-            .values_of_os("package-toolchain")
-            .expect("Parsed package-toolchain but no values");
-        assert!(values.len() == 2);
-        let (executable, out) = (
-            values.next().expect("package-toolchain missing value 1"),
-            values.next().expect("package-toolchain missing value 2"),
-        );
-        Ok(Command::PackageToolchain(executable.into(), out.into()))
-    } else if let Some(mut args) = cmd {
-        if let Some(exe) = args.next() {
-            let cmdline = args.map(|s| s.to_owned()).collect::<Vec<_>>();
-            let mut env_vars = env::vars_os().collect::<Vec<_>>();
+    let matches_result = get_clap_command().try_get_matches_from(args);
 
-            // If we're running under rr, avoid the `LD_PRELOAD` bits, as it will
-            // almost surely do the wrong thing, as the compiler gets executed
-            // in a different process tree.
-            //
-            // FIXME: Maybe we should strip out `LD_PRELOAD` always?
-            if env::var_os("RUNNING_UNDER_RR").is_some() {
-                env_vars.retain(|(k, _v)| k != "LD_PRELOAD" && k != "RUNNING_UNDER_RR");
+    // A command can either be from `ENV_VAR_INTERNAL_START_SERVER` being set or from command-line
+    // args. Validate things so that error messages are nice and the returned opts are correct
+    match (internal_start_server, matches_result) {
+        (true, Err(e)) => {
+            // Need to make sure that the error from `clap` is due to a missing command and not
+            // some other issue
+            if e.kind() == ErrorKind::MissingRequiredArgument {
+                Ok(Command::InternalStartServer)
+            } else {
+                Err(e.into())
             }
-
-            Ok(Command::Compile {
-                exe: exe.to_owned(),
-                cmdline,
-                cwd,
-                env_vars,
-            })
-        } else {
-            bail!("No compile command");
         }
-    } else {
-        bail!("No command specified");
+        (false, Err(e)) => Err(e.into()),
+        (true, Ok(_)) => {
+            // `ENV_VAR_INTERNAL_START_SERVER` and a match means that more than one command was
+            // provided
+            bail!("`{ENV_VAR_INTERNAL_START_SERVER}=1` can't be used with other commands");
+        }
+        (false, Ok(matches)) => {
+            if matches.is_present("show-stats") {
+                let fmt = matches
+                    .value_of_t("stats-format")
+                    .expect("There is a default value");
+                Ok(Command::ShowStats(fmt))
+            } else if matches.is_present("start-server") {
+                Ok(Command::StartServer)
+            } else if matches.is_present("stop-server") {
+                Ok(Command::StopServer)
+            } else if matches.is_present("zero-stats") {
+                Ok(Command::ZeroStats)
+            } else if matches.is_present("dist-auth") {
+                Ok(Command::DistAuth)
+            } else if matches.is_present("dist-status") {
+                Ok(Command::DistStatus)
+            } else if matches.is_present("package-toolchain") {
+                let mut toolchain_values: Vec<PathBuf> =
+                    matches.values_of_t("package-toolchain")?;
+                let maybe_out = toolchain_values.pop();
+                let maybe_exe = toolchain_values.pop();
+                match (maybe_exe, maybe_out) {
+                    (Some(exe), Some(out)) => Ok(Command::PackageToolchain(exe, out)),
+                    _ => unreachable!("clap should enforce two values"),
+                }
+            } else if matches.is_present("CMD") {
+                let mut env_vars = env::vars_os().collect::<Vec<_>>();
+
+                // If we're running under rr, avoid the `LD_PRELOAD` bits, as it will
+                // almost surely do the wrong thing, as the compiler gets executed
+                // in a different process tree.
+                //
+                // FIXME: Maybe we should strip out `LD_PRELOAD` always?
+                if env::var_os("RUNNING_UNDER_RR").is_some() {
+                    env_vars.retain(|(k, _v)| k != "LD_PRELOAD" && k != "RUNNING_UNDER_RR");
+                }
+
+                let cmd: Vec<OsString> = matches.values_of_t("CMD")?;
+                match cmd.as_slice() {
+                    [exe, cmdline @ ..] => Ok(Command::Compile {
+                        exe: exe.to_owned(),
+                        cmdline: cmdline.to_owned(),
+                        cwd,
+                        env_vars,
+                    }),
+                    _ => unreachable!("clap should enforce at least one value in cmd"),
+                }
+            } else {
+                unreachable!("Either the arg group or env variable should provide a command");
+            }
+        }
     }
 }

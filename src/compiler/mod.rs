@@ -24,5 +24,8 @@ mod gcc;
 mod msvc;
 mod nvcc;
 mod rust;
+mod tasking_vx;
+#[macro_use]
+mod counted_array;
 
 pub use crate::compiler::compiler::*;

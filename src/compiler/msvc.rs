@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{CCompilerImpl, CCompilerKind, Language, ParsedArguments};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
+};
 use crate::compiler::{
     clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
 };
-use crate::dist;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::run_input_output;
-use local_encoding::{Encoder, Encoding};
+use crate::{counted_array, dist};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -34,11 +35,12 @@ use crate::errors::*;
 /// A struct on which to implement `CCompilerImpl`.
 ///
 /// Needs a little bit of state just to persist `includes_prefix`.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Msvc {
     /// The prefix used in the output of `-showIncludes`.
     pub includes_prefix: String,
     pub is_clang: bool,
+    pub version: Option<String>,
 }
 
 #[async_trait]
@@ -48,6 +50,9 @@ impl CCompilerImpl for Msvc {
     }
     fn plusplus(&self) -> bool {
         false
+    }
+    fn version(&self) -> Option<String> {
+        self.version.clone()
     }
     fn parse_arguments(
         &self,
@@ -98,8 +103,51 @@ impl CCompilerImpl for Msvc {
     }
 }
 
-fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
-    Encoding::OEM.to_string(bytes)
+#[cfg(not(windows))]
+fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
+    String::from_utf8(multi_byte_str.to_vec())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
+}
+
+#[cfg(windows)]
+pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+
+    // Empty string
+    if multi_byte_str.is_empty() {
+        return Ok(String::new());
+    }
+    unsafe {
+        // Get length of UTF-16 string
+        let len = winapi::um::stringapiset::MultiByteToWideChar(
+            codepage,
+            flags,
+            multi_byte_str.as_ptr() as _,
+            multi_byte_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len > 0 {
+            // Convert to UTF-16
+            let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::MultiByteToWideChar(
+                codepage,
+                flags,
+                multi_byte_str.as_ptr() as _,
+                multi_byte_str.len() as i32,
+                wstr.as_mut_ptr() as _,
+                len,
+            );
+            if len > 0 {
+                // wstr's contents have now been initialized
+                wstr.set_len(len as usize);
+                return String::from_utf16(&wstr[0..(len as usize)])
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+            }
+        }
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
@@ -198,16 +246,58 @@ fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
-    use local_encoding::windows::wide_char_to_multi_byte;
     use std::os::windows::prelude::*;
-    use winapi::um::winnls::CP_OEMCP;
 
     let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let (bytes, _) = wide_char_to_multi_byte(
-        CP_OEMCP, 0, &points, None, // default_char
-        false,
-    )?; // use_default_char_flag
+    let bytes = wide_char_to_multi_byte(&points)?; // use_default_char_flag
     dst.write_all(&bytes)
+}
+
+#[cfg(windows)]
+pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> io::Result<Vec<u8>> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = 0;
+    // Empty string
+    if wide_char_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    unsafe {
+        // Get length of multibyte string
+        let len = winapi::um::stringapiset::WideCharToMultiByte(
+            codepage,
+            flags,
+            wide_char_str.as_ptr(),
+            wide_char_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+
+        if len > 0 {
+            // Convert from UTF-16 to multibyte
+            let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::WideCharToMultiByte(
+                codepage,
+                flags,
+                wide_char_str.as_ptr(),
+                wide_char_str.len() as i32,
+                astr.as_mut_ptr() as _,
+                len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            if len > 0 {
+                astr.set_len(len as usize);
+                if (len as usize) == astr.len() {
+                    return Ok(astr);
+                } else {
+                    return Ok(astr[0..(len as usize)].to_vec());
+                }
+            }
+        }
+        Err(io::Error::last_os_error())
+    }
 }
 
 ArgData! {
@@ -358,6 +448,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
+    msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("ZI", DebugInfo), // Implies /FC, which puts absolute paths in error messages -> TooHardFlag?
     msvc_flag!("ZW", PassThrough),
     msvc_flag!("Za", PassThrough),
@@ -372,6 +463,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Zp4", PassThrough),
     msvc_flag!("Zp8", PassThrough),
     msvc_flag!("Zs", SuppressCompilation),
+    msvc_flag!("analyze", PassThrough),
     msvc_flag!("analyze-", PassThrough),
     msvc_take_arg!("analyze:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("arch:", OsString, Concatenated, PassThroughWithSuffix),
@@ -388,10 +480,17 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
     msvc_take_arg!("errorReport:", OsString, Concatenated, PassThroughWithSuffix), // Deprecated.
     msvc_take_arg!("execution-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_flag!("experimental:deterministic", PassThrough),
+    msvc_flag!("experimental:external", PassThrough),
     msvc_flag!("experimental:module", TooHardFlag),
     msvc_flag!("experimental:module-", PassThrough), // Explicitly disabled modules.
     msvc_take_arg!("experimental:preprocessor", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("external:I", PathBuf, CanBeSeparated, ExternalIncludePath),
+    msvc_flag!("external:W0", PassThrough),
+    msvc_flag!("external:W1", PassThrough),
+    msvc_flag!("external:W2", PassThrough),
+    msvc_flag!("external:W3", PassThrough),
+    msvc_flag!("external:W4", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
@@ -433,11 +532,12 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("w4", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("wd", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("we", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("winsysroot", PathBuf, CanBeSeparated, PassThroughWithPath),
     msvc_take_arg!("wo", OsString, Concatenated, PassThroughWithSuffix),
     take_arg!("@", PathBuf, Concatenated, TooHardPath),
 ]);
 
-// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /ZH, /Zm
+// TODO: what do do with precompiled header flags? eg: /Y-, /Yc, /YI, /Yu, /Zf, /Zm
 
 pub fn parse_arguments(
     arguments: &[OsString],
@@ -459,6 +559,8 @@ pub fn parse_arguments(
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
     let mut profile_generate = false;
+    let mut multiple_input = false;
+    let mut multiple_input_files = Vec::new();
 
     for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
@@ -503,7 +605,8 @@ pub fn parse_arguments(
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
-                            cannot_cache!("multiple input files");
+                            multiple_input = true;
+                            multiple_input_files.push(val.clone());
                         }
                         input_arg = Some(val.clone());
                     }
@@ -597,7 +700,9 @@ pub fn parse_arguments(
                 | Some(NoDiagnosticsColorFlag)
                 | Some(Arch(_))
                 | Some(PassThrough(_))
-                | Some(PassThroughPath(_)) => &mut common_args,
+                | Some(PassThroughPath(_))
+                | Some(PedanticFlag)
+                | Some(Standard(_)) => &mut common_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
@@ -637,6 +742,13 @@ pub fn parse_arguments(
     if !compilation {
         return CompilerArguments::NotCompilation;
     }
+    // Can't cache compilations with multiple inputs.
+    if multiple_input {
+        cannot_cache!(
+            "multiple input files",
+            format!("{:?}", multiple_input_files)
+        );
+    }
     let (input, language) = match input_arg {
         Some(i) => match Language::from_file_name(Path::new(&i)) {
             Some(l) => (i.to_owned(), l),
@@ -649,13 +761,31 @@ pub fn parse_arguments(
     match output_arg {
         // If output file name is not given, use default naming rule
         None => {
-            outputs.insert("obj", Path::new(&input).with_extension("obj"));
+            outputs.insert(
+                "obj",
+                ArtifactDescriptor {
+                    path: Path::new(&input).with_extension("obj"),
+                    optional: false,
+                },
+            );
         }
         Some(o) => {
             if o.extension().is_none() && compilation {
-                outputs.insert("obj", o.with_extension("obj"));
+                outputs.insert(
+                    "obj",
+                    ArtifactDescriptor {
+                        path: o.with_extension("obj"),
+                        optional: false,
+                    },
+                );
             } else {
-                outputs.insert("obj", o);
+                outputs.insert(
+                    "obj",
+                    ArtifactDescriptor {
+                        path: o,
+                        optional: false,
+                    },
+                );
             }
         }
     }
@@ -663,7 +793,13 @@ pub fn parse_arguments(
     // Clang is currently unable to generate PDB files
     if debug_info && !is_clang {
         match pdb {
-            Some(p) => outputs.insert("pdb", p),
+            Some(p) => outputs.insert(
+                "pdb",
+                ArtifactDescriptor {
+                    path: p,
+                    optional: false,
+                },
+            ),
             None => {
                 // -Zi and -ZI without -Fd defaults to vcxxx.pdb (where xxx depends on the
                 // MSVC version), and that's used for all compilations with the same
@@ -687,6 +823,7 @@ pub fn parse_arguments(
         profile_generate,
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
+        suppress_rewrite_includes_only: false,
     })
 }
 
@@ -780,9 +917,9 @@ where
     let output = run_input_output(cmd, None).await?;
 
     let parsed_args = &parsed_args;
-    if let (Some(ref objfile), &Some(ref depfile)) =
-        (parsed_args.outputs.get("obj"), &parsed_args.depfile)
+    if let (Some(obj), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile)
     {
+        let objfile = &obj.path;
         let f = File::create(cwd.join(depfile))?;
         let mut f = BufWriter::new(f);
 
@@ -850,7 +987,7 @@ fn generate_compile_commands(
 
     trace!("compile");
     let out_file = match parsed_args.outputs.get("obj") {
-        Some(obj) => obj,
+        Some(obj) => &obj.path,
         None => bail!("Missing object file output"),
     };
 
@@ -861,7 +998,7 @@ fn generate_compile_commands(
         .map_or(Cacheable::Yes, |pdb| {
             // If the PDB exists, we don't know if it's shared with another
             // compilation. If it is, we can't cache.
-            if Path::new(&cwd).join(pdb).exists() {
+            if Path::new(&cwd).join(pdb.path.clone()).exists() {
                 Cacheable::No
             } else {
                 Cacheable::Yes
@@ -974,7 +1111,16 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_eq!(Some("-c"), compilation_flag.to_str());
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -999,7 +1145,16 @@ mod test {
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
         assert_eq!(Some("/c"), compilation_flag.to_str());
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -1022,7 +1177,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -1045,7 +1209,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
@@ -1128,7 +1301,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-foo", "-bar"]);
         assert!(!msvc_show_includes);
@@ -1144,7 +1326,8 @@ mod test {
             "-imsvc",
             "/a/b/c",
             "-Fofoo.obj",
-            "/showIncludes"
+            "/showIncludes",
+            "/winsysroot../../some/dir"
         ];
         let ParsedArguments {
             input,
@@ -1161,10 +1344,19 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(preprocessor_args, ovec!["-FIfile", "-imsvc/a/b/c"]);
         assert_eq!(dependency_args, ovec!["/showIncludes"]);
-        assert!(common_args.is_empty());
+        assert_eq!(common_args, ovec!["/winsysroot../../some/dir"]);
         assert!(msvc_show_includes);
     }
 
@@ -1187,8 +1379,20 @@ mod test {
         assert_eq!(Language::C, language);
         assert_map_contains!(
             outputs,
-            ("obj", PathBuf::from("foo.obj")),
-            ("pdb", PathBuf::from("foo.pdb"))
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "pdb",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.pdb"),
+                    optional: false
+                }
+            )
         );
         assert!(preprocessor_args.is_empty());
         assert_eq!(common_args, ovec!["-Zi", "-Fdfoo.pdb"]);
@@ -1222,7 +1426,16 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(Language::C, language);
-        assert_map_contains!(outputs, ("obj", PathBuf::from("foo.obj")));
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
         assert_eq!(1, outputs.len());
         assert!(preprocessor_args.is_empty());
         assert_eq!(
@@ -1235,6 +1448,52 @@ mod test {
             ]
         );
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_external_warning_suppression_forward_slashes() {
+        // Parsing /external:W relies on /experimental:external being parsed
+        // and placed into common_args.
+        for n in 0..5 {
+            let args = ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/experimental:external",
+                format!("/external:W{}", n)
+            ];
+            let ParsedArguments {
+                input,
+                language,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                ..
+            } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.c"), input.to_str());
+            assert_eq!(Language::C, language);
+            assert_map_contains!(
+                outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.obj"),
+                        optional: false
+                    }
+                )
+            );
+            assert_eq!(1, outputs.len());
+            assert!(preprocessor_args.is_empty());
+            assert_eq!(
+                common_args,
+                ovec!["/experimental:external", format!("/external:W{}", n)]
+            );
+            assert!(!msvc_show_includes);
+        }
     }
 
     #[test]
@@ -1282,10 +1541,21 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_too_many_inputs() {
+    fn test_parse_arguments_too_many_inputs_single() {
         assert_eq!(
-            CompilerArguments::CannotCache("multiple input files", None),
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
             parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c"])
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_too_many_inputs_multiple() {
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "multiple input files",
+                Some("[\"bar.c\", \"baz.c\"]".to_string())
+            ),
+            parse_arguments(ovec!["-c", "foo.c", "-Fofoo.obj", "bar.c", "baz.c"])
         );
     }
 
@@ -1340,7 +1610,15 @@ mod test {
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,
-            outputs: vec![("obj", "foo.obj".into())].into_iter().collect(),
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.obj".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
             dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
@@ -1348,6 +1626,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -1381,9 +1660,24 @@ mod test {
             language: Language::C,
             compilation_flag: "/c".into(),
             depfile: None,
-            outputs: vec![("obj", "foo.obj".into()), ("pdb", pdb)]
-                .into_iter()
-                .collect(),
+            outputs: vec![
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: "foo.obj".into(),
+                        optional: false,
+                    },
+                ),
+                (
+                    "pdb",
+                    ArtifactDescriptor {
+                        path: pdb,
+                        optional: false,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
             dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
@@ -1391,6 +1685,7 @@ mod test {
             msvc_show_includes: false,
             profile_generate: false,
             color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -1436,5 +1731,35 @@ mod test {
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             extra_hash_files
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn local_oem_codepage_conversions() {
+        use winapi::um::winnls::GetOEMCP;
+
+        let current_oemcp = unsafe { GetOEMCP() };
+        // We don't control the local OEM codepage so test only if it is one of:
+        // United Stats, Latin-1 and Latin-1 + euro symbol
+        if current_oemcp == 437 || current_oemcp == 850 || current_oemcp == 858 {
+            // Non-ASCII characters
+            const INPUT_STRING: &str = "ÇüéâäàåçêëèïîìÄÅ";
+
+            // The characters in INPUT_STRING encoded per the OEM codepage
+            const INPUT_BYTES: [u8; 16] = [
+                128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+            ];
+
+            // Test the conversion from the OEM codepage to UTF-8
+            assert_eq!(from_local_codepage(&INPUT_BYTES).unwrap(), INPUT_STRING);
+
+            // The characters in INPUT_STRING encoded in UTF-16
+            const INPUT_WORDS: [u16; 16] = [
+                199, 252, 233, 226, 228, 224, 229, 231, 234, 235, 232, 239, 238, 236, 196, 197,
+            ];
+
+            // Test the conversion from UTF-16 to the OEM codepage
+            assert_eq!(wide_char_to_multi_byte(&INPUT_WORDS).unwrap(), INPUT_BYTES);
+        }
     }
 }

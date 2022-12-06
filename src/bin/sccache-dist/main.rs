@@ -1,6 +1,4 @@
 extern crate base64;
-#[macro_use]
-extern crate clap;
 extern crate crossbeam_utils;
 extern crate env_logger;
 extern crate flate2;
@@ -22,7 +20,6 @@ extern crate tar;
 extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
-use clap::{App, Arg, ArgMatches, SubCommand};
 use rand::{rngs::OsRng, RngCore};
 use sccache::config::{
     scheduler as scheduler_config, server as server_config, INSECURE_DIST_CLIENT_TOKEN,
@@ -38,205 +35,49 @@ use sccache::util::daemonize;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use syslog::Facility;
 
 mod build;
+mod cmdline;
 mod token_check;
 
+use cmdline::{AuthSubcommand, Command};
+
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
-
-enum Command {
-    Auth(AuthSubcommand),
-    Scheduler(scheduler_config::Config),
-    Server(server_config::Config),
-}
-
-enum AuthSubcommand {
-    Base64 {
-        num_bytes: usize,
-    },
-    JwtHS256ServerToken {
-        secret_key: String,
-        server_id: ServerId,
-    },
-}
 
 // Only supported on x86_64 Linux machines
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
     init_logging();
-    std::process::exit(match parse() {
-        Ok(cmd) => match run(cmd) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("sccache-dist: error: {}", e);
 
-                for e in e.chain().skip(1) {
-                    eprintln!("sccache-dist: caused by: {}", e);
+    let command = match cmdline::try_parse_from(env::args()) {
+        Ok(cmd) => cmd,
+        Err(e) => match e.downcast::<clap::error::Error>() {
+            Ok(clap_err) => clap_err.exit(),
+            Err(some_other_err) => {
+                println!("sccache-dist: {some_other_err}");
+                for source_err in some_other_err.chain().skip(1) {
+                    println!("sccache-dist: caused by: {source_err}");
                 }
-                2
+                std::process::exit(1);
             }
         },
+    };
+
+    std::process::exit(match run(command) {
+        Ok(s) => s,
         Err(e) => {
-            println!("sccache-dist: {}", e);
+            eprintln!("sccache-dist: error: {}", e);
+
             for e in e.chain().skip(1) {
-                println!("sccache-dist: caused by: {}", e);
+                eprintln!("sccache-dist: caused by: {}", e);
             }
-            get_app().print_help().unwrap();
-            println!();
-            1
+            2
         }
     });
-}
-
-/// These correspond to the values of `log::LevelFilter`.
-const LOG_LEVELS: &[&str] = &["error", "warn", "info", "debug", "trace"];
-
-pub fn get_app<'a, 'b>() -> App<'a, 'b> {
-    App::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .subcommand(
-            SubCommand::with_name("auth")
-                .subcommand(SubCommand::with_name("generate-jwt-hs256-key"))
-                .subcommand(
-                    SubCommand::with_name("generate-jwt-hs256-server-token")
-                        .arg(Arg::from_usage(
-                            "--server <SERVER_ADDR> 'Generate a key for the specified server'",
-                        ))
-                        .arg(
-                            Arg::from_usage(
-                                "--secret-key [KEY] 'Use specified key to create the token'",
-                            )
-                            .required_unless("config"),
-                        )
-                        .arg(
-                            Arg::from_usage(
-                                "--config [PATH] 'Use the key from the scheduler config file'",
-                            )
-                            .required_unless("secret-key"),
-                        ),
-                )
-                .subcommand(
-                    SubCommand::with_name("generate-shared-token").arg(
-                        Arg::from_usage(
-                            "--bits [BITS] 'Use the specified number of bits of randomness'",
-                        )
-                        .default_value("256"),
-                    ),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("scheduler")
-                .arg(Arg::from_usage(
-                    "--config <PATH> 'Use the scheduler config file at PATH'",
-                ))
-                .arg(
-                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                        .required(false)
-                        .possible_values(LOG_LEVELS),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("server")
-                .arg(Arg::from_usage(
-                    "--config <PATH> 'Use the server config file at PATH'",
-                ))
-                .arg(
-                    Arg::from_usage("--syslog <LEVEL> 'Log to the syslog with LEVEL'")
-                        .required(false)
-                        .possible_values(LOG_LEVELS),
-                ),
-        )
-}
-
-fn check_init_syslog<'a>(name: &str, matches: &ArgMatches<'a>) {
-    if matches.is_present("syslog") {
-        let level = value_t!(matches, "syslog", log::LevelFilter).unwrap_or_else(|e| e.exit());
-        drop(syslog::init(Facility::LOG_DAEMON, level, Some(name)));
-    }
-}
-
-fn parse() -> Result<Command> {
-    let matches = get_app().get_matches();
-    Ok(match matches.subcommand() {
-        ("auth", Some(matches)) => {
-            Command::Auth(match matches.subcommand() {
-                ("generate-jwt-hs256-key", Some(_matches)) => {
-                    // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
-                    AuthSubcommand::Base64 { num_bytes: 256 / 8 }
-                }
-                ("generate-jwt-hs256-server-token", Some(matches)) => {
-                    let server_id = ServerId::new(value_t_or_exit!(matches, "server", SocketAddr));
-                    let secret_key = if let Some(config_path) =
-                        matches.value_of("config").map(Path::new)
-                    {
-                        if let Some(config) = scheduler_config::from_path(config_path)? {
-                            match config.server_auth {
-                                scheduler_config::ServerAuth::JwtHS256 { secret_key } => secret_key,
-                                scheduler_config::ServerAuth::Insecure
-                                | scheduler_config::ServerAuth::Token { token: _ } => {
-                                    bail!("Scheduler not configured with JWT HS256")
-                                }
-                            }
-                        } else {
-                            bail!("Could not load config")
-                        }
-                    } else {
-                        matches
-                            .value_of("secret-key")
-                            .expect("missing secret-key in parsed subcommand")
-                            .to_owned()
-                    };
-                    AuthSubcommand::JwtHS256ServerToken {
-                        secret_key,
-                        server_id,
-                    }
-                }
-                ("generate-shared-token", Some(matches)) => {
-                    let bits = value_t_or_exit!(matches, "bits", usize);
-                    if bits % 8 != 0 || bits < 64 || bits > 4096 {
-                        bail!("Number of bits must be divisible by 8, greater than 64 and less than 4096")
-                    }
-                    AuthSubcommand::Base64 {
-                        num_bytes: bits / 8,
-                    }
-                }
-                _ => bail!("No subcommand of auth specified"),
-            })
-        }
-        ("scheduler", Some(matches)) => {
-            let config_path = Path::new(
-                matches
-                    .value_of("config")
-                    .expect("missing config in parsed subcommand"),
-            );
-            check_init_syslog("sccache-scheduler", matches);
-            if let Some(config) = scheduler_config::from_path(config_path)? {
-                Command::Scheduler(config)
-            } else {
-                bail!("Could not load config")
-            }
-        }
-        ("server", Some(matches)) => {
-            let config_path = Path::new(
-                matches
-                    .value_of("config")
-                    .expect("missing config in parsed subcommand"),
-            );
-            check_init_syslog("sccache-buildserver", matches);
-            if let Some(config) = server_config::from_path(config_path)? {
-                Command::Server(config)
-            } else {
-                bail!("Could not load config")
-            }
-        }
-        _ => bail!("No subcommand specified"),
-    })
 }
 
 fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
@@ -254,6 +95,7 @@ fn check_server_token(server_token: &str, auth_token: &str) -> Option<ServerId> 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerJwt {
+    exp: u64,
     server_id: ServerId,
 }
 fn create_jwt_server_token(
@@ -262,12 +104,20 @@ fn create_jwt_server_token(
     key: &[u8],
 ) -> Result<String> {
     let key = jwt::EncodingKey::from_secret(key);
-    jwt::encode(header, &ServerJwt { server_id }, &key).map_err(Into::into)
+    jwt::encode(header, &ServerJwt { exp: 0, server_id }, &key).map_err(Into::into)
 }
-fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Option<ServerId> {
-    jwt::dangerous_insecure_decode::<ServerJwt>(server_token)
+fn dangerous_insecure_extract_jwt_server_token(server_token: &str) -> Result<ServerId> {
+    let validation = {
+        let mut validation = jwt::Validation::default();
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation.insecure_disable_signature_validation();
+        validation
+    };
+    let dummy_key = jwt::DecodingKey::from_secret(b"secret");
+    jwt::decode::<ServerJwt>(server_token, &dummy_key, &validation)
         .map(|res| res.claims.server_id)
-        .ok()
+        .map_err(Into::into)
 }
 fn check_jwt_server_token(
     server_token: &str,
@@ -344,14 +194,12 @@ fn run(command: Command) -> Result<i32> {
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
                     }
-                    let validation = jwt::Validation {
-                        leeway: 0,
-                        validate_exp: false,
-                        validate_nbf: false,
-                        aud: None,
-                        iss: None,
-                        sub: None,
-                        algorithms: vec![jwt::Algorithm::HS256],
+                    let validation = {
+                        let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
+                        validation.leeway = 0;
+                        validation.validate_exp = false;
+                        validation.validate_nbf = false;
+                        validation
                     };
                     Box::new(move |server_token| {
                         check_jwt_server_token(server_token, &secret_key, &validation)
@@ -430,10 +278,10 @@ fn run(command: Command) -> Result<i32> {
 }
 
 fn init_logging() {
-    if env::var("RUST_LOG").is_ok() {
-        match env_logger::try_init() {
+    if env::var(sccache::LOGGING_ENV).is_ok() {
+        match env_logger::Builder::from_env(sccache::LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!("Failed to initalize logging: {:?}", e),
+            Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
     }
 }
@@ -789,7 +637,7 @@ impl SchedulerIncoming for Scheduler {
             let job_detail = entry.get();
             if job_detail.server_id != server_id {
                 bail!(
-                    "Job id {} is not registed on server {:?}",
+                    "Job id {} is not registered on server {:?}",
                     job_id,
                     server_id
                 )

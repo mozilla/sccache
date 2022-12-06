@@ -64,19 +64,7 @@ impl AzureCredentials {
     }
 }
 
-pub trait AzureCredentialsProvider {
-    fn provide_credentials(&self) -> Result<AzureCredentials>;
-}
-
-pub struct EnvironmentProvider;
-
-impl AzureCredentialsProvider for EnvironmentProvider {
-    fn provide_credentials(&self) -> Result<AzureCredentials> {
-        credentials_from_environment()
-    }
-}
-
-fn credentials_from_environment() -> Result<AzureCredentials> {
+pub fn credentials_from_environment() -> Result<AzureCredentials> {
     let env_conn_str = var("SCCACHE_AZURE_CONNECTION_STRING")
         .context("No SCCACHE_AZURE_CONNECTION_STRING in environment")?;
 
@@ -190,7 +178,7 @@ mod test {
     }
 
     #[test]
-    fn test_conn_str_with_endpoint_suffix_only() {
+    fn conn_str_with_endpoint_suffix_only() {
         let conn = "DefaultEndpointsProtocol=https;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
         let creds = parse_connection_string(conn, "container".to_string()).unwrap();
 
@@ -200,5 +188,45 @@ mod test {
         );
         assert_eq!("foo", creds.azure_account_name());
         assert_eq!("bar", creds.azure_account_key().as_ref().unwrap());
+    }
+
+    #[test]
+    fn conn_str_with_empty_endpoints_protocol() {
+        let conn = "DefaultEndpointsProtocol=;AccountName=foo;EndpointSuffix=core.windows.net;AccountKey=bar;";
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
+
+        assert_eq!(
+            "https://foo.blob.core.windows.net/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("foo", creds.azure_account_name());
+        assert_eq!("bar", creds.azure_account_key().as_ref().unwrap());
+    }
+
+    #[test]
+    fn conn_str_without_blob_endpoint_and_endpoint_suffix_and_account_name() {
+        let conn = "";
+        let err = parse_connection_string(conn, "container".to_string()).unwrap_err();
+        assert_eq!("Can not infer blob endpoint; connection string is missing BlobEndpoint, AccountName, and/or EndpointSuffix.", err.to_string());
+    }
+
+    #[test]
+    fn conn_str_without_account_name() {
+        let conn =
+            "DefaultEndpointsProtocol=http;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
+        let err = parse_connection_string(conn, "container".to_string()).unwrap_err();
+        assert_eq!("Azure connection string missing at least one of BlobEndpoint (or DefaultEndpointProtocol and EndpointSuffix), or AccountName.", err.to_string());
+    }
+
+    #[test]
+    fn conn_str_blob_endpoint_non_http() {
+        let conn = "DefaultEndpointsProtocol=ws;AccountName=devstoreaccount1;BlobEndpoint=127.0.0.1:10000/devstoreaccount1;";
+        let creds = parse_connection_string(conn, "container".to_string()).unwrap();
+
+        assert_eq!(
+            "ws://127.0.0.1:10000/devstoreaccount1/",
+            creds.azure_blob_endpoint()
+        );
+        assert_eq!("devstoreaccount1", creds.azure_account_name());
     }
 }

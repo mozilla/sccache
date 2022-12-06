@@ -277,7 +277,7 @@ impl OverlayBuilder {
                     let source: Option<&str> = None;
                     let fstype: Option<&str> = None;
                     let data: Option<&str> = None;
-                    // Turn / into a 'slave', so it receives mounts from real root, but doesn't propogate back
+                    // Turn / into a 'slave', so it receives mounts from real root, but doesn't propagate back
                     nix::mount::mount(
                         source,
                         "/",

@@ -17,6 +17,7 @@ use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::errors::*;
 use redis::aio::Connection;
 use redis::{cmd, Client, InfoDict};
+use rredis as redis;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
@@ -76,7 +77,7 @@ impl Storage for RedisCache {
         format!("Redis: {}", self.display_url)
     }
 
-    /// Returns the current cache size. This value is aquired via
+    /// Returns the current cache size. This value is acquired via
     /// the Redis INFO command (used_memory).
     async fn current_size(&self) -> Result<Option<u64>> {
         let mut c = self.connect().await?;

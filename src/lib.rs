@@ -18,10 +18,6 @@
 
 #[macro_use]
 extern crate async_trait;
-#[macro_use]
-extern crate clap;
-#[macro_use]
-extern crate counted_array;
 #[cfg(feature = "jsonwebtoken")]
 use jsonwebtoken as jwt;
 #[macro_use]
@@ -56,36 +52,41 @@ pub mod lru_disk_cache;
 mod mock_command;
 mod protocol;
 pub mod server;
-#[cfg(feature = "simple-s3")]
-mod simples3;
 #[doc(hidden)]
 pub mod util;
 
 use std::env;
 
-const LOGGING_ENV: &str = "SCCACHE_LOG";
+/// Used to denote the environment variable that controls
+/// logging for sccache, and sccache-dist.
+pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
     init_logging();
-    std::process::exit(match cmdline::parse() {
-        Ok(cmd) => match commands::run_command(cmd) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("sccache: error: {}", e);
-                for e in e.chain().skip(1) {
-                    eprintln!("sccache: caused by: {}", e);
+
+    let command = match cmdline::try_parse() {
+        Ok(cmd) => cmd,
+        Err(e) => match e.downcast::<clap::error::Error>() {
+            // If the error is from clap then let them handle formatting and exiting
+            Ok(clap_err) => clap_err.exit(),
+            Err(some_other_err) => {
+                println!("sccache: {some_other_err}");
+                for source in some_other_err.chain().skip(1) {
+                    println!("sccache: caused by: {source}");
                 }
-                2
+                std::process::exit(1);
             }
         },
+    };
+
+    std::process::exit(match commands::run_command(command) {
+        Ok(s) => s,
         Err(e) => {
-            println!("sccache: {}", e);
+            eprintln!("sccache: error: {}", e);
             for e in e.chain().skip(1) {
-                println!("sccache: caused by: {}", e);
+                eprintln!("sccache: caused by: {}", e);
             }
-            cmdline::get_app().print_help().unwrap();
-            println!();
-            1
+            2
         }
     });
 }
@@ -94,7 +95,7 @@ fn init_logging() {
     if env::var(LOGGING_ENV).is_ok() {
         match env_logger::Builder::from_env(LOGGING_ENV).try_init() {
             Ok(_) => (),
-            Err(e) => panic!("Failed to initalize logging: {:?}", e),
+            Err(e) => panic!("Failed to initialize logging: {:?}", e),
         }
     }
 }

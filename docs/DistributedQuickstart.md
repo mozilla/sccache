@@ -7,7 +7,7 @@ macOS and Windows clients are supported but have seen significantly less testing
 Get sccache binaries
 --------------------
 
-Either download pre-built sccache binaries (not currently available), or build sccache locally with the `dist-client` and `dist-server` features enabled:
+Either [install pre-built sccache binaries](https://github.com/mozilla/sccache#installation), or build sccache locally with the `dist-client` and `dist-server` features enabled:
 ```
 cargo build --release --features="dist-client dist-server"
 ```
@@ -19,7 +19,7 @@ If you're only planning to use the client, it is enabled by default, so just `ca
 Configure a scheduler
 ---------------------
 
-If you're adding a server to a cluster that has already be set up, skip ahead to [configuring a build server](#configure-a-build-server).
+If you're adding a server to a cluster that has already been set up, skip ahead to [configuring a build server](#configure-a-build-server).
 
 The scheduler is a daemon that manages compile request from clients and parcels them out to build servers. You only need one of these per sccache setup. Currently only Linux is supported for running the scheduler.
 
@@ -57,7 +57,7 @@ Start the scheduler by running:
 sccache-dist scheduler --config scheduler.conf
 ```
 
-Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `RUST_LOG=trace` when starting it to get useful diagnostics.
+Like the local server, the scheduler process will daemonize itself unless `SCCACHE_NO_DAEMON=1` is set. If the scheduler fails to start you may need to set `SCCACHE_LOG=trace` when starting it to get useful diagnostics.
 
 Configure a build server
 ------------------------
@@ -98,7 +98,7 @@ Due to bubblewrap requirements currently the build server *must* be run as root.
 sudo sccache-dist server --config server.conf
 ```
 
-As with the scheduler, if the build server fails to start you may need to set `RUST_LOG=trace` to get useful diagnostics.
+As with the scheduler, if the build server fails to start you may need to set `SCCACHE_LOG=trace` to get useful diagnostics.
 
 Configure a client
 ------------------
