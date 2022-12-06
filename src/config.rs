@@ -1015,6 +1015,7 @@ fn test_disk_config_parsing() {
         }),
         res
     }
+}
 
 #[test]
 #[serial]
