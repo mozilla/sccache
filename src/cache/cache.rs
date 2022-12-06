@@ -15,6 +15,8 @@
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+#[cfg(feature = "gha")]
+use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
 #[cfg(feature = "redis")]
@@ -417,6 +419,25 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                     }
                 }
             }
+            CacheType::GHA(config::GHACacheConfig {
+                ref url,
+                ref token,
+                ref cache_to,
+                ref cache_from,
+            }) => {
+                debug!(
+                    "Trying GHA Cache ({url}, {}***, {cache_to:?}, {cache_from:?})",
+                    &token[..usize::min(3, token.len())]
+                );
+                #[cfg(feature = "gha")]
+                match GHACache::new(url, token, cache_to.clone(), cache_from.clone()) {
+                    Ok(s) => {
+                        trace!("Using GHA Cache: {}", url);
+                        return Arc::new(s);
+                    }
+                    Err(e) => warn!("Failed to create GHA Cache: {:?}", e),
+                }
+            }
             CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
                 debug!("Trying Memcached({})", url);
                 #[cfg(feature = "memcached")]
@@ -440,9 +461,16 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 }
             }
             CacheType::S3(ref c) => {
-                debug!("Trying S3Cache({}, {})", c.bucket, c.endpoint);
+                debug!("Trying S3Cache({:?})", c);
                 #[cfg(feature = "s3")]
-                match S3Cache::new(&c.bucket, &c.endpoint, c.use_ssl, &c.key_prefix) {
+                match pool.block_on(S3Cache::new(
+                    &c.bucket,
+                    c.region.as_deref(),
+                    &c.key_prefix,
+                    c.no_credentials,
+                    c.endpoint.as_deref(),
+                    c.use_ssl,
+                )) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);

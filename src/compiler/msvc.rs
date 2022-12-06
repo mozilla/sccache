@@ -22,7 +22,6 @@ use crate::compiler::{
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::run_input_output;
 use crate::{counted_array, dist};
-use local_encoding::{Encoder, Encoding};
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -104,8 +103,51 @@ impl CCompilerImpl for Msvc {
     }
 }
 
-fn from_local_codepage(bytes: &[u8]) -> io::Result<String> {
-    Encoding::OEM.to_string(bytes)
+#[cfg(not(windows))]
+fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
+    String::from_utf8(multi_byte_str.to_vec())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
+}
+
+#[cfg(windows)]
+pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+
+    // Empty string
+    if multi_byte_str.is_empty() {
+        return Ok(String::new());
+    }
+    unsafe {
+        // Get length of UTF-16 string
+        let len = winapi::um::stringapiset::MultiByteToWideChar(
+            codepage,
+            flags,
+            multi_byte_str.as_ptr() as _,
+            multi_byte_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len > 0 {
+            // Convert to UTF-16
+            let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::MultiByteToWideChar(
+                codepage,
+                flags,
+                multi_byte_str.as_ptr() as _,
+                multi_byte_str.len() as i32,
+                wstr.as_mut_ptr() as _,
+                len,
+            );
+            if len > 0 {
+                // wstr's contents have now been initialized
+                wstr.set_len(len as usize);
+                return String::from_utf16(&wstr[0..(len as usize)])
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+            }
+        }
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Detect the prefix included in the output of MSVC's -showIncludes output.
@@ -204,16 +246,58 @@ fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
-    use local_encoding::windows::wide_char_to_multi_byte;
     use std::os::windows::prelude::*;
-    use winapi::um::winnls::CP_OEMCP;
 
     let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let (bytes, _) = wide_char_to_multi_byte(
-        CP_OEMCP, 0, &points, None, // default_char
-        false,
-    )?; // use_default_char_flag
+    let bytes = wide_char_to_multi_byte(&points)?; // use_default_char_flag
     dst.write_all(&bytes)
+}
+
+#[cfg(windows)]
+pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> io::Result<Vec<u8>> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = 0;
+    // Empty string
+    if wide_char_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    unsafe {
+        // Get length of multibyte string
+        let len = winapi::um::stringapiset::WideCharToMultiByte(
+            codepage,
+            flags,
+            wide_char_str.as_ptr(),
+            wide_char_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+
+        if len > 0 {
+            // Convert from UTF-16 to multibyte
+            let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::WideCharToMultiByte(
+                codepage,
+                flags,
+                wide_char_str.as_ptr(),
+                wide_char_str.len() as i32,
+                astr.as_mut_ptr() as _,
+                len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            if len > 0 {
+                astr.set_len(len as usize);
+                if (len as usize) == astr.len() {
+                    return Ok(astr);
+                } else {
+                    return Ok(astr[0..(len as usize)].to_vec());
+                }
+            }
+        }
+        Err(io::Error::last_os_error())
+    }
 }
 
 ArgData! {
@@ -1647,5 +1731,35 @@ mod test {
             ovec![std::env::current_dir().unwrap().join("list.txt")],
             extra_hash_files
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn local_oem_codepage_conversions() {
+        use winapi::um::winnls::GetOEMCP;
+
+        let current_oemcp = unsafe { GetOEMCP() };
+        // We don't control the local OEM codepage so test only if it is one of:
+        // United Stats, Latin-1 and Latin-1 + euro symbol
+        if current_oemcp == 437 || current_oemcp == 850 || current_oemcp == 858 {
+            // Non-ASCII characters
+            const INPUT_STRING: &str = "ÇüéâäàåçêëèïîìÄÅ";
+
+            // The characters in INPUT_STRING encoded per the OEM codepage
+            const INPUT_BYTES: [u8; 16] = [
+                128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+            ];
+
+            // Test the conversion from the OEM codepage to UTF-8
+            assert_eq!(from_local_codepage(&INPUT_BYTES).unwrap(), INPUT_STRING);
+
+            // The characters in INPUT_STRING encoded in UTF-16
+            const INPUT_WORDS: [u16; 16] = [
+                199, 252, 233, 226, 228, 224, 229, 231, 234, 235, 232, 239, 238, 236, 196, 197,
+            ];
+
+            // Test the conversion from UTF-16 to the OEM codepage
+            assert_eq!(wide_char_to_multi_byte(&INPUT_WORDS).unwrap(), INPUT_BYTES);
+        }
     }
 }

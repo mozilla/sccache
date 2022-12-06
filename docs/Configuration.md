@@ -35,6 +35,12 @@ cred_path = "/psst/secret/cred"
 bucket = "bucket"
 key_prefix = "prefix"
 
+[cache.gha]
+url = "http://localhost"
+token = "secret"
+cache_to = "sccache-latest"
+cache_from = "sccache-"
+
 [cache.memcached]
 url = "..."
 
@@ -100,3 +106,10 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/1`.
 #### azure
 
 * `SCCACHE_AZURE_CONNECTION_STRING`
+
+#### gha
+
+* `SCCACHE_GHA_CACHE_URL` / `ACTIONS_CACHE_URL` GitHub Actions cache API URL
+* `SCCACHE_GHA_RUNTIME_TOKEN` / `ACTIONS_RUNTIME_TOKEN` GitHub Actions access token
+* `SCCACHE_GHA_CACHE_TO` cache key to write
+* `SCCACHE_GHA_CACHE_FROM` comma separated list of cache keys to read from

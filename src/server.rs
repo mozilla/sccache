@@ -10,7 +10,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.
+// limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
@@ -810,7 +810,7 @@ where
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {
-                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is  not a valid number, using default");
+                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
             }
         }
         let io = builder.new_framed(socket);
@@ -937,6 +937,15 @@ where
                     .map(move |filetime| (path2, filetime))
                     .expect("Must contain sane data, otherwise mtime is not avail")
             }
+        };
+
+        // canonicalize the path to follow symlinks
+        // don't canonicalize if the file name differs so it works with clang's multicall
+        let resolved_compiler_path = match resolved_compiler_path.canonicalize() {
+            Ok(path) if matches!(path.file_name(), Some(name) if resolved_compiler_path.file_name() == Some(name)) => {
+                path
+            }
+            _ => resolved_compiler_path,
         };
 
         let dist_info = match me1.dist_client.get_client().await {

@@ -49,11 +49,11 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
-const COMPILERS: &[&str] = &["clang"];
+const COMPILERS: &[&str] = &["clang", "clang++"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -70,15 +70,21 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     exe: T,
     input: &str,
     output: &str,
+    mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
-    match compiler {
-        "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+    let mut arg = match compiler {
+        "gcc" | "clang" | "clang++" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
+    };
+    if !extra_args.is_empty() {
+        arg.append(&mut extra_args)
     }
+    arg
 }
 
 const INPUT: &str = "test.c";
+const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
 const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
 const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
@@ -109,7 +115,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -126,7 +132,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT))
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -178,7 +184,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     // Check that -deps works.
     trace!("compile with -deps");
-    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new());
     args.push("-depstest.d".into());
     sccache_command()
         .args(&args)
@@ -209,7 +215,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         env_vars,
     } = compiler;
     trace!("test -MP with -Werror");
-    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT, Vec::new());
     args.extend(vec_from!(
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
@@ -249,7 +255,7 @@ int main(int argc, char** argv) {
 }
 ",
     );
-    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT);
+    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT, Vec::new());
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
     sccache_command()
@@ -323,7 +329,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT)[..],
+                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-Wunreachable-code")[..],
             ]
             .concat(),
@@ -349,7 +355,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT)[..],
+                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-DSCCACHE_TEST_DEFINE")[..],
             ]
             .concat(),
@@ -362,7 +368,9 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
 }
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_basic_compile(compiler.clone(), tempdir);
+    if compiler.name != "clang++" {
+        test_basic_compile(compiler.clone(), tempdir);
+    }
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
@@ -373,6 +381,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang++" {
+        test_clang_multicall(compiler.clone(), tempdir);
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
@@ -406,6 +417,31 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 }
 
+fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_clang_multicall: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_CLANG_MULTICALL], tempdir);
+
+    println!("compile clang_multicall");
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            &exe,
+            INPUT_CLANG_MULTICALL,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+}
+
 fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
     let Compiler {
         name,
@@ -420,7 +456,13 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
 
     println!("compile whitespace");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT_WITH_WHITESPACE, OUTPUT))
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_WITH_WHITESPACE,
+            OUTPUT,
+            Vec::new(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -440,6 +482,7 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
             &exe,
             INPUT_WITH_WHITESPACE_ALT,
             OUTPUT,
+            Vec::new(),
         ))
         .current_dir(tempdir)
         .envs(env_vars)
@@ -468,16 +511,14 @@ fn find_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
     COMPILERS
         .iter()
-        .filter_map(|c| match which_in(c, env::var_os("PATH"), &cwd) {
-            Ok(full_path) => match full_path.canonicalize() {
-                Ok(full_path_canon) => Some(Compiler {
+        .filter_map(|c| {
+            which_in(c, env::var_os("PATH"), &cwd)
+                .ok()
+                .map(|full_path| Compiler {
                     name: *c,
-                    exe: full_path_canon.into_os_string(),
+                    exe: full_path.into(),
                     env_vars: vec![],
-                }),
-                Err(_) => None,
-            },
-            Err(_) => None,
+                })
         })
         .collect::<Vec<_>>()
 }

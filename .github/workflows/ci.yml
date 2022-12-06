@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
-          toolchain: 1.58
+          toolchain: 1.60.0
 
       - name: clippy version
         run: cargo clippy --version
@@ -43,9 +43,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-20.04
-            rustc: 1.58.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-20.04
-            rustc: 1.58.0
+            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
+          - os: ubuntu-18.04
+            rustc: 1.60.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-20.04
@@ -59,7 +59,7 @@ jobs:
           - os: ubuntu-22.04
           - os: macOS-11
           - os: windows-2019
-            rustc: 1.58.0 # Oldest supported version, keep in sync with README.md
+            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
           - os: windows-2019
             rustc: nightly
             allow_failure: true
@@ -76,6 +76,10 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           toolchain: ${{ matrix.rustc }}
+
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
@@ -152,7 +156,7 @@ jobs:
       - name: Id
         id: id
         shell: bash
-        run: echo "::set-output name=id::${ID#refs/tags/}"
+        run: echo "id=${ID#refs/tags/}" >> $GITHUB_OUTPUT
         env:
           ID: ${{ startsWith(github.ref, 'refs/tags/') && github.ref || github.sha }}
 
@@ -193,6 +197,10 @@ jobs:
         with:
           toolchain: ${{ matrix.rustc }}
 
+      - name: Install gcc & clang for tests
+        run: sudo apt-get install -y clang gcc
+        if: ${{ matrix.os == 'ubuntu-20.04' }}
+
       - name: "`grcov` ~ install"
         run: cargo install grcov
 
@@ -217,7 +225,7 @@ jobs:
           grcov . --output-type files --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()" | sort --unique
           # generate coverage report
           grcov . --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch --ignore build.rs --ignore "/*" --ignore "[a-zA-Z]:/*" --excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"
-          echo ::set-output name=report::${COVERAGE_REPORT_FILE}
+          echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
       - name: Upload coverage results (to Codecov.io)
         uses: codecov/codecov-action@v3
@@ -243,6 +251,7 @@ jobs:
       - name: Create release assets
         run: |
           for d in sccache-*; do
+            chmod +x "$d/sccache"*
             cp README.md LICENSE "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
@@ -255,7 +264,7 @@ jobs:
       - name: Create release
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          for f in sccache-*.tar.gz* sccache-*.zip*; do 
+          for f in sccache-*.tar.gz* sccache-*.zip*; do
               if [[ -f "$f" ]]; then
                 files="$files -a $f";
               fi
