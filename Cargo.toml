@@ -123,7 +123,7 @@ features = [
 
 [features]
 default = ["all"]
-all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure"]
+all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha"]
 azure = ["chrono", "hyper", "hyperx", "reqwest", "url", "hmac", "md-5", "sha2"]
 s3 = ["aws-config", "aws-sdk-s3", "aws-smithy-client", "aws-sig-auth"]
 gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "url"]
