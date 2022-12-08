@@ -1,6 +1,6 @@
 [package]
 name = "sccache"
-version = "0.3.1"
+version = "0.3.3"
 authors = ["Ted Mielczarek <ted@mielczarek.org>", "Alex Crichton <alex@alexcrichton.com>"]
 license = "Apache-2.0"
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API."
