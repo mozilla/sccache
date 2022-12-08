@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -o errexit
 set -o pipefail
 set -o nounset
@@ -80,11 +80,11 @@ elif [ "$1" = test ]; then
 
     set +x
     if ! which docker; then
-        echo -e "WARNING: =====\n\ndocker not present, some tests will fail\n\n=====\n\n\n\n\n"
+        printf "WARNING: =====\n\ndocker not present, some tests will fail\n\n=====\n\n\n\n\n"
         sleep 5
     fi
     if ! which icecc-create-env; then
-        echo -e "WARNING: =====\n\nicecc-create-env not present, some tests will fail\n\n=====\n\n\n\n\n"
+        printf "WARNING: =====\n\nicecc-create-env not present, some tests will fail\n\n=====\n\n\n\n\n"
         sleep 5
     fi
     set -x

@@ -431,6 +431,7 @@ impl Default for DistConfig {
 pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
+    pub server_startup_timeout_ms: Option<u64>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -657,10 +658,11 @@ pub struct Config {
     pub caches: Vec<CacheType>,
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
+    pub server_startup_timeout: Option<std::time::Duration>,
 }
 
 impl Config {
-    pub fn load() -> Result<Config> {
+    pub fn load() -> Result<Self> {
         let env_conf = config_from_env()?;
 
         let file_conf_path = config_file("SCCACHE_CONF", "config");
@@ -668,23 +670,31 @@ impl Config {
             .context("Failed to load config file")?
             .unwrap_or_default();
 
-        Ok(Config::from_env_and_file_configs(env_conf, file_conf))
+        Ok(Self::from_env_and_file_configs(env_conf, file_conf))
     }
 
-    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Config {
+    fn from_env_and_file_configs(env_conf: EnvConfig, file_conf: FileConfig) -> Self {
         let mut conf_caches: CacheConfigs = Default::default();
 
-        let FileConfig { cache, dist } = file_conf;
+        let FileConfig {
+            cache,
+            dist,
+            server_startup_timeout_ms,
+        } = file_conf;
         conf_caches.merge(cache);
+
+        let server_startup_timeout =
+            server_startup_timeout_ms.map(std::time::Duration::from_millis);
 
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
         let (caches, fallback_cache) = conf_caches.into_vec_and_fallback();
-        Config {
+        Self {
             caches,
             fallback_cache,
             dist,
+            server_startup_timeout,
         }
     }
 }
@@ -961,6 +971,7 @@ fn config_overrides() {
             ..Default::default()
         },
         dist: Default::default(),
+        server_startup_timeout_ms: None,
     };
 
     assert_eq!(
@@ -982,6 +993,7 @@ fn config_overrides() {
                 size: 5,
             },
             dist: Default::default(),
+            server_startup_timeout: None,
         }
     );
 }
@@ -1059,6 +1071,8 @@ fn test_gcs_oauth_url() {
 #[test]
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
+server_startup_timeout_ms = 10000
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -1166,6 +1180,7 @@ no_credentials = true
                 toolchain_cache_size: 5368709120,
                 rewrite_includes_only: false,
             },
+            server_startup_timeout_ms: Some(10000),
         }
     )
 }

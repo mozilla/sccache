@@ -939,9 +939,14 @@ where
             }
         };
 
-        let resolved_compiler_path = resolved_compiler_path
-            .canonicalize()
-            .unwrap_or(resolved_compiler_path);
+        // canonicalize the path to follow symlinks
+        // don't canonicalize if the file name differs so it works with clang's multicall
+        let resolved_compiler_path = match resolved_compiler_path.canonicalize() {
+            Ok(path) if matches!(path.file_name(), Some(name) if resolved_compiler_path.file_name() == Some(name)) => {
+                path
+            }
+            _ => resolved_compiler_path,
+        };
 
         let dist_info = match me1.dist_client.get_client().await {
             Ok(Some(ref client)) => {
