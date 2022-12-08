@@ -87,12 +87,12 @@ fn create_mock_rustc(dir: PathBuf) {
     let rustc = bin.join("rustc");
     write!(
         File::create(&rustc).unwrap(),
-        r#"#!/usr/bin/env bash
+        r#"#!/usr/bin/env sh
 
 set -e
 build=0
 
-while (( "$#" )); do
+while [ "$#" -gt 0 ]; do
     case "$1" in
         -vV)
             echo rustc 1.0.0
@@ -124,7 +124,7 @@ while (( "$#" )); do
     shift
 done
 
-if (( build )); then
+if [ "$build" -eq 1 ]; then
     echo $(($(cat counter) + 1)) > counter
     cp counter RUST_FILE
 fi
