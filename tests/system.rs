@@ -49,11 +49,11 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang"];
+const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
-const COMPILERS: &[&str] = &["clang"];
+const COMPILERS: &[&str] = &["clang", "clang++"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -73,7 +73,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut arg = match compiler {
-        "gcc" | "clang" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "gcc" | "clang" | "clang++" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     };
@@ -84,6 +84,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
 }
 
 const INPUT: &str = "test.c";
+const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
 const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
 const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
@@ -367,7 +368,9 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
 }
 
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_basic_compile(compiler.clone(), tempdir);
+    if compiler.name != "clang++" {
+        test_basic_compile(compiler.clone(), tempdir);
+    }
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
@@ -378,6 +381,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
     if compiler.name == "clang" || compiler.name == "gcc" {
         test_gcc_clang_no_warnings_from_macro_expansion(compiler.clone(), tempdir);
+    }
+    if compiler.name == "clang++" {
+        test_clang_multicall(compiler.clone(), tempdir);
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
@@ -409,6 +415,31 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     } else {
         test_clang_cache_whitespace_normalization(compiler, tempdir, false);
     }
+}
+
+fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_clang_multicall: {}", name);
+    // Compile a source file.
+    copy_to_tempdir(&[INPUT_CLANG_MULTICALL], tempdir);
+
+    println!("compile clang_multicall");
+    sccache_command()
+        .args(compile_cmdline(
+            name,
+            &exe,
+            INPUT_CLANG_MULTICALL,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
 }
 
 fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
@@ -480,16 +511,14 @@ fn find_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
     COMPILERS
         .iter()
-        .filter_map(|c| match which_in(c, env::var_os("PATH"), &cwd) {
-            Ok(full_path) => match full_path.canonicalize() {
-                Ok(full_path_canon) => Some(Compiler {
+        .filter_map(|c| {
+            which_in(c, env::var_os("PATH"), &cwd)
+                .ok()
+                .map(|full_path| Compiler {
                     name: *c,
-                    exe: full_path_canon.into_os_string(),
+                    exe: full_path.into(),
                     env_vars: vec![],
-                }),
-                Err(_) => None,
-            },
-            Err(_) => None,
+                })
         })
         .collect::<Vec<_>>()
 }
