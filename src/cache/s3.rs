@@ -13,26 +13,21 @@
 use opendal::services::s3;
 use opendal::Operator;
 
-use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use std::convert::TryInto;
-use std::io;
-use std::time::{Duration, Instant};
 
 use crate::errors::*;
 
-pub struct S3Cache {
-    client: Operator,
-}
+pub struct S3Cache;
 
 impl S3Cache {
-    pub async fn new(
+    pub fn build(
         bucket: &str,
         region: Option<&str>,
         key_prefix: &str,
         no_credentials: bool,
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
-    ) -> Result<S3Cache> {
+    ) -> Result<Operator> {
         let mut builder = s3::Builder::default();
         builder.bucket(bucket);
         if let Some(region) = region {
@@ -46,53 +41,8 @@ impl S3Cache {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
-        Ok(S3Cache {
-            client: builder.build()?.into(),
-        })
+        Ok(builder.build()?.into())
     }
-}
-
-#[async_trait]
-impl Storage for S3Cache {
-    async fn get(&self, key: &str) -> Result<Cache> {
-        match self.client.object(&normalize_key(key)).read().await {
-            Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res))?;
-                Ok(Cache::Hit(hit))
-            }
-            Err(e) => {
-                warn!("Got AWS error: {:?}", e);
-                Ok(Cache::Miss)
-            }
-        }
-    }
-
-    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
-        let start = Instant::now();
-
-        self.client
-            .object(&normalize_key(key))
-            .write(entry.finish()?)
-            .await?;
-
-        Ok(start.elapsed())
-    }
-
-    fn location(&self) -> String {
-        format!("S3, bucket: {}", self.client.metadata().name())
-    }
-
-    async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(None)
-    }
-
-    async fn max_size(&self) -> Result<Option<u64>> {
-        Ok(None)
-    }
-}
-
-fn normalize_key(key: &str) -> String {
-    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
 
 /// Resolve given endpoint along with use_ssl settings.
@@ -125,14 +75,6 @@ fn endpoint_resolver(endpoint: &str, use_ssl: Option<bool>) -> Result<String> {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn test_normalize_key() {
-        assert_eq!(
-            normalize_key("0123456789abcdef0123456789abcdef"),
-            "0/1/2/0123456789abcdef0123456789abcdef"
-        );
-    }
 
     #[test]
     fn test_endpoint_resolver() -> Result<()> {

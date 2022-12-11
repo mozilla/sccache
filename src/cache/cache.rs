@@ -327,6 +327,57 @@ pub trait Storage: Send + Sync {
     async fn max_size(&self) -> Result<Option<u64>>;
 }
 
+/// Implement storage for operator.
+#[cfg(any(feature = "s3", feature = "azure"))]
+#[async_trait]
+impl Storage for opendal::Operator {
+    async fn get(&self, key: &str) -> Result<Cache> {
+        match self.object(&normalize_key(key)).read().await {
+            Ok(res) => {
+                let hit = CacheRead::from(io::Cursor::new(res))?;
+                Ok(Cache::Hit(hit))
+            }
+            Err(e) => {
+                warn!("Got AWS error: {:?}", e);
+                Ok(Cache::Miss)
+            }
+        }
+    }
+
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let start = std::time::Instant::now();
+
+        self.object(&normalize_key(key))
+            .write(entry.finish()?)
+            .await?;
+
+        Ok(start.elapsed())
+    }
+
+    fn location(&self) -> String {
+        let meta = self.metadata();
+        format!(
+            "{}, bucket: {}, prefix: {}",
+            meta.scheme(),
+            meta.name(),
+            meta.root()
+        )
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+/// Normalize key `abcdef` into `a/b/c/abcdef`
+fn normalize_key(key: &str) -> String {
+    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+}
+
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
 pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
@@ -463,14 +514,14 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::S3(ref c) => {
                 debug!("Trying S3Cache({:?})", c);
                 #[cfg(feature = "s3")]
-                match pool.block_on(S3Cache::new(
+                match S3Cache::build(
                     &c.bucket,
                     c.region.as_deref(),
                     &c.key_prefix,
                     c.no_credentials,
                     c.endpoint.as_deref(),
                     c.use_ssl,
-                )) {
+                ) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);
@@ -485,4 +536,17 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     trace!("Using DiskCache({:?}, {})", dir, size);
     Arc::new(DiskCache::new(&dir, size, pool))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_normalize_key() {
+        assert_eq!(
+            normalize_key("0123456789abcdef0123456789abcdef"),
+            "0/1/2/0123456789abcdef0123456789abcdef"
+        );
+    }
 }
