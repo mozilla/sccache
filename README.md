@@ -27,7 +27,7 @@ Table of Contents (ToC)
 * [Usage](#usage)
 * [Storage Options](#storage-options)
   * [Local](#local)
-  * [S3](#s3)
+  * [S3](docs/S3.md)
   * [Redis](#redis)
   * [Memcached](#memcached)
   * [Google Cloud Storage](#google-cloud-storage)
@@ -190,27 +190,6 @@ The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`
 
 The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
-### S3
-
-If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
-
-You can configure the region using the `SCCACHE_REGION` environment variable, or specify the `region` key in `~/.aws/credentials`. Alternatively you can specify the endpoint URL using the `SCCACHE_ENDPOINT` environment variable. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`.
-
-If your endpoint requires HTTPS/TLS, set `SCCACHE_S3_USE_SSL=true`. If you don't need a secure network layer, HTTP (`SCCACHE_S3_USE_SSL=false`) might be better for performance.
-
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the S3 bucket, effectively creating a scope. To do that use the `SCCACHE_S3_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
-#### Credentials of S3
-
-Sccache is able to load credentials from various sources. Incluing:
-
-- Static: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-- Profile: `~/.aws/credentials` and `~/.aws/config`. The AWS_PROFILE environment variable can be used to select a specific profile if multiple profiles are available.
-- EC2 Metadata Services: Via [IMDSv2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html).
-- AssumeRole: assume role with the role specfied by `AWS_ROLE_ARN`.
-- AssumeRoleWithWebIdentity: assume role with web webIdentity specfied by `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`.
-
-Alternatively, the `SCCACHE_S3_NO_CREDENTIALS` environment variable can be set to use public readonly access to the S3 bucket, without the need for credentials. This can be useful for implementing a readonly cache for pull requests, which typically cannot be given access to credentials for security reasons.
 
 ### Redis
 Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance. Redis can be configured as a LRU (least recently used) cache with a fixed maximum cache size. Set `maxmemory` and `maxmemory-policy` according to the [Redis documentation](https://redis.io/topics/lru-cache). The `allkeys-lru` policy which discards the *least recently accessed or modified* key fits well for the sccache use case.
