@@ -963,9 +963,9 @@ fn config_overrides() {
                     url: "memurl".to_owned()
                 }),
                 CacheType::Azure(AzureCacheConfig {
-                    connection_string: "".to_string(),
-                    container: "".to_string(),
-                    key_prefix: "".to_owned()
+                    connection_string: String::new(),
+                    container: String::new(),
+                    key_prefix: String::new()
                 }),
             ],
             fallback_cache: DiskCacheConfig {
