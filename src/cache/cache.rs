@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "azure")]
+use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
 use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
@@ -24,8 +26,6 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
-#[cfg(feature = "azure")]
-use crate::{azure, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
 #[cfg(feature = "gcs")]
@@ -383,21 +383,19 @@ fn normalize_key(key: &str) -> String {
 pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
-            CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
+            CacheType::Azure(config::AzureCacheConfig {
+                ref connection_string,
+                ref container,
+                ref key_prefix,
+            }) => {
                 debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match azure::credentials_from_environment() {
-                    Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
-                        Ok(storage) => {
-                            trace!("Using AzureBlobCache");
-                            return Arc::new(storage);
-                        }
-                        Err(e) => warn!("Failed to create Azure cache: {:?}", e),
-                    },
-                    Err(err) => warn!(
-                        "Failed to create Azure cache: could not find Azure credentials in the environment: {}",
-                        err
-                    ),
+                match AzureBlobCache::build(connection_string, container, key_prefix) {
+                    Ok(storage) => {
+                        trace!("Using AzureBlobCache");
+                        return Arc::new(storage);
+                    }
+                    Err(e) => warn!("Failed to create Azure cache: {:?}", e),
                 }
             }
             CacheType::GCS(config::GCSCacheConfig {
