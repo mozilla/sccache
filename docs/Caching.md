@@ -3,7 +3,7 @@
 To know if the storage contains the artifact we need, we are
 computing some hashes to make sure the input is the same.
 
-Because the configuration and environnement matter, the hash
+Because the configuration and environment matter, the hash
 computation takes a few parameters into account.
 
 ## How hash keys are computed.

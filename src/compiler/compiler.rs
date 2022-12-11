@@ -1048,7 +1048,7 @@ g++
 gcc
 #elif defined(__DCC__)
 diab
-#elif definded(__CTC__)
+#elif defined(__CTC__)
 tasking_vx
 #else
 unknown
