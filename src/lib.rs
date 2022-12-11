@@ -38,8 +38,6 @@ mod test;
 #[macro_use]
 pub mod errors;
 
-#[cfg(feature = "azure")]
-mod azure;
 mod cache;
 mod client;
 mod cmdline;

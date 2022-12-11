@@ -146,6 +146,8 @@ impl HTTPUrl {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AzureCacheConfig {
+    pub connection_string: String,
+    pub container: String,
     pub key_prefix: String,
 }
 
@@ -591,7 +593,10 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Azure =======
-    let azure = env::var("SCCACHE_AZURE_CONNECTION_STRING").ok().map(|_| {
+    let azure = if let (Ok(connection_string), Ok(container)) = (
+        env::var("SCCACHE_AZURE_CONNECTION_STRING"),
+        env::var("SCCACHE_AZURE_BLOB_CONTAINER"),
+    ) {
         let key_prefix = env::var("SCCACHE_AZURE_KEY_PREFIX")
             .ok()
             .as_ref()
@@ -599,8 +604,14 @@ fn config_from_env() -> Result<EnvConfig> {
             .filter(|s| !s.is_empty())
             .unwrap_or_default()
             .to_owned();
-        AzureCacheConfig { key_prefix }
-    });
+        Some(AzureCacheConfig {
+            connection_string,
+            container,
+            key_prefix,
+        })
+    } else {
+        None
+    };
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
@@ -908,6 +919,8 @@ fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
             azure: Some(AzureCacheConfig {
+                connection_string: "".to_string(),
+                container: "".to_string(),
                 key_prefix: "".to_owned(),
             }),
             disk: Some(DiskCacheConfig {
@@ -950,6 +963,8 @@ fn config_overrides() {
                     url: "memurl".to_owned()
                 }),
                 CacheType::Azure(AzureCacheConfig {
+                    connection_string: "".to_string(),
+                    container: "".to_string(),
                     key_prefix: "".to_owned()
                 }),
             ],
