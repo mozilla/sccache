@@ -31,7 +31,7 @@ Table of Contents (ToC)
   * [Redis](docs/Redis.md)
   * [Memcached](docs/Memcached.md)
   * [Google Cloud Storage](docs/Gcs.md)
-  * [Azure](#azure)
+  * [Azure](docs/Azure.md)
   * [GitHub Actions](#github-actions)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
@@ -190,14 +190,6 @@ The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`
 
 The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
-### Azure
-To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
-environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
-the container for you - you'll need to do that yourself.
-
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the container, effectively creating a scope. To do that use the `SCCACHE_AZURE_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
-**Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
 
 ### GitHub Actions
 To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set the `SCCACHE_GHA_CACHE_URL`/`ACTIONS_CACHE_URL` and `SCCACHE_GHA_RUNTIME_TOKEN`/`ACTIONS_RUNTIME_TOKEN` environmental variables. The `SCCACHE_` prefixed environmental variables override the variables without the prefix.
