@@ -338,7 +338,7 @@ impl Storage for opendal::Operator {
                 Ok(Cache::Hit(hit))
             }
             Err(e) => {
-                warn!("Got AWS error: {:?}", e);
+                warn!("Got error: {:?}", e);
                 Ok(Cache::Miss)
             }
         }
