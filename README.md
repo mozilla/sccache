@@ -29,7 +29,7 @@ Table of Contents (ToC)
   * [Local](#local)
   * [S3](docs/S3.md)
   * [Redis](docs/Redis.md)
-  * [Memcached](#memcached)
+  * [Memcached](docs/Memcached.md)
   * [Google Cloud Storage](#google-cloud-storage)
   * [Azure](#azure)
   * [GitHub Actions](#github-actions)
@@ -189,10 +189,6 @@ sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` envi
 The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
 
 The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
-
-
-### Memcached
-Set `SCCACHE_MEMCACHED` to a [Memcached](https://memcached.org/) url in format `tcp://<hostname>:<port> ...` to store the cache in a Memcached instance.
 
 ### Google Cloud Storage
 To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
