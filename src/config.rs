@@ -919,9 +919,9 @@ fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
             azure: Some(AzureCacheConfig {
-                connection_string: "".to_string(),
-                container: "".to_string(),
-                key_prefix: "".to_owned(),
+                connection_string: String::new(),
+                container: String::new(),
+                key_prefix: String::new(),
             }),
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
