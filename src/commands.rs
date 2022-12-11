@@ -304,9 +304,9 @@ fn connect_or_start_server(
 /// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
 pub fn request_zero_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
     debug!("request_stats");
-    let response = conn
-        .request(Request::ZeroStats)
-        .context("failed to send zero statistics command to server or failed to receive respone")?;
+    let response = conn.request(Request::ZeroStats).context(
+        "failed to send zero statistics command to server or failed to receive response",
+    )?;
     if let Response::Stats(stats) = response {
         Ok(*stats)
     } else {
