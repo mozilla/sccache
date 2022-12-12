@@ -294,8 +294,12 @@ mod test {
         );
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
         assert_eq!(
-            ovec!["-arch", "xyz", "-fabc", "/winsysroot", "../some/dir"],
+            ovec![ "-fabc", "/winsysroot", "../some/dir"],
             a.common_args
+        );
+        assert_eq!(
+            ovec!["-arch", "xyz"],
+            a.arch_args
         );
     }
 
