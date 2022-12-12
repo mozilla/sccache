@@ -754,6 +754,7 @@ mod test {
             dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
+            arch_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
