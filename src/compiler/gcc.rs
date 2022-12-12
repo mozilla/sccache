@@ -244,6 +244,7 @@ where
     let mut dep_target = None;
     let mut dep_flag = OsString::from("-MT");
     let mut common_args = vec![];
+    let mut arch_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
@@ -266,7 +267,6 @@ where
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
-    let mut seen_arch = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -355,13 +355,7 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
-            Some(Arch(arch)) => {
-                match seen_arch {
-                    Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
-                    _ => {}
-                };
-                seen_arch = Some(arch.clone());
-            }
+            Some(Arch(_)) => {}
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
                 Argument::Raw(ref val) => {
@@ -386,9 +380,9 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
-            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
+            Some(Arch(arch)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
