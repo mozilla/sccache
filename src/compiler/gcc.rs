@@ -561,6 +561,7 @@ where
         dependency_args,
         preprocessor_args,
         common_args,
+        arch_args,
         extra_hash_files,
         msvc_show_includes: false,
         profile_generate,

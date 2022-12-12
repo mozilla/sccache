@@ -818,6 +818,7 @@ pub fn parse_arguments(
         dependency_args,
         preprocessor_args,
         common_args,
+        arch_args: vec![],
         extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate,

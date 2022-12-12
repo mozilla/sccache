@@ -291,6 +291,7 @@ where
         dependency_args,
         preprocessor_args,
         common_args,
+        arch_args: vec![],
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
