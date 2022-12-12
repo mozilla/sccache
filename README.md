@@ -26,13 +26,13 @@ Table of Contents (ToC)
 * [Build](#build)
 * [Usage](#usage)
 * [Storage Options](#storage-options)
-  * [Local](#local)
-  * [S3](#s3)
-  * [Redis](#redis)
-  * [Memcached](#memcached)
-  * [Google Cloud Storage](#google-cloud-storage)
-  * [Azure](#azure)
-  * [GitHub Actions](#github-actions)
+  * [Local](docs/Local.md)
+  * [S3](docs/S3.md)
+  * [Redis](docs/Redis.md)
+  * [Memcached](docs/Memcached.md)
+  * [Google Cloud Storage](docs/Gcs.md)
+  * [Azure](docs/Azure.md)
+  * [GitHub Actions](docs/GHA.md)
 * [Debugging](#debugging)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Known Caveats](#known-caveats)
@@ -180,111 +180,6 @@ When statically linking with OpenSSL, you will need Perl available in your `$PAT
 
 ---
 
-Storage Options
----------------
-
-### Local
-sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
-
-The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
-
-The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
-
-### S3
-
-If you want to use S3 storage for the sccache cache, you need to set the `SCCACHE_BUCKET` environment variable to the name of the S3 bucket to use.
-
-You can configure the region using the `SCCACHE_REGION` environment variable, or specify the `region` key in `~/.aws/credentials`. Alternatively you can specify the endpoint URL using the `SCCACHE_ENDPOINT` environment variable. To connect to a minio storage for example you can set `SCCACHE_ENDPOINT=<ip>:<port>`.
-
-If your endpoint requires HTTPS/TLS, set `SCCACHE_S3_USE_SSL=true`. If you don't need a secure network layer, HTTP (`SCCACHE_S3_USE_SSL=false`) might be better for performance.
-
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the S3 bucket, effectively creating a scope. To do that use the `SCCACHE_S3_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
-#### Credentials of S3
-
-Sccache is able to load credentials from various sources. Incluing:
-
-- Static: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-- Profile: `~/.aws/credentials` and `~/.aws/config`. The AWS_PROFILE environment variable can be used to select a specific profile if multiple profiles are available.
-- EC2 Metadata Services: Via [IMDSv2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html).
-- AssumeRole: assume role with the role specfied by `AWS_ROLE_ARN`.
-- AssumeRoleWithWebIdentity: assume role with web webIdentity specfied by `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`.
-
-Alternatively, the `SCCACHE_S3_NO_CREDENTIALS` environment variable can be set to use public readonly access to the S3 bucket, without the need for credentials. This can be useful for implementing a readonly cache for pull requests, which typically cannot be given access to credentials for security reasons.
-
-### Redis
-Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[:<passwd>@]<hostname>[:port][/<db>]` to store the cache in a Redis instance. Redis can be configured as a LRU (least recently used) cache with a fixed maximum cache size. Set `maxmemory` and `maxmemory-policy` according to the [Redis documentation](https://redis.io/topics/lru-cache). The `allkeys-lru` policy which discards the *least recently accessed or modified* key fits well for the sccache use case.
-
-Redis over TLS is supported. Use the [`rediss://`](https://www.iana.org/assignments/uri-schemes/prov/rediss) url scheme (note `rediss` vs `redis`). Append `#insecure` the the url to disable hostname verification and accept self-signed certificates (dangerous!). Note that this also disables [SNI](https://en.wikipedia.org/wiki/Server_Name_Indication).
-
-### Memcached
-Set `SCCACHE_MEMCACHED` to a [Memcached](https://memcached.org/) url in format `tcp://<hostname>:<port> ...` to store the cache in a Memcached instance.
-
-### Google Cloud Storage
-To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
-
-If you're using authentication, either:
-- Set `SCCACHE_GCS_KEY_PATH` to the location of your JSON service account credentials
-- (Deprecated) Set `SCCACHE_GCS_CREDENTIALS_URL` to a URL returning an OAuth token in non-standard `{"accessToken": "...", "expireTime": "..."}` format.
-- Set `SCCACHE_GCS_OAUTH_URL` to a URL returning an OAuth token. If you are running on a Google Cloud instance, this is of the form `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/${YOUR_SERVICE_ACCOUNT}/token`
-
-By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE` to either `READ_ONLY` or `READ_WRITE`.
-
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the GCS bucket, effectively creating a scope. To do that use the `SCCACHE_GCS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
-To create such account, in GCP, go in `APIs and Services` => `Cloud Storage` => `Create credentials` => `Service account`. Then, once created, click on the account then `Keys` => `Add key` => `Create new key`. Select the JSON format and here it is. This JSON file is what `SCCACHE_GCS_KEY_PATH` expects.
-The service account needs `Storage Object Admin` permissions on the bucket (otherwise, sccache will fail with a simple `Permission denied`).
-
-To verify that it works, run:
-
-```
-export SCCACHE_GCS_BUCKET=<bucket name in GCP>
-export SCCACHE_GCS_KEY_PATH=secret-gcp-storage.json
-./sccache --show-stats
-# you should see
-[...]
-Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), key_prefix: (none)
-```
-
-### Azure
-To use Azure Blob Storage, you'll need your Azure connection string and an _existing_ Blob Storage container name.  Set the `SCCACHE_AZURE_CONNECTION_STRING`
-environment variable to your connection string, and `SCCACHE_AZURE_BLOB_CONTAINER` to the name of the container to use.  Note that sccache will not create
-the container for you - you'll need to do that yourself.
-
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the container, effectively creating a scope. To do that use the `SCCACHE_AZURE_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
-
-**Important:** The environment variables are only taken into account when the server starts, i.e. only on the first run.
-
-### GitHub Actions
-To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set the `SCCACHE_GHA_CACHE_URL`/`ACTIONS_CACHE_URL` and `SCCACHE_GHA_RUNTIME_TOKEN`/`ACTIONS_RUNTIME_TOKEN` environmental variables. The `SCCACHE_` prefixed environmental variables override the variables without the prefix.
-
-In a GitHub Actions workflow, you can set these environmental variables using the following step.
-
-```yaml
-- name: Configure sccache
-  uses: actions/github-script@v6
-  with:
-    script: |
-      core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-      core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-```
-
-To write to the cache, set `SCCACHE_GHA_CACHE_TO` to a cache key, for example
-`sccache-latest`. To read from cache key prefixes, set `SCCACHE_GHA_CACHE_FROM`
-to a comma-separated list of cache key prefixes, for example `sccache-`.
-
-In contrast to the [`@actions/cache`](https://github.com/actions/cache) action, which saves a single large archive per cache key, `sccache` with GHA cache storage saves each cache entry separately.
-
-GHA cache storage will create many small caches with the same cache key, e.g. `SCCACHE_GHA_CACHE_TO` and `SCCACHE_GHA_CACHE_FROM`. These GHA caches are differentiated by their [_version_](https://github.com/actions/cache#cache-version). The GHA cache implementation in `sccache` calculates the cache version from the [`sccache` entry key](docs/Caching.md), e.g. the source file path.
-
-For example, if a cache entry has the version `main.rs` and has GHA cache entries for the `sccache-1` and `sccache-2` keys, then `SCCACHE_GHA_CACHE_FROM=sccache-` will match both and [return the most recent entry](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#matching-a-cache-key).
-
-This behavior is useful for scoping caches from different versions of Rust or for cross-platform builds (`rust-sdk-{RUST_TOOLKIT}-{TARGET_TRIPLE}-`), and to allow newer commits to override older caches by adding the Git SHA as a suffix (`-{GITHUB_SHA}`), as in the following screenshot.
-
-<img width="718" src="https://user-images.githubusercontent.com/19253212/205356799-deedc465-e534-4ef6-a249-fc15121fdfd9.png">
-
----
-
 Separating caches between invocations
 -------------------------------------
 
@@ -340,7 +235,7 @@ Known Caveats
 
 ### Rust
 
-* Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
+* Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` create with a thin `bin` wrapper.
 * Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 
 [More details on Rust caveats](/docs/Rust.md)
