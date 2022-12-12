@@ -386,10 +386,8 @@ where
 
         // Create an argument vector containing both common and arch args, to
         // use in creating a hash key
-        let mut common_and_arch_args = parsed_args.common_args.to_owned();
-        for arch_arg in parsed_args.arch_args.iter() {
-            common_and_arch_args.push(arch_arg.to_owned());
-        }
+        let mut common_and_arch_args = parsed_args.common_args.clone();
+        common_and_arch_args.extend(parsed_args.arch_args.to_vec());
 
         let key = {
             hash_key(
