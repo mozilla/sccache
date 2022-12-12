@@ -722,6 +722,7 @@ pub fn generate_compile_commands(
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
+    arguments.extend(parsed_args.arch_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
         arguments,
