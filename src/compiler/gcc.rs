@@ -1648,15 +1648,40 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         }
 
-        assert_eq!(
-            CompilerArguments::CannotCache("multiple different -arch", None),
-            parse_arguments_(
-                stringvec![
-                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                ],
-                false
-            )
-        );
+        let args = stringvec![
+            "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+        ];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            arch_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+                )
+            );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fPIC"], common_args);
+        assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
+        assert!(!msvc_show_includes);
     }
 
     #[test]
