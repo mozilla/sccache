@@ -142,6 +142,8 @@ ArgData! { pub
 
 use self::ArgData::*;
 
+const ARCH_FLAG: &str = "-arch";
+
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
@@ -174,7 +176,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
     take_arg!("-Xpreprocessor", OsString, Separated, PreprocessorArgument),
-    take_arg!("-arch", OsString, Separated, Arch),
+    take_arg!(ARCH_FLAG, OsString, Separated, Arch),
     take_arg!("-aux-info", OsString, Separated, PassThrough),
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
@@ -615,13 +617,33 @@ fn preprocess_cmd<T>(
             }
         }
     }
+
+    // Explicitly rewrite the -arch args to be preprocessor defines of the form
+    // __arch__ so that they affect the preprocessor output but don't cause
+    // clang to error.
+    debug!("arch args before rewrite: {:?}", parsed_args.arch_args);
+    let mut rewritten_arch_args = Vec::<OsString>::new();
+    for arch_arg in parsed_args.arch_args.iter() {
+        if arch_arg == ARCH_FLAG {
+            continue;
+        }
+
+        let mut preprocessor_arch_arg: OsString = OsString::new();
+        preprocessor_arch_arg.push("-D__");
+        preprocessor_arch_arg.push(arch_arg);
+        preprocessor_arch_arg.push("__=1");
+        rewritten_arch_args.push(preprocessor_arch_arg.clone());
+    }
+
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
+        .args(&rewritten_arch_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
+    debug!("cmd after -arch rewrite: {:?}", cmd);
 }
 
 #[allow(clippy::too_many_arguments)]
