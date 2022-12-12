@@ -1410,6 +1410,35 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_cmd_rewrites_archs() {
+        let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        // make sure the architectures were rewritten to prepocessor defines
+        let expected_args = ovec![
+            "-x", "c++", "-E", "-fdirectives-only", "foo.cc", "-D__arm64__=1", 
+            "-D__i386__=1"
+        ];
+        assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
     fn pedantic_default() {
         let args = stringvec!["-pedantic", "-c", "foo.cc"];
         let parsed_args = match parse_arguments_(args, false) {
