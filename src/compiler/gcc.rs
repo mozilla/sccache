@@ -622,18 +622,15 @@ fn preprocess_cmd<T>(
     // __arch__ so that they affect the preprocessor output but don't cause
     // clang to error.
     debug!("arch args before rewrite: {:?}", parsed_args.arch_args);
-    let mut rewritten_arch_args = Vec::<OsString>::new();
-    for arch_arg in parsed_args.arch_args.iter() {
-        if arch_arg == ARCH_FLAG {
-            continue;
-        }
-
-        let mut preprocessor_arch_arg: OsString = OsString::new();
-        preprocessor_arch_arg.push("-D__");
-        preprocessor_arch_arg.push(arch_arg);
-        preprocessor_arch_arg.push("__=1");
-        rewritten_arch_args.push(preprocessor_arch_arg.clone());
-    }
+    let rewritten_arch_args = parsed_args
+        .arch_args
+        .iter()
+        .filter(|&arg| arg.ne(ARCH_FLAG))
+        .filter_map(|arg| match arg.to_str() {
+            Some(arg_string) => Some(format!("-D__{}__=1", arg_string).into()),
+            None => None,
+        })
+        .collect::<Vec<OsString>>();
 
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
