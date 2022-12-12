@@ -384,7 +384,7 @@ where
             | Some(NoDiagnosticsColorFlag)
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
-            Some(Arch(arch)) => &mut arch_args,
+            Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
