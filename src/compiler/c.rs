@@ -384,11 +384,18 @@ where
             preprocessor_result.stdout.len()
         );
 
+        // Create an argument vector containing both common and arch args, to
+        // use in creating a hash key
+        let mut common_and_arch_args = parsed_args.common_args.to_owned();
+        for arch_arg in parsed_args.arch_args.iter() {
+            common_and_arch_args.push(arch_arg.to_owned());
+        }
+
         let key = {
             hash_key(
                 &executable_digest,
                 parsed_args.language,
-                &parsed_args.common_args,
+                &common_and_arch_args,
                 &extra_hashes,
                 &env_vars,
                 &preprocessor_result.stdout,
