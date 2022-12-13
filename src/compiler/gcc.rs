@@ -1429,7 +1429,12 @@ mod test {
         );
         // make sure the architectures were rewritten to prepocessor defines
         let expected_args = ovec![
-            "-x", "c++", "-E", "-fdirectives-only", "foo.cc", "-D__arm64__=1", 
+            "-x",
+            "c++",
+            "-E",
+            "-fdirectives-only",
+            "foo.cc",
+            "-D__arm64__=1",
             "-D__i386__=1"
         ];
         assert_eq!(cmd.args, expected_args);
@@ -1674,9 +1679,8 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         }
 
-        let args = stringvec![
-            "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-        ];
+        let args =
+            stringvec!["-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"];
         let ParsedArguments {
             input,
             language,
@@ -1702,8 +1706,8 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
-                )
-            );
+            )
+        );
         assert!(preprocessor_args.is_empty());
         assert_eq!(ovec!["-fPIC"], common_args);
         assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
