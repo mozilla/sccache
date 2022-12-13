@@ -1049,13 +1049,12 @@ dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
 [cache.gcs]
-# optional url
-deprecated_url = "..."
 rw_mode = "READ_ONLY"
 # rw_mode = "READ_WRITE"
 cred_path = "/psst/secret/cred"
 bucket = "bucket"
 key_prefix = "prefix"
+service_account = "example_service_account"
 
 [cache.gha]
 url = "http://localhost"
@@ -1091,7 +1090,7 @@ no_credentials = true
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),
                     cred_path: Some("/psst/secret/cred".to_string()),
-                    service_account: None,
+                    service_account: Some("example_service_account".to_string()),
                     rw_mode: GCSCacheRWMode::ReadOnly,
                     key_prefix: "prefix".into(),
                 }),
