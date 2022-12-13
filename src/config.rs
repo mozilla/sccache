@@ -183,9 +183,8 @@ pub enum GCSCacheRWMode {
 pub struct GCSCacheConfig {
     pub bucket: String,
     pub key_prefix: String,
-    pub cred_path: Option<PathBuf>,
-    pub oauth_url: Option<String>,
-    pub deprecated_url: Option<String>,
+    pub cred_path: Option<String>,
+    pub service_account: Option<String>,
     pub rw_mode: GCSCacheRWMode,
 }
 
@@ -535,20 +534,21 @@ fn config_from_env() -> Result<EnvConfig> {
             .filter(|s| !s.is_empty())
             .unwrap_or_default()
             .to_owned();
-        let deprecated_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
-        let oauth_url = env::var("SCCACHE_GCS_OAUTH_URL").ok();
-        let cred_path = env::var_os("SCCACHE_GCS_KEY_PATH").map(PathBuf::from);
 
-        if oauth_url.is_some() && cred_path.is_some() {
-            warn!("Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set");
-            warn!("You should set only one of them!");
-            warn!("SCCACHE_GCS_KEY_PATH will take precedence");
-        }
-        if let Some(p) = &cred_path {
-            if !p.is_file() {
-                warn!("Could not find SCCACHE_GCS_KEY_PATH file '{:?}'", p);
+        let deprecated_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
+          if deprecated_url.is_some() {
+                warn!("gcs deprecated_url has been deprecated");
             }
-        }
+
+        let oauth_url = env::var("SCCACHE_GCS_OAUTH_URL").ok();
+          if oauth_url.is_some() {
+                warn!("SCCACHE_GCS_OAUTH_URL has been deprecated");
+                 warn!("if you intend to use vm metadata for auth, please set correct service account intead");
+            }
+
+        let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
+        let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
+
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
             Ok("READ_ONLY") => GCSCacheRWMode::ReadOnly,
             Ok("READ_WRITE") => GCSCacheRWMode::ReadWrite,
@@ -567,8 +567,7 @@ fn config_from_env() -> Result<EnvConfig> {
             bucket,
             key_prefix,
             cred_path,
-            oauth_url,
-            deprecated_url,
+            service_account,
             rw_mode,
         }
     });
@@ -999,53 +998,29 @@ fn test_s3_no_credentials() {
 }
 
 #[test]
-fn test_gcs_credentials_url() {
+fn test_gcs_service_account() {
     env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-    env::set_var("SCCACHE_GCS_CREDENTIALS_URL", "http://localhost/");
+    env::set_var("SCCACHE_GCS_SERVICE_ACCOUNT", "my@example.com");
     env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
 
     let env_cfg = config_from_env().unwrap();
     match env_cfg.cache.gcs {
         Some(GCSCacheConfig {
             ref bucket,
-            ref deprecated_url,
+            service_account,
             rw_mode,
             ..
         }) => {
             assert_eq!(bucket, "my-bucket");
-            match deprecated_url {
-                Some(ref url) => assert_eq!(url, "http://localhost/"),
-                None => panic!("URL can't be none"),
-            };
+            assert_eq!(service_account, Some("my@example.com".to_string()));
             assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
         }
         None => unreachable!(),
     };
-}
 
-#[test]
-fn test_gcs_oauth_url() {
-    env::set_var("SCCACHE_GCS_BUCKET", "my-bucket");
-    env::set_var("SCCACHE_GCS_OAUTH_URL", "http://localhost/");
-    env::set_var("SCCACHE_GCS_RW_MODE", "READ_WRITE");
-
-    let env_cfg = config_from_env().unwrap();
-    match env_cfg.cache.gcs {
-        Some(GCSCacheConfig {
-            ref bucket,
-            ref oauth_url,
-            rw_mode,
-            ..
-        }) => {
-            assert_eq!(bucket, "my-bucket");
-            match oauth_url {
-                Some(ref url) => assert_eq!(url, "http://localhost/"),
-                None => panic!("URL can't be none"),
-            };
-            assert_eq!(rw_mode, GCSCacheRWMode::ReadWrite);
-        }
-        None => unreachable!(),
-    };
+    env::remove_var("SCCACHE_GCS_BUCKET");
+    env::remove_var("SCCACHE_GCS_SERVICE_ACCOUNT");
+    env::remove_var("SCCACHE_GCS_RW_MODE");
 }
 
 #[test]
@@ -1115,10 +1090,9 @@ no_credentials = true
                     size: 7 * 1024 * 1024 * 1024,
                 }),
                 gcs: Some(GCSCacheConfig {
-                    oauth_url: None,
-                    deprecated_url: Some("...".to_owned()),
                     bucket: "bucket".to_owned(),
-                    cred_path: Some(PathBuf::from("/psst/secret/cred")),
+                    cred_path: Some("/psst/secret/cred".to_string()),
+                    service_account: None,
                     rw_mode: GCSCacheRWMode::ReadOnly,
                     key_prefix: "prefix".into(),
                 }),
