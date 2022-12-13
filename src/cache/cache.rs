@@ -16,7 +16,7 @@
 use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+use crate::cache::gcs::{GCSCache, RWMode};
 #[cfg(feature = "gha")]
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
@@ -28,8 +28,6 @@ use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
 use std::fmt;
 use std::fs;
-#[cfg(feature = "gcs")]
-use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -328,7 +326,7 @@ pub trait Storage: Send + Sync {
 }
 
 /// Implement storage for operator.
-#[cfg(any(feature = "s3", feature = "azure"))]
+#[cfg(any(feature = "s3", feature = "azure", feature = "gcs"))]
 #[async_trait]
 impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
@@ -402,62 +400,25 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
                 ref bucket,
                 ref key_prefix,
                 ref cred_path,
-                ref deprecated_url,
-                ref oauth_url,
                 rw_mode,
+                ref service_account,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {}, {:?}, {:?}, {:?}, {:?})",
-                    bucket, key_prefix, cred_path, deprecated_url, oauth_url, rw_mode
+                    "Trying GCS bucket({}, {}, {:?})",
+                    bucket, key_prefix, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
-                    let service_account_info_opt: Option<gcs::ServiceAccountInfo> =
-                        if let Some(ref cred_path) = *cred_path {
-                            // Attempt to read the service account key from file
-                            let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
-                                let mut file = File::open(&cred_path)?;
-                                let mut service_account_json = String::new();
-                                file.read_to_string(&mut service_account_json)?;
-                                Ok(serde_json::from_str(&service_account_json)?)
-                            })(
-                            );
-
-                            // warn! if an error was encountered reading the key from the file
-                            if let Err(ref e) = service_account_key_res {
-                                warn!(
-                                    "Failed to parse service account credentials from file: {:?}. \
-                                     Continuing without authentication.",
-                                    e
-                                );
-                            }
-
-                            service_account_key_res
-                                .ok()
-                                .map(ServiceAccountInfo::AccountKey)
-                        } else if let Some(ref url) = *deprecated_url {
-                            Some(ServiceAccountInfo::DeprecatedUrl(url.clone()))
-                        } else if let Some(ref url) = *oauth_url {
-                            Some(ServiceAccountInfo::OAuthUrl(url.clone()))
-                        } else {
-                            warn!(
-                            "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."
-                        );
-                            None
-                        };
-
                     let gcs_read_write_mode = match rw_mode {
                         config::GCSCacheRWMode::ReadOnly => RWMode::ReadOnly,
                         config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
                     };
 
-                    let gcs_cred_provider = service_account_info_opt
-                        .map(|info| GCSCredentialProvider::new(gcs_read_write_mode, info));
-
-                    match GCSCache::new(
-                        bucket.to_owned(),
-                        key_prefix.to_owned(),
-                        gcs_cred_provider,
+                    match GCSCache::build(
+                        bucket,
+                        key_prefix,
+                        cred_path.as_deref(),
+                        service_account.as_deref(),
                         gcs_read_write_mode,
                     ) {
                         Ok(s) => {

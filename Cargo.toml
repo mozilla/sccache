@@ -28,7 +28,7 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.22.3", optional=true }
+opendal = { version= "0.22.5", optional=true }
 chrono = { version = "0.4.23", optional = true }
 clap = { version = "3.2.22", features = ["derive", "env", "wrap_help"] }
 directories = "4.0.1"
@@ -39,7 +39,6 @@ futures = "0.3"
 futures-locks = "0.7"
 gha-toolkit = { version = "0.3.1", optional = true }
 gzp = { version = "0.11", default-features = false, features = ["deflate_rust"]  }
-hmac = { version = "0.12.0", optional = true }
 http = "0.2"
 hyper = { version = "0.14.10", optional = true, features = ["server"] }
 hyperx = { version = "1.0", optional = true }
@@ -49,17 +48,14 @@ lazy_static = "1.0.0"
 libc = "0.2.138"
 linked-hash-map = "0.5"
 log = "0.4"
-md-5 = { version = "0.10.5", optional = true }
 memcached-rs = { version = "0.4" , optional = true }
 num_cpus = "1.14"
 number_prefix = "0.4"
 openssl = { version = "0.10.9", optional = true }
-percent-encoding = { version = "2", optional = true }
 rand = "0.8.4"
 regex = "1.7.0"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream"], optional = true }
 retry = "2"
-ring = { version = "0.16", optional = true, features = ["std"] }
 rredis = { package = "redis", version = "0.21", optional = true, default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
 semver = "1.0"
 sha2 = { version = "0.10.6", optional = true }
@@ -123,7 +119,7 @@ default = ["all"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha"]
 azure = ["opendal"]
 s3 = ["opendal"]
-gcs = ["chrono", "hyper", "hyperx", "percent-encoding", "reqwest", "ring", "url"]
+gcs = ["opendal"]
 gha = ["gha-toolkit"]
 memcached = ["memcached-rs"]
 native-zlib = []
