@@ -535,16 +535,14 @@ fn config_from_env() -> Result<EnvConfig> {
             .unwrap_or_default()
             .to_owned();
 
-        let deprecated_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
-          if deprecated_url.is_some() {
-                warn!("gcs deprecated_url has been deprecated");
-            }
+        if env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok() {
+            warn!("gcs deprecated_url has been deprecated");
+        }
 
-        let oauth_url = env::var("SCCACHE_GCS_OAUTH_URL").ok();
-          if oauth_url.is_some() {
-                warn!("SCCACHE_GCS_OAUTH_URL has been deprecated");
-                 warn!("if you intend to use vm metadata for auth, please set correct service account intead");
-            }
+        if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
+            warn!("SCCACHE_GCS_OAUTH_URL has been deprecated");
+            warn!("if you intend to use vm metadata for auth, please set correct service account intead");
+        }
 
         let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
         let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
@@ -563,6 +561,7 @@ fn config_from_env() -> Result<EnvConfig> {
                 GCSCacheRWMode::ReadOnly
             }
         };
+
         GCSCacheConfig {
             bucket,
             key_prefix,
