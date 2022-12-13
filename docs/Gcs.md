@@ -35,4 +35,4 @@ Sccache is able to load credentials from various sources. Including:
 
 ## Deprecation
 
-`SCCACHE_GCS_CREDENTIALS_URL` and `SCCACHE_GCS_OAUTH_URL` have been deprecated, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
+`SCCACHE_GCS_CREDENTIALS_URL` and `SCCACHE_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
