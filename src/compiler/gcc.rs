@@ -626,9 +626,9 @@ fn preprocess_cmd<T>(
         .arch_args
         .iter()
         .filter(|&arg| arg.ne(ARCH_FLAG))
-        .filter_map(|arg| match arg.to_str() {
-            Some(arg_string) => Some(format!("-D__{}__=1", arg_string).into()),
-            None => None,
+        .filter_map(|arg| {
+            arg.to_str()
+                .map(|arg_string| format!("-D__{}__=1", arg_string).into())
         })
         .collect::<Vec<OsString>>();
 
