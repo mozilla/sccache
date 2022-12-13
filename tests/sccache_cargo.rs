@@ -318,19 +318,7 @@ fn test_gcp_arg_check() -> Result<()> {
 
     // This is just a warning
     cmd.assert().success().stderr(predicate::str::contains(
-        "Both SCCACHE_GCS_OAUTH_URL and SCCACHE_GCS_KEY_PATH are set",
-    ));
-
-    stop_sccache()?;
-    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
-    cmd.arg("--start-server")
-        .env("SCCACHE_LOG", "debug")
-        .env("SCCACHE_GCS_BUCKET", "b")
-        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
-
-    // This is just a warning
-    cmd.assert().success().stderr(predicate::str::contains(
-        "Could not find SCCACHE_GCS_KEY_PATH file",
+        "SCCACHE_GCS_OAUTH_URL has been deprecated",
     ));
 
     Ok(())
