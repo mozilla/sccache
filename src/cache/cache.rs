@@ -326,7 +326,7 @@ pub trait Storage: Send + Sync {
 }
 
 /// Implement storage for operator.
-#[cfg(any(feature = "s3", feature = "azure"))]
+#[cfg(any(feature = "s3", feature = "azure", feature = "gcs"))]
 #[async_trait]
 impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
