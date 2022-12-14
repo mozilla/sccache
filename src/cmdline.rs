@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use clap::{Arg, ArgGroup, ErrorKind};
+use clap::{error::ErrorKind, Arg, ArgAction, ArgGroup, ValueEnum};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ use which::which_in;
 
 const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ValueEnum)]
 pub enum StatsFormat {
     Text,
     Json,
@@ -34,10 +34,6 @@ impl StatsFormat {
             Self::Text => "text",
             Self::Json => "json",
         }
-    }
-
-    fn values() -> &'static [Self] {
-        &[Self::Text, Self::Json]
     }
 }
 
@@ -90,19 +86,18 @@ pub enum Command {
     },
 }
 
-fn flag_infer_long_and_short(name: &'static str) -> Arg<'static> {
+fn flag_infer_long_and_short(name: &'static str) -> Arg {
     flag_infer_long(name).short(name.chars().next().expect("Name needs at least one char"))
 }
 
-fn flag_infer_long(name: &'static str) -> Arg<'static> {
+fn flag_infer_long(name: &'static str) -> Arg {
     Arg::new(name).long(name)
 }
 
 /// Get the [`clap::Command`] used for argument parsing.
-fn get_clap_command() -> clap::Command<'static> {
+fn get_clap_command() -> clap::Command {
     clap::Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
-        .trailing_var_arg(true)
         .max_term_width(110)
         .after_help(concat!(
             "Enabled features:\n",
@@ -126,24 +121,38 @@ fn get_clap_command() -> clap::Command<'static> {
             "\n"
         ))
         .args(&[
-            flag_infer_long_and_short("show-stats").help("show cache statistics"),
-            flag_infer_long("start-server").help("start background server"),
-            flag_infer_long("stop-server").help("stop background server"),
-            flag_infer_long_and_short("zero-stats").help("zero statistics counters"),
-            flag_infer_long("dist-auth").help("authenticate for distributed compilation"),
-            flag_infer_long("dist-status").help("show status of the distributed client"),
+            flag_infer_long_and_short("show-stats")
+                .help("show cache statistics")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("start-server")
+                .help("start background server")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("stop-server")
+                .help("stop background server")
+                .action(ArgAction::SetTrue),
+            flag_infer_long_and_short("zero-stats")
+                .help("zero statistics counters")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("dist-auth")
+                .help("authenticate for distributed compilation")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("dist-status")
+                .help("show status of the distributed client")
+                .action(ArgAction::SetTrue),
             flag_infer_long("package-toolchain")
                 .help("package toolchain for distributed compilation")
-                .number_of_values(2)
+                .value_parser(clap::value_parser!(PathBuf))
+                .num_args(2)
                 .value_names(&["EXE", "OUT"]),
             flag_infer_long("stats-format")
                 .help("set output format of statistics")
                 .value_name("FMT")
-                .possible_values(StatsFormat::values().iter().map(StatsFormat::as_str))
+                .value_parser(clap::value_parser!(StatsFormat))
                 .default_value(StatsFormat::default().as_str()),
             Arg::new("CMD")
-                .multiple_occurrences(true)
-                .use_value_delimiter(false),
+                .value_parser(clap::value_parser!(OsString))
+                .trailing_var_arg(true)
+                .action(ArgAction::Append),
         ])
         .group(
             ArgGroup::new("one_and_only_one")
@@ -232,31 +241,35 @@ pub fn try_parse() -> Result<Command> {
             bail!("`{ENV_VAR_INTERNAL_START_SERVER}=1` can't be used with other commands");
         }
         (false, Ok(matches)) => {
-            if matches.is_present("show-stats") {
+            if matches.get_flag("show-stats") {
                 let fmt = matches
-                    .value_of_t("stats-format")
+                    .get_one("stats-format")
+                    .cloned()
                     .expect("There is a default value");
                 Ok(Command::ShowStats(fmt))
-            } else if matches.is_present("start-server") {
+            } else if matches.get_flag("start-server") {
                 Ok(Command::StartServer)
-            } else if matches.is_present("stop-server") {
+            } else if matches.get_flag("stop-server") {
                 Ok(Command::StopServer)
-            } else if matches.is_present("zero-stats") {
+            } else if matches.get_flag("zero-stats") {
                 Ok(Command::ZeroStats)
-            } else if matches.is_present("dist-auth") {
+            } else if matches.get_flag("dist-auth") {
                 Ok(Command::DistAuth)
-            } else if matches.is_present("dist-status") {
+            } else if matches.get_flag("dist-status") {
                 Ok(Command::DistStatus)
-            } else if matches.is_present("package-toolchain") {
-                let mut toolchain_values: Vec<PathBuf> =
-                    matches.values_of_t("package-toolchain")?;
+            } else if matches.contains_id("package-toolchain") {
+                let mut toolchain_values = matches
+                    .get_many("package-toolchain")
+                    .expect("`package-toolchain` requires two values")
+                    .cloned()
+                    .collect::<Vec<PathBuf>>();
                 let maybe_out = toolchain_values.pop();
                 let maybe_exe = toolchain_values.pop();
                 match (maybe_exe, maybe_out) {
                     (Some(exe), Some(out)) => Ok(Command::PackageToolchain(exe, out)),
                     _ => unreachable!("clap should enforce two values"),
                 }
-            } else if matches.is_present("CMD") {
+            } else if matches.contains_id("CMD") {
                 let mut env_vars = env::vars_os().collect::<Vec<_>>();
 
                 // If we're running under rr, avoid the `LD_PRELOAD` bits, as it will
@@ -268,7 +281,11 @@ pub fn try_parse() -> Result<Command> {
                     env_vars.retain(|(k, _v)| k != "LD_PRELOAD" && k != "RUNNING_UNDER_RR");
                 }
 
-                let cmd: Vec<OsString> = matches.values_of_t("CMD")?;
+                let cmd = matches
+                    .get_many("CMD")
+                    .expect("CMD is required")
+                    .cloned()
+                    .collect::<Vec<OsString>>();
                 match cmd.as_slice() {
                     [exe, cmdline @ ..] => Ok(Command::Compile {
                         exe: exe.to_owned(),
