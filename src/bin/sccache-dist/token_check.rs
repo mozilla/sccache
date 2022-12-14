@@ -2,6 +2,7 @@ use crate::jwt;
 use anyhow::{bail, Context, Result};
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::RequestExt;
+use sccache::util::BASE64_URL_SAFE_ENGINE;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
@@ -29,9 +30,9 @@ impl Jwk {
         }
 
         // JWK is big-endian, openssl bignum from_slice is big-endian
-        let n = base64::decode_config(&self.n, base64::URL_SAFE)
+        let n = base64::decode_engine(&self.n, &BASE64_URL_SAFE_ENGINE)
             .context("Failed to base64 decode n")?;
-        let e = base64::decode_config(&self.e, base64::URL_SAFE)
+        let e = base64::decode_engine(&self.e, &BASE64_URL_SAFE_ENGINE)
             .context("Failed to base64 decode e")?;
         let n_bn = openssl::bn::BigNum::from_slice(&n)
             .context("Failed to create openssl bignum from n")?;

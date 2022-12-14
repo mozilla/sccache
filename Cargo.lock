@@ -2309,7 +2309,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "atty",
- "base64 0.13.1",
+ "base64 0.20.0",
  "bincode 1.3.3",
  "blake3",
  "byteorder",

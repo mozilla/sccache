@@ -32,6 +32,7 @@ use sccache::dist::{
     UpdateJobStateResult,
 };
 use sccache::util::daemonize;
+use sccache::util::BASE64_URL_SAFE_ENGINE;
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
@@ -136,7 +137,7 @@ fn run(command: Command) -> Result<i32> {
             let mut bytes = vec![0; num_bytes];
             OsRng.fill_bytes(&mut bytes);
             // As long as it can be copied, it doesn't matter if this is base64 or hex etc
-            println!("{}", base64::encode_config(&bytes, base64::URL_SAFE_NO_PAD));
+            println!("{}", base64::encode_engine(&bytes, &BASE64_URL_SAFE_ENGINE));
             Ok(0)
         }
         Command::Auth(AuthSubcommand::JwtHS256ServerToken {
@@ -144,7 +145,7 @@ fn run(command: Command) -> Result<i32> {
             server_id,
         }) => {
             let header = jwt::Header::new(jwt::Algorithm::HS256);
-            let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)?;
+            let secret_key = base64::decode_engine(&secret_key, &BASE64_URL_SAFE_ENGINE)?;
             let token = create_jwt_server_token(server_id, &header, &secret_key)
                 .context("Failed to create server token")?;
             println!("{}", token);
@@ -189,7 +190,7 @@ fn run(command: Command) -> Result<i32> {
                     Box::new(move |server_token| check_server_token(server_token, &token))
                 }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
-                    let secret_key = base64::decode_config(&secret_key, base64::URL_SAFE_NO_PAD)
+                    let secret_key = base64::decode_engine(&secret_key, &BASE64_URL_SAFE_ENGINE)
                         .context("Secret key base64 invalid")?;
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
