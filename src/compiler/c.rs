@@ -98,6 +98,8 @@ pub struct ParsedArguments {
     pub preprocessor_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor or the compiler.
     pub common_args: Vec<OsString>,
+    /// Commandline arguments for the compiler that specify the architecture given
+    pub arch_args: Vec<OsString>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
@@ -382,11 +384,16 @@ where
             preprocessor_result.stdout.len()
         );
 
+        // Create an argument vector containing both common and arch args, to
+        // use in creating a hash key
+        let mut common_and_arch_args = parsed_args.common_args.clone();
+        common_and_arch_args.extend(parsed_args.arch_args.to_vec());
+
         let key = {
             hash_key(
                 &executable_digest,
                 parsed_args.language,
-                &parsed_args.common_args,
+                &common_and_arch_args,
                 &extra_hashes,
                 &env_vars,
                 &preprocessor_result.stdout,
@@ -673,7 +680,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `hash_key`.
-pub const CACHE_VERSION: &[u8] = b"10";
+pub const CACHE_VERSION: &[u8] = b"11";
 
 lazy_static! {
     /// Environment variables that are factored into the cache key.
