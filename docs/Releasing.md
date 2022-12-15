@@ -8,5 +8,5 @@ We use [`cargo-release`](https://crates.io/crates/cargo-release) to produce rele
 
 ## Things to be aware of
 
-1. You must have authenticated to crates.io using `cargo login` to publish the sccache crate there.
-2. cargo will not allow publishing a crate if there are crates in the `[patch]` section in `Cargo.toml`.
+1. You must have authenticated to crates.io using `cargo login` to publish the sccache create there.
+2. cargo will not allow publishing a create if there are crates in the `[patch]` section in `Cargo.toml`.

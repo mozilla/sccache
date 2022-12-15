@@ -29,6 +29,13 @@ use std::time::Duration;
 
 use crate::errors::*;
 
+/// The url safe engine for base64.
+pub const BASE64_URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
+    base64::engine::fast_portable::FastPortable::from(
+        &base64::alphabet::URL_SAFE,
+        base64::engine::fast_portable::NO_PAD,
+    );
+
 #[derive(Clone)]
 pub struct Digest {
     inner: blake3_Hasher,
@@ -506,20 +513,6 @@ mod http_extension {
     }
 }
 
-pub trait DateTimeExt {
-    fn to_rfc7231(&self) -> String;
-}
-
-#[cfg(any(feature = "azure", feature = "gcs"))]
-impl<Tz: chrono::TimeZone> DateTimeExt for chrono::DateTime<Tz>
-where
-    Tz::Offset: core::fmt::Display,
-{
-    fn to_rfc7231(&self) -> String {
-        self.naive_utc().format("%a, %d %b %Y %T GMT").to_string()
-    }
-}
-
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
@@ -638,21 +631,5 @@ mod tests {
         assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
         assert_eq!(a.split_prefix("foo2"), None);
         assert_eq!(a.split_prefix("b"), None);
-    }
-
-    #[cfg(feature = "azure")]
-    #[test]
-    fn rfc7231_format() {
-        use crate::util::DateTimeExt;
-        use chrono::{DateTime, Utc};
-
-        let zero_datetime = match chrono::NaiveDateTime::from_timestamp_opt(0, 0) {
-            Some(v) => v,
-            _ => panic!("zero date time from_timetamp_opt"),
-        };
-
-        let time = DateTime::<Utc>::from_utc(zero_datetime, Utc);
-
-        assert_eq!(time.to_rfc7231(), "Thu, 01 Jan 1970 00:00:00 GMT");
     }
 }

@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "azure")]
+use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use crate::cache::gcs::{self, GCSCache, GCSCredentialProvider, RWMode, ServiceAccountInfo};
+use crate::cache::gcs::{GCSCache, RWMode};
 #[cfg(feature = "gha")]
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
@@ -24,12 +26,8 @@ use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 use crate::config::{self, CacheType, Config};
-#[cfg(feature = "azure")]
-use crate::{azure, cache::azure::AzureBlobCache};
 use std::fmt;
 use std::fs;
-#[cfg(feature = "gcs")]
-use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -327,88 +325,100 @@ pub trait Storage: Send + Sync {
     async fn max_size(&self) -> Result<Option<u64>>;
 }
 
+/// Implement storage for operator.
+#[cfg(any(feature = "s3", feature = "azure", feature = "gcs"))]
+#[async_trait]
+impl Storage for opendal::Operator {
+    async fn get(&self, key: &str) -> Result<Cache> {
+        match self.object(&normalize_key(key)).read().await {
+            Ok(res) => {
+                let hit = CacheRead::from(io::Cursor::new(res))?;
+                Ok(Cache::Hit(hit))
+            }
+            Err(e) => {
+                warn!("Got error: {:?}", e);
+                Ok(Cache::Miss)
+            }
+        }
+    }
+
+    async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
+        let start = std::time::Instant::now();
+
+        self.object(&normalize_key(key))
+            .write(entry.finish()?)
+            .await?;
+
+        Ok(start.elapsed())
+    }
+
+    fn location(&self) -> String {
+        let meta = self.metadata();
+        format!(
+            "{}, bucket: {}, prefix: {}",
+            meta.scheme(),
+            meta.name(),
+            meta.root()
+        )
+    }
+
+    async fn current_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    async fn max_size(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+}
+
+/// Normalize key `abcdef` into `a/b/c/abcdef`
+fn normalize_key(key: &str) -> String {
+    format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
+}
+
 /// Get a suitable `Storage` implementation from configuration.
 #[allow(clippy::cognitive_complexity)] // TODO simplify!
 pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Arc<dyn Storage> {
     for cache_type in config.caches.iter() {
         match *cache_type {
-            CacheType::Azure(config::AzureCacheConfig { ref key_prefix }) => {
+            CacheType::Azure(config::AzureCacheConfig {
+                ref connection_string,
+                ref container,
+                ref key_prefix,
+            }) => {
                 debug!("Trying Azure Blob Store account({})", key_prefix);
                 #[cfg(feature = "azure")]
-                match azure::credentials_from_environment() {
-                    Ok(creds) => match AzureBlobCache::new(creds, key_prefix) {
-                        Ok(storage) => {
-                            trace!("Using AzureBlobCache");
-                            return Arc::new(storage);
-                        }
-                        Err(e) => warn!("Failed to create Azure cache: {:?}", e),
-                    },
-                    Err(err) => warn!(
-                        "Failed to create Azure cache: could not find Azure credentials in the environment: {}",
-                        err
-                    ),
+                match AzureBlobCache::build(connection_string, container, key_prefix) {
+                    Ok(storage) => {
+                        trace!("Using AzureBlobCache");
+                        return Arc::new(storage);
+                    }
+                    Err(e) => warn!("Failed to create Azure cache: {:?}", e),
                 }
             }
             CacheType::GCS(config::GCSCacheConfig {
                 ref bucket,
                 ref key_prefix,
                 ref cred_path,
-                ref deprecated_url,
-                ref oauth_url,
                 rw_mode,
+                ref service_account,
             }) => {
                 debug!(
-                    "Trying GCS bucket({}, {}, {:?}, {:?}, {:?}, {:?})",
-                    bucket, key_prefix, cred_path, deprecated_url, oauth_url, rw_mode
+                    "Trying GCS bucket({}, {}, {:?})",
+                    bucket, key_prefix, rw_mode
                 );
                 #[cfg(feature = "gcs")]
                 {
-                    let service_account_info_opt: Option<gcs::ServiceAccountInfo> =
-                        if let Some(ref cred_path) = *cred_path {
-                            // Attempt to read the service account key from file
-                            let service_account_key_res: Result<gcs::ServiceAccountKey> = (|| {
-                                let mut file = File::open(&cred_path)?;
-                                let mut service_account_json = String::new();
-                                file.read_to_string(&mut service_account_json)?;
-                                Ok(serde_json::from_str(&service_account_json)?)
-                            })(
-                            );
-
-                            // warn! if an error was encountered reading the key from the file
-                            if let Err(ref e) = service_account_key_res {
-                                warn!(
-                                    "Failed to parse service account credentials from file: {:?}. \
-                                     Continuing without authentication.",
-                                    e
-                                );
-                            }
-
-                            service_account_key_res
-                                .ok()
-                                .map(ServiceAccountInfo::AccountKey)
-                        } else if let Some(ref url) = *deprecated_url {
-                            Some(ServiceAccountInfo::DeprecatedUrl(url.clone()))
-                        } else if let Some(ref url) = *oauth_url {
-                            Some(ServiceAccountInfo::OAuthUrl(url.clone()))
-                        } else {
-                            warn!(
-                            "No SCCACHE_GCS_KEY_PATH specified-- no authentication will be used."
-                        );
-                            None
-                        };
-
                     let gcs_read_write_mode = match rw_mode {
                         config::GCSCacheRWMode::ReadOnly => RWMode::ReadOnly,
                         config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
                     };
 
-                    let gcs_cred_provider = service_account_info_opt
-                        .map(|info| GCSCredentialProvider::new(gcs_read_write_mode, info));
-
-                    match GCSCache::new(
-                        bucket.to_owned(),
-                        key_prefix.to_owned(),
-                        gcs_cred_provider,
+                    match GCSCache::build(
+                        bucket,
+                        key_prefix,
+                        cred_path.as_deref(),
+                        service_account.as_deref(),
                         gcs_read_write_mode,
                     ) {
                         Ok(s) => {
@@ -463,14 +473,14 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::S3(ref c) => {
                 debug!("Trying S3Cache({:?})", c);
                 #[cfg(feature = "s3")]
-                match pool.block_on(S3Cache::new(
+                match S3Cache::build(
                     &c.bucket,
                     c.region.as_deref(),
                     &c.key_prefix,
                     c.no_credentials,
                     c.endpoint.as_deref(),
                     c.use_ssl,
-                )) {
+                ) {
                     Ok(s) => {
                         trace!("Using S3Cache");
                         return Arc::new(s);
@@ -485,4 +495,17 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     trace!("Using DiskCache({:?}, {})", dir, size);
     Arc::new(DiskCache::new(&dir, size, pool))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_normalize_key() {
+        assert_eq!(
+            normalize_key("0123456789abcdef0123456789abcdef"),
+            "0/1/2/0123456789abcdef0123456789abcdef"
+        );
+    }
 }

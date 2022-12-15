@@ -86,6 +86,7 @@ mod code_grant_pkce {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
+    use crate::util::BASE64_URL_SAFE_ENGINE;
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::{rngs::OsRng, RngCore};
@@ -110,6 +111,7 @@ mod code_grant_pkce {
     // Code response - https://tools.ietf.org/html/rfc6749#section-4.1.2
     const CODE_RESULT_PARAM: &str = "code";
     const STATE_RESULT_PARAM: &str = "state";
+
     // Token request - https://tools.ietf.org/html/rfc7636#section-4.5
     #[derive(Serialize)]
     struct TokenRequest<'a> {
@@ -145,10 +147,10 @@ mod code_grant_pkce {
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
         OsRng.fill_bytes(&mut code_verifier_bytes);
-        let code_verifier = base64::encode_config(&code_verifier_bytes, base64::URL_SAFE_NO_PAD);
+        let code_verifier = base64::encode_engine(&code_verifier_bytes, &BASE64_URL_SAFE_ENGINE);
         let mut hasher = Sha256::new();
         hasher.update(&code_verifier);
-        let code_challenge = base64::encode_config(&hasher.finalize(), base64::URL_SAFE_NO_PAD);
+        let code_challenge = base64::encode_engine(&hasher.finalize(), &BASE64_URL_SAFE_ENGINE);
         Ok((code_verifier, code_challenge))
     }
 

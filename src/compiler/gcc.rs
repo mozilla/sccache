@@ -142,6 +142,8 @@ ArgData! { pub
 
 use self::ArgData::*;
 
+const ARCH_FLAG: &str = "-arch";
+
 // Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
@@ -174,7 +176,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
     take_arg!("-Xpreprocessor", OsString, Separated, PreprocessorArgument),
-    take_arg!("-arch", OsString, Separated, Arch),
+    take_arg!(ARCH_FLAG, OsString, Separated, Arch),
     take_arg!("-aux-info", OsString, Separated, PassThrough),
     take_arg!("-b", OsString, Separated, PassThrough),
     flag!("-c", DoCompilation),
@@ -244,6 +246,7 @@ where
     let mut dep_target = None;
     let mut dep_flag = OsString::from("-MT");
     let mut common_args = vec![];
+    let mut arch_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
@@ -266,7 +269,6 @@ where
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
-    let mut seen_arch = None;
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -355,13 +357,7 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
-            Some(Arch(arch)) => {
-                match seen_arch {
-                    Some(s) if &s != arch => cannot_cache!("multiple different -arch"),
-                    _ => {}
-                };
-                seen_arch = Some(arch.clone());
-            }
+            Some(Arch(_)) => {}
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
                 Argument::Raw(ref val) => {
@@ -386,9 +382,9 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
-            | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
+            Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
@@ -567,6 +563,7 @@ where
         dependency_args,
         preprocessor_args,
         common_args,
+        arch_args,
         extra_hash_files,
         msvc_show_includes: false,
         profile_generate,
@@ -620,13 +617,30 @@ fn preprocess_cmd<T>(
             }
         }
     }
+
+    // Explicitly rewrite the -arch args to be preprocessor defines of the form
+    // __arch__ so that they affect the preprocessor output but don't cause
+    // clang to error.
+    debug!("arch args before rewrite: {:?}", parsed_args.arch_args);
+    let rewritten_arch_args = parsed_args
+        .arch_args
+        .iter()
+        .filter(|&arg| arg.ne(ARCH_FLAG))
+        .filter_map(|arg| {
+            arg.to_str()
+                .map(|arg_string| format!("-D__{}__=1", arg_string).into())
+        })
+        .collect::<Vec<OsString>>();
+
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
+        .args(&rewritten_arch_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
+    debug!("cmd after -arch rewrite: {:?}", cmd);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -705,6 +719,7 @@ pub fn generate_compile_commands(
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.common_args.clone());
+    arguments.extend(parsed_args.arch_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -1392,6 +1407,40 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_cmd_rewrites_archs() {
+        let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        // make sure the architectures were rewritten to prepocessor defines
+        let expected_args = ovec![
+            "-x",
+            "c++",
+            "-E",
+            "-fdirectives-only",
+            "foo.cc",
+            "-D__arm64__=1",
+            "-D__i386__=1"
+        ];
+        assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
     fn pedantic_default() {
         let args = stringvec!["-pedantic", "-c", "foo.cc"];
         let parsed_args = match parse_arguments_(args, false) {
@@ -1630,15 +1679,39 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         }
 
-        assert_eq!(
-            CompilerArguments::CannotCache("multiple different -arch", None),
-            parse_arguments_(
-                stringvec![
-                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                ],
-                false
+        let args =
+            stringvec!["-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"];
+        let ParsedArguments {
+            input,
+            language,
+            compilation_flag,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            arch_args,
+            ..
+        } = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_eq!(Some("-c"), compilation_flag.to_str());
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
             )
         );
+        assert!(preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fPIC"], common_args);
+        assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
+        assert!(!msvc_show_includes);
     }
 
     #[test]
@@ -1706,6 +1779,7 @@ mod test {
             dependency_args: vec![],
             preprocessor_args: vec![],
             common_args: vec![],
+            arch_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,

@@ -16,13 +16,13 @@
 use std::{env, ffi::OsString, fmt, net::SocketAddr, path::PathBuf, str::FromStr};
 
 use anyhow::{anyhow, bail};
-use clap::{Arg, ArgGroup, Command as ClapCommand};
+use clap::{Arg, ArgGroup, Command as ClapCommand, ValueEnum};
 use sccache::{config, dist::ServerId};
 use syslog::Facility;
 
 use crate::cmdline::{AuthSubcommand, Command};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TokenLength(usize);
 
 impl TokenLength {
@@ -53,35 +53,13 @@ impl fmt::Display for TokenLength {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ValueEnum)]
 enum LogLevel {
     Error,
     Warn,
     Info,
     Debug,
     Trace,
-}
-
-impl LogLevel {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-            Self::Trace => "trace",
-        }
-    }
-
-    fn values() -> &'static [Self] {
-        &[
-            Self::Error,
-            Self::Warn,
-            Self::Info,
-            Self::Debug,
-            Self::Trace,
-        ]
-    }
 }
 
 impl FromStr for LogLevel {
@@ -113,17 +91,21 @@ impl From<LogLevel> for log::LevelFilter {
     }
 }
 
-fn flag_infer_long(name: &'static str) -> Arg<'static> {
+fn flag_infer_long(name: &'static str) -> Arg {
     Arg::new(name).long(name)
 }
 
-fn get_clap_command() -> ClapCommand<'static> {
+fn get_clap_command() -> ClapCommand {
     let syslog = flag_infer_long("syslog")
         .help("Log to the syslog with LEVEL")
         .value_name("LEVEL")
-        .possible_values(LogLevel::values().iter().map(LogLevel::as_str));
-    let config_with_help_message =
-        |help: &'static str| flag_infer_long("config").help(help).value_name("PATH");
+        .value_parser(clap::value_parser!(LogLevel));
+    let config_with_help_message = |help: &'static str| {
+        flag_infer_long("config")
+            .help(help)
+            .value_name("PATH")
+            .value_parser(clap::value_parser!(PathBuf))
+    };
 
     ClapCommand::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
@@ -138,6 +120,7 @@ fn get_clap_command() -> ClapCommand<'static> {
                             flag_infer_long("server")
                                 .help("Generate a key for the specified server")
                                 .value_name("SERVER_ADDR")
+                                .value_parser(clap::value_parser!(SocketAddr))
                                 .required(true),
                             flag_infer_long("secret-key")
                                 .help("Use specified key to create the token")
@@ -158,7 +141,7 @@ fn get_clap_command() -> ClapCommand<'static> {
                             .help("Use the specified number of bits of randomness")
                             .value_name("BITS")
                             .default_value("256")
-                            .validator(TokenLength::from_bits),
+                            .value_parser(TokenLength::from_bits),
                     ),
                 ),
         )
@@ -188,12 +171,16 @@ pub fn try_parse_from(
             // Size based on https://briansmith.org/rustdoc/ring/hmac/fn.recommended_key_len.html
             Some(("generate-jwt-hs256-key", _)) => AuthSubcommand::Base64 { num_bytes: 256 / 8 },
             Some(("generate-jwt-hs256-server-token", matches)) => {
-                let server_addr: SocketAddr = matches.value_of_t("server")?;
-                let server_id = ServerId::new(server_addr);
+                let server_addr = matches
+                    .get_one("server")
+                    .expect("`server` is required and it can be parsed to a `SocketAddr`");
+                let server_id = ServerId::new(*server_addr);
 
-                let secret_key = if matches.is_present("config") {
-                    let config_path: PathBuf = matches.value_of_t("config")?;
-                    if let Some(config) = config::scheduler::from_path(&config_path)? {
+                let secret_key = if matches.contains_id("config") {
+                    let config_path = matches
+                        .get_one::<PathBuf>("config")
+                        .expect("`config` is required and it can be parsed to a `PathBuf`");
+                    if let Some(config) = config::scheduler::from_path(config_path)? {
                         match config.server_auth {
                             config::scheduler::ServerAuth::JwtHS256 { secret_key } => secret_key,
                             config::scheduler::ServerAuth::Insecure
@@ -205,7 +192,10 @@ pub fn try_parse_from(
                         bail!("Could not load config")
                     }
                 } else {
-                    matches.value_of_t("secret-key")?
+                    matches
+                        .get_one::<String>("secret-key")
+                        .expect("`secret-key` is required")
+                        .to_string()
                 };
 
                 AuthSubcommand::JwtHS256ServerToken {
@@ -214,10 +204,9 @@ pub fn try_parse_from(
                 }
             }
             Some(("generate-shared-token", matches)) => {
-                let token_bits = TokenLength::from_bits(
-                    matches.value_of("bits").expect("clap provides default"),
-                )
-                .expect("clap uses `from_bits` as a validator");
+                let token_bits = matches
+                    .get_one::<TokenLength>("bits")
+                    .expect("clap provides default");
 
                 AuthSubcommand::Base64 {
                     num_bytes: token_bits.as_bytes(),
@@ -226,26 +215,34 @@ pub fn try_parse_from(
             _ => unreachable!("Subcommand is enforced by clap"),
         }),
         Some(("scheduler", matches)) => {
-            if matches.is_present("syslog") {
-                let log_level: LogLevel = matches.value_of_t("syslog")?;
-                check_init_syslog("sccache-scheduler", log_level);
+            if matches.contains_id("syslog") {
+                let log_level = matches
+                    .get_one::<LogLevel>("syslog")
+                    .expect("`syslog` is required");
+                check_init_syslog("sccache-scheduler", *log_level);
             }
 
-            let config_path: PathBuf = matches.value_of_t("config")?;
-            if let Some(config) = config::scheduler::from_path(&config_path)? {
+            let config_path = matches
+                .get_one::<PathBuf>("config")
+                .expect("`config` is required");
+            if let Some(config) = config::scheduler::from_path(config_path)? {
                 Command::Scheduler(config)
             } else {
                 bail!("Could not load config")
             }
         }
         Some(("server", matches)) => {
-            if matches.is_present("syslog") {
-                let log_level: LogLevel = matches.value_of_t("syslog")?;
-                check_init_syslog("sccache-buildserver", log_level);
+            if matches.contains_id("syslog") {
+                let log_level = matches
+                    .get_one::<LogLevel>("syslog")
+                    .expect("`syslog` is required");
+                check_init_syslog("sccache-buildserver", *log_level);
             }
 
-            let config_path: PathBuf = matches.value_of_t("config")?;
-            if let Some(config) = config::server::from_path(&config_path)? {
+            let config_path = matches
+                .get_one::<PathBuf>("config")
+                .expect("`config` is required");
+            if let Some(config) = config::server::from_path(config_path)? {
                 Command::Server(config)
             } else {
                 bail!("Could not load config")
