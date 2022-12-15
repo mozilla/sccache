@@ -860,6 +860,30 @@ pub mod server {
         TEN_GIGS
     }
 
+    const DEFAULT_POT_CLONE_FROM: &str = "sccache-template";
+    const DEFAULT_POT_FS_ROOT: &str = "/opt/pot";
+    const DEFAULT_POT_CMD: &str = "pot";
+    const DEFAULT_POT_CLONE_ARGS: &[&str] = &["-i", "lo0|127.0.0.2"];
+
+    fn default_pot_clone_from() -> String {
+        DEFAULT_POT_CLONE_FROM.to_string()
+    }
+
+    fn default_pot_fs_root() -> PathBuf {
+        DEFAULT_POT_FS_ROOT.into()
+    }
+
+    fn default_pot_cmd() -> PathBuf {
+        DEFAULT_POT_CMD.into()
+    }
+
+    fn default_pot_clone_args() -> Vec<String> {
+        DEFAULT_POT_CLONE_ARGS
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
@@ -870,6 +894,17 @@ pub mod server {
         Overlay {
             build_dir: PathBuf,
             bwrap_path: PathBuf,
+        },
+        #[serde(rename = "pot")]
+        Pot {
+            #[serde(default = "default_pot_fs_root")]
+            pot_fs_root: PathBuf,
+            #[serde(default = "default_pot_clone_from")]
+            clone_from: String,
+            #[serde(default = "default_pot_cmd")]
+            pot_cmd: PathBuf,
+            #[serde(default = "default_pot_clone_args")]
+            pot_clone_args: Vec<String>,
         },
     }
 

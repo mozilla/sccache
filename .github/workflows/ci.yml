@@ -272,3 +272,60 @@ jobs:
           hub release create -m $tag_name $tag_name $files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test_freebsd:
+    name: test freebsd-13.1 rust stable
+    runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { os: macos-12 }
+        release: [ "13.1" ]
+    steps:
+    - uses: actions/checkout@v3
+    - name: Prepare, build and test
+      uses: vmactions/freebsd-vm@v0
+      with:
+        mem: 8192
+        usesh: true
+        copyback: false
+        prepare: pkg install -y curl gmake gtar pot sudo
+        run: |
+          #####################################################################################
+          ###  Prepare, build, and test
+          #####################################################################################
+          ###  based on ref: <https://github.com/rust-lang/rustup/pull/2783>
+          ###  and on ref: <https://github.com/uutils/coreutils/commit/86c610a84b8b6c>
+          ###  * NOTE: All steps need to be run in this block, otherwise, we are operating back
+          ###    on the mac host.
+          set -exo pipefail
+          #
+          ### Basic user setup ################################################################
+          TEST_USER=tester
+          TEST_USER_HOME="/opt/$TEST_USER"
+          REPO_NAME=${GITHUB_WORKSPACE##*/}
+          WORKSPACE_PARENT="/Users/runner/work/${REPO_NAME}"
+          WORKSPACE="${WORKSPACE_PARENT}/${REPO_NAME}"
+          export WORKSPACE
+          #
+          mkdir -p "$TEST_USER_HOME"
+          pw adduser -n "$TEST_USER" -d "$TEST_USER_HOME" -c "Tester" -h -
+          chown -R "$TEST_USER":"$TEST_USER" "$TEST_USER_HOME"
+          chown -R "$TEST_USER":"$TEST_USER" "/$WORKSPACE_PARENT"/
+          cat > /usr/local/etc/sudoers.d/wheel<<EOF
+          $TEST_USER ALL=(ALL) NOPASSWD: ALL
+          EOF
+          #
+          ### Install rust stable from rustup  ################################################
+          su "$TEST_USER" -c "/bin/sh -exo pipefail" <<"EOH"
+          whoami
+          echo "$HOME"
+          fetch -o /tmp/rustup.sh https://sh.rustup.rs
+          sh /tmp/rustup.sh -y --profile=minimal
+          ### Run tests #######################################################################
+          . "$HOME/.cargo/env"
+          "$WORKSPACE/scripts/freebsd-ci-test.sh"
+          EOH
+          # end

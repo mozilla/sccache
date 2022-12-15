@@ -436,9 +436,9 @@ checksum = "5827cebf4670468b8772dd191856768aedcb1b0278a04f989f7766351917b9dc"
 
 [[package]]
 name = "core_affinity"
-version = "0.7.5"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe2ebd14a61ca9d5289105b02fe9075ca19eeb2c38fdb64fac76f883048113ee"
+checksum = "479fdfb5e75b80b678a34a8231b4415481b06b706e486bf5b3ba72378710caaf"
 dependencies = [
  "libc",
  "num_cpus",
@@ -932,9 +932,9 @@ dependencies = [
 
 [[package]]
 name = "gzp"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c7abc1ca06615f8c2280386817653056892d9069e5bd571900a50cf983ae5cb"
+checksum = "b116c570af4672dbc81a291b6a36d6e07176112b1be04a5f6e58fef1adc5e45a"
 dependencies = [
  "byteorder",
  "bytes",

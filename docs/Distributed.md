@@ -26,10 +26,10 @@ Distributed sccache consists of three parts:
  - the server (`sccache-dist` binary), responsible for actually executing
    a build
 
-All servers are required to be a 64-bit Linux install. Clients may request
-compilation from Linux, Windows or macOS. Linux compilations will attempt to
-automatically package the compiler in use, while Windows and macOS users will
-need to specify a toolchain for cross-compilation ahead of time.
+All servers are required to be a 64-bit Linux or a FreeBSD install. Clients
+may request compilation from Linux, Windows or macOS. Linux compilations will
+attempt to automatically package the compiler in use, while Windows and macOS
+users will need to specify a toolchain for cross-compilation ahead of time.
 
 ## Communication
 
