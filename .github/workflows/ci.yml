@@ -236,43 +236,6 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
 
-  release:
-    name: release
-    runs-on: ubuntu-latest
-    needs: [build, lint, test]
-    if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v3
-
-      - name: Get artifacts
-        uses: actions/download-artifact@v3
-
-      - name: Create release assets
-        run: |
-          for d in sccache-*; do
-            chmod +x "$d/sccache"*
-            cp README.md LICENSE "$d/"
-            tar -zcvf "$d.tar.gz" "$d"
-            echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
-            if [[ $d =~ (sccache-)(.*)?(x86_64-pc-windows)(.*)? ]]; then
-              zip -r "$d.zip" "$d"
-              echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
-            fi
-          done
-
-      - name: Create release
-        run: |
-          tag_name=${GITHUB_REF#refs/tags/}
-          for f in sccache-*.tar.gz* sccache-*.zip*; do
-              if [[ -f "$f" ]]; then
-                files="$files -a $f";
-              fi
-          done
-          hub release create -m $tag_name $tag_name $files
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   test_freebsd:
     name: test freebsd-13.1 rust stable
     runs-on: ${{ matrix.job.os }}
@@ -329,3 +292,40 @@ jobs:
           "$WORKSPACE/scripts/freebsd-ci-test.sh"
           EOH
           # end
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: [build, lint, test]
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Get artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Create release assets
+        run: |
+          for d in sccache-*; do
+            chmod +x "$d/sccache"*
+            cp README.md LICENSE "$d/"
+            tar -zcvf "$d.tar.gz" "$d"
+            echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
+            if [[ $d =~ (sccache-)(.*)?(x86_64-pc-windows)(.*)? ]]; then
+              zip -r "$d.zip" "$d"
+              echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
+            fi
+          done
+
+      - name: Create release
+        run: |
+          tag_name=${GITHUB_REF#refs/tags/}
+          for f in sccache-*.tar.gz* sccache-*.zip*; do
+              if [[ -f "$f" ]]; then
+                files="$files -a $f";
+              fi
+          done
+          hub release create -m $tag_name $tag_name $files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
