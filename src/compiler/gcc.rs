@@ -17,9 +17,11 @@ use crate::compiler::c::{
     ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
 use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
+#[cfg(feature = "dist-client")]
+use crate::dist::pkg;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
-use crate::{counted_array, dist, dist::pkg};
+use crate::{counted_array, dist};
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -386,6 +388,7 @@ where
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
+                #[cfg(feature = "dist-client")]
                 match pkg::simplify_path(path) {
                     Ok((simple_path, _)) => {
                         let new = ExtraHashFile(simple_path.clone());
@@ -401,6 +404,11 @@ where
                         &mut common_args
                     }
                     Err(_) => cannot_cache!("Cannot simplify path"),
+                }
+                #[cfg(not(feature = "dist-client"))]
+                {
+                    extra_hash_files.push(cwd.join(path));
+                    &mut common_args
                 }
             }
             Some(PreprocessorArgumentFlag)
@@ -462,6 +470,7 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
+                #[cfg(feature = "dist-client")]
                 match pkg::simplify_path(path) {
                     Ok((simple_path, _)) => {
                         let new = ExtraHashFile(simple_path.clone());
@@ -477,6 +486,11 @@ where
                         &mut common_args
                     }
                     Err(_) => cannot_cache!("Cannot simplify path"),
+                }
+                #[cfg(not(feature = "dist-client"))]
+                {
+                    extra_hash_files.push(cwd.join(path));
+                    &mut common_args
                 }
             }
             Some(PreprocessorArgumentFlag)
@@ -516,10 +530,13 @@ where
         );
     }
     let input = match input_arg {
+        #[cfg(feature = "dist-client")]
         Some(path) => match pkg::simplify_path(Path::new(&path)) {
             Ok((simple_path, _)) => simple_path,
             Err(_) => cannot_cache!("Cannot simplify path"),
         },
+        #[cfg(not(feature = "dist-client"))]
+        Some(path) => path.into(),
         // We can't cache compilation without an input.
         None => cannot_cache!("no input file"),
     };
