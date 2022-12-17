@@ -25,7 +25,7 @@ Table of Contents (ToC)
 * [Build Requirements](#build-requirements)
 * [Build](#build)
 * [Usage](#usage)
-* [Storage Options](#storage-options)
+* Storage Options
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
   * [Redis](docs/Redis.md)
