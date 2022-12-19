@@ -95,7 +95,7 @@ itertools = "0.10"
 predicates = "=2.1.2"
 thirtyfour_sync = "0.27"
 once_cell = "1.16"
-serial_test = "0.9"
+serial_test = "0.10"
 wiremock = "0.5.15"
 
 [target.'cfg(unix)'.dependencies]
