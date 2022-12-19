@@ -110,6 +110,7 @@ walkdir = "2"
 which = { version = "6", default-features = false }
 zip = { version = "0.6", default-features = false }
 zstd = "0.13"
+notify = { version = "5", default-features = false, features = [] }
 
 # dist-server only
 nix = { version = "0.28.0", optional = true, features = [
