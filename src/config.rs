@@ -186,6 +186,7 @@ pub struct GCSCacheConfig {
     pub cred_path: Option<String>,
     pub service_account: Option<String>,
     pub rw_mode: GCSCacheRWMode,
+    pub credential_url: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,14 +536,14 @@ fn config_from_env() -> Result<EnvConfig> {
             .unwrap_or_default()
             .to_owned();
 
-        if env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok() {
-            warn!("gcs deprecated_url has been deprecated");
-        }
+
 
         if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
             warn!("SCCACHE_GCS_OAUTH_URL has been deprecated");
             warn!("if you intend to use vm metadata for auth, please set correct service account intead");
         }
+
+        let credential_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
 
         let cred_path = env::var("SCCACHE_GCS_KEY_PATH").ok();
         let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
@@ -568,6 +569,7 @@ fn config_from_env() -> Result<EnvConfig> {
             cred_path,
             service_account,
             rw_mode,
+            credential_url,
         }
     });
 
@@ -879,7 +881,7 @@ pub mod server {
 
     fn default_pot_clone_args() -> Vec<String> {
         DEFAULT_POT_CLONE_ARGS
-            .into_iter()
+            .iter()
             .map(|s| s.to_string())
             .collect()
     }
@@ -1128,6 +1130,7 @@ no_credentials = true
                     service_account: Some("example_service_account".to_string()),
                     rw_mode: GCSCacheRWMode::ReadOnly,
                     key_prefix: "prefix".into(),
+                    credential_url: None,
                 }),
                 gha: Some(GHACacheConfig {
                     url: "http://localhost".to_owned(),

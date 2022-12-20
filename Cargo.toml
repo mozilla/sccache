@@ -28,7 +28,8 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.22.5", optional=true }
+opendal = { version= "0.22.6", optional=true }
+reqsign = {version="0.7.3", optional=true}
 chrono = { version = "0.4.23", optional = true }
 clap = { version = "4.0.29", features = ["derive", "env", "wrap_help"] }
 directories = "4.0.1"
@@ -120,9 +121,9 @@ features = [
 [features]
 default = ["all"]
 all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha"]
-azure = ["opendal"]
-s3 = ["opendal"]
-gcs = ["opendal"]
+azure = ["opendal","reqsign"]
+s3 = ["opendal","reqsign"]
+gcs = ["opendal","reqsign"]
 gha = ["gha-toolkit"]
 memcached = ["memcached-rs"]
 native-zlib = []

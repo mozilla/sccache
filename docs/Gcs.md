@@ -25,6 +25,7 @@ Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), 
 Sccache is able to load credentials from various sources. Including:
 
 - User Input: If `SCCACHE_GCS_KEY_PATH` has been set, we will load from key path first.
+- [Task Cluster](https://taskcluster.net/): If `SCCACHE_GCS_CREDENTIALS_URL` has been set, we will load token from this url first.
 - Static: `GOOGLE_APPLICATION_CREDENTIALS`
 - Well-known locations:
   - Windows: `%APPDATA%\gcloud\application_default_credentials.json`
@@ -35,4 +36,4 @@ Sccache is able to load credentials from various sources. Including:
 
 ## Deprecation
 
-`SCCACHE_GCS_CREDENTIALS_URL` and `SCCACHE_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
+`SCCACHE_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
