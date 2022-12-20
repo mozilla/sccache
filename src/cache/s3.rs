@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use opendal::layers::LoggingLayer;
 use opendal::services::s3;
 use opendal::Operator;
 
@@ -41,7 +42,8 @@ impl S3Cache {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
-        Ok(builder.build()?.into())
+        let op: Operator = builder.build()?.into();
+        Ok(op.layer(LoggingLayer::default()))
     }
 }
 
