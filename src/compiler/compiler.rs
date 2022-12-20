@@ -348,14 +348,19 @@ where
                 let duration = start.elapsed();
                 if !compiler_result.status.success() {
                     debug!(
-                        "[{}]: Compiled but failed, not storing in cache",
-                        out_pretty
+                        "[{}]: Compiled in {}, but failed, not storing in cache",
+                        out_pretty,
+                        fmt_duration_as_secs(&duration)
                     );
                     return Ok((CompileResult::CompileFailed, compiler_result));
                 }
                 if cacheable != Cacheable::Yes {
                     // Not cacheable
-                    debug!("[{}]: Compiled but not cacheable", out_pretty);
+                    debug!(
+                        "[{}]: Compiled in {}, but not cacheable",
+                        out_pretty,
+                        fmt_duration_as_secs(&duration)
+                    );
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
                 debug!(
@@ -363,17 +368,24 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                let start_create_artifact = Instant::now();
                 let mut entry = CacheWrite::from_objects(outputs, &pool)
                     .await
                     .context("failed to zip up compiler outputs")?;
 
                 entry.put_stdout(&compiler_result.stdout)?;
                 entry.put_stderr(&compiler_result.stderr)?;
+                debug!(
+                    "[{}]: Created cache artifact in {}",
+                    out_pretty,
+                    fmt_duration_as_secs(&start_create_artifact.elapsed())
+                );
 
                 let out_pretty2 = out_pretty.clone();
                 // Try to finish storing the newly-written cache
                 // entry. We'll get the result back elsewhere.
                 let future = async move {
+                    let start = Instant::now();
                     match storage.put(&key, entry).await {
                         Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
                         Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
@@ -381,7 +393,7 @@ where
 
                     Ok(CacheWriteInfo {
                         object_file_pretty: out_pretty2,
-                        duration,
+                        duration: start.elapsed(),
                     })
                 };
                 let future = Box::pin(future);
