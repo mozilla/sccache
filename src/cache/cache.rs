@@ -335,8 +335,9 @@ impl Storage for opendal::Operator {
                 let hit = CacheRead::from(io::Cursor::new(res))?;
                 Ok(Cache::Hit(hit))
             }
+            Err(e) if e.kind() == opendal::ErrorKind::ObjectNotFound => Ok(Cache::Miss),
             Err(e) => {
-                warn!("Got error: {:?}", e);
+                warn!("Got unexpected error: {:?}", e);
                 Ok(Cache::Miss)
             }
         }

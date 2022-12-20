@@ -14,8 +14,8 @@
 // limitations under the License.
 
 use crate::errors::*;
-use opendal::services::gcs;
 use opendal::Operator;
+use opendal::{layers::LoggingLayer, services::gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
 
 #[derive(Copy, Clone)]
@@ -67,7 +67,8 @@ impl GCSCache {
         }
         builder.signer(signer_builder.build()?);
 
-        Ok(builder.build()?.into())
+        let op: Operator = builder.build()?.into();
+        Ok(op.layer(LoggingLayer::default()))
     }
 }
 
