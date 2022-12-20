@@ -16,6 +16,7 @@
 use crate::errors::*;
 use opendal::services::gcs;
 use opendal::Operator;
+use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
 
 #[derive(Copy, Clone)]
 pub enum RWMode {
@@ -43,18 +44,75 @@ impl GCSCache {
         cred_path: Option<&str>,
         service_account: Option<&str>,
         rw_mode: RWMode,
+        credential_url: Option<&str>,
     ) -> Result<Operator> {
         let mut builder = gcs::Builder::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
-        builder.scope(rw_mode.to_scope());
+
+        let mut signer_builder = GoogleBuilder::default();
+        signer_builder.scope(rw_mode.to_scope());
         if let Some(service_account) = service_account {
-            builder.service_account(service_account);
+            signer_builder.service_account(service_account);
         }
         if let Some(path) = cred_path {
-            builder.credential_path(path);
+            signer_builder.credential_path(path);
         }
+        if let Some(cred_url) = credential_url {
+            signer_builder.customed_token_loader(TaskClusterTokenLoader {
+                client: reqwest::blocking::Client::default(),
+                scope: rw_mode.to_scope().to_string(),
+                url: cred_url.to_string(),
+            });
+        }
+        builder.signer(signer_builder.build()?);
 
         Ok(builder.build()?.into())
     }
+}
+
+/// TaskClusterTokenLoeader is used to load tokens from [TaskCluster](https://taskcluster.net/)
+///
+/// This feature is required to run [mozilla's CI](https://searchfox.org/mozilla-central/source/build/mozconfig.cache#67-84):
+///
+/// ```txt
+/// export SCCACHE_GCS_CREDENTIALS_URL=http://taskcluster/auth/v1/gcp/credentials/$SCCACHE_GCS_PROJECT/${bucket}@$SCCACHE_GCS_PROJECT.iam.gserviceaccount.com"
+/// ```
+///
+/// Reference: [gcpCredentials](https://docs.taskcluster.net/docs/reference/platform/auth/api#gcpCredentials)
+#[derive(Debug)]
+struct TaskClusterTokenLoader {
+    client: reqwest::blocking::Client,
+    scope: String,
+    url: String,
+}
+
+impl GoogleTokenLoad for TaskClusterTokenLoader {
+    fn load_token(&self) -> Result<Option<GoogleToken>> {
+        let res = self.client.get(&self.url).send()?;
+
+        if res.status().is_success() {
+            let resp = res.json::<TaskClusterToken>()?;
+
+            // TODO: we can parse expire time instead using hardcode 1 hour.
+            Ok(Some(GoogleToken::new(
+                &resp.access_token,
+                3600,
+                &self.scope,
+            )))
+        } else {
+            let status_code = res.status();
+            let content = res.text()?;
+            Err(anyhow!(
+                "token load failed for: code: {status_code}, {content}"
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all(deserialize = "camelCase"))]
+struct TaskClusterToken {
+    access_token: String,
+    expire_time: String,
 }
