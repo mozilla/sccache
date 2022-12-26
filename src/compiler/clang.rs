@@ -315,7 +315,6 @@ mod test {
             )
         );
         assert_eq!(ovec!["-Xclang", "--dependent-lib=msvcrt"], a.common_args);
-        // assert!(a.common_args.is_empty());
     }
 
     #[test]
@@ -330,6 +329,11 @@ mod test {
             "foo.o"
         );
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
+    }
+
+    #[test]
+    fn test_gcodeview() {
+        parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-gcodeview");
     }
 
     #[test]
