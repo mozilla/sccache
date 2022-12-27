@@ -24,7 +24,7 @@ jobs:
           cargo install --debug --path . --features "redis"
 
       - name: Test
-        run: cargo test redis --features compress,services-redis -- --nocapture
+        run: cargo clean && cargo build
         env:
           RUST_BACKTRACE: full
           RUST_LOG: debug
