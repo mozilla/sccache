@@ -44,6 +44,8 @@ jobs:
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/sccache
+      - name: Chmod for binary
+        run: chmod +x /home/runner/.cargo/bin/sccache
 
       - name: Test
         run: cargo clean && cargo build
