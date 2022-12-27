@@ -28,8 +28,8 @@ jobs:
         env:
           RUST_BACKTRACE: full
           RUST_LOG: debug
-          RUSTC_WRAPPER: $HOME/.cargo/bin/sccache
+          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
           SCCACHE_REDIS: redis://127.0.0.1
 
       - name: Output
-        run: $HOME/.cargo/bin/sccache --show-stats
+        run: /home/runner/.cargo/bin/sccache --show-stats
