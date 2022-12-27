@@ -1,8 +1,29 @@
-name: redis-test
+name: integration-tests
 on: [push, pull_request]
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - name: Build
+        run: |
+          cargo build --all-features
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: integration-tests
+          path: ./target/debug/sccache
+
   redis:
     runs-on: ubuntu-latest
+    needs: build
 
     services:
       redis:
@@ -19,9 +40,10 @@ jobs:
         with:
           toolchain: "stable"
 
-      - name: Build
-        run: |
-          cargo install --debug --path . --features "redis"
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/sccache
 
       - name: Test
         run: cargo clean && cargo build
