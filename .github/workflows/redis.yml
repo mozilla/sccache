@@ -49,4 +49,4 @@ jobs:
         run: |
           /home/runner/.cargo/bin/sccache --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits.*0" || exit 1
+          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits\s*0$" || exit 1
