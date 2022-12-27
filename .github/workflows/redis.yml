@@ -32,4 +32,5 @@ jobs:
           SCCACHE_REDIS: redis://127.0.0.1
 
       - name: Output
-        run: /home/runner/.cargo/bin/sccache --show-stats
+        run: |
+          sccache --show-stats | grep redis --passthru
