@@ -33,4 +33,4 @@ jobs:
 
       - name: Output
         run: |
-          sccache --show-stats | grep redis --passthru
+          /home/runner/.cargo/bin/sccache --show-stats | grep redis --passthru
