@@ -43,7 +43,7 @@ jobs:
       - uses: actions/download-artifact@v3
         with:
           name: integration-tests
-          path: /home/runner/.cargo/bin/sccache
+          path: /home/runner/.cargo/bin/
       - name: Chmod for binary
         run: chmod +x /home/runner/.cargo/bin/sccache
 
