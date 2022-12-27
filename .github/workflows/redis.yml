@@ -36,3 +36,17 @@ jobs:
           /home/runner/.cargo/bin/sccache --show-stats
 
           /home/runner/.cargo/bin/sccache --show-stats | grep redis
+
+      - name: Test Twice for Cache Read
+        run: cargo clean && cargo build
+        env:
+          RUST_BACKTRACE: full
+          RUST_LOG: debug
+          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+          SCCACHE_REDIS: redis://127.0.0.1
+
+      - name: Output
+        run: |
+          /home/runner/.cargo/bin/sccache --show-stats
+
+          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits.*0" || exit 1
