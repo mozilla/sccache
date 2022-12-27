@@ -465,7 +465,7 @@ pub fn storage_from_config(config: &Config, pool: &tokio::runtime::Handle) -> Ar
             CacheType::Redis(config::RedisCacheConfig { ref url }) => {
                 debug!("Trying Redis({})", url);
                 #[cfg(feature = "redis")]
-                match RedisCache::new(url) {
+                match RedisCache::build(url) {
                     Ok(s) => {
                         trace!("Using Redis: {}", url);
                         return Arc::new(s);

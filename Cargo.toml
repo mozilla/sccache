@@ -57,7 +57,6 @@ rand = "0.8.4"
 regex = "1.7.0"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream"], optional = true }
 retry = "2"
-rredis = { package = "redis", version = "0.21", optional = true, default-features = false, features = ["aio", "tokio-comp", "tokio-native-tls-comp"] }
 semver = "1.0"
 sha2 = { version = "0.10.6", optional = true }
 serde = "1.0"
@@ -127,7 +126,7 @@ gcs = ["opendal","reqsign"]
 gha = ["gha-toolkit"]
 memcached = ["memcached-rs"]
 native-zlib = []
-redis = ["url", "rredis"]
+redis = ["url", "opendal/services-redis"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
