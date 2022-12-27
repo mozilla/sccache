@@ -1,0 +1,32 @@
+name: redis-test
+on: [push, pull_request]
+jobs:
+  redis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - uses: shogo82148/actions-setup-redis@v1
+        with:
+          redis-version: "6.x"
+
+      - name: Build
+        run: |
+          cargo install --path . --features "redis"
+
+      - name: Test
+        run: cargo test redis --features compress,services-redis -- --nocapture
+        env:
+          RUST_BACKTRACE: full
+          RUST_LOG: debug
+          RUSTC_WRAPPER: $HOME/.cargo/bin/sccache
+          SCCACHE_REDIS: redis://127.0.0.1
+
+      - name: Output
+        run: $HOME/.cargo/bin/sccache --show-stats
