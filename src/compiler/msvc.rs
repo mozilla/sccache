@@ -701,7 +701,7 @@ pub fn parse_arguments(
                 | Some(NoDiagnosticsColorFlag)
                 | Some(Arch(_))
                 | Some(PassThroughFlag)
-                | Some(PassThrough(_))            
+                | Some(PassThrough(_))
                 | Some(PassThroughPath(_))
                 | Some(PedanticFlag)
                 | Some(Standard(_)) => &mut common_args,

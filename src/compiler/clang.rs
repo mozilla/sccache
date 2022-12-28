@@ -301,7 +301,14 @@ mod test {
 
     #[test]
     fn test_dependent_lib() {
-        let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "--dependent-lib=msvcrt");
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "--dependent-lib=msvcrt"
+        );
         assert_eq!(Some("foo.c"), a.input.to_str());
         assert_eq!(Language::C, a.language);
         assert_map_contains!(
@@ -377,7 +384,10 @@ mod test {
             ])
         );
         assert_eq!(
-            CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", Some("-broken".to_string())),
+            CompilerArguments::CannotCache(
+                "Can't handle UnknownFlag arguments with -Xclang",
+                Some("-broken".to_string())
+            ),
             parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"
             ])
