@@ -319,7 +319,7 @@ fn test_gcp_arg_check() -> Result<()> {
     // This is just a warning
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("gcs credential url is invliad"));
+        .stderr(predicate::str::contains("gcs credential url is invalid"));
 
     Ok(())
 }
