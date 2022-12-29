@@ -1,5 +1,11 @@
 name: integration-tests
 on: [push, pull_request]
+
+env:
+  RUST_BACKTRACE: full
+  RUST_LOG: debug
+  RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,9 +38,6 @@ jobs:
           - 6379:6379
 
     env:
-      RUST_BACKTRACE: full
-      RUST_LOG: debug
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       SCCACHE_REDIS: redis://127.0.0.1
 
     steps:
@@ -58,18 +61,18 @@ jobs:
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep redis
+          ${RUSTC_WRAPPER} --show-stats | grep redis
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   s3_minio:
     runs-on: ubuntu-latest
@@ -86,9 +89,6 @@ jobs:
           MINIO_SECRET_KEY: "minioadmin"
 
     env:
-      RUST_BACKTRACE: full
-      RUST_LOG: debug
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       SCCACHE_BUCKET: test
       SCCACHE_ENDPOINT: http://127.0.0.1:9000/
       AWS_ACCESS_KEY_ID: "minioadmin"
@@ -112,25 +112,25 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
-        run: chmod +x /home/runner/.cargo/bin/sccache
+        run: chmod +x ${RUSTC_WRAPPER}
 
       - name: Test
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep s3
+          ${RUSTC_WRAPPER} --show-stats | grep s3
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   azblob_azurite:
     runs-on: ubuntu-latest
@@ -144,9 +144,6 @@ jobs:
           - 10000:10000
 
     env:
-      RUST_BACKTRACE: full
-      RUST_LOG: debug
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       SCCACHE_AZURE_BLOB_CONTAINER: "test"
       SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
 
@@ -170,22 +167,22 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
-        run: chmod +x /home/runner/.cargo/bin/sccache
+        run: chmod +x ${RUSTC_WRAPPER}
 
       - name: Test
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep azblob
+          ${RUSTC_WRAPPER} --show-stats | grep azblob
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          /home/runner/.cargo/bin/sccache --show-stats
+          ${RUSTC_WRAPPER} --show-stats
 
-          /home/runner/.cargo/bin/sccache --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
