@@ -399,7 +399,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         .build()?;
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
-    let storage = storage_from_config(config, &pool);
+    let storage = storage_from_config(config, &pool)?;
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
