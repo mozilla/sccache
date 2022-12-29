@@ -399,10 +399,27 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         .build()?;
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
-    let storage = storage_from_config(config, &pool)?;
+
+    let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
+
+    let storage = match storage_from_config(config, &pool) {
+        Ok(storage) => storage,
+        Err(err) => {
+            error!("storage init failed for: {err:?}");
+
+            notify_server_startup(
+                &notify,
+                ServerStartup::Err {
+                    reason: err.to_string(),
+                },
+            )?;
+
+            return Err(err);
+        }
+    };
+
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
-    let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
     match res {
         Ok(srv) => {
             let port = srv.port();

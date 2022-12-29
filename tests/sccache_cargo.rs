@@ -308,5 +308,18 @@ fn test_gcp_arg_check() -> Result<()> {
         "If setting GCS credentials, SCCACHE_GCS_BUCKET",
     ));
 
+    stop_sccache()?;
+    let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
+    cmd.arg("--start-server")
+        .env("SCCACHE_LOG", "debug")
+        .env("SCCACHE_GCS_BUCKET", "b")
+        .env("SCCACHE_GCS_CREDENTIALS_URL", "not_valid_url//127.0.0.1")
+        .env("SCCACHE_GCS_KEY_PATH", "foo.json");
+
+    // This is just a warning
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("gcs credential url is invliad"));
+
     Ok(())
 }
