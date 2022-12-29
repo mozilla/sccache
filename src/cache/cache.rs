@@ -25,7 +25,16 @@ use crate::cache::memcached::MemcachedCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
-use crate::config::{self, CacheType, Config};
+use crate::config::Config;
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3"
+))]
+use crate::config::{self, CacheType};
 use std::fmt;
 use std::fs;
 use std::io::{self, Cursor, Read, Seek, Write};
@@ -326,7 +335,7 @@ pub trait Storage: Send + Sync {
 }
 
 /// Implement storage for operator.
-#[cfg(any(feature = "s3", feature = "azure", feature = "gcs"))]
+#[cfg(any(feature = "s3", feature = "azure", feature = "gcs", feature = "redis"))]
 #[async_trait]
 impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
@@ -373,6 +382,7 @@ impl Storage for opendal::Operator {
 }
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
+#[cfg(any(feature = "s3", feature = "azure", feature = "gcs", feature = "redis"))]
 fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
@@ -471,6 +481,15 @@ pub fn storage_from_config(
 
                 return Ok(Arc::new(storage));
             }
+            #[cfg(not(any(
+                feature = "azure",
+                feature = "gcs",
+                feature = "gha",
+                feature = "memcached",
+                feature = "redis",
+                feature = "s3"
+            )))]
+            _ => return Err(anyhow!("cache type is not enabled")),
         }
     }
 
