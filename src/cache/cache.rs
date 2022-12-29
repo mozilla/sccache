@@ -489,7 +489,7 @@ pub fn storage_from_config(
                 feature = "redis",
                 feature = "s3"
             )))]
-            _ => return Err(anyhow!("cache type is not enabled")),
+            _ => bail!("cache type is not enabled"),
         }
     }
 
