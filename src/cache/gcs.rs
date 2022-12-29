@@ -61,7 +61,7 @@ impl GCSCache {
         }
         if let Some(cred_url) = credential_url {
             let _ = Url::parse(cred_url)
-                .map_err(|err| anyhow!("gcs credential url is invliad: {err:?}"))?;
+                .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
             signer_builder.customed_token_loader(TaskClusterTokenLoader {
                 client: reqwest::blocking::Client::default(),
                 scope: rw_mode.to_scope().to_string(),
