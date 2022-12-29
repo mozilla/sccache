@@ -39,7 +39,7 @@ jobs:
 
     env:
       SCCACHE_REDIS: redis://127.0.0.1
-      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
 
     steps:
       - name: Clone repository
@@ -55,7 +55,7 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
-        run: chmod +x /home/runner/.cargo/bin/sccache
+        run: chmod +x ${SCCACHE_PATH}
 
       - name: Test
         run: cargo clean && cargo build
@@ -95,7 +95,7 @@ jobs:
       AWS_ACCESS_KEY_ID: "minioadmin"
       AWS_SECRET_ACCESS_KEY: "minioadmin"
       AWS_EC2_METADATA_DISABLED: "true"
-      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
 
     steps:
       - name: Clone repository
@@ -148,7 +148,7 @@ jobs:
     env:
       SCCACHE_AZURE_BLOB_CONTAINER: "test"
       SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
-      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
 
     steps:
       - name: Clone repository
