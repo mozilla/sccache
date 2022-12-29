@@ -31,6 +31,12 @@ jobs:
         ports:
           - 6379:6379
 
+    env:
+      RUST_BACKTRACE: full
+      RUST_LOG: debug
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+      SCCACHE_REDIS: redis://127.0.0.1
+
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
@@ -49,11 +55,6 @@ jobs:
 
       - name: Test
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_REDIS: redis://127.0.0.1
 
       - name: Output
         run: |
@@ -63,11 +64,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_REDIS: redis://127.0.0.1
 
       - name: Output
         run: |
@@ -89,15 +85,21 @@ jobs:
           MINIO_ACCESS_KEY: "minioadmin"
           MINIO_SECRET_KEY: "minioadmin"
 
+    env:
+      RUST_BACKTRACE: full
+      RUST_LOG: debug
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+      SCCACHE_BUCKET: test
+      SCCACHE_ENDPOINT: http://127.0.0.1:9000/
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AWS_EC2_METADATA_DISABLED: "true"
+
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
 
       - name: Setup test bucket
-        env:
-          AWS_ACCESS_KEY_ID: "minioadmin"
-          AWS_SECRET_ACCESS_KEY: "minioadmin"
-          AWS_EC2_METADATA_DISABLED: "true"
         run: aws --endpoint-url http://127.0.0.1:9000/ s3 mb s3://test
 
       - name: Install rust
@@ -114,14 +116,6 @@ jobs:
 
       - name: Test
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_BUCKET: test
-          SCCACHE_ENDPOINT: http://127.0.0.1:9000/
-          AWS_ACCESS_KEY_ID: "minioadmin"
-          AWS_SECRET_ACCESS_KEY: "minioadmin"
 
       - name: Output
         run: |
@@ -131,14 +125,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_BUCKET: test
-          SCCACHE_ENDPOINT: http://127.0.0.1:9000/
-          AWS_ACCESS_KEY_ID: "minioadmin"
-          AWS_SECRET_ACCESS_KEY: "minioadmin"
 
       - name: Output
         run: |
@@ -157,6 +143,13 @@ jobs:
         ports:
           - 10000:10000
 
+    env:
+      RUST_BACKTRACE: full
+      RUST_LOG: debug
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+      SCCACHE_AZURE_BLOB_CONTAINER: "test"
+      SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
@@ -165,7 +158,7 @@ jobs:
         run: |
           az storage container create \
               --name test \
-              --connection-string "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+              --connection-string ${SCCACHE_AZURE_CONNECTION_STRING}
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -181,12 +174,6 @@ jobs:
 
       - name: Test
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_AZURE_BLOB_CONTAINER: "test"
-          SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
 
       - name: Output
         run: |
@@ -196,12 +183,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
-        env:
-          RUST_BACKTRACE: full
-          RUST_LOG: debug
-          RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-          SCCACHE_AZURE_BLOB_CONTAINER: "test"
-          SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
 
       - name: Output
         run: |
