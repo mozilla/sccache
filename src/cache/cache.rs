@@ -382,7 +382,7 @@ impl Storage for opendal::Operator {
 }
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
-#[cfg(any(feature = "s3", feature = "azure", feature = "gcs", feature = "redis"))]
+#[allow(dead_code)]
 fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
