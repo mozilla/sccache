@@ -82,6 +82,7 @@ fn test_dist_basic() {
     basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
     get_stats(|info| {
+        println!("current info: {info:?}");
         assert_eq!(1, info.stats.dist_compiles.values().sum::<usize>());
         assert_eq!(0, info.stats.dist_errors);
         assert_eq!(1, info.stats.compile_requests);
