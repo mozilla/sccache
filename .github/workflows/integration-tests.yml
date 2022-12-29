@@ -4,7 +4,7 @@ on: [push, pull_request]
 env:
   RUST_BACKTRACE: full
   RUST_LOG: debug
-  RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+  SCCACHE_PATH: /home/runner/.cargo/bin/sccache
 
 jobs:
   build:
@@ -39,6 +39,7 @@ jobs:
 
     env:
       SCCACHE_REDIS: redis://127.0.0.1
+      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
 
     steps:
       - name: Clone repository
@@ -61,18 +62,18 @@ jobs:
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep redis
+          ${SCCACHE_PATH} --show-stats | grep redis
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   s3_minio:
     runs-on: ubuntu-latest
@@ -94,6 +95,7 @@ jobs:
       AWS_ACCESS_KEY_ID: "minioadmin"
       AWS_SECRET_ACCESS_KEY: "minioadmin"
       AWS_EC2_METADATA_DISABLED: "true"
+      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
 
     steps:
       - name: Clone repository
@@ -112,25 +114,25 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
-        run: chmod +x ${RUSTC_WRAPPER}
+        run: chmod +x ${SCCACHE_PATH}
 
       - name: Test
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep s3
+          ${SCCACHE_PATH} --show-stats | grep s3
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   azblob_azurite:
     runs-on: ubuntu-latest
@@ -146,6 +148,7 @@ jobs:
     env:
       SCCACHE_AZURE_BLOB_CONTAINER: "test"
       SCCACHE_AZURE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+      RUSTC_WRAPPER: ${{ env.SCCACHE_PATH }}
 
     steps:
       - name: Clone repository
@@ -167,22 +170,22 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
-        run: chmod +x ${RUSTC_WRAPPER}
+        run: chmod +x ${SCCACHE_PATH}
 
       - name: Test
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep azblob
+          ${SCCACHE_PATH} --show-stats | grep azblob
 
       - name: Test Twice for Cache Read
         run: cargo clean && cargo build
 
       - name: Output
         run: |
-          ${RUSTC_WRAPPER} --show-stats
+          ${SCCACHE_PATH} --show-stats
 
-          ${RUSTC_WRAPPER} --show-stats | grep -e "Cache hits\s*[1-9]"
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
