@@ -79,7 +79,7 @@ jobs:
 
       - name: Install gcc & clang for tests
         run: sudo apt-get install -y clang gcc
-        if: ${{ startsWith(matrix.os, 'ubuntu' }}
+        if: ${{ startsWith(matrix.os, 'ubuntu') }}
 
       - name: Build tests
         run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
