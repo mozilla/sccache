@@ -17,6 +17,7 @@ use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
+use url::Url;
 
 #[derive(Copy, Clone)]
 pub enum RWMode {
@@ -59,6 +60,8 @@ impl GCSCache {
             signer_builder.credential_path(path);
         }
         if let Some(cred_url) = credential_url {
+            let _ = Url::parse(cred_url)
+                .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
             signer_builder.customed_token_loader(TaskClusterTokenLoader {
                 client: reqwest::blocking::Client::default(),
                 scope: rw_mode.to_scope().to_string(),
