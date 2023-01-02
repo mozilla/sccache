@@ -28,7 +28,7 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.22.6", optional=true }
+opendal = { version= "0.23.0", optional=true }
 reqsign = {version="0.7.3", optional=true}
 chrono = { version = "0.4.23", optional = true }
 clap = { version = "4.0.29", features = ["derive", "env", "wrap_help"] }
