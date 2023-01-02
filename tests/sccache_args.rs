@@ -78,7 +78,9 @@ fn test_s3_invalid_args() -> Result<()> {
     let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
     cmd.arg("--start-server")
         .env("SCCACHE_LOG", "debug")
-        .env("SCCACHE_BUCKET", "test");
+        .env("SCCACHE_BUCKET", "test")
+        .env("AWS_ACCESS_KEY_ID", "invalid_ak")
+        .env("AWS_SECRET_ACCESS_KEY", "invalid_sk");
 
     cmd.assert()
         .failure()
