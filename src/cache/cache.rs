@@ -481,14 +481,7 @@ pub fn storage_from_config(
 
                 return Ok(Arc::new(storage));
             }
-            #[cfg(not(any(
-                feature = "azure",
-                feature = "gcs",
-                feature = "gha",
-                feature = "memcached",
-                feature = "redis",
-                feature = "s3"
-            )))]
+            #[allow(unreachable_patterns)]
             _ => bail!("cache type is not enabled"),
         }
     }
