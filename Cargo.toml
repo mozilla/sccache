@@ -50,7 +50,7 @@ libc = "0.2.139"
 linked-hash-map = "0.5"
 log = "0.4"
 memcached-rs = { version = "0.4" , optional = true }
-num_cpus = "1.14"
+num_cpus = "1.15"
 number_prefix = "0.4"
 openssl = { version = "0.10.45", optional = true }
 rand = "0.8.4"
