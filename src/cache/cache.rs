@@ -106,6 +106,15 @@ impl fmt::Debug for Cache {
     }
 }
 
+/// CacheMode is used to repreent which mode we are using.
+#[derive(Debug)]
+pub enum CacheMode {
+    /// Only read cache from storage.
+    ReadOnly,
+    /// Full support of cache storage: read and write.
+    ReadWrite,
+}
+
 /// Trait objects can't be bounded by more than one non-builtin trait.
 pub trait ReadSeek: Read + Seek + Send {}
 
@@ -324,6 +333,22 @@ pub trait Storage: Send + Sync {
     /// finished.
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
 
+    /// Check the cache capability.
+    ///
+    /// - `Ok(CacheMode::ReadOnly)` means cache can only be used to `get`
+    ///   cache.
+    /// - `Ok(CacheMode::ReadWrite)` means cache can do both `get` and `put`.
+    /// - `Err(err)` means cache is not setup correctly or not match with
+    ///   users input (for example, user try to use `ReadWrite` but cache
+    ///   is `ReadOnly`).
+    ///
+    /// We will provide a default implementation which returns
+    /// `Ok(CacheMode::ReadWrite)` for service that doesn't
+    /// support check yet.
+    async fn check(&self) -> Result<CacheMode> {
+        Ok(CacheMode::ReadWrite)
+    }
+
     /// Get the storage location.
     fn location(&self) -> String;
 
@@ -362,10 +387,35 @@ impl Storage for opendal::Operator {
         Ok(start.elapsed())
     }
 
+    async fn check(&self) -> Result<CacheMode> {
+        use opendal::ErrorKind;
+
+        let path = ".sccache_check";
+
+        let can_write = match self.object(path).write("Hello, World!").await {
+            Ok(_) => true,
+            Err(err) if err.kind() == ErrorKind::ObjectPermissionDenied => false,
+            Err(err) => bail!("cache storage failed to write: {:?}", err),
+        };
+
+        match self.object(path).read().await {
+            Ok(_) => (),
+            // Read not exist file with not found is ok.
+            Err(err) if err.kind() == ErrorKind::ObjectNotFound => (),
+            Err(err) => bail!("cache storage failed to read: {:?}", err),
+        };
+
+        if can_write {
+            Ok(CacheMode::ReadWrite)
+        } else {
+            Ok(CacheMode::ReadOnly)
+        }
+    }
+
     fn location(&self) -> String {
         let meta = self.metadata();
         format!(
-            "{}, bucket: {}, prefix: {}",
+            "{}, name: {}, prefix: {}",
             meta.scheme(),
             meta.name(),
             meta.root()

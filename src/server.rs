@@ -418,6 +418,25 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         }
     };
 
+    let cache_mode = runtime.block_on(async {
+        match storage.check().await {
+            Ok(mode) => Ok(mode),
+            Err(err) => {
+                error!("storage check failed for: {err:?}");
+
+                notify_server_startup(
+                    &notify,
+                    ServerStartup::Err {
+                        reason: err.to_string(),
+                    },
+                )?;
+
+                Err(err)
+            }
+        }
+    })?;
+    info!("server has setup with {cache_mode:?}");
+
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
     match res {
