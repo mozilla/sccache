@@ -1530,7 +1530,7 @@ impl ServerStats {
             stats_vec,
             self.compiler_write_duration,
             self.cache_misses.all(),
-            "Average compiler write"
+            "Average compiler"
         );
         set_duration_stat!(
             stats_vec,
