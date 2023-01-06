@@ -1223,7 +1223,7 @@ where
                                 }
                             }
                             stats.cache_misses.increment(&kind);
-                            stats.cache_read_miss_duration += duration;
+                            stats.compiler_write_duration += duration;
                             cache_write = Some(future);
                         }
                         CompileResult::NotCacheable => {
@@ -1390,7 +1390,7 @@ pub struct ServerStats {
     /// The total time spent reading cache hits.
     pub cache_read_hit_duration: Duration,
     /// The total time spent reading cache misses.
-    pub cache_read_miss_duration: Duration,
+    pub compiler_write_duration: Duration,
     /// The count of compilation failures.
     pub compile_fails: u64,
     /// Counts of reasons why compiles were not cached.
@@ -1440,7 +1440,7 @@ impl Default for ServerStats {
             cache_writes: u64::default(),
             cache_write_duration: Duration::new(0, 0),
             cache_read_hit_duration: Duration::new(0, 0),
-            cache_read_miss_duration: Duration::new(0, 0),
+            compiler_write_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
             not_cached: HashMap::new(),
             dist_compiles: HashMap::new(),
@@ -1528,9 +1528,9 @@ impl ServerStats {
         );
         set_duration_stat!(
             stats_vec,
-            self.cache_read_miss_duration,
+            self.compiler_write_duration,
             self.cache_misses.all(),
-            "Average cache read miss"
+            "Average compiler write"
         );
         set_duration_stat!(
             stats_vec,
