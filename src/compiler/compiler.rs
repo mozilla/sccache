@@ -345,12 +345,12 @@ where
                     out_pretty.clone(),
                 )
                 .await?;
-                let duration = start.elapsed();
+                let duration_compilation = start.elapsed();
                 if !compiler_result.status.success() {
                     debug!(
                         "[{}]: Compiled in {}, but failed, not storing in cache",
                         out_pretty,
-                        fmt_duration_as_secs(&duration)
+                        fmt_duration_as_secs(&duration_compilation)
                     );
                     return Ok((CompileResult::CompileFailed, compiler_result));
                 }
@@ -359,14 +359,14 @@ where
                     debug!(
                         "[{}]: Compiled in {}, but not cacheable",
                         out_pretty,
-                        fmt_duration_as_secs(&duration)
+                        fmt_duration_as_secs(&duration_compilation)
                     );
                     return Ok((CompileResult::NotCacheable, compiler_result));
                 }
                 debug!(
                     "[{}]: Compiled in {}, storing in cache",
                     out_pretty,
-                    fmt_duration_as_secs(&duration)
+                    fmt_duration_as_secs(&duration_compilation)
                 );
                 let start_create_artifact = Instant::now();
                 let mut entry = CacheWrite::from_objects(outputs, &pool)
@@ -398,7 +398,7 @@ where
                 };
                 let future = Box::pin(future);
                 Ok((
-                    CompileResult::CacheMiss(miss_type, dist_type, duration, future),
+                    CompileResult::CacheMiss(miss_type, dist_type, duration_compilation, future),
                     compiler_result,
                 ))
             }
@@ -784,7 +784,7 @@ pub enum CompileResult {
     CacheMiss(
         MissType,
         DistType,
-        Duration,
+        Duration, // Compilation time
         Pin<Box<dyn Future<Output = Result<CacheWriteInfo>> + Send>>,
     ),
     /// Not in cache, but the compilation result was determined to be not cacheable.
