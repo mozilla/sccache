@@ -189,3 +189,52 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+  gha:
+    runs-on: ubuntu-latest
+    needs: build
+
+    env:
+      SCCACHE_GHA_VERSION: "sccache_integration_tests"
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Configure Cache Env
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Test
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep gha
+
+      - name: Test Twice for Cache Read
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"

@@ -394,6 +394,7 @@ impl Storage for opendal::Operator {
 
         let can_write = match self.object(path).write("Hello, World!").await {
             Ok(_) => true,
+            Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
             Err(err) if err.kind() == ErrorKind::ObjectPermissionDenied => false,
             Err(err) => bail!("cache storage failed to write: {:?}", err),
         };
@@ -485,15 +486,10 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig {
-                ref url,
-                ref token,
-                ref cache_to,
-                ref cache_from,
-            }) => {
-                debug!("Init gha cache with url {url}");
+            CacheType::GHA(config::GHACacheConfig { ref version }) => {
+                debug!("Init gha cache with version {version}");
 
-                let storage = GHACache::new(url, token, cache_to.clone(), cache_from.clone())
+                let storage = GHACache::build(version)
                     .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }

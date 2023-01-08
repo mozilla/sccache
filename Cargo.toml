@@ -28,7 +28,7 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.22.6", optional=true }
+opendal = { version= "0.24", optional=true }
 reqsign = {version="0.7.3", optional=true}
 chrono = { version = "0.4.23", optional = true }
 clap = { version = "4.0.29", features = ["derive", "env", "wrap_help"] }
@@ -38,7 +38,6 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 futures = "0.3"
 futures-locks = "0.7"
-gha-toolkit = { version = "0.3.1", optional = true }
 gzp = { version = "0.11.1", default-features = false, features = ["deflate_rust"]  }
 http = "0.2"
 hyper = { version = "0.14.10", optional = true, features = ["server"] }
@@ -123,7 +122,7 @@ all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha"]
 azure = ["opendal","reqsign"]
 s3 = ["opendal","reqsign"]
 gcs = ["opendal","reqsign", "url", "reqwest/blocking"]
-gha = ["gha-toolkit"]
+gha = ["opendal"]
 memcached = ["memcached-rs"]
 native-zlib = []
 redis = ["url", "opendal/services-redis"]

@@ -192,10 +192,9 @@ pub struct GCSCacheConfig {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GHACacheConfig {
-    pub url: String,
-    pub token: String,
-    pub cache_to: Option<String>,
-    pub cache_from: Option<String>,
+    /// Version for gha cache is a namespace. By setting different versions,
+    /// we can avoid mixed caches.
+    pub version: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -573,20 +572,8 @@ fn config_from_env() -> Result<EnvConfig> {
     });
 
     // ======= GHA =======
-    let gha = if let (Some(url), Some(token)) = (
-        env::var("SCCACHE_GHA_CACHE_URL")
-            .ok()
-            .or_else(|| env::var("ACTIONS_CACHE_URL").ok()),
-        env::var("SCCACHE_GHA_RUNTIME_TOKEN")
-            .ok()
-            .or_else(|| env::var("ACTIONS_RUNTIME_TOKEN").ok()),
-    ) {
-        Some(GHACacheConfig {
-            url,
-            token,
-            cache_to: env::var("SCCACHE_GHA_CACHE_TO").ok(),
-            cache_from: env::var("SCCACHE_GHA_CACHE_FROM").ok(),
-        })
+    let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
+        Some(GHACacheConfig { version })
     } else {
         None
     };
@@ -1083,10 +1070,7 @@ key_prefix = "prefix"
 service_account = "example_service_account"
 
 [cache.gha]
-url = "http://localhost"
-token = "secret"
-cache_to = "sccache-latest"
-cache_from = "sccache-"
+version = "sccache"
 
 [cache.memcached]
 url = "..."
@@ -1122,10 +1106,7 @@ no_credentials = true
                     credential_url: None,
                 }),
                 gha: Some(GHACacheConfig {
-                    url: "http://localhost".to_owned(),
-                    token: "secret".to_owned(),
-                    cache_to: Some("sccache-latest".to_owned()),
-                    cache_from: Some("sccache-".to_owned()),
+                    version: "sccache".to_string()
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
