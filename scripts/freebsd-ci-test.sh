@@ -62,7 +62,8 @@ output_env_info()
 	cargo -V
 	rustc -V
 	curl --version
-	pot version
+	# See https://github.com/bsdpot/pot/pull/253
+	pot version || true
 	gtar --version
 	echo "## installed packages"
 	pkg info
@@ -170,6 +171,7 @@ prepare_pot()
 	sudo sysrc -f /usr/local/etc/pot/pot.conf \
 	  POT_FS_ROOT="$TEST_TMPDIR/pot"
 	sudo pot init -f ""
+	sudo pot version
 	sudo cp "$HOME"/.potcache/*.txz /var/cache/pot 2>/dev/null || true
 	sudo pot create -p sccache-template -N alias -i "lo0|127.0.0.2" \
 	  -t single -b "$OS_VERSION"
