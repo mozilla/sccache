@@ -38,6 +38,7 @@ set -eo pipefail
 
 init()
 {
+	echo "## init()"
 	base=$(realpath "$(dirname "$0")"/..)
 	OS_VERSION="$(freebsd-version | awk -F- '{print $1}')"
 	PUB_INTF="$(netstat -4rn | grep default | awk '{ print $4}')"
@@ -45,6 +46,7 @@ init()
 	export XDG_CONFIG_HOME="$TEST_TMPDIR/.config"
 	mkdir -p "$XDG_CONFIG_HOME"
 	export SCCACHE_DIR="$TEST_TMPDIR/.cache"
+	sudo mkdir -p /opt/pot/
 	killall sccache 2>/dev/null || true
 	killall sccache-dist 2>/dev/null || true
 	export RUST_LOG_STYLE=never
