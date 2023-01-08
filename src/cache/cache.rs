@@ -394,6 +394,7 @@ impl Storage for opendal::Operator {
 
         let can_write = match self.object(path).write("Hello, World!").await {
             Ok(_) => true,
+            Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
             Err(err) if err.kind() == ErrorKind::ObjectPermissionDenied => false,
             Err(err) => bail!("cache storage failed to write: {:?}", err),
         };
