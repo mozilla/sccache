@@ -113,6 +113,7 @@ ArgData! { pub
     NoDiagnosticsColorFlag,
     // Should only be necessary for -Xclang flags - unknown flags not hidden behind
     // that are assumed to not affect compilation
+    PassThroughFlag,
     PassThrough(OsString),
     PassThroughPath(PathBuf),
     PreprocessorArgumentFlag,
@@ -342,6 +343,7 @@ where
                 need_explicit_dep_argument_path = DepArgumentRequirePath::Provided
             }
             Some(ExtraHashFile(_))
+            | Some(PassThroughFlag)
             | Some(PreprocessorArgumentFlag)
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
@@ -382,6 +384,7 @@ where
             | Some(DiagnosticsColor(_))
             | Some(DiagnosticsColorFlag)
             | Some(NoDiagnosticsColorFlag)
+            | Some(PassThroughFlag)
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Arch(_)) => &mut arch_args,
@@ -436,8 +439,11 @@ where
             None => match arg {
                 Argument::Raw(_) if follows_plugin_arg => &mut common_args,
                 Argument::Raw(_) => cannot_cache!("Can't handle Raw arguments with -Xclang"),
-                Argument::UnknownFlag(_) => {
-                    cannot_cache!("Can't handle UnknownFlag arguments with -Xclang")
+                Argument::UnknownFlag(flag) => {
+                    cannot_cache!(
+                        "Can't handle UnknownFlag arguments with -Xclang",
+                        flag.to_str().unwrap_or("").to_string()
+                    )
                 }
                 _ => unreachable!(),
             },
@@ -446,6 +452,7 @@ where
             | Some(NoDiagnosticsColorFlag)
             | Some(Arch(_))
             | Some(PassThrough(_))
+            | Some(PassThroughFlag)
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));

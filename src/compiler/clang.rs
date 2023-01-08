@@ -159,6 +159,7 @@ impl CCompilerImpl for Clang {
 }
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
+    take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
@@ -184,6 +185,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fprofile-use", PathBuf, Concatenated('='), ClangProfileUse),
     take_arg!("-fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
     take_arg!("-gcc-toolchain", OsString, Separated, PassThrough),
+    flag!("-gcodeview", PassThroughFlag),
     take_arg!("-include-pch", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
@@ -298,6 +300,31 @@ mod test {
     }
 
     #[test]
+    fn test_dependent_lib() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "--dependent-lib=msvcrt"
+        );
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::C, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert_eq!(ovec!["-Xclang", "--dependent-lib=msvcrt"], a.common_args);
+    }
+
+    #[test]
     fn test_parse_arguments_others() {
         parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
         parses!(
@@ -309,6 +336,11 @@ mod test {
             "foo.o"
         );
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
+    }
+
+    #[test]
+    fn test_gcodeview() {
+        parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-gcodeview");
     }
 
     #[test]
@@ -352,7 +384,10 @@ mod test {
             ])
         );
         assert_eq!(
-            CompilerArguments::CannotCache("Can't handle UnknownFlag arguments with -Xclang", None),
+            CompilerArguments::CannotCache(
+                "Can't handle UnknownFlag arguments with -Xclang",
+                Some("-broken".to_string())
+            ),
             parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "-broken"
             ])
