@@ -1070,10 +1070,7 @@ key_prefix = "prefix"
 service_account = "example_service_account"
 
 [cache.gha]
-url = "http://localhost"
-token = "secret"
-cache_to = "sccache-latest"
-cache_from = "sccache-"
+version = "sccache"
 
 [cache.memcached]
 url = "..."
