@@ -238,3 +238,58 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+  memcached:
+    runs-on: ubuntu-latest
+    needs: build
+
+    # Setup memcached server
+    services:
+      memcached:
+        image: bitnami/memcached
+        env:
+          # memcache's max item size is 1MiB, But our tests
+          # will produce larger file.
+          #
+          # Specify the setting here to make our test happy.
+          MEMCACHED_MAX_ITEM_SIZE: 16777216
+        ports:
+          - 11211:11211
+
+    env:
+      SCCACHE_MEMCACHED: "tcp://127.0.0.1:11211"
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Test
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep memcached
+
+      - name: Test Twice for Cache Read
+        run: cargo clean && cargo build
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
