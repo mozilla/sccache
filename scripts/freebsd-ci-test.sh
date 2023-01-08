@@ -171,7 +171,7 @@ prepare_pot()
 	sudo sysrc -f /usr/local/etc/pot/pot.conf \
 	  POT_FS_ROOT="$TEST_TMPDIR/pot"
 	sudo pot init -f ""
-	pot version
+	sudo pot version
 	sudo cp "$HOME"/.potcache/*.txz /var/cache/pot 2>/dev/null || true
 	sudo pot create -p sccache-template -N alias -i "lo0|127.0.0.2" \
 	  -t single -b "$OS_VERSION"
