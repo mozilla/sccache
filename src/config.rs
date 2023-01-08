@@ -192,7 +192,7 @@ pub struct GCSCacheConfig {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GHACacheConfig {
-    /// Version for gha cache is a namesapce. By setting different versions,
+    /// Version for gha cache is a namespace. By setting different versions,
     /// we can avoid mixed caches.
     pub version: String,
 }
