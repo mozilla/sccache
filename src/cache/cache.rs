@@ -485,15 +485,10 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig {
-                ref url,
-                ref token,
-                ref cache_to,
-                ref cache_from,
-            }) => {
-                debug!("Init gha cache with url {url}");
+            CacheType::GHA(config::GHACacheConfig { ref version }) => {
+                debug!("Init gha cache with version {version}");
 
-                let storage = GHACache::new(url, token, cache_to.clone(), cache_from.clone())
+                let storage = GHACache::build(version)
                     .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
