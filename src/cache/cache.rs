@@ -403,7 +403,7 @@ impl Storage for opendal::Operator {
         let can_write = match self.object(path).write("Hello, World!").await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
-            // Toralte all other write errors because we can do read as least.
+            // Tolerate all other write errors because we can do read as least.
             Err(err) => {
                 warn!("storage write check failed: {err:?}");
                 false
