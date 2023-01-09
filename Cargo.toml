@@ -31,7 +31,7 @@ bytes = "1"
 opendal = { version= "0.24", optional=true }
 reqsign = {version="0.7.3", optional=true}
 chrono = { version = "0.4.23", optional = true }
-clap = { version = "4.0.29", features = ["derive", "env", "wrap_help"] }
+clap = { version = "4.0.32", features = ["derive", "env", "wrap_help"] }
 directories = "4.0.1"
 env_logger = "0.10"
 filetime = "0.2"
