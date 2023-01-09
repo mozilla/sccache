@@ -392,18 +392,22 @@ impl Storage for opendal::Operator {
 
         let path = ".sccache_check";
 
-        let can_write = match self.object(path).write("Hello, World!").await {
-            Ok(_) => true,
-            Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
-            Err(err) if err.kind() == ErrorKind::ObjectPermissionDenied => false,
-            Err(err) => bail!("cache storage failed to write: {:?}", err),
-        };
-
+        // Read is required, return error directly if we can't read .
         match self.object(path).read().await {
             Ok(_) => (),
             // Read not exist file with not found is ok.
             Err(err) if err.kind() == ErrorKind::ObjectNotFound => (),
             Err(err) => bail!("cache storage failed to read: {:?}", err),
+        };
+
+        let can_write = match self.object(path).write("Hello, World!").await {
+            Ok(_) => true,
+            Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
+            // Toralte all other write errors because we can do read as least.
+            Err(err) => {
+                warn!("storage write check failed: {err:?}");
+                false
+            }
         };
 
         if can_write {
