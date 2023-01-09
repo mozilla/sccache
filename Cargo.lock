@@ -180,6 +180,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ea22880d78093b0cbe17c89f64a7d457941e65759157ec6cb31a31d652b05e5"
 
 [[package]]
+name = "base64"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a4ddaa51a5bc52a6948f74c06d20aaaddb71924eab79b8c97a8c556e942d6a"
+
+[[package]]
 name = "bb8"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,20 +196,6 @@ dependencies = [
  "futures-util",
  "parking_lot",
  "tokio",
-]
-
-[[package]]
-name = "bb8-memcached"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b89872326be2525f8c1f543084fb2e840710ee1815548356dd2a3d2aa818d1a0"
-dependencies = [
- "async-trait",
- "bb8",
- "futures",
- "memcache-async",
- "tokio",
- "url",
 ]
 
 [[package]]
@@ -1549,16 +1541,16 @@ checksum = "6f61fba1741ea2b3d6a1e3178721804bb716a68a6aeba1149b5d52e3d464ea66"
 
 [[package]]
 name = "opendal"
-version = "0.24.3"
+version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a7cac84b3a569ea4203b133b5c2443f2a18d5afcc140598842b9478de999b08"
+checksum = "d9ea6283b48c0365596bf784bf3785866f05c8c88e3289a0ef7bc165c5d27651"
 dependencies = [
  "anyhow",
  "async-compat",
  "async-trait",
  "backon",
- "base64 0.20.0",
- "bb8-memcached",
+ "base64 0.21.0",
+ "bb8",
  "bincode 2.0.0-rc.2",
  "bytes",
  "flagset",
@@ -1566,6 +1558,7 @@ dependencies = [
  "http",
  "log",
  "md-5",
+ "memcache-async",
  "once_cell",
  "parking_lot",
  "percent-encoding",
