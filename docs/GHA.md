@@ -12,3 +12,11 @@ This cache type will needs token like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
       core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
+
+## Behavior
+
+Sccache has a need to access and create caches separately. So, in contrast to the [`@actions/cache`](https://github.com/actions/cache) action, which saves a single large archive per cache key, `sccache` with GHA cache storage saves each cache entry separately.
+
+So while visiting `Caches` Under Github's Action tab, you will see a lot of cache entries like the following:
+
+![image](https://user-images.githubusercontent.com/5351546/211239569-11ca3e41-8906-4420-b69f-7fc3d1af20e5.png)
