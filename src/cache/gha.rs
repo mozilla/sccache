@@ -32,6 +32,7 @@ pub struct GHACache;
 impl GHACache {
     pub fn build(version: &str) -> Result<Operator> {
         let mut builder = ghac::Builder::default();
+        builder.root("/sccache");
         if version.is_empty() {
             builder.version(GHA_CACHE_VERSION);
         } else {
