@@ -3165,6 +3165,7 @@ proc_macro false
         m.update(b"=");
         OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
         f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
+        TEST_RUSTC_VERSION.hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
         let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
