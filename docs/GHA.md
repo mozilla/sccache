@@ -1,6 +1,6 @@
 # GitHub Actions
 
-To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set `SCCACHE_GHA` to `on` to enable it.
+To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set `SCCACHE_GHA_ENABLED` to `on` to enable it.
 
 By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
 

@@ -192,6 +192,7 @@ pub struct GCSCacheConfig {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GHACacheConfig {
+    pub enabled: bool,
     /// Version for gha cache is a namespace. By setting different versions,
     /// we can avoid mixed caches.
     pub version: String,
@@ -573,10 +574,14 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= GHA =======
     let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
-        Some(GHACacheConfig { version })
-    } else if env::var("SCCACHE_GHA").is_ok() {
+        Some(GHACacheConfig {
+            enabled: true,
+            version,
+        })
+    } else if env::var("SCCACHE_GHA_ENABLED").is_ok() {
         // If SCCACHE_GHA has been set, enable with default version.
         Some(GHACacheConfig {
+            enabled: true,
             version: "".to_string(),
         })
     } else {
@@ -1111,6 +1116,7 @@ no_credentials = true
                     credential_url: None,
                 }),
                 gha: Some(GHACacheConfig {
+                    enabled: true,
                     version: "sccache".to_string()
                 }),
                 redis: Some(RedisCacheConfig {
