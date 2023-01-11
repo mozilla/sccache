@@ -32,7 +32,13 @@ pub struct GHACache;
 impl GHACache {
     pub fn build(version: &str) -> Result<Operator> {
         let mut builder = ghac::Builder::default();
+        // This is the prefix of gha cache.
+        // From user side, cache key will be like `sccache/f/c/b/fcbxxx`
+        //
+        // User customization is theoretically supported, but I decided
+        // to see the community feedback first.
         builder.root("/sccache");
+
         if version.is_empty() {
             builder.version(GHA_CACHE_VERSION);
         } else {
