@@ -18,13 +18,25 @@ use opendal::Operator;
 
 use crate::errors::*;
 
+/// GHA_CACHE_VERSION is exist to give sccache maintainers a chance
+/// to purge users cache enforcely. Also this version is the default
+/// value if user doesn't input one.
+///
+/// Please bump this version if something really bad happended. For example,
+/// this is bug that may lead to path conflict.
+const GHA_CACHE_VERSION: &str = "sccache-v0";
+
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
 
 impl GHACache {
     pub fn build(version: &str) -> Result<Operator> {
         let mut builder = ghac::Builder::default();
-        builder.version(version);
+        if version.is_empty() {
+            builder.version(GHA_CACHE_VERSION);
+        } else {
+            builder.version(&format!("{GHA_CACHE_VERSION}-{version}"));
+        }
 
         let op: Operator = builder.build()?.into();
         Ok(op.layer(LoggingLayer::default()))

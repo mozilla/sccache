@@ -574,6 +574,11 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= GHA =======
     let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
         Some(GHACacheConfig { version })
+    } else if env::var("SCCACHE_GHA").is_ok() {
+        // If SCCACHE_GHA has been set, enable with default version.
+        Some(GHACacheConfig {
+            version: "".to_string(),
+        })
     } else {
         None
     };
