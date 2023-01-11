@@ -955,8 +955,6 @@ where
 
         match rustc_vv {
             Ok(rustc_verbose_version) => {
-                debug!("Found rustc");
-
                 let rustc_executable2 = rustc_executable.clone();
 
                 let proxy = RustupProxy::find_proxy_executable::<T>(
@@ -1007,6 +1005,8 @@ where
                         trace!("Compiling rust without proxy");
                         (None, rustc_executable2)
                     });
+
+                debug!("Using rustc at path: {resolved_rustc:?}");
 
                 Rust::new(
                     creator,

@@ -85,6 +85,24 @@ pub struct Rust {
     executable: PathBuf,
     /// The host triple for this rustc.
     host: String,
+    /// The verbose version for this rustc.
+    ///
+    /// Hash calculation will take this version into consideration to prevent
+    /// cached object broken after version bump.
+    ///
+    /// Looks like the following:
+    ///
+    /// ```shell
+    /// :) rustc -vV
+    /// rustc 1.66.1 (90743e729 2023-01-10)
+    /// binary: rustc
+    /// commit-hash: 90743e7298aca107ddaa0c202a4d3604e29bfeb6
+    /// commit-date: 2023-01-10
+    /// host: x86_64-unknown-linux-gnu
+    /// release: 1.66.1
+    /// LLVM version: 15.0.2
+    /// ```
+    version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
@@ -101,6 +119,8 @@ pub struct RustHasher {
     executable: PathBuf,
     /// The host triple for this rustc.
     host: String,
+    /// The version for this rustc.
+    version: String,
     /// The path to the rustc sysroot.
     sysroot: PathBuf,
     /// The digests of all the shared libraries in rustc's $sysroot/lib (or /bin on Windows).
@@ -443,6 +463,7 @@ impl Rust {
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
+                version: rustc_verbose_version.to_string(),
                 sysroot,
                 compiler_shlibs_digests: digests,
                 rlib_dep_reader,
@@ -455,6 +476,7 @@ impl Rust {
             hash_all(&libs, &pool).await.map(move |digests| Rust {
                 executable,
                 host,
+                version: rustc_verbose_version.to_string(),
                 sysroot,
                 compiler_shlibs_digests: digests,
             })
@@ -496,6 +518,7 @@ where
             CompilerArguments::Ok(args) => CompilerArguments::Ok(Box::new(RustHasher {
                 executable: self.executable.clone(), // if rustup exists, this must already contain the true resolved compiler path
                 host: self.host.clone(),
+                version: self.version.clone(),
                 sysroot: self.sysroot.clone(),
                 compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
                 #[cfg(feature = "dist-client")]
@@ -1269,6 +1292,7 @@ where
         let RustHasher {
             executable,
             host,
+            version,
             sysroot,
             compiler_shlibs_digests,
             #[cfg(feature = "dist-client")]
@@ -1422,6 +1446,9 @@ where
         }
         // 8. The cwd of the compile. This will wind up in the rlib.
         cwd.hash(&mut HashToDigest { digest: &mut m });
+        // 9. The version of the compiler.
+        version.hash(&mut HashToDigest { digest: &mut m });
+
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
         let flat_os_string_arguments: Vec<OsString> = os_string_arguments
             .into_iter()
@@ -2408,6 +2435,16 @@ mod test {
         }
     }
 
+    const TEST_RUSTC_VERSION: &str = r#"
+rustc 1.66.1 (90743e729 2023-01-10)
+binary: rustc
+commit-hash: 90743e7298aca107ddaa0c202a4d3604e29bfeb6
+commit-date: 2023-01-10
+host: x86_64-unknown-linux-gnu
+release: 1.66.1
+LLVM version: 15.0.2
+"#;
+
     #[test]
     #[allow(clippy::cognitive_complexity)]
     fn test_parse_arguments_simple() {
@@ -3044,6 +3081,7 @@ proc_macro false
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![FAKE_DIGEST.to_owned()],
             #[cfg(feature = "dist-client")]
@@ -3127,6 +3165,7 @@ proc_macro false
         m.update(b"=");
         OsStr::new("foo").hash(&mut HashToDigest { digest: &mut m });
         f.tempdir.path().hash(&mut HashToDigest { digest: &mut m });
+        TEST_RUSTC_VERSION.hash(&mut HashToDigest { digest: &mut m });
         let digest = m.finish();
         assert_eq!(res.key, digest);
         let mut out = res.compilation.outputs().map(|k| k.key).collect::<Vec<_>>();
@@ -3163,6 +3202,7 @@ proc_macro false
         let hasher = Box::new(RustHasher {
             executable: "rustc".into(),
             host: "x86-64-unknown-unknown-unknown".to_owned(),
+            version: TEST_RUSTC_VERSION.to_string(),
             sysroot: f.tempdir.path().join("sysroot"),
             compiler_shlibs_digests: vec![],
             #[cfg(feature = "dist-client")]
