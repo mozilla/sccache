@@ -1087,6 +1087,7 @@ key_prefix = "prefix"
 service_account = "example_service_account"
 
 [cache.gha]
+enabled = true
 version = "sccache"
 
 [cache.memcached]
