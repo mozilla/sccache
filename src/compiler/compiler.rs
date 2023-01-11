@@ -955,7 +955,7 @@ where
 
         match rustc_vv {
             Ok(rustc_verbose_version) => {
-                debug!("Found rustc");
+                debug!("Found rustc at path: {rustc_executable:?}");
 
                 let rustc_executable2 = rustc_executable.clone();
 
