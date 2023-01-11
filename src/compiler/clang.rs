@@ -23,7 +23,6 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
-use semver::{BuildMetadata, Prerelease, Version};
 use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
@@ -40,41 +39,10 @@ pub struct Clang {
     pub clangplusplus: bool,
     /// true iff this is Apple's clang(++).
     pub is_appleclang: bool,
+    /// true iff supports the -fminimize-whitespace preprocessor flag.
+    pub has_fminimize_whitespace: bool,
     /// String from __VERSION__ macro.
     pub version: Option<String>,
-}
-
-impl Clang {
-    fn is_minversion(&self, major: u64) -> bool {
-        // Apple clang follows its own versioning scheme.
-        if self.is_appleclang {
-            return false;
-        }
-
-        let version_val = match self.version.clone() {
-            Some(version_val) => version_val,
-            None => return false,
-        };
-
-        let version_str = match version_val.split(' ').find(|x| x.contains('.')) {
-            Some(version_str) => version_str,
-            None => return false,
-        };
-
-        let parsed_version = match Version::parse(version_str) {
-            Ok(parsed_version) => parsed_version,
-            Err(e) => return false,
-        };
-
-        parsed_version
-            >= (Version {
-                major,
-                minor: 0,
-                patch: 0,
-                pre: Prerelease::default(),
-                build: BuildMetadata::default(),
-            })
-    }
 }
 
 #[async_trait]
@@ -119,7 +87,7 @@ impl CCompilerImpl for Clang {
         let mut ignorable_whitespace_flags = vec!["-P".to_string()];
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
-        if self.is_minversion(14) {
+        if self.has_fminimize_whitespace {
             ignorable_whitespace_flags.push("-fminimize-whitespace".to_string())
         }
 
@@ -234,6 +202,7 @@ mod test {
         Clang {
             clangplusplus: false,
             is_appleclang: false,
+            has_fminimize_whitespace: false,
             version: None,
         }
         .parse_arguments(&arguments, &std::env::current_dir().unwrap())

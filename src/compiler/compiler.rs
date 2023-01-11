@@ -1084,15 +1084,13 @@ __VERSION__
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
 
-    cmd.arg("-E").arg(src);
+    cmd.arg("-E").arg(src.clone());
     trace!("compiler {:?}", cmd);
     let child = cmd.spawn().await?;
     let output = child
         .wait_with_output()
         .await
         .context("failed to read child output")?;
-
-    drop(tempdir);
 
     let stdout = match str::from_utf8(&output.stdout) {
         Ok(s) => s,
@@ -1107,18 +1105,49 @@ __VERSION__
         }
     });
     if let Some(kind) = lines.next() {
-        let version = lines
-            .next()
-            // In case the compiler didn't expand the macro.
-            .filter(|&line| line != "__VERSION__")
-            .map(str::to_owned);
+        // Unescape the version string. We only remove surrounding quotes assuming that the version string does not
+        // contain characters that needed escaping. If the compiler did not know the macro (it is a gcc extension and
+        // not supported by eg. msvc), the line will still contain __VERSION__ and we have no version information.
+        // In case the macro was expanded to something other than a quoted string, still assume that it represents
+        // the compiler version.
+        let version = match lines.next() {
+            Some("__VERSION__") => None,
+            Some(s) if s.len() >= 2 && s.starts_with('\"') && s.ends_with('\"') => {
+                Some(s[1..s.len() - 1].to_owned())
+            }
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(s.to_owned()),
+            None => None,
+        };
         match kind {
             "clang" | "clang++" | "apple-clang" | "apple-clang++" => {
                 debug!("Found {}", kind);
+
+                // Check whether the compiler also supports the -E -fminimize-whitespace flag
+                let mut pcmd = creator.clone().new_command_sync(&executable);
+                pcmd.stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .envs(env.iter().map(|s| (&s.0, &s.1)));
+                pcmd.arg("-E").arg("-fminimize-whitespace").arg(src);
+
+                debug!("testing compiler flag {:?}", pcmd);
+                let child = pcmd.spawn().await?;
+                let output = child.wait_with_output().await;
+                debug!("output {:?}", output);
+                let supports_fminimize_whitespace = match output {
+                    Err(_) => false,
+                    Ok(o) => o.status.success(),
+                };
+                debug!(
+                    "Supports -fminimize-whitespace: {}",
+                    supports_fminimize_whitespace
+                );
+
                 return CCompiler::new(
                     Clang {
                         clangplusplus: kind.ends_with("++"),
                         is_appleclang: kind.starts_with("apple-"),
+                        has_fminimize_whitespace: supports_fminimize_whitespace,
                         version: version.clone(),
                     },
                     executable,
@@ -1199,6 +1228,8 @@ __VERSION__
         }
     }
 
+    drop(tempdir);
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     debug!("nothing useful in detection output {:?}", stdout);
     debug!("compiler status: {}", output.status);
@@ -1259,6 +1290,14 @@ mod test {
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\n", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(1),
+                "",
+                "\nclang: error: unknown argument: '-fminimize-whitespace'\n",
+            )),
+        );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1433,6 +1472,7 @@ LLVM version: 6.0",
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         next_command(&creator, Ok(MockChild::new(exit_status(0), "\ndiab\n", "")));
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1497,6 +1537,15 @@ LLVM version: 6.0",
             .map(|version| {
                 let output = format!("clang\n\"{}.0.0\"", version);
                 next_command(&creator, Ok(MockChild::new(exit_status(0), &output, "")));
+                next_command(
+                    &creator,
+                    Ok(MockChild::new(
+                        exit_status(1),
+                        "",
+                        "\nclang: error: unknown argument: '-fminimize-whitespace'\n",
+                    )),
+                );
+
                 let c = detect_compiler(
                     creator.clone(),
                     &f.bins[0],

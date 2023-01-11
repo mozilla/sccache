@@ -387,7 +387,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
-    if compiler.name == "clang" {
+    if compiler.name == "clang" || compiler.name == "clang++" {
         let version_cmd = Command::new(compiler.name)
             .arg("--version")
             .output()
@@ -399,12 +399,12 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
             Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
         };
 
-        // Apple clang would match "Apple LLVM version"
-        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        // Apple clang would match "Apple clang version" with its own versioning scheme and does not support -fminimize-whitespace (yet).
+        let re = Regex::new(r"(?P<apple>Apple+*)?clang version (?P<major>\d+)").unwrap();
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
-                c.name("apple") == None,
+                c.name("apple") != None,
             ),
             None => panic!(
                 "Version info not found in --version output: {}",
@@ -488,8 +488,8 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
         .envs(env_vars)
         .assert()
         .success();
-    println!("request stats (expecting cache hit)");
     if hit {
+        println!("request stats (expecting cache hit)");
         get_stats(|info| {
             assert_eq!(2, info.stats.compile_requests);
             assert_eq!(2, info.stats.requests_executed);
@@ -497,6 +497,7 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
             assert_eq!(1, info.stats.cache_misses.all());
         });
     } else {
+        println!("request stats (expecting cache miss)");
         get_stats(|info| {
             assert_eq!(2, info.stats.compile_requests);
             assert_eq!(2, info.stats.requests_executed);
