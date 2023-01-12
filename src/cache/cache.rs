@@ -397,6 +397,18 @@ impl Storage for opendal::Operator {
             Ok(_) => (),
             // Read not exist file with not found is ok.
             Err(err) if err.kind() == ErrorKind::ObjectNotFound => (),
+            // Tricky Part.
+            //
+            // We tolerate rate limited here to make sccache keep running.
+            // For the worse case, we will miss all the cache.
+            //
+            // In some super rare cases, user could configure storage in wrong
+            // and hitting other services rate limit. There are few things we
+            // can do, so we will print our the error here to make users know
+            // about it.
+            Err(err) if err.kind() == ErrorKind::ObjectRateLimited => {
+                eprintln!("cache storage read check: {err:?}, but we decide to keep running")
+            }
             Err(err) => bail!("cache storage failed to read: {:?}", err),
         };
 
@@ -405,7 +417,7 @@ impl Storage for opendal::Operator {
             Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
             // Toralte all other write errors because we can do read as least.
             Err(err) => {
-                warn!("storage write check failed: {err:?}");
+                eprintln!("storage write check failed: {err:?}");
                 false
             }
         };

@@ -14,3 +14,7 @@ This cache type will needs token like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
       core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
+
+## Behavior
+
+In case sccache reaches the rate limit of the service, the build will continue but the storage might not be performed.
