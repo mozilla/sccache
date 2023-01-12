@@ -15,4 +15,4 @@ This cache type will needs token like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
 
 ## Behavior
 
-If case sccache reaches the rate limit of the service, the build will continue but the storage might not be performed.
+In case sccache reaches the rate limit of the service, the build will continue but the storage might not be performed.
