@@ -292,7 +292,6 @@ test_sccache_dist_02()
 
 cleanup()
 {
-	trap - EXIT INT HUP
 	echo "#### cleaning up"
 	set +e
 	sccache --stop-server
@@ -316,9 +315,19 @@ cleanup()
 	set -e
 }
 
+install_signal_handler()
+{
+	trap 'remove_signal_handler; cleanup; exit' EXIT INT HUP
+}
+
+remove_signal_handler()
+{
+	trap - EXIT INT HUP
+}
+
 main()
 {
-	trap 'cleanup; trap - EXIT; exit' EXIT INT HUP
+	install_signal_handler
 	init
 	output_env_info
 	build_and_test_project
@@ -331,6 +340,7 @@ main()
 	start_sccache_server
 	test_sccache_dist_01
 	test_sccache_dist_02
+	remove_signal_handler
 	cleanup
 }
 
