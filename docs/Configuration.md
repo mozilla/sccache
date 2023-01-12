@@ -86,6 +86,12 @@ configuration variables
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If `SCCACHE_REGION` is undefined, it will default to `us-east-1`.
 
+#### cloudflare r2
+
+* `SCCACHE_BUCKET` is the name of your R2 bucket.
+* `SCCACHE_ENDPOINT` must follow the format of `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Note that the `https://` must be included. Your account ID can be found [here](https://developers.cloudflare.com/fundamentals/get-started/basic-tasks/find-account-and-zone-ids/).
+* `SCCACHE_REGION` should be set to `auto`.
+
 #### redis
 
 * `SCCACHE_REDIS` full redis url, including auth and access token/passwd

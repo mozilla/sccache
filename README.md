@@ -28,6 +28,7 @@ Table of Contents (ToC)
 * Storage Options
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
+  * [R2](docs/S3.md#R2)
   * [Redis](docs/Redis.md)
   * [Memcached](docs/Memcached.md)
   * [Google Cloud Storage](docs/Gcs.md)
