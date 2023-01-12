@@ -490,7 +490,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig { ref version }) => {
+            CacheType::GHA(config::GHACacheConfig { ref version, .. }) => {
                 debug!("Init gha cache with version {version}");
 
                 let storage = GHACache::build(version)

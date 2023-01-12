@@ -17,6 +17,7 @@ use opendal::services::ghac;
 use opendal::Operator;
 
 use crate::errors::*;
+use crate::VERSION;
 
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
@@ -24,7 +25,18 @@ pub struct GHACache;
 impl GHACache {
     pub fn build(version: &str) -> Result<Operator> {
         let mut builder = ghac::Builder::default();
-        builder.version(version);
+        // This is the prefix of gha cache.
+        // From user side, cache key will be like `sccache/f/c/b/fcbxxx`
+        //
+        // User customization is theoretically supported, but I decided
+        // to see the community feedback first.
+        builder.root("/sccache");
+
+        if version.is_empty() {
+            builder.version(&format!("sccache-v{VERSION}"));
+        } else {
+            builder.version(&format!("sccache-v{VERSION}-{version}"));
+        }
 
         let op: Operator = builder.build()?.into();
         Ok(op.layer(LoggingLayer::default()))

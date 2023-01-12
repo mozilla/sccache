@@ -195,7 +195,7 @@ jobs:
     needs: build
 
     env:
-      SCCACHE_GHA_VERSION: "sccache_integration_tests"
+      SCCACHE_GHA_ENABLED: "on"
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
 
     steps:

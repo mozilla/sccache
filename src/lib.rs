@@ -55,6 +55,12 @@ pub mod util;
 
 use std::env;
 
+/// VERSION is the pkg version of sccache.
+///
+/// This version is safe to be used in cache services to indicate the version
+/// that sccache ie.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Used to denote the environment variable that controls
 /// logging for sccache, and sccache-dist.
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
