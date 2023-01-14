@@ -510,10 +510,13 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "memcached")]
-            CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
+            CacheType::Memcached(config::MemcachedCacheConfig {
+                ref url,
+                ref expiration,
+            }) => {
                 debug!("Init memcached cache with url {url}");
 
-                let storage = MemcachedCache::new(url, pool)
+                let storage = MemcachedCache::build(url, *expiration)
                     .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }

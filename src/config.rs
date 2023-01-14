@@ -198,10 +198,24 @@ pub struct GHACacheConfig {
     pub version: String,
 }
 
+/// Memcached's default value of expiration is 10800s (3 hours), which is too
+/// short for use case of sccache.
+///
+/// We increase the default expiration to 86400s (1 day) to balance between
+/// memory consumpation and cache hit rate.
+///
+/// Please change this value freely if we have a better choice.
+const DEFAULT_MEMCACHED_CACHE_EXPIRATION: u32 = 86400;
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
+    /// the expiration time in seconds.
+    ///
+    /// Default to 24 hours (86400)
+    /// Up to 30 days (2592000)
+    pub expiration: u32,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,9 +525,16 @@ fn config_from_env() -> Result<EnvConfig> {
         .map(|url| RedisCacheConfig { url });
 
     // ======= memcached =======
+    let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
+        None => DEFAULT_MEMCACHED_CACHE_EXPIRATION,
+        Some(v) => v
+            .parse()
+            .map_err(|err| anyhow!("SCCACHE_MEMCACHED_EXPIRATION value is invalid: {err:?}"))?,
+    };
+
     let memcached = env::var("SCCACHE_MEMCACHED")
         .ok()
-        .map(|url| MemcachedCacheConfig { url });
+        .map(|url| MemcachedCacheConfig { url, expiration });
 
     // ======= GCP/GCS =======
     if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
@@ -980,6 +1001,7 @@ fn config_overrides() {
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
+                expiration: 24 * 3600,
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
@@ -1092,6 +1114,7 @@ version = "sccache"
 
 [cache.memcached]
 url = "..."
+expiration = 86400
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/1"
@@ -1132,6 +1155,7 @@ no_credentials = true
                 }),
                 memcached: Some(MemcachedCacheConfig {
                     url: "...".to_owned(),
+                    expiration: 24 * 3600
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
