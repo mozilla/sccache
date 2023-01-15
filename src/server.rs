@@ -1090,11 +1090,10 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
     ) -> SccacheResponse {
-        let mut stats = self.stats.write().await;
         match compiler {
             Err(e) => {
                 debug!("check_compiler: Unsupported compiler: {}", e.to_string());
-                stats.requests_unsupported_compiler += 1;
+                self.stats.write().await.requests_unsupported_compiler += 1;
                 return Message::WithoutBody(Response::Compile(
                     CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
                 ));
@@ -1106,7 +1105,7 @@ where
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
-                        stats.requests_executed += 1;
+                        self.stats.write().await.requests_executed += 1;
                         let (tx, rx) = Body::pair();
                         self.start_compile_task(c, hasher, cmd, cwd, env_vars, tx);
                         let res = CompileResponse::CompileStarted;
@@ -1121,12 +1120,13 @@ where
                         } else {
                             debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
                         }
+                        let mut stats = self.stats.write().await;
                         stats.requests_not_cacheable += 1;
                         *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
                     }
                     CompilerArguments::NotCompilation => {
                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
-                        stats.requests_not_compile += 1;
+                        self.stats.write().await.requests_not_compile += 1;
                     }
                 }
             }
