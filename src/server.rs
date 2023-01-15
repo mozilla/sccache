@@ -1234,6 +1234,9 @@ where
                             stats.compile_fails += 1;
                         }
                     };
+                    // Make sure the write guard has been dropped ASAP.
+                    drop(stats);
+
                     let Output {
                         status,
                         stdout,
