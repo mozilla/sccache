@@ -17,6 +17,12 @@ name = "sccache"
 name = "sccache-dist"
 required-features = ["dist-server"]
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+
 [dependencies]
 anyhow = "1.0"
 ar = "0.9"
