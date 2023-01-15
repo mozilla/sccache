@@ -47,12 +47,12 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 #[cfg(feature = "dist-client")]
 use std::time::Instant;
 use std::u64;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -683,7 +683,7 @@ where
     C: Send,
 {
     /// Server statistics.
-    stats: Arc<RwLock<ServerStats>>,
+    stats: Arc<Mutex<ServerStats>>,
 
     /// Distributed sccache client
     dist_client: Arc<DistClientContainer>,
@@ -760,7 +760,7 @@ where
             match req.into_inner() {
                 Request::Compile(compile) => {
                     debug!("handle_client: compile");
-                    me.stats.write().await.compile_requests += 1;
+                    me.stats.lock().await.compile_requests += 1;
                     me.handle_compile(compile).await
                 }
                 Request::GetStats => {
@@ -825,11 +825,11 @@ where
         info: ActiveInfo,
     ) -> SccacheService<C> {
         SccacheService {
-            stats: Arc::new(RwLock::new(ServerStats::default())),
+            stats: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
-            compilers: Arc::new(RwLock::new(HashMap::new())),
-            compiler_proxies: Arc::new(RwLock::new(HashMap::new())),
+            compilers: Arc::default(),
+            compiler_proxies: Arc::default(),
             rt,
             creator: C::new(client),
             tx,
@@ -887,7 +887,7 @@ where
 
     /// Get info and stats about the cache.
     async fn get_info(&self) -> Result<ServerInfo> {
-        let stats = self.stats.read().await.clone();
+        let stats = self.stats.lock().await.clone();
         let cache_location = self.storage.location();
         futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
             move |(cache_size, max_cache_size)| ServerInfo {
@@ -901,7 +901,7 @@ where
 
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
-        *self.stats.write().await = ServerStats::default();
+        *self.stats.lock().await = ServerStats::default();
     }
 
     /// Handle a compile request from a client.
@@ -1093,7 +1093,7 @@ where
         match compiler {
             Err(e) => {
                 debug!("check_compiler: Unsupported compiler: {}", e.to_string());
-                self.stats.write().await.requests_unsupported_compiler += 1;
+                self.stats.lock().await.requests_unsupported_compiler += 1;
                 return Message::WithoutBody(Response::Compile(
                     CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
                 ));
@@ -1105,7 +1105,7 @@ where
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
-                        self.stats.write().await.requests_executed += 1;
+                        self.stats.lock().await.requests_executed += 1;
                         let (tx, rx) = Body::pair();
                         self.start_compile_task(c, hasher, cmd, cwd, env_vars, tx);
                         let res = CompileResponse::CompileStarted;
@@ -1120,13 +1120,13 @@ where
                         } else {
                             debug!("parse_arguments: CannotCache({}): {:?}", why, cmd)
                         }
-                        let mut stats = self.stats.write().await;
+                        let mut stats = self.stats.lock().await;
                         stats.requests_not_cacheable += 1;
                         *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
                     }
                     CompilerArguments::NotCompilation => {
                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
-                        self.stats.write().await.requests_not_compile += 1;
+                        self.stats.lock().await.requests_not_compile += 1;
                     }
                 }
             }
@@ -1190,7 +1190,7 @@ where
             };
             match result {
                 Ok((compiled, out)) => {
-                    let mut stats = me.stats.write().await;
+                    let mut stats = me.stats.lock().await;
                     match compiled {
                         CompileResult::Error => {
                             stats.cache_errors.increment(&kind);
@@ -1251,7 +1251,7 @@ where
                     res.stderr = stderr;
                 }
                 Err(err) => {
-                    let mut stats = me.stats.write().await;
+                    let mut stats = me.stats.lock().await;
                     match err.downcast::<ProcessError>() {
                         Ok(ProcessError(output)) => {
                             debug!("Compilation failed: {:?}", output);
@@ -1302,7 +1302,7 @@ where
                     match cache_write.await {
                         Err(e) => {
                             debug!("Error executing cache write: {}", e);
-                            me.stats.write().await.cache_write_errors += 1;
+                            me.stats.lock().await.cache_write_errors += 1;
                         }
                         //TODO: save cache stats!
                         Ok(info) => {
@@ -1311,7 +1311,7 @@ where
                                 info.object_file_pretty,
                                 util::fmt_duration_as_secs(&info.duration)
                             );
-                            let mut stats = me.stats.write().await;
+                            let mut stats = me.stats.lock().await;
                             stats.cache_writes += 1;
                             stats.cache_write_duration += info.duration;
                         }
@@ -1797,13 +1797,13 @@ impl Future for ShutdownOrInactive {
 /// Helper future which tracks the `ActiveInfo` below. This future will resolve
 /// once all instances of `ActiveInfo` have been dropped.
 struct WaitUntilZero {
-    info: std::sync::Weak<Mutex<Info>>,
+    info: std::sync::Weak<std::sync::Mutex<Info>>,
 }
 
 #[derive(Clone)]
 #[allow(dead_code)]
 struct ActiveInfo {
-    info: Arc<Mutex<Info>>,
+    info: Arc<std::sync::Mutex<Info>>,
 }
 
 struct Info {
@@ -1821,7 +1821,7 @@ impl Drop for Info {
 impl WaitUntilZero {
     #[rustfmt::skip]
     fn new() -> (WaitUntilZero, ActiveInfo) {
-        let info = Arc::new(Mutex::new(Info { waker: None }));
+        let info = Arc::new(std::sync::Mutex::new(Info { waker: None }));
 
         (WaitUntilZero { info: Arc::downgrade(&info) }, ActiveInfo { info })
     }
