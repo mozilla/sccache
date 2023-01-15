@@ -671,7 +671,7 @@ impl RustupProxy {
         let state = match state {
             Ok(ProxyPath::ToBeDiscovered) => {
                 // still no rustup found, use which crate to find one
-                match which::which(&proxy_name) {
+                match which::which(proxy_name) {
                     Ok(proxy_candidate) => {
                         warn!(
                             "proxy: rustup found, but not where it was expected (next to rustc {})",
@@ -2262,7 +2262,7 @@ impl RlibDepReader {
         env_vars: &[(OsString, OsString)],
         rlib: &Path,
     ) -> Result<Vec<String>> {
-        let rlib_mtime = fs::metadata(&rlib)
+        let rlib_mtime = fs::metadata(rlib)
             .and_then(|m| m.modified())
             .context("Unable to get rlib modified time")?;
 
@@ -2278,8 +2278,8 @@ impl RlibDepReader {
         trace!("Discovering dependencies of {}", rlib.display());
 
         let mut cmd = process::Command::new(&self.executable);
-        cmd.args(&["-Z", "ls"])
-            .arg(&rlib)
+        cmd.args(["-Z", "ls"])
+            .arg(rlib)
             .env_clear()
             .envs(ref_env(env_vars))
             .env("RUSTC_BOOTSTRAP", "1"); // TODO: this is fairly naughty
@@ -3264,7 +3264,7 @@ proc_macro false
                     "b=b.rlib"
                 ],
                 &[],
-                &mk_files
+                mk_files
             ),
             hash_key(
                 &f,
@@ -3284,7 +3284,7 @@ proc_macro false
                     "lib"
                 ],
                 &[],
-                &mk_files
+                mk_files
             )
         );
     }

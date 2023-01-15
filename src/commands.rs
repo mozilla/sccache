@@ -567,8 +567,8 @@ where
     T: CommandCreatorSync,
 {
     trace!("do_compile");
-    let exe_path = which_in(exe, path, &cwd)?;
-    let res = request_compile(&mut conn, &exe_path, &cmdline, &cwd, env_vars)?;
+    let exe_path = which_in(exe, path, cwd)?;
+    let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
     handle_compile_response(
         creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
     )

@@ -187,7 +187,7 @@ where
     }
     cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
         .arg(&input)
-        .current_dir(&tempdir.path())
+        .current_dir(tempdir.path())
         // The MSDN docs say the -showIncludes output goes to stderr,
         // but that's not true unless running with -E.
         .stdout(Stdio::piped())
@@ -902,7 +902,7 @@ where
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
+        .current_dir(cwd);
     if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
     }
@@ -1010,7 +1010,7 @@ fn generate_compile_commands(
         });
 
     let mut fo = OsString::from("-Fo");
-    fo.push(&out_file);
+    fo.push(out_file);
 
     let mut arguments: Vec<OsString> = vec![
         parsed_args.compilation_flag.clone(),
@@ -1086,7 +1086,7 @@ mod test {
         let stderr = String::from("some\r\nstderr\r\n");
         next_command(
             &creator,
-            Ok(MockChild::new(exit_status(0), &stdout, &stderr)),
+            Ok(MockChild::new(exit_status(0), stdout, stderr)),
         );
         assert_eq!(
             "blah: ",

@@ -143,7 +143,7 @@ fn get_clap_command() -> clap::Command {
                 .help("package toolchain for distributed compilation")
                 .value_parser(clap::value_parser!(PathBuf))
                 .num_args(2)
-                .value_names(&["EXE", "OUT"]),
+                .value_names(["EXE", "OUT"]),
             flag_infer_long("stats-format")
                 .help("set output format of statistics")
                 .value_name("FMT")
@@ -156,7 +156,7 @@ fn get_clap_command() -> clap::Command {
         ])
         .group(
             ArgGroup::new("one_and_only_one")
-                .args(&[
+                .args([
                     "dist-auth",
                     "dist-status",
                     "show-stats",

@@ -293,7 +293,7 @@ async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut preprocess = creator.clone().new_command_sync(&executable);
+    let mut preprocess = creator.clone().new_command_sync(executable);
     preprocess
         .arg("-E")
         .arg(&parsed_args.input)
@@ -321,7 +321,7 @@ where
     // you can specify a target name which overrules the default target name.
 
     if let Some(ref depfile) = parsed_args.depfile {
-        let mut generate_depfile = creator.clone().new_command_sync(&executable);
+        let mut generate_depfile = creator.clone().new_command_sync(executable);
         generate_depfile
             .arg("-Em")
             .arg("-o")
