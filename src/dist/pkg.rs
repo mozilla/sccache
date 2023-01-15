@@ -362,7 +362,7 @@ mod toolchain_imp {
 }
 
 pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
-    let metadata_res = fs::metadata(&src);
+    let metadata_res = fs::metadata(src);
 
     let mut file_header = tar::Header::new_ustar();
     // TODO: test this works
@@ -396,7 +396,7 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     // to be like Unix, and the path is (now) relative so there should be no funny results
     // due to Windows
     // TODO: should really use a `set_path_str` or similar
-    file_header.set_path(&dest)?;
+    file_header.set_path(dest)?;
     Ok(file_header)
 }
 

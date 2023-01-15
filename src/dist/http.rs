@@ -91,7 +91,7 @@ mod common {
                 anyhow::bail!(errmsg);
             }
         } else {
-            Ok(bincode::deserialize(&*bytes)?)
+            Ok(bincode::deserialize(&bytes)?)
         }
     }
 

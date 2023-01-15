@@ -312,7 +312,7 @@ pub async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(&executable);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.dependency_args)
@@ -415,7 +415,7 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
 
             let mut contents = String::new();
             let file = self.cwd.join(&value);
-            let res = File::open(&file).and_then(|mut f| f.read_to_string(&mut contents));
+            let res = File::open(file).and_then(|mut f| f.read_to_string(&mut contents));
             if res.is_err() {
                 // Failed to read the file, so return the argument as it is.
                 // This will result in a CannotCache.

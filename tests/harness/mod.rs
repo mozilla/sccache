@@ -74,7 +74,7 @@ pub fn stop_local_daemon() {
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
     sccache_command()
-        .args(&["--show-stats", "--stats-format=json"])
+        .args(["--show-stats", "--stats-format=json"])
         .assert()
         .success()
         .stdout(predicate::function(move |output: &[u8]| {
@@ -98,13 +98,13 @@ pub fn zero_stats() {
 
 pub fn write_json_cfg<T: Serialize>(path: &Path, filename: &str, contents: &T) {
     let p = path.join(filename);
-    let mut f = fs::File::create(&p).unwrap();
+    let mut f = fs::File::create(p).unwrap();
     f.write_all(&serde_json::to_vec(contents).unwrap()).unwrap();
 }
 
 pub fn write_source(path: &Path, filename: &str, contents: &str) {
     let p = path.join(filename);
-    let mut f = fs::File::create(&p).unwrap();
+    let mut f = fs::File::create(p).unwrap();
     f.write_all(contents.as_bytes()).unwrap();
 }
 

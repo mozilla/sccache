@@ -181,7 +181,7 @@ impl LruDiskCache {
 
     /// Returns `true` if the disk cache can store a file of `size` bytes.
     pub fn can_store(&self, size: u64) -> bool {
-        size <= self.lru.capacity() as u64
+        size <= self.lru.capacity()
     }
 
     /// Add the file at `path` of size `size` to the cache.
@@ -194,7 +194,7 @@ impl LruDiskCache {
             AddFile::RelPath(p) => p,
         };
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
-        while self.lru.size() as u64 + size > self.lru.capacity() as u64 {
+        while self.lru.size() + size > self.lru.capacity() {
             let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
@@ -233,7 +233,7 @@ impl LruDiskCache {
                     rel_path.to_string_lossy(),
                     e
                 );
-                fs::remove_file(&self.rel_to_abs_path(rel_path))
+                fs::remove_file(self.rel_to_abs_path(rel_path))
                     .expect("Failed to remove file we just created!");
                 e
             })
@@ -245,13 +245,13 @@ impl LruDiskCache {
         key: K,
         with: F,
     ) -> Result<()> {
-        self.insert_by(key, None, |path| with(File::create(&path)?))
+        self.insert_by(key, None, |path| with(File::create(path)?))
     }
 
     /// Add a file with `bytes` as its contents to the cache at path `key`.
     pub fn insert_bytes<K: AsRef<OsStr>>(&mut self, key: K, bytes: &[u8]) -> Result<()> {
         self.insert_by(key, Some(bytes.len() as u64), |path| {
-            let mut f = File::create(&path)?;
+            let mut f = File::create(path)?;
             f.write_all(bytes)?;
             Ok(())
         })

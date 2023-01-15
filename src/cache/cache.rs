@@ -553,7 +553,7 @@ pub fn storage_from_config(
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(&dir, size, pool)))
+    Ok(Arc::new(DiskCache::new(dir, size, pool)))
 }
 
 #[cfg(test)]

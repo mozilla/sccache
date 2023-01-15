@@ -134,7 +134,7 @@ where
 {
     let b = dir.join(path);
     let parent = b.parent().unwrap();
-    fs::create_dir_all(&parent)?;
+    fs::create_dir_all(parent)?;
     let f = fs::File::create(&b)?;
     fill_contents(f)?;
     b.canonicalize()
@@ -153,7 +153,7 @@ pub fn mk_bin_contents<F: FnOnce(File) -> io::Result<()>>(
     use std::os::unix::fs::OpenOptionsExt;
     let bin = dir.join(path);
     let parent = bin.parent().unwrap();
-    fs::create_dir_all(&parent)?;
+    fs::create_dir_all(parent)?;
     let f = fs::OpenOptions::new()
         .write(true)
         .create(true)
