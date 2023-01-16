@@ -44,7 +44,7 @@ jobs:
         include:
           - os: ubuntu-20.04
             rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
-          - os: ubuntu-18.04
+          - os: ubuntu-22.04
             rustc: 1.60.0
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
@@ -86,6 +86,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
+
+      - name: Upload failure
+        if: failure()
+        uses: ./.github/actions/artifact_failure
+        with:
+          name: test-${{ matrix.os }}-${{ matrix.rustc || 'stable' }}-${{ matrix.extra_desc }}
 
   build:
     name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
@@ -182,10 +188,10 @@ jobs:
             extra_args: --features=unstable
           - os: macOS-11
             rustc: nightly
-# Disable on Windows for now as it fails with:
-# found invalid metadata files for crate `vte_generate_state_changes`
-#          - os: windows-2019
-#            rustc: nightly
+    # Disable on Windows for now as it fails with:
+    # found invalid metadata files for crate `vte_generate_state_changes`
+    #          - os: windows-2019
+    #            rustc: nightly
     env:
       RUST_BACKTRACE: 1
     steps:
@@ -207,9 +213,9 @@ jobs:
       - name: Execute tests
         run: cargo test --no-fail-fast --locked --all-targets --verbose ${{ matrix.extra_args }}
         env:
-          CARGO_INCREMENTAL: '0'
-          RUSTC_WRAPPER: ''
-          RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off'
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: ""
+          RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off"
 
       - name: Generate coverage data (via `grcov`)
         id: coverage
@@ -245,53 +251,58 @@ jobs:
       matrix:
         job:
           - { os: macos-12 }
-        release: [ "13.1" ]
+        release: ["13.1"]
     steps:
-    - uses: actions/checkout@v3
-    - name: Prepare, build and test
-      uses: vmactions/freebsd-vm@v0
-      with:
-        mem: 8192
-        usesh: true
-        copyback: false
-        prepare: pkg install -y ca_root_nss curl gmake gtar pot sudo
-        run: |
-          #####################################################################################
-          ###  Prepare, build, and test
-          #####################################################################################
-          ###  based on ref: <https://github.com/rust-lang/rustup/pull/2783>
-          ###  and on ref: <https://github.com/uutils/coreutils/commit/86c610a84b8b6c>
-          ###  * NOTE: All steps need to be run in this block, otherwise, we are operating back
-          ###    on the mac host.
-          set -exo pipefail
-          #
-          ### Basic user setup ################################################################
-          TEST_USER=tester
-          TEST_USER_HOME="/opt/$TEST_USER"
-          REPO_NAME=${GITHUB_WORKSPACE##*/}
-          WORKSPACE_PARENT="/Users/runner/work/${REPO_NAME}"
-          WORKSPACE="${WORKSPACE_PARENT}/${REPO_NAME}"
-          export WORKSPACE
-          #
-          mkdir -p "$TEST_USER_HOME"
-          pw adduser -n "$TEST_USER" -d "$TEST_USER_HOME" -c "Tester" -h -
-          chown -R "$TEST_USER":"$TEST_USER" "$TEST_USER_HOME"
-          chown -R "$TEST_USER":"$TEST_USER" "/$WORKSPACE_PARENT"/
-          cat > /usr/local/etc/sudoers.d/wheel<<EOF
-          $TEST_USER ALL=(ALL) NOPASSWD: ALL
-          EOF
-          #
-          ### Install rust stable from rustup  ################################################
-          su "$TEST_USER" -c "/bin/sh -exo pipefail" <<"EOH"
-          whoami
-          echo "$HOME"
-          fetch -o /tmp/rustup.sh https://sh.rustup.rs
-          sh /tmp/rustup.sh -y --profile=minimal
-          ### Run tests #######################################################################
-          . "$HOME/.cargo/env"
-          "$WORKSPACE/scripts/freebsd-ci-test.sh"
-          EOH
-          # end
+      - uses: actions/checkout@v3
+      - name: Prepare, build and test
+        uses: vmactions/freebsd-vm@v0
+        with:
+          mem: 8192
+          usesh: true
+          copyback: false
+          prepare: pkg install -y ca_root_nss curl gmake gtar pot sudo
+          run: |
+            #####################################################################################
+            ###  Prepare, build, and test
+            #####################################################################################
+            ###  based on ref: <https://github.com/rust-lang/rustup/pull/2783>
+            ###  and on ref: <https://github.com/uutils/coreutils/commit/86c610a84b8b6c>
+            ###  * NOTE: All steps need to be run in this block, otherwise, we are operating back
+            ###    on the mac host.
+            set -exo pipefail
+            #
+            ### Basic user setup ################################################################
+            TEST_USER=tester
+            TEST_USER_HOME="/opt/$TEST_USER"
+            REPO_NAME=${GITHUB_WORKSPACE##*/}
+            WORKSPACE_PARENT="/Users/runner/work/${REPO_NAME}"
+            WORKSPACE="${WORKSPACE_PARENT}/${REPO_NAME}"
+            export WORKSPACE
+            #
+            mkdir -p "$TEST_USER_HOME"
+            pw adduser -n "$TEST_USER" -d "$TEST_USER_HOME" -c "Tester" -h -
+            chown -R "$TEST_USER":"$TEST_USER" "$TEST_USER_HOME"
+            chown -R "$TEST_USER":"$TEST_USER" "/$WORKSPACE_PARENT"/
+            cat > /usr/local/etc/sudoers.d/wheel<<EOF
+            $TEST_USER ALL=(ALL) NOPASSWD: ALL
+            EOF
+            #
+            ### Install rust stable from rustup  ################################################
+            su "$TEST_USER" -c "/bin/sh -exo pipefail" <<"EOH"
+            whoami
+            echo "$HOME"
+            fetch -o /tmp/rustup.sh https://sh.rustup.rs
+            sh /tmp/rustup.sh -y --profile=minimal
+            ### Run tests #######################################################################
+            . "$HOME/.cargo/env"
+            "$WORKSPACE/scripts/freebsd-ci-test.sh"
+            EOH
+            # end
+      - name: Upload failure
+        if: failure()
+        uses: ./.github/actions/artifact_failure
+        with:
+          name: test-freebsd-13.1-stable
 
   release:
     name: release

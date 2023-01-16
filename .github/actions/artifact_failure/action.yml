@@ -1,0 +1,25 @@
+name: "Upload failure Artifacts"
+description: "Upload failure Artifacts"
+inputs:
+  name:
+    description: ""
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: pack failure artifacts
+      shell: bash
+      run: |
+        killall sccache || true
+        killall sccache-dist || true
+
+        tar --exclude='target' \
+            --exclude='docs' \
+            --exclude='bins' \
+            --exclude='.git' \
+            --exclude='failure-*' \
+            -zcf failure-${{ inputs.name }}.tar.gz .
+    - uses: actions/upload-artifact@v3
+      with:
+        name: ${{ inputs.name }}
+        path: failure-${{ inputs.name }}.tar.gz
