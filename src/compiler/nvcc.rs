@@ -285,7 +285,17 @@ mod test {
 
     #[test]
     fn test_parse_threads_argument_simple_cu() {
-        let a = parses!("-t=1", "-t", "2", "--threads=1", "--threads=2", "-c", "foo.cu", "-o", "foo.o");
+        let a = parses!(
+            "-t=1",
+            "-t",
+            "2",
+            "--threads=1",
+            "--threads=2",
+            "-c",
+            "foo.cu",
+            "-o",
+            "foo.o"
+        );
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(
@@ -299,12 +309,10 @@ mod test {
             )
         );
         assert!(a.preprocessor_args.is_empty());
-        assert_eq!(ovec![
-            "-t=1",
-            "-t=2",
-            "--threads", "1",
-            "--threads", "2"
-        ], a.common_args);
+        assert_eq!(
+            ovec!["-t=1", "-t=2", "--threads", "1", "--threads", "2"],
+            a.common_args
+        );
     }
 
     #[test]
