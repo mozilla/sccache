@@ -491,6 +491,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("external:W2", PassThrough),
     msvc_flag!("external:W3", PassThrough),
     msvc_flag!("external:W4", PassThrough),
+    msvc_flag!("external:anglebrackets", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
