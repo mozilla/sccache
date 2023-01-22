@@ -21,7 +21,6 @@ required-features = ["dist-server"]
 codegen-units = 1
 lto = true
 strip = true
-panic = "abort"
 
 [dependencies]
 anyhow = "1.0"
