@@ -292,6 +292,7 @@ where
         preprocessor_args,
         common_args,
         arch_args: vec![],
+        unhashed_args: vec![],
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
@@ -349,6 +350,7 @@ pub fn generate_compile_commands(
         out_file.into(),
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
@@ -755,6 +757,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,

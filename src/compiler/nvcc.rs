@@ -197,7 +197,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
-    take_arg!("--threads", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
 
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -217,7 +217,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-nohdinitlist", PreprocessorArgumentFlag),
     flag!("-ptx", DoCompilation),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
-    take_arg!("-t", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-t", OsString, CanBeSeparated('='), Unhashed),
     take_arg!("-x", OsString, CanBeSeparated('='), Language),
 ]);
 
@@ -311,7 +311,7 @@ mod test {
         assert!(a.preprocessor_args.is_empty());
         assert_eq!(
             ovec!["-t=1", "-t=2", "--threads", "1", "--threads", "2"],
-            a.common_args
+            a.unhashed_args
         );
     }
 
