@@ -8,7 +8,7 @@ use std::io::Write;
 use std::net::{self, IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::str;
+use std::str::{self, FromStr};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,20 +25,10 @@ use predicates::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
 
-#[cfg(feature = "dist-server")]
-macro_rules! matches {
-    ($expression:expr, $($pattern:tt)+) => {
-        match $expression {
-            $($pattern)+ => true,
-            _ => false
-        }
-    }
-}
-
 const CONTAINER_NAME_PREFIX: &str = "sccache_dist_test";
 const DIST_IMAGE: &str = "sccache_dist_test_image";
 const DIST_DOCKERFILE: &str = include_str!("Dockerfile.sccache-dist");
-const DIST_IMAGE_BWRAP_PATH: &str = "/bwrap";
+const DIST_IMAGE_BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MAX_STARTUP_WAIT: Duration = Duration::from_secs(5);
 
 const DIST_SERVER_TOKEN: &str = "THIS IS THE TEST TOKEN";
@@ -55,6 +45,9 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // will hang because the internal server process is not detached.
     let _ = sccache_command()
         .arg("--start-server")
+        // Uncomment following lines to debug locally.
+        // .env("SCCACHE_LOG", "debug")
+        // .env("SCCACHE_ERROR_LOG", "/tmp/sccache_log.txt")
         .env("SCCACHE_CONF", cfg_path)
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
         .status()
@@ -74,12 +67,14 @@ pub fn stop_local_daemon() {
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
     sccache_command()
-        .args(&["--show-stats", "--stats-format=json"])
+        .args(["--show-stats", "--stats-format=json"])
         .assert()
         .success()
         .stdout(predicate::function(move |output: &[u8]| {
             let s = str::from_utf8(output).expect("Output not UTF-8");
-            f(serde_json::from_str(s).expect("Failed to parse JSON stats"));
+            let stats = serde_json::from_str(s).expect("Failed to parse JSON stats");
+            eprintln!("get server stats: {stats:?}");
+            f(stats);
             true
         }));
 }
@@ -98,13 +93,13 @@ pub fn zero_stats() {
 
 pub fn write_json_cfg<T: Serialize>(path: &Path, filename: &str, contents: &T) {
     let p = path.join(filename);
-    let mut f = fs::File::create(&p).unwrap();
+    let mut f = fs::File::create(p).unwrap();
     f.write_all(&serde_json::to_vec(contents).unwrap()).unwrap();
 }
 
 pub fn write_source(path: &Path, filename: &str, contents: &str) {
     let p = path.join(filename);
-    let mut f = fs::File::create(&p).unwrap();
+    let mut f = fs::File::create(p).unwrap();
     f.write_all(contents.as_bytes()).unwrap();
 }
 
@@ -271,6 +266,8 @@ impl DistSystem {
                 "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
+                "--network",
+                "host",
                 "-v",
                 &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
                 "-v",
@@ -337,6 +334,8 @@ impl DistSystem {
                 "SCCACHE_LOG=sccache=trace",
                 "-e",
                 "RUST_BACKTRACE=1",
+                "--network",
+                "host",
                 "-v",
                 &format!("{}:/sccache-dist", self.sccache_dist.to_str().unwrap()),
                 "-v",
@@ -364,7 +363,7 @@ impl DistSystem {
 
         check_output(&output);
 
-        let server_ip = self.container_ip(&server_name);
+        let server_ip = IpAddr::from_str("127.0.0.1").unwrap();
         let server_cfg = sccache_server_cfg(&self.tmpdir, self.scheduler_url(), server_ip);
         fs::File::create(&server_cfg_path)
             .unwrap()
@@ -388,7 +387,7 @@ impl DistSystem {
         handler: S,
     ) -> ServerHandle {
         let server_addr = {
-            let ip = self.host_interface_ip();
+            let ip = IpAddr::from_str("127.0.0.1").unwrap();
             let listener = net::TcpListener::bind(SocketAddr::from((ip, 0))).unwrap();
             listener.local_addr().unwrap()
         };
@@ -461,8 +460,7 @@ impl DistSystem {
     }
 
     pub fn scheduler_url(&self) -> HTTPUrl {
-        let ip = self.container_ip(self.scheduler_name.as_ref().unwrap());
-        let url = format!("http://{}:{}", ip, SCHEDULER_PORT);
+        let url = format!("http://127.0.0.1:{}", SCHEDULER_PORT);
         HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap())
     }
 
@@ -473,37 +471,6 @@ impl DistSystem {
         .unwrap();
         assert!(res.status().is_success());
         bincode::deserialize_from(res).unwrap()
-    }
-
-    fn container_ip(&self, name: &str) -> IpAddr {
-        let output = Command::new("docker")
-            .args(&[
-                "inspect",
-                "--format",
-                "{{ .NetworkSettings.IPAddress }}",
-                name,
-            ])
-            .output()
-            .unwrap();
-        check_output(&output);
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        stdout.trim().to_owned().parse().unwrap()
-    }
-
-    // The interface that the host sees on the docker network (typically 'docker0')
-    fn host_interface_ip(&self) -> IpAddr {
-        let output = Command::new("docker")
-            .args(&[
-                "inspect",
-                "--format",
-                "{{ .NetworkSettings.Gateway }}",
-                self.scheduler_name.as_ref().unwrap(),
-            ])
-            .output()
-            .unwrap();
-        check_output(&output);
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        stdout.trim().to_owned().parse().unwrap()
     }
 }
 

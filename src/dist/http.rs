@@ -91,7 +91,7 @@ mod common {
                 anyhow::bail!(errmsg);
             }
         } else {
-            Ok(bincode::deserialize(&*bytes)?)
+            Ok(bincode::deserialize(&bytes)?)
         }
     }
 
@@ -556,7 +556,10 @@ mod server {
 
         rouille::Response {
             status_code: 200,
-            headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+            headers: vec![
+                ("Content-Type".into(), "application/octet-stream".into()),
+                ("Content-Length".into(), data.len().to_string().into()),
+            ],
             data: rouille::ResponseBody::from_data(data),
             upgrade: None,
         }
@@ -744,6 +747,9 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
+                    // Disable connection pool to avoid broken connection
+                    // between runtime
+                    .pool_max_idle_per_host(0)
                     .build()
                     .context("failed to create a HTTP client")?;
                 // Use the updated certificates
@@ -783,12 +789,16 @@ mod server {
                         prepare_response(request, &res)
                     },
                     (GET) (/api/v1/scheduler/server_certificate/{server_id: ServerId}) => {
-                        let certs = server_certificates.lock().unwrap();
-                        let (cert_digest, cert_pem) = try_or_500_log!(req_id, certs.get(&server_id)
+                        let certs = {
+                            let guard = server_certificates.lock().unwrap();
+                            guard.get(&server_id).map(|v|v.to_owned())
+                        };
+
+                        let (cert_digest, cert_pem) = try_or_500_log!(req_id, certs
                             .context("server cert not available"));
                         let res = ServerCertificateHttpResponse {
-                            cert_digest: cert_digest.clone(),
-                            cert_pem: cert_pem.clone(),
+                            cert_digest,
+                            cert_pem,
                         };
                         prepare_response(request, &res)
                     },
@@ -1100,6 +1110,9 @@ mod client {
             let client = reqwest::ClientBuilder::new()
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
+                // Disable connection pool to avoid broken connection
+                // between runtime
+                .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
             let client_toolchains =

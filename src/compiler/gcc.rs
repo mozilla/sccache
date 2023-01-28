@@ -824,7 +824,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 None => return None,
             };
             let file = match arg.split_prefix("@") {
-                Some(arg) => self.cwd.join(&arg),
+                Some(arg) => self.cwd.join(arg),
                 None => return Some(arg),
             };
 

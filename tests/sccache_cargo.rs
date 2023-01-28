@@ -101,7 +101,7 @@ impl SccacheTest<'_> {
     fn show_stats(&self) -> assert_cmd::assert::AssertResult {
         trace!("sccache --show-stats");
         Command::new(SCCACHE_BIN.as_os_str())
-            .args(&["--show-stats", "--stats-format=json"])
+            .args(["--show-stats", "--stats-format=json"])
             .assert()
             .try_success()
     }
@@ -205,7 +205,7 @@ fn test_rust_cargo_build_nightly() -> Result<()> {
 
 fn cargo_clean(test_info: &SccacheTest) -> Result<()> {
     Command::new(CARGO.as_os_str())
-        .args(&["clean"])
+        .args(["clean"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
@@ -222,7 +222,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
 
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
-        .args(&[cmd, "--color=never"])
+        .args([cmd, "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
@@ -231,7 +231,7 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
     // Clean it so we can build it again.
     cargo_clean(&test_info)?;
     Command::new(CARGO.as_os_str())
-        .args(&[cmd, "--color=always"])
+        .args([cmd, "--color=always"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
@@ -250,7 +250,7 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     cargo_clean(&test_info)?;
     // Now build the crate with cargo.
     Command::new(CARGO.as_os_str())
-        .args(&["run", "--color=never"])
+        .args(["run", "--color=never"])
         .envs(test_info.env.iter().cloned())
         .current_dir(CRATE_DIR.as_os_str())
         .assert()
@@ -261,7 +261,7 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     cargo_clean(&test_info)?;
 
     Command::new(CARGO.as_os_str())
-        .args(&["run", "--color=always"])
+        .args(["run", "--color=always"])
         .envs(test_info.env.iter().cloned())
         .env("TEST_ENV_VAR", "OTHER_VALUE")
         .current_dir(CRATE_DIR.as_os_str())

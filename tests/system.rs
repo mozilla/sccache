@@ -184,7 +184,7 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     // Check that -deps works.
     trace!("compile with -deps");
-    let mut args = compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new());
+    let mut args = compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new());
     args.push("-depstest.d".into());
     sccache_command()
         .args(&args)
@@ -215,7 +215,7 @@ fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
         env_vars,
     } = compiler;
     trace!("test -MP with -Werror");
-    let mut args = compile_cmdline(name, &exe, INPUT_ERR, OUTPUT, Vec::new());
+    let mut args = compile_cmdline(name, exe, INPUT_ERR, OUTPUT, Vec::new());
     args.extend(vec_from!(
         OsString, "-MD", "-MP", "-MF", "foo.pp", "-Werror"
     ));
@@ -255,7 +255,7 @@ int main(int argc, char** argv) {
 }
 ",
     );
-    let mut args = compile_cmdline(name, &exe, SRC, OUTPUT, Vec::new());
+    let mut args = compile_cmdline(name, exe, SRC, OUTPUT, Vec::new());
     args.extend(vec_from!(OsString, "-fprofile-generate"));
     trace!("compile source.c (1)");
     sccache_command()
@@ -329,7 +329,7 @@ fn test_gcc_clang_no_warnings_from_macro_expansion(compiler: Compiler, tempdir: 
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
+                &compile_cmdline(name, exe, INPUT_MACRO_EXPANSION, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-Wunreachable-code")[..],
             ]
             .concat(),
@@ -355,7 +355,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(
             [
-                &compile_cmdline(name, &exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
+                &compile_cmdline(name, exe, INPUT_WITH_DEFINE, OUTPUT, Vec::new())[..],
                 &vec_from!(OsString, "-DSCCACHE_TEST_DEFINE")[..],
             ]
             .concat(),
@@ -404,7 +404,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
-                c.name("apple") == None,
+                c.name("apple").is_none(),
             ),
             None => panic!(
                 "Version info not found in --version output: {}",
@@ -431,7 +431,7 @@ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(compile_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_CLANG_MULTICALL,
             OUTPUT,
             Vec::new(),
@@ -515,7 +515,7 @@ fn find_compilers() -> Vec<Compiler> {
             which_in(c, env::var_os("PATH"), &cwd)
                 .ok()
                 .map(|full_path| Compiler {
-                    name: *c,
+                    name: c,
                     exe: full_path.into(),
                     env_vars: vec![],
                 })

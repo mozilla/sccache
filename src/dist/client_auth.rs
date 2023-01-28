@@ -150,7 +150,7 @@ mod code_grant_pkce {
         let code_verifier = base64::encode_engine(&code_verifier_bytes, &BASE64_URL_SAFE_ENGINE);
         let mut hasher = Sha256::new();
         hasher.update(&code_verifier);
-        let code_challenge = base64::encode_engine(&hasher.finalize(), &BASE64_URL_SAFE_ENGINE);
+        let code_challenge = base64::encode_engine(hasher.finalize(), &BASE64_URL_SAFE_ENGINE);
         Ok((code_verifier, code_challenge))
     }
 
