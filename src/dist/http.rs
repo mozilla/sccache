@@ -931,6 +931,7 @@ mod server {
                     .expect("failed to serialize heartbeat"),
             ) {
                 Ok(HeartbeatServerResult { is_new }) => {
+                    // TODO: if is_new, terminate all running jobs
                     trace!("Heartbeat success is_new={}", is_new);
                     Ok(())
                 }
