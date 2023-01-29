@@ -932,16 +932,13 @@ mod server {
             ) {
                 Ok(HeartbeatServerResult { is_new }) => {
                     trace!("Heartbeat success is_new={}", is_new);
-                    // TODO: if is_new, terminate all running jobs
-                    thread::sleep(HEARTBEAT_INTERVAL);
+                    Ok(())
                 }
                 Err(e) => {
                     error!("Failed to send heartbeat to server: {}", e);
-                    thread::sleep(HEARTBEAT_ERROR_INTERVAL);
+                    Err(e)
                 }
             }
-
-            Ok(())
         }
 
         pub fn start(self) -> Result<Void> {
