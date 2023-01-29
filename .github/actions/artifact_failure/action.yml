@@ -12,6 +12,7 @@ runs:
       run: |
         killall sccache || true
         killall sccache-dist || true
+        docker kill $(docker ps -q) || true
 
         tar --exclude='target' \
             --exclude='docs' \
