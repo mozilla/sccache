@@ -82,10 +82,10 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
 
       - name: Build tests
-        run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
+        run: cargo test --no-run --locked --all-targets ${{ matrix.extra_args }}
 
       - name: Run tests
-        run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
+        run: cargo test --locked --all-targets ${{ matrix.extra_args }}
 
       - name: Upload failure
         if: failure()
