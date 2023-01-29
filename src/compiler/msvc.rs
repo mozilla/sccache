@@ -549,6 +549,7 @@ pub fn parse_arguments(
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec![];
+    let mut unhashed_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
@@ -706,6 +707,7 @@ pub fn parse_arguments(
                 | Some(PassThroughPath(_))
                 | Some(PedanticFlag)
                 | Some(Standard(_)) => &mut common_args,
+                Some(Unhashed(_)) => &mut unhashed_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
@@ -822,6 +824,7 @@ pub fn parse_arguments(
         preprocessor_args,
         common_args,
         arch_args: vec![],
+        unhashed_args,
         extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate,
@@ -1019,6 +1022,7 @@ fn generate_compile_commands(
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.dependency_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
     let command = CompileCommand {
@@ -1624,6 +1628,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
@@ -1684,6 +1689,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,

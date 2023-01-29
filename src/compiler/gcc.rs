@@ -119,6 +119,8 @@ ArgData! { pub
     PreprocessorArgumentFlag,
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
+    // Used for arguments that shouldn't affect the computed hash
+    Unhashed(OsString),
     DoCompilation,
     Output(PathBuf),
     NeedDepTarget,
@@ -248,6 +250,7 @@ where
     let mut dep_flag = OsString::from("-MT");
     let mut common_args = vec![];
     let mut arch_args = vec![];
+    let mut unhashed_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
@@ -348,7 +351,8 @@ where
             | Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
             | Some(PassThrough(_))
-            | Some(PassThroughPath(_)) => {}
+            | Some(PassThroughPath(_))
+            | Some(Unhashed(_)) => {}
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
                     "c" => Some(Language::C),
@@ -387,6 +391,7 @@ where
             | Some(PassThroughFlag)
             | Some(PassThrough(_))
             | Some(PassThroughPath(_)) => &mut common_args,
+            Some(Unhashed(_)) => &mut unhashed_args,
             Some(Arch(_)) => &mut arch_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
@@ -454,6 +459,7 @@ where
             | Some(PassThrough(_))
             | Some(PassThroughFlag)
             | Some(PassThroughPath(_)) => &mut common_args,
+            Some(Unhashed(_)) => &mut unhashed_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
@@ -571,6 +577,7 @@ where
         preprocessor_args,
         common_args,
         arch_args,
+        unhashed_args,
         extra_hash_files,
         msvc_show_includes: false,
         profile_generate,
@@ -725,6 +732,7 @@ pub fn generate_compile_commands(
         out_file.into(),
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
     arguments.extend(parsed_args.arch_args.clone());
     let command = CompileCommand {
@@ -1787,6 +1795,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
