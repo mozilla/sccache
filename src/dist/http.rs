@@ -915,6 +915,35 @@ mod server {
             })
         }
 
+        fn heartbeat(
+            client: &reqwest::blocking::Client,
+            heartbeat_req: &HeartbeatServerHttpRequest,
+            heartbeat_url: &reqwest::Url,
+            scheduler_auth: &str,
+        ) -> Result<()> {
+            trace!("Performing heartbeat");
+
+            match bincode_req(
+                client
+                    .post(heartbeat_url.clone())
+                    .bearer_auth(scheduler_auth)
+                    .bincode(&heartbeat_req)
+                    .expect("failed to serialize heartbeat"),
+            ) {
+                Ok(HeartbeatServerResult { is_new }) => {
+                    trace!("Heartbeat success is_new={}", is_new);
+                    // TODO: if is_new, terminate all running jobs
+                    thread::sleep(HEARTBEAT_INTERVAL);
+                }
+                Err(e) => {
+                    error!("Failed to send heartbeat to server: {}", e);
+                    thread::sleep(HEARTBEAT_ERROR_INTERVAL);
+                }
+            }
+
+            Ok(())
+        }
+
         pub fn start(self) -> Result<Void> {
             let Self {
                 public_addr,
@@ -936,34 +965,21 @@ mod server {
             };
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
+            let client = reqwest::blocking::Client::new();
             let requester = ServerRequester {
-                client: reqwest::blocking::Client::new(),
+                client: client.clone(),
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
 
+            // Perform heartbeat once before start the server.
+            Self::heartbeat(&client, &heartbeat_req, &heartbeat_url, &scheduler_auth)?;
+
             // TODO: detect if this panics
-            thread::spawn(move || {
-                let client = reqwest::blocking::Client::new();
-                loop {
-                    trace!("Performing heartbeat");
-                    match bincode_req(
-                        client
-                            .post(heartbeat_url.clone())
-                            .bearer_auth(scheduler_auth.clone())
-                            .bincode(&heartbeat_req)
-                            .expect("failed to serialize heartbeat"),
-                    ) {
-                        Ok(HeartbeatServerResult { is_new }) => {
-                            trace!("Heartbeat success is_new={}", is_new);
-                            // TODO: if is_new, terminate all running jobs
-                            thread::sleep(HEARTBEAT_INTERVAL)
-                        }
-                        Err(e) => {
-                            error!("Failed to send heartbeat to server: {}", e);
-                            thread::sleep(HEARTBEAT_ERROR_INTERVAL)
-                        }
-                    }
+            thread::spawn(move || loop {
+                match Self::heartbeat(&client, &heartbeat_req, &heartbeat_url, &scheduler_auth) {
+                    Ok(_) => thread::sleep(HEARTBEAT_INTERVAL),
+                    Err(_) => thread::sleep(HEARTBEAT_ERROR_INTERVAL),
                 }
             });
 
