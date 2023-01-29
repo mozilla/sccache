@@ -10,9 +10,7 @@ runs:
     - name: pack failure artifacts
       shell: bash
       run: |
-        ps aux
-        killall sccache || true
-        killall sccache-dist || true
+        killall -r ".*sccache.*" || true
         docker kill $(docker ps -q) || true
 
         tar --exclude='target' \
