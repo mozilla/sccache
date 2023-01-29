@@ -17,9 +17,9 @@ runs:
 
         tar --exclude='target' \
             --exclude='docs' \
-            --exclude='bins' \
             --exclude='.git' \
             --exclude='failure-*' \
+            --warning=no-file-changed \
             -zcf failure-${{ inputs.name }}.tar.gz .
     - uses: actions/upload-artifact@v3
       with:
