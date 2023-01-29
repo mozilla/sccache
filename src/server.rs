@@ -1099,7 +1099,7 @@ where
                 ));
             }
             Ok(c) => {
-                debug!("check_compiler: Supported compiler");
+                debug!("check_compiler: Supported compiler: {:?}", c.kind());
                 // Now check that we can handle this compiler with
                 // the provided commandline.
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {

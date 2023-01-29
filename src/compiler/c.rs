@@ -62,6 +62,7 @@ where
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Language {
+    Assembler,
     C,
     Cxx,
     ObjectiveC,
@@ -125,6 +126,7 @@ impl ParsedArguments {
 impl Language {
     pub fn from_file_name(file: &Path) -> Option<Self> {
         match file.extension().and_then(|e| e.to_str()) {
+            Some("S") | Some("s") | Some("sx") => Some(Language::Assembler),
             // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
             Some("c") => Some(Language::C),
             // TODO i
@@ -147,6 +149,7 @@ impl Language {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Language::Assembler => "assembler",
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objc",

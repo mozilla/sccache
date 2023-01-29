@@ -593,6 +593,7 @@ fn preprocess_cmd<T>(
     T: RunCommand,
 {
     let language = match parsed_args.language {
+        Language::Assembler => "assembler",
         Language::C => "c",
         Language::Cxx => "c++",
         Language::ObjectiveC => "objective-c",
@@ -710,6 +711,7 @@ pub fn generate_compile_commands(
     // Pass the language explicitly as we might have gotten it from the
     // command line.
     let language = match parsed_args.language {
+        Language::Assembler => "assembler",
         Language::C => "c",
         Language::Cxx => "c++",
         Language::ObjectiveC => "objective-c",
@@ -740,6 +742,7 @@ pub fn generate_compile_commands(
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
         let mut language: String = match parsed_args.language {
+            Language::Assembler => "assembler",
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objective-c",

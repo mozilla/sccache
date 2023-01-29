@@ -79,6 +79,7 @@ impl CCompilerImpl for Nvcc {
         T: CommandCreatorSync,
     {
         let language = match parsed_args.language {
+            Language::Assembler => "assembler",
             Language::C => "c",
             Language::Cxx => "c++",
             Language::ObjectiveC => "objective-c",

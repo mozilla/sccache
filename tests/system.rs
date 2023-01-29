@@ -90,6 +90,7 @@ const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+const INPUT_ASSEMBLER: &str = "test.s";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -110,9 +111,10 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     } = compiler;
     trace!("run_sccache_command_test: {}", name);
     // Compile a source file.
-    copy_to_tempdir(&[INPUT, INPUT_ERR], tempdir);
+    copy_to_tempdir(&[INPUT, INPUT_ASSEMBLER, INPUT_ERR], tempdir);
 
     let out_file = tempdir.join(OUTPUT);
+
     trace!("compile");
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
@@ -134,7 +136,7 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
         .current_dir(tempdir)
-        .envs(env_vars)
+        .envs(env_vars.clone())
         .assert()
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
@@ -146,6 +148,50 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+
+    // test assembler.
+    trace!("compile");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_ASSEMBLER,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(3, info.stats.compile_requests);
+        assert_eq!(3, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
+    });
+
+    trace!("compile");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(4, info.stats.compile_requests);
+        assert_eq!(4, info.stats.requests_executed);
+        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&2, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("C/C++").unwrap());
     });
 }
 
