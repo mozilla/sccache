@@ -60,4 +60,7 @@ impl Storage for MockStorage {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+    async fn clear(&self) -> Result<()> {
+        Ok(())
+    }
 }

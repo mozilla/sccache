@@ -139,4 +139,16 @@ impl Storage for DiskCache {
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(self.lru.lock().unwrap().get().map(|l| l.capacity()))
     }
+
+    async fn clear(&self) -> Result<()> {
+        trace!("DiskCache::clear");
+        let lru = self.lru.clone();
+
+        self.pool
+            .spawn_blocking(move || {
+                lru.lock().unwrap().get_or_init()?.clear()?;
+                Ok(())
+            })
+            .await?
+    }
 }

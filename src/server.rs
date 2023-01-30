@@ -800,6 +800,13 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::ClearCache => {
+                    debug!("handle_client: clear_cache");
+                    me.clear_cache()
+                        .await
+                        .map(|_| Response::ClearCacheComplete)
+                        .map(Message::WithoutBody)
+                }
             }
         })
     }
@@ -902,6 +909,10 @@ where
     /// Zero stats about the cache.
     async fn zero_stats(&self) {
         *self.stats.lock().await = ServerStats::default();
+    }
+
+    async fn clear_cache(&self) -> Result<()> {
+        self.storage.clear().await
     }
 
     /// Handle a compile request from a client.

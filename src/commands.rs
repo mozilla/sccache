@@ -545,6 +545,13 @@ where
     }))
 }
 
+pub fn request_clear_cache(mut conn: ServerConnection) -> Result<()> {
+    debug!("clear_cache");
+    conn.request(Request::ClearCache)
+        .context("Failed to send data to or receive data from server")?;
+    Ok(())
+}
+
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
 ///
 /// The first entry in `cmdline` will be looked up in `path` if it is not
@@ -744,6 +751,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 &mut io::stderr(),
             );
             return res.context("failed to execute compile");
+        }
+        Command::ClearCache => {
+            trace!("Command::ClearCache");
+            let conn = connect_or_start_server(get_port(), startup_timeout)?;
+            request_clear_cache(conn).context("couldn't clear cache on server")?;
         }
     }
 

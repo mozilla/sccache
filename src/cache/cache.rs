@@ -357,6 +357,9 @@ pub trait Storage: Send + Sync {
 
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
+
+    /// Clear the contents of the cache.
+    async fn clear(&self) -> Result<()>;
 }
 
 /// Implement storage for operator.
@@ -445,6 +448,11 @@ impl Storage for opendal::Operator {
 
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(None)
+    }
+
+    async fn clear(&self) -> Result<()> {
+        let meta = self.metadata();
+        Err(anyhow!("Cannot clear the cache on {}", meta.scheme()))
     }
 }
 
