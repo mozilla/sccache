@@ -155,7 +155,7 @@ fn test_server_stats() {
     // Ask it for stats.
     let info = request_stats(conn).unwrap();
     assert_eq!(0, info.stats.compile_requests);
-    // Include sccache ver (cli) to validate. 
+    // Include sccache ver (cli) to validate.
     assert_eq!(env!("CARGO_PKG_VERSION"), info.version);
     // Now signal it to shut down.
     sender.send(ServerMessage::Shutdown).ok().unwrap();
