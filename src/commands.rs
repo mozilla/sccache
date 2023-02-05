@@ -18,7 +18,9 @@ use crate::compiler::ColorMode;
 use crate::config::Config;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    ClearCacheComplete, Compile, CompileFinished, CompileResponse, Request, Response,
+};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
@@ -547,9 +549,17 @@ where
 
 pub fn request_clear_cache(mut conn: ServerConnection) -> Result<()> {
     debug!("clear_cache");
-    conn.request(Request::ClearCache)
+    let response = conn
+        .request(Request::ClearCache)
         .context("Failed to send data to or receive data from server")?;
-    Ok(())
+    if let Response::ClearCacheComplete(resp) = response {
+        match resp {
+            ClearCacheComplete::Ok => Ok(()),
+            ClearCacheComplete::Err(e) => bail!("{}", e),
+        }
+    } else {
+        bail!("Unexpected server response!")
+    }
 }
 
 /// Send a `Compile` request to the sccache server `conn`, and handle the response.
@@ -755,7 +765,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::ClearCache => {
             trace!("Command::ClearCache");
             let conn = connect_or_start_server(get_port(), startup_timeout)?;
-            request_clear_cache(conn).context("couldn't clear cache on server")?;
+            request_clear_cache(conn).context("failed to clear cache")?;
         }
     }
 

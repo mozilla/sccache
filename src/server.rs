@@ -23,7 +23,9 @@ use crate::config::Config;
 use crate::dist;
 use crate::jobserver::Client;
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
-use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+use crate::protocol::{
+    ClearCacheComplete, Compile, CompileFinished, CompileResponse, Request, Response,
+};
 use crate::util;
 #[cfg(feature = "dist-client")]
 use anyhow::Context as _;
@@ -802,10 +804,9 @@ where
                 }
                 Request::ClearCache => {
                     debug!("handle_client: clear_cache");
-                    me.clear_cache()
-                        .await
-                        .map(|_| Response::ClearCacheComplete)
-                        .map(Message::WithoutBody)
+                    Ok(Message::WithoutBody(Response::ClearCacheComplete(
+                        me.clear_cache().await,
+                    )))
                 }
             }
         })
@@ -911,8 +912,11 @@ where
         *self.stats.lock().await = ServerStats::default();
     }
 
-    async fn clear_cache(&self) -> Result<()> {
-        self.storage.clear().await
+    async fn clear_cache(&self) -> ClearCacheComplete {
+        match self.storage.clear().await {
+            Ok(()) => ClearCacheComplete::Ok,
+            Err(e) => ClearCacheComplete::Err(e.to_string()),
+        }
     }
 
     /// Handle a compile request from a client.

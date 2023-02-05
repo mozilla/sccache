@@ -32,7 +32,7 @@ pub enum Response {
     /// Second response for `Request::Compile`, containing the results of the compilation.
     CompileFinished(CompileFinished),
     /// Response for `Request::ClearCache`.
-    ClearCacheComplete,
+    ClearCacheComplete(ClearCacheComplete),
 }
 
 /// Possible responses from the server for a `Compile` request.
@@ -59,6 +59,15 @@ pub struct CompileFinished {
     pub stderr: Vec<u8>,
     /// The state of any compiler options passed to control color output.
     pub color_mode: ColorMode,
+}
+
+/// Possible responses from the server for a `ClearCache` request.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum ClearCacheComplete {
+    /// The cache was cleared.
+    Ok,
+    /// The cache was not cleared.
+    Err(String),
 }
 
 /// The contents of a compile request from a client.
