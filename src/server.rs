@@ -889,12 +889,14 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.lock().await.clone();
         let cache_location = self.storage.location();
+        let version = env!("CARGO_PKG_VERSION").to_string();
         futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
             move |(cache_size, max_cache_size)| ServerInfo {
                 stats,
                 cache_location,
                 cache_size,
                 max_cache_size,
+                version,
             },
         )
     }
@@ -1423,6 +1425,7 @@ pub struct ServerInfo {
     pub cache_location: String,
     pub cache_size: Option<u64>,
     pub max_cache_size: Option<u64>,
+    pub version: String,
 }
 
 /// Status of the dist client.
@@ -1617,6 +1620,12 @@ impl ServerInfo {
             "{:<name_width$} {}",
             "Cache location",
             self.cache_location,
+            name_width = name_width
+        );
+        println!(
+            "{:<name_width$} {}",
+            "Version (client)",
+            self.version,
             name_width = name_width
         );
         for &(name, val) in &[
