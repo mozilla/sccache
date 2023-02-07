@@ -1,7 +1,6 @@
 use crate::jwt;
 use anyhow::{bail, Context, Result};
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccache::util::RequestExt;
 use sccache::util::BASE64_URL_SAFE_ENGINE;
 use std::collections::HashMap;
 use std::result::Result as StdResult;
@@ -150,13 +149,11 @@ impl MozillaCheck {
         // https://github.com/mozilla-iam/auth0-deploy/blob/6889f1dde12b84af50bb4b2e2f00d5e80d5be33f/rules/CIS-Claims-fixups.js#L158-L168
         let url = reqwest::Url::parse(MOZ_USERINFO_ENDPOINT)
             .expect("Failed to parse MOZ_USERINFO_ENDPOINT");
-        let header = hyperx::header::Authorization(hyperx::header::Bearer {
-            token: token.to_owned(),
-        });
+
         let res = self
             .client
             .get(url.clone())
-            .set_header(header)
+            .bearer_auth(token)
             .send()
             .context("Failed to make request to mozilla userinfo")?;
         let status = res.status();
@@ -289,13 +286,10 @@ impl ProxyTokenCheck {
             auth_cache.remove(token);
         }
         // Make a request to another API, which as a side effect should actually check the token
-        let header = hyperx::header::Authorization(hyperx::header::Bearer {
-            token: token.to_owned(),
-        });
         let res = self
             .client
             .get(&self.url)
-            .set_header(header)
+            .bearer_auth(token)
             .send()
             .context("Failed to make request to proxying url")?;
         if !res.status().is_success() {

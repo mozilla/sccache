@@ -21,8 +21,10 @@ pub use self::server::{
 };
 
 mod common {
-    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-    use hyperx::header;
+    use http::header;
+    use http::header::CONNECTION;
+    use http::header::CONTENT_LENGTH;
+    use http::header::CONTENT_TYPE;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::fmt;
@@ -30,7 +32,6 @@ mod common {
     use crate::dist;
 
     use crate::errors::*;
-    use crate::util::RequestExt;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
     pub trait ReqwestRequestBuilderExt: Sized {
@@ -45,12 +46,15 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.set_header(header::ContentType::octet_stream())
-                .set_header(header::ContentLength(bytes.len() as u64))
-                .body(bytes)
+            self.header(
+                header::CONTENT_TYPE,
+                mime::APPLICATION_OCTET_STREAM.to_string(),
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
-            self.set_header(header::Authorization(header::Bearer { token }))
+            self.bearer_auth(token)
         }
     }
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
@@ -60,12 +64,12 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.set_header(header::ContentType::octet_stream())
-                .set_header(header::ContentLength(bytes.len() as u64))
+            self.header(CONTENT_TYPE, mime::APPLICATION_OCTET_STREAM.to_string())
+                .header(CONTENT_LENGTH, bytes.len())
                 .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
-            self.set_header(header::Authorization(header::Bearer { token }))
+            self.bearer_auth(token)
         }
     }
 
@@ -75,7 +79,7 @@ mod common {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let res = req.set_header(header::Connection::close()).send().await?;
+        let res = req.header(CONNECTION, "close").send().await?;
 
         let status = res.status();
         let bytes = res.bytes().await?;
@@ -248,7 +252,6 @@ mod server {
     use crate::jwt;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use hyperx::header;
     use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
     use std::collections::HashMap;
@@ -272,7 +275,6 @@ mod server {
         SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
     };
     use crate::errors::*;
-    use crate::util::RequestExt;
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
@@ -283,7 +285,7 @@ mod server {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let mut res = req.set_header(header::Connection::close()).send()?;
+        let mut res = req.header(http::header::CONNECTION, "close").send()?;
         let status = res.status();
         let mut body = vec![];
         res.copy_to(&mut body)

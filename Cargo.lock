@@ -297,9 +297,9 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "bytes"
-version = "1.1.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4872d67bab6358e59559027aa3b9157c53d9358c51423c17554809a8858e0f8"
+checksum = "89b2fd2a0dcf38d7971e2194b6b6eebab45ae01067456a7fd93d5547a61b70be"
 
 [[package]]
 name = "cache-padded"
@@ -1095,22 +1095,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyperx"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5617e92fc2f2501c3e2bc6ce547cad841adba2bae5b921c7e52510beca6d084c"
-dependencies = [
- "base64 0.13.1",
- "bytes",
- "http",
- "httpdate",
- "language-tags",
- "mime",
- "percent-encoding",
- "unicase",
-]
-
-[[package]]
 name = "iana-time-zone"
 version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1240,12 +1224,6 @@ dependencies = [
  "serde_json",
  "simple_asn1",
 ]
-
-[[package]]
-name = "language-tags"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
 name = "lazy_static"
@@ -1530,9 +1508,9 @@ checksum = "6f61fba1741ea2b3d6a1e3178721804bb716a68a6aeba1149b5d52e3d464ea66"
 
 [[package]]
 name = "opendal"
-version = "0.24.6"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a657010a255640ce4b5e06b3bf275e3debe013208998cb22fa315eb40395919"
+checksum = "c40ed33cc9fed187ce8293587416e0afd6ac9fcde17f2a20ad0dca14dd685ebe"
 dependencies = [
  "anyhow",
  "async-compat",
@@ -1545,6 +1523,7 @@ dependencies = [
  "flagset",
  "futures",
  "http",
+ "hyper",
  "log",
  "md-5",
  "memcache-async",
@@ -1962,13 +1941,13 @@ dependencies = [
 
 [[package]]
 name = "reqsign"
-version = "0.7.4"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c97ac0f771c78ddf4bcb73c8454c76565a7249780e7296767f7e89661b0e045"
+checksum = "3f446438814fde3785305a59a85a6d1b361ce2c9d29e58dd87c9103a242c40b6"
 dependencies = [
  "anyhow",
  "backon",
- "base64 0.20.0",
+ "base64 0.21.0",
  "bytes",
  "dirs",
  "form_urlencoded",
@@ -2205,7 +2184,6 @@ dependencies = [
  "gzp",
  "http",
  "hyper",
- "hyperx",
  "itertools",
  "jobserver",
  "jsonwebtoken",
@@ -2214,6 +2192,7 @@ dependencies = [
  "libmount",
  "linked-hash-map",
  "log",
+ "mime",
  "nix 0.26.2",
  "num_cpus",
  "number_prefix",

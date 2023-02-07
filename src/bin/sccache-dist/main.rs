@@ -2,7 +2,6 @@ extern crate base64;
 extern crate crossbeam_utils;
 extern crate env_logger;
 extern crate flate2;
-extern crate hyperx;
 extern crate jsonwebtoken as jwt;
 
 #[cfg(not(target_os = "freebsd"))]

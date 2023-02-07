@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use opendal::layers::LoggingLayer;
-use opendal::services::ghac;
+use opendal::services::Ghac;
 use opendal::Operator;
 
 use crate::errors::*;
@@ -24,7 +24,7 @@ pub struct GHACache;
 
 impl GHACache {
     pub fn build(version: &str) -> Result<Operator> {
-        let mut builder = ghac::Builder::default();
+        let mut builder = Ghac::default();
         // This is the prefix of gha cache.
         // From user side, cache key will be like `sccache/f/c/b/fcbxxx`
         //
@@ -38,7 +38,9 @@ impl GHACache {
             builder.version(&format!("sccache-v{VERSION}-{version}"));
         }
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }

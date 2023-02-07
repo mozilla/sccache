@@ -16,7 +16,7 @@
 use opendal::Operator;
 
 use opendal::layers::LoggingLayer;
-use opendal::services::azblob;
+use opendal::services::Azblob;
 
 use crate::errors::*;
 
@@ -24,11 +24,13 @@ pub struct AzureBlobCache;
 
 impl AzureBlobCache {
     pub fn build(connection_string: &str, container: &str, key_prefix: &str) -> Result<Operator> {
-        let mut builder = azblob::Builder::from_connection_string(connection_string)?;
+        let mut builder = Azblob::from_connection_string(connection_string)?;
         builder.container(container);
         builder.root(key_prefix);
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }

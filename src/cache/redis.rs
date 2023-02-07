@@ -15,7 +15,7 @@
 
 use crate::errors::*;
 use opendal::layers::LoggingLayer;
-use opendal::services::redis;
+use opendal::services::Redis;
 use opendal::Operator;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -29,7 +29,7 @@ impl RedisCache {
     pub fn build(url: &str) -> Result<Operator> {
         let parsed = Url::parse(url)?;
 
-        let mut builder = redis::Builder::default();
+        let mut builder = Redis::default();
         builder.endpoint(parsed.as_str());
         builder.username(parsed.username());
         builder.password(parsed.password().unwrap_or_default());
@@ -45,7 +45,9 @@ impl RedisCache {
             .map(|v| v.parse().unwrap_or_default())
             .unwrap_or_default());
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }
