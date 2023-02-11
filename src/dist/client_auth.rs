@@ -1,8 +1,8 @@
 use futures::channel::oneshot;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::StatusCode;
 use hyper::server::conn::AddrIncoming;
 use hyper::{Body, Response, Server};
-use hyperx::header::{ContentLength, ContentType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -13,8 +13,6 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use url::Url;
 use uuid::Uuid;
-
-use crate::util::RequestExt;
 
 use crate::errors::*;
 
@@ -38,8 +36,8 @@ fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
 
 fn html_response(body: &'static str) -> Response<Body> {
     Response::builder()
-        .set_header(ContentType::html())
-        .set_header(ContentLength(body.len() as u64))
+        .header(CONTENT_TYPE, mime::TEXT_HTML.to_string())
+        .header(CONTENT_LENGTH, body.len())
         .body(body.into())
         .unwrap()
 }
@@ -48,8 +46,8 @@ fn json_response<T: Serialize>(data: &T) -> Result<Response<Body>> {
     let body = serde_json::to_vec(data).context("Failed to serialize to JSON")?;
     let len = body.len();
     Ok(Response::builder()
-        .set_header(ContentType::json())
-        .set_header(ContentLength(len as u64))
+        .header(CONTENT_TYPE, mime::APPLICATION_JSON.to_string())
+        .header(CONTENT_LENGTH, len)
         .body(body.into())
         .unwrap())
 }
@@ -452,8 +450,8 @@ where
     let len = body.len();
     let builder = Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR);
     let res = builder
-        .set_header(ContentType::text())
-        .set_header(ContentLength(len as u64))
+        .header(CONTENT_TYPE, mime::TEXT_PLAIN.to_string())
+        .header(CONTENT_LENGTH, len)
         .body(body.into())
         .unwrap();
     Ok::<Response<Body>, hyper::Error>(res)

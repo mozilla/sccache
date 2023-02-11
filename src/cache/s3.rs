@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use opendal::layers::LoggingLayer;
-use opendal::services::s3;
+use opendal::services::S3;
 use opendal::Operator;
 
 use std::convert::TryInto;
@@ -29,21 +29,23 @@ impl S3Cache {
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
     ) -> Result<Operator> {
-        let mut builder = s3::Builder::default();
+        let mut builder = S3::default();
         builder.bucket(bucket);
         if let Some(region) = region {
             builder.region(region);
         }
         builder.root(key_prefix);
         if no_credentials {
-            builder.disable_credential_loader();
+            builder.disable_config_load();
         }
         if let Some(endpoint) = endpoint {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }
 

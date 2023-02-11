@@ -15,7 +15,7 @@
 
 use crate::errors::*;
 use opendal::Operator;
-use opendal::{layers::LoggingLayer, services::gcs};
+use opendal::{layers::LoggingLayer, services::Gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
 use url::Url;
 
@@ -47,7 +47,7 @@ impl GCSCache {
         rw_mode: RWMode,
         credential_url: Option<&str>,
     ) -> Result<Operator> {
-        let mut builder = gcs::Builder::default();
+        let mut builder = Gcs::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
 
@@ -70,8 +70,10 @@ impl GCSCache {
         }
         builder.signer(signer_builder.build()?);
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }
 

@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use opendal::layers::LoggingLayer;
-use opendal::services::memcached;
+use opendal::services::Memcached;
 use opendal::Operator;
 
 use crate::errors::*;
@@ -26,11 +26,13 @@ pub struct MemcachedCache;
 
 impl MemcachedCache {
     pub fn build(url: &str, expiration: u32) -> Result<Operator> {
-        let mut builder = memcached::Builder::default();
+        let mut builder = Memcached::default();
         builder.endpoint(url);
         builder.default_ttl(Duration::from_secs(expiration as u64));
 
-        let op: Operator = builder.build()?.into();
-        Ok(op.layer(LoggingLayer::default()))
+        let op = Operator::create(builder)?
+            .layer(LoggingLayer::default())
+            .finish();
+        Ok(op)
     }
 }
