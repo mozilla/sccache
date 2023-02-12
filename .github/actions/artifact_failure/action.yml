@@ -10,6 +10,10 @@ runs:
     - name: pack failure artifacts
       shell: bash
       run: |
+        echo "Current running processes"
+        ps uax
+        echo "Processes that access current dir"
+        lsof +D `pwd` || true
         killall sccache || true
         killall sccache-dist || true
 
@@ -17,9 +21,8 @@ runs:
             --exclude='docs' \
             --exclude='bins' \
             --exclude='.git' \
-            --exclude='failure-*' \
-            -zcf failure-${{ inputs.name }}.tar.gz .
+            -zcf target/failure-${{ inputs.name }}.tar.gz .
     - uses: actions/upload-artifact@v3
       with:
         name: ${{ inputs.name }}
-        path: failure-${{ inputs.name }}.tar.gz
+        path: target/failure-${{ inputs.name }}.tar.gz
