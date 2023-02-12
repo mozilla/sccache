@@ -32,7 +32,7 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.26.2", optional=true }
+opendal = { version= "0.27.0", optional=true }
 reqsign = {version="0.8.1", optional=true}
 chrono = { version = "0.4.23", optional = true }
 clap = { version = "4.0.32", features = ["derive", "env", "wrap_help"] }
@@ -120,11 +120,12 @@ features = [
 
 [features]
 default = ["all"]
-all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha"]
+all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha", "webdav"]
 azure = ["opendal","reqsign"]
 s3 = ["opendal","reqsign"]
 gcs = ["opendal","reqsign", "url", "reqwest/blocking"]
 gha = ["opendal"]
+webdav = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
 redis = ["url", "opendal/services-redis"]
