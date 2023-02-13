@@ -652,6 +652,7 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+   // ======= WebDAV =======
     let webdav = if let Ok(endpoint) = env::var("SCCACHE_WEBDAV_ENDPOINT") {
         let key_prefix = env::var("SCCACHE_WEBDAV_KEY_PREFIX")
             .ok()
