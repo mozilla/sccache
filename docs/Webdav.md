@@ -1,4 +1,4 @@
-# Webdav
+# WebDAV
 
 Set `SCCACHE_WEBDAV_ENDPOINT` to a wevdav service endpoint to store cache in a webdav service. Set `SCCACHE_WEBDAV_KEY_PREFIX` to specify the key prefix of cache.
 
