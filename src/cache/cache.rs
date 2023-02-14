@@ -25,6 +25,8 @@ use crate::cache::memcached::MemcachedCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
+#[cfg(feature = "webdav")]
+use crate::cache::webdav::WebdavCache;
 use crate::config::Config;
 #[cfg(any(
     feature = "azure",
@@ -32,7 +34,8 @@ use crate::config::Config;
     feature = "gha",
     feature = "memcached",
     feature = "redis",
-    feature = "s3"
+    feature = "s3",
+    feature = "webdav"
 ))]
 use crate::config::{self, CacheType};
 use std::fmt;
@@ -544,6 +547,13 @@ pub fn storage_from_config(
                 )
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
+                return Ok(Arc::new(storage));
+            }
+            #[cfg(feature = "webdav")]
+            CacheType::Webdav(ref c) => {
+                debug!("Init webdav cache with endpoint {}", c.endpoint);
+                let storage = WebdavCache::build(&c.endpoint, &c.key_prefix)
+                    .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]

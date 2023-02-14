@@ -27,5 +27,7 @@ pub mod memcached;
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
+#[cfg(feature = "webdav")]
+pub mod webdav;
 
 pub use crate::cache::cache::*;

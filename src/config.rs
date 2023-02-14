@@ -226,6 +226,13 @@ pub struct RedisCacheConfig {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WebdavCacheConfig {
+    pub endpoint: String,
+    pub key_prefix: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct S3CacheConfig {
     pub bucket: String,
     pub region: Option<String>,
@@ -243,6 +250,7 @@ pub enum CacheType {
     Memcached(MemcachedCacheConfig),
     Redis(RedisCacheConfig),
     S3(S3CacheConfig),
+    Webdav(WebdavCacheConfig),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -255,6 +263,7 @@ pub struct CacheConfigs {
     pub memcached: Option<MemcachedCacheConfig>,
     pub redis: Option<RedisCacheConfig>,
     pub s3: Option<S3CacheConfig>,
+    pub webdav: Option<WebdavCacheConfig>,
 }
 
 impl CacheConfigs {
@@ -269,6 +278,7 @@ impl CacheConfigs {
             memcached,
             redis,
             s3,
+            webdav,
         } = self;
 
         let cache_type = s3
@@ -277,7 +287,8 @@ impl CacheConfigs {
             .or_else(|| memcached.map(CacheType::Memcached))
             .or_else(|| gcs.map(CacheType::GCS))
             .or_else(|| gha.map(CacheType::GHA))
-            .or_else(|| azure.map(CacheType::Azure));
+            .or_else(|| azure.map(CacheType::Azure))
+            .or_else(|| webdav.map(CacheType::Webdav));
 
         let fallback = disk.unwrap_or_default();
 
@@ -294,6 +305,7 @@ impl CacheConfigs {
             memcached,
             redis,
             s3,
+            webdav,
         } = other;
 
         if azure.is_some() {
@@ -316,6 +328,9 @@ impl CacheConfigs {
         }
         if s3.is_some() {
             self.s3 = s3
+        }
+        if webdav.is_some() {
+            self.webdav = webdav
         }
     }
 }
@@ -637,6 +652,24 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // ======= WebDAV =======
+    let webdav = if let Ok(endpoint) = env::var("SCCACHE_WEBDAV_ENDPOINT") {
+        let key_prefix = env::var("SCCACHE_WEBDAV_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+
+        Some(WebdavCacheConfig {
+            endpoint,
+            key_prefix,
+        })
+    } else {
+        None
+    };
+
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -660,6 +693,7 @@ fn config_from_env() -> Result<EnvConfig> {
         memcached,
         redis,
         s3,
+        webdav,
     };
 
     Ok(EnvConfig { cache })
@@ -1126,6 +1160,10 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
+
+[cache.webdav]
+endpoint = "http://127.0.0.1:8080"
+key_prefix = "webdavprefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1165,6 +1203,10 @@ no_credentials = true
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
                 }),
+                webdav: Some(WebdavCacheConfig {
+                    endpoint: "http://127.0.0.1:8080".to_string(),
+                    key_prefix: "webdavprefix".into(),
+                })
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
