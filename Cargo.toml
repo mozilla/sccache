@@ -69,7 +69,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "io-util", "time", "net"
 tokio-serde = "0.8"
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = "0.4"
-toml = "0.5"
+toml = "0.7"
 url = { version = "2", optional = true }
 uuid = { version = "1.2", features = ["v4"] }
 walkdir = "2"
