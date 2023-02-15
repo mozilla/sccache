@@ -99,7 +99,7 @@ export RUSTC_WRAPPER=/path/to/sccache
 cargo build
 ```
 
-sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
+sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
