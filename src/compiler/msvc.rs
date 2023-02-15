@@ -353,7 +353,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("EP", SuppressCompilation),
     msvc_take_arg!("F", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("FA", OsString, Concatenated, TooHard),
-    msvc_flag!("FC", TooHardFlag), // Use absolute paths in error messages.
+    msvc_flag!("FC", PassThrough), // Use absolute paths in error messages, does not affect caching, only the debug output of the build
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("FS", Ignore),
@@ -364,7 +364,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
-    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath), // allows users to specify the name for a PCH (when using /Yu or /Yc), PCHs are not supported in sccache.
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
     msvc_flag!("GA", PassThrough),
@@ -382,7 +382,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Gd", PassThrough),
     msvc_flag!("Ge", PassThrough),
     msvc_flag!("Gh", PassThrough),
-    msvc_flag!("Gm", TooHardFlag),
+    msvc_flag!("Gm", TooHardFlag), // enable minimal rebuild, we do not support this
+    msvc_flag!("Gm-", PassThrough), // disable minimal rebuild; we prefer no minimal rebuild, so marking it as disabled is fine
     msvc_flag!("Gr", PassThrough),
     msvc_take_arg!("Gs", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Gv", PassThrough),
@@ -443,6 +444,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("W4", PassThrough),
     msvc_flag!("WL", PassThrough),
     msvc_flag!("WX", PassThrough),
+    msvc_flag!("WX-", PassThrough),
     msvc_flag!("Wall", PassThrough),
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
@@ -507,7 +509,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("nologo", PassThrough),
     msvc_take_arg!("o", PathBuf, Separated, Output), // Deprecated but valid
     msvc_flag!("openmp", PassThrough),
+    msvc_flag!("openmp-", PassThrough),
     msvc_flag!("openmp:experimental", PassThrough),
+    msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
     msvc_flag!("sdl", PassThrough),
     msvc_flag!("sdl-", PassThrough),
