@@ -61,27 +61,39 @@ mod client {
             toolchain_configs: &[config::DistToolchainConfig],
         ) -> Result<Self> {
             let cache_dir = cache_dir.to_owned();
-            fs::create_dir_all(&cache_dir)
-                .context("failed to create top level toolchain cache dir")?;
+            fs::create_dir_all(&cache_dir).context(format!(
+                "failed to create top level toolchain cache dir: {}",
+                cache_dir.display()
+            ))?;
 
             let toolchain_creation_dir = cache_dir.join("toolchain_tmp");
             if toolchain_creation_dir.exists() {
-                fs::remove_dir_all(&toolchain_creation_dir)
-                    .context("failed to clean up temporary toolchain creation directory")?
+                fs::remove_dir_all(&toolchain_creation_dir).context(format!(
+                    "failed to clean up temporary toolchain creation directory: {}",
+                    toolchain_creation_dir.display()
+                ))?
             }
-            fs::create_dir(&toolchain_creation_dir)
-                .context("failed to create temporary toolchain creation directory")?;
+            fs::create_dir(&toolchain_creation_dir).context(format!(
+                "failed to create temporary toolchain creation directory: {}",
+                toolchain_creation_dir.display()
+            ))?;
 
             let weak_map_path = cache_dir.join("weak_map.json");
             if !weak_map_path.exists() {
                 fs::File::create(&weak_map_path)
                     .and_then(|mut f| f.write_all(b"{}"))
-                    .context("failed to create new toolchain weak map file")?
+                    .context(format!(
+                        "failed to create new toolchain weak map file: {}",
+                        weak_map_path.display()
+                    ))?
             }
-            let weak_map = fs::File::open(weak_map_path)
+            let weak_map = fs::File::open(&weak_map_path)
                 .map_err(Error::from)
                 .and_then(|f| serde_json::from_reader(f).map_err(Error::from))
-                .context("failed to load toolchain weak map")?;
+                .context(format!(
+                    "failed to load toolchain weak map: {}",
+                    weak_map_path.display()
+                ))?;
 
             let tc_cache_dir = cache_dir.join("tc");
             let cache = TcCache::new(&tc_cache_dir, cache_size)
