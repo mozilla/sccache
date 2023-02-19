@@ -506,6 +506,14 @@ pub fn daemonize() -> Result<()> {
     Ok(())
 }
 
+/// Disable connection pool to avoid broken connection between runtime
+pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .expect("http client must build with success")
+}
+
 #[cfg(test)]
 mod tests {
     use super::OsStrExt;

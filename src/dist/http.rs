@@ -250,6 +250,7 @@ pub mod urls {
 #[cfg(feature = "dist-server")]
 mod server {
     use crate::jwt;
+    use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use rand::{rngs::OsRng, RngCore};
@@ -685,7 +686,7 @@ mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(reqwest::blocking::Client::new()),
+                client: Mutex::new(new_reqwest_blocking_client()),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -939,14 +940,14 @@ mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: reqwest::blocking::Client::new(),
+                client: new_reqwest_blocking_client(),
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = reqwest::blocking::Client::new();
+                let client = new_reqwest_blocking_client();
                 loop {
                     trace!("Performing heartbeat");
                     match bincode_req(
