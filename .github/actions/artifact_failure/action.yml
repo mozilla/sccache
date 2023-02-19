@@ -25,4 +25,6 @@ runs:
     - uses: actions/upload-artifact@v3
       with:
         name: ${{ inputs.name }}
-        path: target/failure-${{ inputs.name }}.tar.gz
+        path: |
+          target/failure-${{ inputs.name }}.tar.gz
+          /tmp/sccache_*.txt

@@ -47,13 +47,14 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
         .arg("--start-server")
         // Uncomment following lines to debug locally.
         .env("SCCACHE_LOG", "debug")
-        .env("SCCACHE_ERROR_LOG", "sccache_log.txt")
+        .env("SCCACHE_ERROR_LOG", "/tmp/sccache_local_daemon.txt")
         .env("SCCACHE_CONF", cfg_path)
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
         .status()
         .unwrap()
         .success();
 }
+
 pub fn stop_local_daemon() {
     trace!("sccache --stop-server");
     drop(
