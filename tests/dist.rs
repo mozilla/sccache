@@ -17,6 +17,7 @@ use sccache::dist::{
 };
 use std::ffi::OsStr;
 use std::path::Path;
+use std::time::Duration;
 
 use sccache::errors::*;
 
@@ -115,6 +116,8 @@ fn test_dist_restartedserver() {
     basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
     system.restart_server(&server_handle);
+    // Give our server some time to get start.
+    std::thread::sleep(Duration::from_secs(1));
     basic_compile(tmpdir, &sccache_cfg_path, &sccache_cached_cfg_path);
 
     get_stats(|info| {
