@@ -43,7 +43,7 @@ fs-err = "2.9"
 futures = "0.3"
 gzp = { version = "0.11.1", default-features = false, features = ["deflate_rust"]  }
 http = "0.2"
-hyper = { version = "0.14.10", optional = true, features = ["server"] }
+hyper = { version = "0.14.24", optional = true, features = ["server"] }
 jobserver = "0.1"
 jsonwebtoken = { version = "8", optional = true }
 lazy_static = "1.0.0"
