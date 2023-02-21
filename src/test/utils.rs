@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use crate::mock_command::*;
+use fs::File;
+use fs_err as fs;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
-use fs_err as fs;
-use fs::File;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};

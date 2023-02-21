@@ -54,8 +54,8 @@ mod toolchain_imp {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
     use super::tarify_path;
-    use std::collections::BTreeMap;
     use fs_err as fs;
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::path::{Component, Path, PathBuf};
     use std::process;

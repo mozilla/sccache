@@ -25,11 +25,11 @@ use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use fs::File;
+use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use fs_err as fs;
-use fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -436,7 +436,8 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
 #[cfg(test)]
 mod test {
     use super::{
-        dist, fs, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments, ARGS,
+        dist, fs, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
+        ARGS,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;

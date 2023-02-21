@@ -30,12 +30,12 @@ use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
+use fs::File;
+#[cfg(feature = "dist-client")]
+use fs_err as fs;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-#[cfg(feature = "dist-client")]
-use fs_err as fs;
-use fs::File;
 use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};

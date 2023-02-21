@@ -18,8 +18,8 @@ mod client {
     use crate::dist::Toolchain;
     use crate::lru_disk_cache::Error as LruError;
     use anyhow::{bail, Context, Error, Result};
-    use std::collections::{HashMap, HashSet};
     use fs_err as fs;
+    use std::collections::{HashMap, HashSet};
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
