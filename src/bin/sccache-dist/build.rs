@@ -21,7 +21,7 @@ use sccache::dist::{
 };
 use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{hash_map, HashMap};
-use std::fs;
+use fs_err as fs;
 use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};

@@ -34,8 +34,8 @@ use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 #[cfg(feature = "dist-client")]
-use std::fs;
-use std::fs::File;
+use fs_err as fs;
+use fs::File;
 use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -1231,7 +1231,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
-    use std::fs::{self, File};
+    use fs::File;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;

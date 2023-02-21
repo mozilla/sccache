@@ -12,7 +12,7 @@ use predicates::prelude::*;
 use serial_test::serial;
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::fs;
+use fs_err as fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

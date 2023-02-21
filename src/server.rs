@@ -36,7 +36,8 @@ use number_prefix::NumberPrefix;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::metadata;
+use fs_err as fs;
+use fs::metadata;
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
@@ -114,7 +115,7 @@ fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Resu
 
 #[cfg(windows)]
 fn notify_server_startup(name: &Option<OsString>, status: ServerStartup) -> Result<()> {
-    use std::fs::OpenOptions;
+    use fs::OpenOptions;
 
     let name = match *name {
         Some(ref s) => s,

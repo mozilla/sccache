@@ -39,7 +39,7 @@ use crate::config::Config;
 ))]
 use crate::config::{self, CacheType};
 use std::fmt;
-use std::fs;
+use fs_err as fs;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

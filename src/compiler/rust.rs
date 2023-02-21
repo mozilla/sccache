@@ -42,7 +42,7 @@ use std::env::consts::DLL_EXTENSION;
 use std::env::consts::{DLL_PREFIX, EXE_EXTENSION};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
+use fs_err as fs;
 use std::future::Future;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
@@ -280,7 +280,7 @@ where
     T: AsRef<Path>,
     U: AsRef<Path>,
 {
-    let mut f = fs::File::open(file)?;
+    let mut f = fs::File::open(file.as_ref())?;
     let mut deps = String::new();
     f.read_to_string(&mut deps)?;
     Ok((parse_dep_info(&deps, cwd), parse_env_dep_info(&deps)))
@@ -2407,7 +2407,7 @@ mod test {
     use crate::test::utils::*;
     use itertools::Itertools;
     use std::ffi::OsStr;
-    use std::fs::File;
+    use fs::File;
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
 

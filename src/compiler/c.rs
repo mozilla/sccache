@@ -28,7 +28,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs;
+use fs_err as fs;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
