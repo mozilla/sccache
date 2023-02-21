@@ -20,10 +20,11 @@ use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArgum
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use fs::File;
+use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -871,7 +872,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::fs::File;
+    use fs::File;
     use std::io::Write;
 
     use super::*;

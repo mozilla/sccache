@@ -1239,7 +1239,7 @@ mod client {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
-                    let toolchain_file = tokio::fs::File::from_std(toolchain_file);
+                    let toolchain_file = tokio::fs::File::from_std(toolchain_file.into());
                     let toolchain_file_stream = tokio_util::io::ReaderStream::new(toolchain_file);
                     let body = Body::wrap_stream(toolchain_file_stream);
                     let req = req.bearer_auth(job_alloc.auth).body(body);

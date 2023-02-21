@@ -1,12 +1,13 @@
 pub mod lru_cache;
 
+use fs::File;
+use fs_err as fs;
 use std::borrow::Borrow;
 use std::boxed::Box;
 use std::collections::hash_map::RandomState;
 use std::error::Error as StdError;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, File};
 use std::hash::BuildHasher;
 use std::io;
 use std::io::prelude::*;
@@ -315,10 +316,10 @@ impl LruDiskCache {
 
 #[cfg(test)]
 mod tests {
+    use super::fs::{self, File};
     use super::{Error, LruDiskCache};
 
     use filetime::{set_file_times, FileTime};
-    use std::fs::{self, File};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;

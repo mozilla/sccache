@@ -8,11 +8,11 @@ use once_cell::sync::Lazy;
 
 use assert_cmd::prelude::*;
 use chrono::Local;
+use fs_err as fs;
 use predicates::prelude::*;
 use serial_test::serial;
 use std::convert::Infallible;
 use std::ffi::OsString;
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

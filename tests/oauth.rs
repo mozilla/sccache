@@ -1,7 +1,7 @@
 #![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
 
-use std::fs;
+use fs_err as fs;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
