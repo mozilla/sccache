@@ -23,10 +23,11 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
+use fs::{File, OpenOptions};
+use fs_err as fs;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;

@@ -14,6 +14,7 @@
 
 use anyhow::{anyhow, bail, Context, Error, Result};
 use flate2::read::GzDecoder;
+use fs_err as fs;
 use libmount::Overlay;
 use sccache::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
@@ -21,7 +22,6 @@ use sccache::dist::{
 };
 use sccache::lru_disk_cache::Error as LruError;
 use std::collections::{hash_map, HashMap};
-use std::fs;
 use std::io;
 use std::iter;
 use std::path::{self, Path, PathBuf};

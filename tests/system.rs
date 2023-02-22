@@ -24,6 +24,8 @@ use crate::harness::{
     write_json_cfg, write_source, zero_stats,
 };
 use assert_cmd::prelude::*;
+use fs::File;
+use fs_err as fs;
 use log::Level::Trace;
 use predicates::prelude::*;
 use regex::Regex;
@@ -31,7 +33,6 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

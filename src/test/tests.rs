@@ -19,10 +19,11 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
+use fs::File;
+use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
 #[cfg(not(target_os = "macos"))]
 use serial_test::serial;
-use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
 use std::net::TcpListener;

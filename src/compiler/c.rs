@@ -24,11 +24,11 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
+use fs_err as fs;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;

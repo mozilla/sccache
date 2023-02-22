@@ -22,10 +22,11 @@ use crate::compiler::{
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::run_input_output;
 use crate::{counted_array, dist};
+use fs::File;
+use fs_err as fs;
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
