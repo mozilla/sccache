@@ -22,9 +22,6 @@ pub use self::server::{
 
 mod common {
     use http::header;
-    use http::header::CONNECTION;
-    use http::header::CONTENT_LENGTH;
-    use http::header::CONTENT_TYPE;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::fmt;
@@ -64,9 +61,12 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.header(CONTENT_TYPE, mime::APPLICATION_OCTET_STREAM.to_string())
-                .header(CONTENT_LENGTH, bytes.len())
-                .body(bytes)
+            self.header(
+                header::CONTENT_TYPE,
+                mime::APPLICATION_OCTET_STREAM.to_string(),
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
             self.bearer_auth(token)
@@ -79,7 +79,7 @@ mod common {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let res = req.header(CONNECTION, "close").send().await?;
+        let res = req.header(header::CONNECTION, "close").send().await?;
 
         let status = res.status();
         let bytes = res.bytes().await?;
@@ -250,6 +250,7 @@ pub mod urls {
 #[cfg(feature = "dist-server")]
 mod server {
     use crate::jwt;
+    use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use rand::{rngs::OsRng, RngCore};
@@ -685,7 +686,7 @@ mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(reqwest::blocking::Client::new()),
+                client: Mutex::new(new_reqwest_blocking_client()),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -939,14 +940,14 @@ mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: reqwest::blocking::Client::new(),
+                client: new_reqwest_blocking_client(),
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = reqwest::blocking::Client::new();
+                let client = new_reqwest_blocking_client();
                 loop {
                     trace!("Performing heartbeat");
                     match bincode_req(
@@ -1152,6 +1153,8 @@ mod client {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
                 .timeout(timeout)
+                // Disable keep-alive
+                .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
             // Use the updated certificates

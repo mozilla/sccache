@@ -31,7 +31,6 @@ use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunComm
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
 use fs::File;
-#[cfg(feature = "dist-client")]
 use fs_err as fs;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};

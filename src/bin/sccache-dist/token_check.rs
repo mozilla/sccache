@@ -1,7 +1,7 @@
 use crate::jwt;
 use anyhow::{bail, Context, Result};
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccache::util::BASE64_URL_SAFE_ENGINE;
+use sccache::util::{new_reqwest_blocking_client, BASE64_URL_SAFE_ENGINE};
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
@@ -97,7 +97,7 @@ impl MozillaCheck {
     pub fn new(required_groups: Vec<String>) -> Self {
         Self {
             auth_cache: Mutex::new(HashMap::new()),
-            client: reqwest::blocking::Client::new(),
+            client: new_reqwest_blocking_client(),
             required_groups,
         }
     }
@@ -266,7 +266,7 @@ impl ProxyTokenCheck {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: new_reqwest_blocking_client(),
             maybe_auth_cache,
             url,
         }

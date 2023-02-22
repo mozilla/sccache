@@ -82,10 +82,10 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-20.04' || matrix.os == 'ubuntu-22.04' }}
 
       - name: Build tests
-        run: cargo test --no-run --locked --all-targets --verbose ${{ matrix.extra_args }}
+        run: cargo test --no-run --locked --all-targets ${{ matrix.extra_args }}
 
       - name: Run tests
-        run: cargo test --locked --all-targets --verbose ${{ matrix.extra_args }}
+        run: cargo test --locked --all-targets ${{ matrix.extra_args }}
 
       - name: Upload failure
         if: failure()
@@ -150,7 +150,7 @@ jobs:
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
 
       - name: Build
-        run: cargo build --locked --release --verbose --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
@@ -211,7 +211,7 @@ jobs:
         run: cargo install grcov
 
       - name: Execute tests
-        run: cargo test --no-fail-fast --locked --all-targets --verbose ${{ matrix.extra_args }}
+        run: cargo test --no-fail-fast --locked --all-targets ${{ matrix.extra_args }}
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""

@@ -507,6 +507,23 @@ pub fn daemonize() -> Result<()> {
     Ok(())
 }
 
+/// Disable connection pool to avoid broken connection between runtime
+///
+/// # TODO
+///
+/// We should refactor sccache current model to make sure that we only have
+/// one tokio runtime and keep reqwest alive inside it.
+///
+/// ---
+///
+/// More details could be found at https://github.com/mozilla/sccache/pull/1563
+pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .expect("http client must build with success")
+}
+
 #[cfg(test)]
 mod tests {
     use super::OsStrExt;
