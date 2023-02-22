@@ -36,6 +36,8 @@ use fs_err as fs;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+#[cfg(not(feature = "dist-client"))]
+use std::fs;
 use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};

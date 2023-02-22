@@ -22,9 +22,6 @@ pub use self::server::{
 
 mod common {
     use http::header;
-    use http::header::CONNECTION;
-    use http::header::CONTENT_LENGTH;
-    use http::header::CONTENT_TYPE;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::fmt;
@@ -64,9 +61,12 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.header(CONTENT_TYPE, mime::APPLICATION_OCTET_STREAM.to_string())
-                .header(CONTENT_LENGTH, bytes.len())
-                .body(bytes)
+            self.header(
+                header::CONTENT_TYPE,
+                mime::APPLICATION_OCTET_STREAM.to_string(),
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
             self.bearer_auth(token)
@@ -79,7 +79,7 @@ mod common {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let res = req.header(CONNECTION, "close").send().await?;
+        let res = req.header(header::CONNECTION, "close").send().await?;
 
         let status = res.status();
         let bytes = res.bytes().await?;
