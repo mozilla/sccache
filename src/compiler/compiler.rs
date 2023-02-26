@@ -1114,9 +1114,21 @@ __VERSION__
         match kind {
             "clang" | "clang++" | "apple-clang" | "apple-clang++" => {
                 debug!("Found {}", kind);
-                return detect_clang_compiler(creator, executable, env, pool, kind, version)
-                    .await
-                    .map(|a| Box::new(a) as Box<dyn Compiler<T>>);
+
+                let supports_fminimize_whitespace =
+                    detect_fminimize_whitespace_support(creator, &executable, env, &pool).await;
+                return CCompiler::new(
+                    Clang {
+                        clangplusplus: kind.ends_with("++"),
+                        is_appleclang: kind.starts_with("apple-"),
+                        has_fminimize_whitespace: supports_fminimize_whitespace,
+                        version: version.clone(),
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
             "diab" => {
                 debug!("Found diab");
@@ -1217,31 +1229,37 @@ fn extract_compiler_version(version_line: Option<&str>) -> Option<String> {
 }
 
 /// Detect a Clang compiler and its features.
-async fn detect_clang_compiler<T>(
+async fn detect_fminimize_whitespace_support<T>(
     creator: T,
-    executable: PathBuf,
+    executable: &PathBuf,
     env: Vec<(OsString, OsString)>,
-    pool: tokio::runtime::Handle,
-    kind: &str,
-    version: Option<String>,
-) -> Result<CCompiler<Clang>>
+    pool: &tokio::runtime::Handle,
+) -> bool
 where
     T: CommandCreatorSync,
 {
     // Content does not matter, we are just checking whether the compiler accepts a flag.
     let test = b"__VERSION__".to_vec();
     let (tempdir, src) =
-        write_temp_file(&pool, "test_minimize_whitespace.c".as_ref(), test).await?;
+        match write_temp_file(pool, "test_minimize_whitespace.c".as_ref(), test).await {
+            Err(_) => return false,
+            Ok((tempdir, src)) => (tempdir, src),
+        };
 
     // Check whether the compiler also supports the -E -fminimize-whitespace flag.
     let mut cmd = creator.clone().new_command_sync(&executable);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .envs(env.iter().map(|s| (&s.0, &s.1)));
-    cmd.arg("-E").arg("-fminimize-whitespace").arg(src);
+        .envs(env.iter().map(|s| (&s.0, &s.1)))
+        .arg("-E")
+        .arg("-fminimize-whitespace")
+        .arg(src);
 
     debug!("testing compiler flag {:?}", cmd);
-    let child = cmd.spawn().await?;
+    let child = match cmd.spawn().await {
+        Err(_) => return false,
+        Ok(child) => child,
+    };
     let output = child.wait_with_output().await;
     debug!("output {:?}", output);
     let supports_fminimize_whitespace = match output {
@@ -1255,17 +1273,7 @@ where
 
     drop(tempdir);
 
-    return CCompiler::new(
-        Clang {
-            clangplusplus: kind.ends_with("++"),
-            is_appleclang: kind.starts_with("apple-"),
-            has_fminimize_whitespace: supports_fminimize_whitespace,
-            version: version.clone(),
-        },
-        executable,
-        &pool,
-    )
-    .await;
+    supports_fminimize_whitespace
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
@@ -1382,17 +1390,9 @@ mod test {
                 "\nclang: error: unknown argument: '-fminimize-whitespace'\n",
             )),
         );
-        let c = detect_clang_compiler(
-            creator,
-            f.bins[0].clone(),
-            vec![],
-            pool.clone(),
-            "clang++",
-            Some("\"Clang 14.0.0\"".to_string()),
-        )
-        .wait()
-        .unwrap();
-        assert!(!c.compiler.has_fminimize_whitespace);
+        let supports_fminimize_whitespace =
+            detect_fminimize_whitespace_support(creator, &f.bins[0], vec![], pool).wait();
+        assert!(!supports_fminimize_whitespace);
     }
 
     #[test]
@@ -1403,17 +1403,9 @@ mod test {
         let pool = runtime.handle();
 
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let c = detect_clang_compiler(
-            creator,
-            f.bins[0].clone(),
-            vec![],
-            pool.clone(),
-            "clang++",
-            Some("\"Clang 15.0.0\"".to_string()),
-        )
-        .wait()
-        .unwrap();
-        assert!(c.compiler.has_fminimize_whitespace);
+        let supports_fminimize_whitespace =
+            detect_fminimize_whitespace_support(creator, &f.bins[0], vec![], pool).wait();
+        assert!(supports_fminimize_whitespace);
     }
 
     #[test]
