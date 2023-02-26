@@ -405,7 +405,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
-                !c.name("apple") != None,
+                c.name("apple").is_some(),
             ),
             None => panic!(
                 "Version info not found in --version output: {}",

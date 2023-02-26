@@ -32,6 +32,7 @@ use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
 use fs::File;
 use fs_err as fs;
+use std::any::Any;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -137,6 +138,9 @@ where
         env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<dyn Compiler<T>>;
+
+    #[allow(dead_code)]
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
@@ -1091,6 +1095,8 @@ __VERSION__
         .await
         .context("failed to read child output")?;
 
+    drop(tempdir);
+
     let stdout = match str::from_utf8(&output.stdout) {
         Ok(s) => s,
         Err(_) => bail!("Failed to parse output"),
@@ -1104,56 +1110,13 @@ __VERSION__
         }
     });
     if let Some(kind) = lines.next() {
-        // Unescape the version string. We only remove surrounding quotes assuming that the version string does not
-        // contain characters that needed escaping. If the compiler did not know the macro (it is a gcc extension and
-        // not supported by eg. msvc), the line will still contain __VERSION__ and we have no version information.
-        // In case the macro was expanded to something other than a quoted string, still assume that it represents
-        // the compiler version.
-        let version = match lines.next() {
-            Some("__VERSION__") => None,
-            Some(s) if s.len() >= 2 && s.starts_with('\"') && s.ends_with('\"') => {
-                Some(s[1..s.len() - 1].to_owned())
-            }
-            Some(s) if s.trim().is_empty() => None,
-            Some(s) => Some(s.to_owned()),
-            None => None,
-        };
+        let version = extract_compiler_version(lines.next());
         match kind {
             "clang" | "clang++" | "apple-clang" | "apple-clang++" => {
                 debug!("Found {}", kind);
-
-                // Check whether the compiler also supports the -E -fminimize-whitespace flag
-                let mut pcmd = creator.clone().new_command_sync(&executable);
-                pcmd.stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .envs(env.iter().map(|s| (&s.0, &s.1)));
-                pcmd.arg("-E").arg("-fminimize-whitespace").arg(src);
-
-                debug!("testing compiler flag {:?}", pcmd);
-                let child = pcmd.spawn().await?;
-                let output = child.wait_with_output().await;
-                debug!("output {:?}", output);
-                let supports_fminimize_whitespace = match output {
-                    Err(_) => false,
-                    Ok(o) => o.status.success(),
-                };
-                debug!(
-                    "Supports -fminimize-whitespace: {}",
-                    supports_fminimize_whitespace
-                );
-
-                return CCompiler::new(
-                    Clang {
-                        clangplusplus: kind.ends_with("++"),
-                        is_appleclang: kind.starts_with("apple-"),
-                        has_fminimize_whitespace: supports_fminimize_whitespace,
-                        version: version.clone(),
-                    },
-                    executable,
-                    &pool,
-                )
-                .await
-                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+                return detect_clang_compiler(creator, executable, env, pool, kind, version)
+                    .await
+                    .map(|a| Box::new(a) as Box<dyn Compiler<T>>);
             }
             "diab" => {
                 debug!("Found diab");
@@ -1227,14 +1190,82 @@ __VERSION__
         }
     }
 
-    drop(tempdir);
-
     let stderr = String::from_utf8_lossy(&output.stderr);
     debug!("nothing useful in detection output {:?}", stdout);
     debug!("compiler status: {}", output.status);
     debug!("compiler stderr:\n{}", stderr);
 
     bail!(stderr.into_owned())
+}
+
+/// Extract the version of the compiler as it self-identifies from its __VERSION__ expansion.
+fn extract_compiler_version(version_line: Option<&str>) -> Option<String> {
+    // We only remove surrounding quotes assuming that the version string does not
+    // contain characters that needed escaping. If the compiler did not know the macro (it is a gcc extension and
+    // not supported by eg. msvc), the line will still contain __VERSION__ and we have no version information.
+    // In case the macro was expanded to something other than a quoted string, still assume that it represents
+    // the compiler version.
+    match version_line.map(|v| v.trim()) {
+        Some("__VERSION__") => None,
+        Some(s) if s.len() >= 2 && s.starts_with('\"') && s.ends_with('\"') => {
+            Some(s[1..s.len() - 1].to_owned())
+        }
+        Some(s) if s.trim().is_empty() => None,
+        Some(s) => Some(s.to_owned()),
+        None => None,
+    }
+}
+
+/// Detect a Clang compiler and its features.
+async fn detect_clang_compiler<T>(
+    creator: T,
+    executable: PathBuf,
+    env: Vec<(OsString, OsString)>,
+    pool: tokio::runtime::Handle,
+    kind: &str,
+    version: Option<String>,
+) -> Result<CCompiler<Clang>>
+where
+    T: CommandCreatorSync,
+{
+    // Content does not matter, we are just checking whether the compiler accepts a flag.
+    let test = b"__VERSION__".to_vec();
+    let (tempdir, src) =
+        write_temp_file(&pool, "test_minimize_whitespace.c".as_ref(), test).await?;
+
+    // Check whether the compiler also supports the -E -fminimize-whitespace flag.
+    let mut cmd = creator.clone().new_command_sync(&executable);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(env.iter().map(|s| (&s.0, &s.1)));
+    cmd.arg("-E").arg("-fminimize-whitespace").arg(src);
+
+    debug!("testing compiler flag {:?}", cmd);
+    let child = cmd.spawn().await?;
+    let output = child.wait_with_output().await;
+    debug!("output {:?}", output);
+    let supports_fminimize_whitespace = match output {
+        Err(_) => false,
+        Ok(o) => o.status.success(),
+    };
+    debug!(
+        "Supports -fminimize-whitespace: {}",
+        supports_fminimize_whitespace
+    );
+
+    drop(tempdir);
+
+    return CCompiler::new(
+        Clang {
+            clangplusplus: kind.ends_with("++"),
+            is_appleclang: kind.starts_with("apple-"),
+            has_fminimize_whitespace: supports_fminimize_whitespace,
+            version: version.clone(),
+        },
+        executable,
+        &pool,
+    )
+    .await;
 }
 
 /// If `executable` is a known compiler, return a `Box<Compiler>` containing information about it.
@@ -1267,6 +1298,31 @@ mod test {
     use std::time::Duration;
     use std::u64;
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn test_extract_compiler_version() {
+        // No version info provided
+        assert_eq!(extract_compiler_version(None), None);
+
+        // Clang and gcc expansion of __VERSION__
+        assert_eq!(
+            extract_compiler_version(Some(" \"Ubuntu Clang 14.0.0\" ")),
+            Some("Ubuntu Clang 14.0.0".to_string())
+        );
+        assert_eq!(
+            extract_compiler_version(Some(" \"11.3.0\" ")),
+            Some("11.3.0".to_string())
+        );
+
+        // msvc doesn't expand __VERSION__ at all, i.e. no version info provided
+        assert_eq!(extract_compiler_version(Some(" __VERSION__ ")), None);
+
+        // Fallback if __VERSION__ did not expand to a string literal
+        assert_eq!(
+            extract_compiler_version(Some(" Hello World ")),
+            Some("Hello World".to_string())
+        );
+    }
 
     #[test]
     fn test_detect_compiler_kind_gcc() {
@@ -1302,6 +1358,62 @@ mod test {
             .unwrap()
             .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+        assert!(
+            !c.as_any()
+                .downcast_ref::<CCompiler<Clang>>()
+                .unwrap()
+                .compiler
+                .has_fminimize_whitespace
+        );
+    }
+
+    #[test]
+    fn test_detect_clang_compiler_14() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(1),
+                "",
+                "\nclang: error: unknown argument: '-fminimize-whitespace'\n",
+            )),
+        );
+        let c = detect_clang_compiler(
+            creator,
+            f.bins[0].clone(),
+            vec![],
+            pool.clone(),
+            "clang++",
+            Some("\"Clang 14.0.0\"".to_string()),
+        )
+        .wait()
+        .unwrap();
+        assert!(!c.compiler.has_fminimize_whitespace);
+    }
+
+    #[test]
+    fn test_detect_clang_compiler_15() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let c = detect_clang_compiler(
+            creator,
+            f.bins[0].clone(),
+            vec![],
+            pool.clone(),
+            "clang++",
+            Some("\"Clang 15.0.0\"".to_string()),
+        )
+        .wait()
+        .unwrap();
+        assert!(c.compiler.has_fminimize_whitespace);
     }
 
     #[test]

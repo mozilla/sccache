@@ -31,6 +31,7 @@ use crate::{counted_array, dist};
 use filetime::FileTime;
 use fs_err as fs;
 use log::Level::Trace;
+use std::any::Any;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
@@ -534,6 +535,11 @@ where
 
     fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
+    }
+
+    #[allow(dead_code)]
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
