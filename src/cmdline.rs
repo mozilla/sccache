@@ -143,7 +143,7 @@ fn get_clap_command() -> clap::Command {
                 .help("package toolchain for distributed compilation")
                 .value_parser(clap::value_parser!(PathBuf))
                 .num_args(2)
-                .value_names(&["EXE", "OUT"]),
+                .value_names(["EXE", "OUT"]),
             flag_infer_long("stats-format")
                 .help("set output format of statistics")
                 .value_name("FMT")
@@ -156,7 +156,7 @@ fn get_clap_command() -> clap::Command {
         ])
         .group(
             ArgGroup::new("one_and_only_one")
-                .args(&[
+                .args([
                     "dist-auth",
                     "dist-status",
                     "show-stats",
@@ -278,7 +278,19 @@ pub fn try_parse() -> Result<Command> {
                 //
                 // FIXME: Maybe we should strip out `LD_PRELOAD` always?
                 if env::var_os("RUNNING_UNDER_RR").is_some() {
-                    env_vars.retain(|(k, _v)| k != "LD_PRELOAD" && k != "RUNNING_UNDER_RR");
+                    env_vars.retain(|(k, _v)| {
+                        k != "LD_PRELOAD"
+                            && k != "RUNNING_UNDER_RR"
+                            && k != "HOSTNAME"
+                            && k != "PWD"
+                            && k != "HOST"
+                            && k != "RPM_BUILD_ROOT"
+                            && k != "SOURCE_DATE_EPOCH"
+                            && k != "RPM_PACKAGE_RELEASE"
+                            && k != "MINICOM"
+                            && k != "DESTDIR"
+                            && k != "RPM_PACKAGE_VERSION"
+                    });
                 }
 
                 let cmd = matches

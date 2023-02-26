@@ -25,6 +25,8 @@ use crate::cache::memcached::MemcachedCache;
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
+#[cfg(feature = "webdav")]
+use crate::cache::webdav::WebdavCache;
 use crate::config::Config;
 #[cfg(any(
     feature = "azure",
@@ -32,11 +34,12 @@ use crate::config::Config;
     feature = "gha",
     feature = "memcached",
     feature = "redis",
-    feature = "s3"
+    feature = "s3",
+    feature = "webdav"
 ))]
 use crate::config::{self, CacheType};
+use fs_err as fs;
 use std::fmt;
-use std::fs;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -510,10 +513,13 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "memcached")]
-            CacheType::Memcached(config::MemcachedCacheConfig { ref url }) => {
+            CacheType::Memcached(config::MemcachedCacheConfig {
+                ref url,
+                ref expiration,
+            }) => {
                 debug!("Init memcached cache with url {url}");
 
-                let storage = MemcachedCache::new(url, pool)
+                let storage = MemcachedCache::build(url, *expiration)
                     .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
@@ -543,6 +549,13 @@ pub fn storage_from_config(
 
                 return Ok(Arc::new(storage));
             }
+            #[cfg(feature = "webdav")]
+            CacheType::Webdav(ref c) => {
+                debug!("Init webdav cache with endpoint {}", c.endpoint);
+                let storage = WebdavCache::build(&c.endpoint, &c.key_prefix)
+                    .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+                return Ok(Arc::new(storage));
+            }
             #[allow(unreachable_patterns)]
             _ => bail!("cache type is not enabled"),
         }
@@ -550,7 +563,7 @@ pub fn storage_from_config(
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(&dir, size, pool)))
+    Ok(Arc::new(DiskCache::new(dir, size, pool)))
 }
 
 #[cfg(test)]

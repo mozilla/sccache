@@ -2,7 +2,7 @@ use crate::dist::Toolchain;
 use crate::lru_disk_cache::Result as LruResult;
 use crate::lru_disk_cache::{LruDiskCache, ReadSeek};
 use anyhow::{anyhow, Result};
-use std::fs;
+use fs_err as fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -18,8 +18,8 @@ mod client {
     use crate::dist::Toolchain;
     use crate::lru_disk_cache::Error as LruError;
     use anyhow::{bail, Context, Error, Result};
+    use fs_err as fs;
     use std::collections::{HashMap, HashSet};
-    use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -61,27 +61,39 @@ mod client {
             toolchain_configs: &[config::DistToolchainConfig],
         ) -> Result<Self> {
             let cache_dir = cache_dir.to_owned();
-            fs::create_dir_all(&cache_dir)
-                .context("failed to create top level toolchain cache dir")?;
+            fs::create_dir_all(&cache_dir).context(format!(
+                "failed to create top level toolchain cache dir: {}",
+                cache_dir.display()
+            ))?;
 
             let toolchain_creation_dir = cache_dir.join("toolchain_tmp");
             if toolchain_creation_dir.exists() {
-                fs::remove_dir_all(&toolchain_creation_dir)
-                    .context("failed to clean up temporary toolchain creation directory")?
+                fs::remove_dir_all(&toolchain_creation_dir).context(format!(
+                    "failed to clean up temporary toolchain creation directory: {}",
+                    toolchain_creation_dir.display()
+                ))?
             }
-            fs::create_dir(&toolchain_creation_dir)
-                .context("failed to create temporary toolchain creation directory")?;
+            fs::create_dir(&toolchain_creation_dir).context(format!(
+                "failed to create temporary toolchain creation directory: {}",
+                toolchain_creation_dir.display()
+            ))?;
 
             let weak_map_path = cache_dir.join("weak_map.json");
             if !weak_map_path.exists() {
                 fs::File::create(&weak_map_path)
                     .and_then(|mut f| f.write_all(b"{}"))
-                    .context("failed to create new toolchain weak map file")?
+                    .context(format!(
+                        "failed to create new toolchain weak map file: {}",
+                        weak_map_path.display()
+                    ))?
             }
-            let weak_map = fs::File::open(weak_map_path)
+            let weak_map = fs::File::open(&weak_map_path)
                 .map_err(Error::from)
                 .and_then(|f| serde_json::from_reader(f).map_err(Error::from))
-                .context("failed to load toolchain weak map")?;
+                .context(format!(
+                    "failed to load toolchain weak map: {}",
+                    weak_map_path.display()
+                ))?;
 
             let tc_cache_dir = cache_dir.join("tc");
             let cache = TcCache::new(&tc_cache_dir, cache_size)
@@ -202,7 +214,7 @@ mod client {
             debug!("Weak key {} appears to be new", weak_key);
             let tmpfile = tempfile::NamedTempFile::new_in(self.cache_dir.join("toolchain_tmp"))?;
             toolchain_packager
-                .write_pkg(tmpfile.reopen()?)
+                .write_pkg(fs_err::File::from_parts(tmpfile.reopen()?, tmpfile.path()))
                 .context("Could not package toolchain")?;
             let tc = cache.insert_file(tmpfile.path())?;
             self.record_weak(weak_key.to_owned(), tc.archive_id.clone())?;
@@ -292,7 +304,7 @@ mod client {
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         impl crate::dist::pkg::ToolchainPackager for PanicToolchainPackager {
-            fn write_pkg(self: Box<Self>, _f: ::std::fs::File) -> crate::errors::Result<()> {
+            fn write_pkg(self: Box<Self>, _f: super::fs::File) -> crate::errors::Result<()> {
                 panic!("should not have called packager")
             }
         }

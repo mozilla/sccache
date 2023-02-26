@@ -30,12 +30,11 @@ use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
+use fs::File;
+use fs_err as fs;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-#[cfg(feature = "dist-client")]
-use std::fs;
-use std::fs::File;
 use std::future::Future;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -599,7 +598,7 @@ where
             // Do this first so cleanup works correctly
             let local_path = output_paths.last().expect("nothing in vec after push");
 
-            let mut file = try_or_cleanup!(File::create(&local_path)
+            let mut file = try_or_cleanup!(File::create(local_path)
                 .with_context(|| format!("Failed to create output file {}", local_path.display())));
             let count = try_or_cleanup!(io::copy(&mut output_data.into_reader(), &mut file)
                 .with_context(|| format!("Failed to write output to {}", local_path.display())));
@@ -1262,7 +1261,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
-    use std::fs::{self, File};
+    use fs::File;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
@@ -1324,7 +1323,7 @@ mod test {
         // showincludes prefix detection output
         next_command(
             &creator,
-            Ok(MockChild::new(exit_status(0), &stdout, &String::new())),
+            Ok(MockChild::new(exit_status(0), stdout, String::new())),
         );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
@@ -1403,9 +1402,9 @@ LLVM version: 6.0",
         );
         // rustc --print=sysroot
         let sysroot = f.tempdir.path().to_str().unwrap();
-        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
-        next_command(creator, Ok(MockChild::new(exit_status(0), &sysroot, "")));
+        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
+        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
+        next_command(creator, Ok(MockChild::new(exit_status(0), sysroot, "")));
     }
 
     #[test]
@@ -1536,7 +1535,7 @@ LLVM version: 6.0",
             .iter()
             .map(|version| {
                 let output = format!("clang\n\"{}.0.0\"", version);
-                next_command(&creator, Ok(MockChild::new(exit_status(0), &output, "")));
+                next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
                 next_command(
                     &creator,
                     Ok(MockChild::new(
@@ -1599,7 +1598,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
@@ -1710,7 +1709,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
@@ -1895,7 +1894,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
@@ -2006,7 +2005,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
@@ -2086,7 +2085,7 @@ LLVM version: 6.0",
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
         ];
-        let storage = DiskCache::new(&f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));

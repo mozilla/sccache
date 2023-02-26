@@ -22,10 +22,11 @@ use crate::compiler::{
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::run_input_output;
 use crate::{counted_array, dist};
+use fs::File;
+use fs_err as fs;
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
@@ -187,7 +188,7 @@ where
     }
     cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
         .arg(&input)
-        .current_dir(&tempdir.path())
+        .current_dir(tempdir.path())
         // The MSDN docs say the -showIncludes output goes to stderr,
         // but that's not true unless running with -E.
         .stdout(Stdio::piped())
@@ -491,6 +492,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("external:W2", PassThrough),
     msvc_flag!("external:W3", PassThrough),
     msvc_flag!("external:W4", PassThrough),
+    msvc_flag!("external:anglebrackets", PassThrough),
     msvc_take_arg!("favor:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fp:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("fsanitize-blacklist", PathBuf, Concatenated('='), ExtraHashFile),
@@ -548,6 +550,7 @@ pub fn parse_arguments(
     let mut output_arg = None;
     let mut input_arg = None;
     let mut common_args = vec![];
+    let mut unhashed_args = vec![];
     let mut preprocessor_args = vec![];
     let mut dependency_args = vec![];
     let mut extra_hash_files = vec![];
@@ -705,6 +708,7 @@ pub fn parse_arguments(
                 | Some(PassThroughPath(_))
                 | Some(PedanticFlag)
                 | Some(Standard(_)) => &mut common_args,
+                Some(Unhashed(_)) => &mut unhashed_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
@@ -821,6 +825,7 @@ pub fn parse_arguments(
         preprocessor_args,
         common_args,
         arch_args: vec![],
+        unhashed_args,
         extra_hash_files,
         msvc_show_includes: show_includes,
         profile_generate,
@@ -901,7 +906,7 @@ where
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
-        .current_dir(&cwd);
+        .current_dir(cwd);
     if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
         cmd.arg("-showIncludes");
     }
@@ -1009,7 +1014,7 @@ fn generate_compile_commands(
         });
 
     let mut fo = OsString::from("-Fo");
-    fo.push(&out_file);
+    fo.push(out_file);
 
     let mut arguments: Vec<OsString> = vec![
         parsed_args.compilation_flag.clone(),
@@ -1018,6 +1023,7 @@ fn generate_compile_commands(
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.dependency_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
 
     let command = CompileCommand {
@@ -1083,10 +1089,7 @@ mod test {
         }
         let stdout = format!("blah: {}\r\n", s);
         let stderr = String::from("some\r\nstderr\r\n");
-        next_command(
-            &creator,
-            Ok(MockChild::new(exit_status(0), &stdout, &stderr)),
-        );
+        next_command(&creator, Ok(MockChild::new(exit_status(0), stdout, stderr)));
         assert_eq!(
             "blah: ",
             detect_showincludes_prefix(&creator, "cl.exe".as_ref(), false, Vec::new(), &pool)
@@ -1626,6 +1629,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
@@ -1686,6 +1690,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,

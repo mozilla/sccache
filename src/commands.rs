@@ -23,10 +23,11 @@ use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
 use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
+use fs::{File, OpenOptions};
+use fs_err as fs;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -567,8 +568,8 @@ where
     T: CommandCreatorSync,
 {
     trace!("do_compile");
-    let exe_path = which_in(exe, path, &cwd)?;
-    let res = request_compile(&mut conn, &exe_path, &cmdline, &cwd, env_vars)?;
+    let exe_path = which_in(exe, path, cwd)?;
+    let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
     handle_compile_response(
         creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
     )

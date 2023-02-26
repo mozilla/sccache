@@ -247,6 +247,7 @@ test_sccache_dist_01()
 	# one failed remote build.
 	if [ "$FAILED_DIST" -gt 1 ]; then
 		2>&1 echo "More than one distributed compilations failed"
+		cat "$TEST_TMPDIR"/sccache_log.txt
 		return 1
 	fi
 	if [ "$SUCCEEDED_DIST" -eq 0 ]; then

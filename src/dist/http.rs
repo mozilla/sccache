@@ -21,8 +21,7 @@ pub use self::server::{
 };
 
 mod common {
-    #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-    use hyperx::header;
+    use http::header;
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::fmt;
@@ -30,7 +29,6 @@ mod common {
     use crate::dist;
 
     use crate::errors::*;
-    use crate::util::RequestExt;
 
     // Note that content-length is necessary due to https://github.com/tiny-http/tiny-http/issues/147
     pub trait ReqwestRequestBuilderExt: Sized {
@@ -45,12 +43,15 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.set_header(header::ContentType::octet_stream())
-                .set_header(header::ContentLength(bytes.len() as u64))
-                .body(bytes)
+            self.header(
+                header::CONTENT_TYPE,
+                mime::APPLICATION_OCTET_STREAM.to_string(),
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
-            self.set_header(header::Authorization(header::Bearer { token }))
+            self.bearer_auth(token)
         }
     }
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
@@ -60,12 +61,15 @@ mod common {
             Ok(self.bytes(bytes))
         }
         fn bytes(self, bytes: Vec<u8>) -> Self {
-            self.set_header(header::ContentType::octet_stream())
-                .set_header(header::ContentLength(bytes.len() as u64))
-                .body(bytes)
+            self.header(
+                header::CONTENT_TYPE,
+                mime::APPLICATION_OCTET_STREAM.to_string(),
+            )
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(bytes)
         }
         fn bearer_auth(self, token: String) -> Self {
-            self.set_header(header::Authorization(header::Bearer { token }))
+            self.bearer_auth(token)
         }
     }
 
@@ -75,7 +79,7 @@ mod common {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let res = req.set_header(header::Connection::close()).send().await?;
+        let res = req.header(header::CONNECTION, "close").send().await?;
 
         let status = res.status();
         let bytes = res.bytes().await?;
@@ -91,7 +95,7 @@ mod common {
                 anyhow::bail!(errmsg);
             }
         } else {
-            Ok(bincode::deserialize(&*bytes)?)
+            Ok(bincode::deserialize(&bytes)?)
         }
     }
 
@@ -246,9 +250,9 @@ pub mod urls {
 #[cfg(feature = "dist-server")]
 mod server {
     use crate::jwt;
+    use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use hyperx::header;
     use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
     use std::collections::HashMap;
@@ -272,7 +276,6 @@ mod server {
         SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
     };
     use crate::errors::*;
-    use crate::util::RequestExt;
 
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
     const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
@@ -283,7 +286,7 @@ mod server {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let mut res = req.set_header(header::Connection::close()).send()?;
+        let mut res = req.header(http::header::CONNECTION, "close").send()?;
         let status = res.status();
         let mut body = vec![];
         res.copy_to(&mut body)
@@ -556,7 +559,10 @@ mod server {
 
         rouille::Response {
             status_code: 200,
-            headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+            headers: vec![
+                ("Content-Type".into(), "application/octet-stream".into()),
+                ("Content-Length".into(), data.len().to_string().into()),
+            ],
             data: rouille::ResponseBody::from_data(data),
             upgrade: None,
         }
@@ -680,7 +686,7 @@ mod server {
                 check_server_auth,
             } = self;
             let requester = SchedulerRequester {
-                client: Mutex::new(reqwest::blocking::Client::new()),
+                client: Mutex::new(new_reqwest_blocking_client()),
             };
 
             macro_rules! check_server_auth_or_err {
@@ -744,6 +750,9 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
+                    // Disable connection pool to avoid broken connection
+                    // between runtime
+                    .pool_max_idle_per_host(0)
                     .build()
                     .context("failed to create a HTTP client")?;
                 // Use the updated certificates
@@ -783,12 +792,16 @@ mod server {
                         prepare_response(request, &res)
                     },
                     (GET) (/api/v1/scheduler/server_certificate/{server_id: ServerId}) => {
-                        let certs = server_certificates.lock().unwrap();
-                        let (cert_digest, cert_pem) = try_or_500_log!(req_id, certs.get(&server_id)
+                        let certs = {
+                            let guard = server_certificates.lock().unwrap();
+                            guard.get(&server_id).map(|v|v.to_owned())
+                        };
+
+                        let (cert_digest, cert_pem) = try_or_500_log!(req_id, certs
                             .context("server cert not available"));
                         let res = ServerCertificateHttpResponse {
-                            cert_digest: cert_digest.clone(),
-                            cert_pem: cert_pem.clone(),
+                            cert_digest,
+                            cert_pem,
                         };
                         prepare_response(request, &res)
                     },
@@ -927,14 +940,14 @@ mod server {
             let job_authorizer = JWTJobAuthorizer::new(jwt_key);
             let heartbeat_url = urls::scheduler_heartbeat_server(&scheduler_url);
             let requester = ServerRequester {
-                client: reqwest::blocking::Client::new(),
+                client: new_reqwest_blocking_client(),
                 scheduler_url,
                 scheduler_auth: scheduler_auth.clone(),
             };
 
             // TODO: detect if this panics
             thread::spawn(move || {
-                let client = reqwest::blocking::Client::new();
+                let client = new_reqwest_blocking_client();
                 loop {
                     trace!("Performing heartbeat");
                     match bincode_req(
@@ -1100,6 +1113,9 @@ mod client {
             let client = reqwest::ClientBuilder::new()
                 .timeout(timeout)
                 .connect_timeout(connect_timeout)
+                // Disable connection pool to avoid broken connection
+                // between runtime
+                .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
             let client_toolchains =
@@ -1137,6 +1153,8 @@ mod client {
             let timeout = Duration::new(REQUEST_TIMEOUT_SECS, 0);
             let new_client_async = client_async_builder
                 .timeout(timeout)
+                // Disable keep-alive
+                .pool_max_idle_per_host(0)
                 .build()
                 .context("failed to create an async HTTP client")?;
             // Use the updated certificates
@@ -1224,7 +1242,7 @@ mod client {
                 Ok(Some(toolchain_file)) => {
                     let url = urls::server_submit_toolchain(job_alloc.server_id, job_alloc.job_id);
                     let req = self.client.lock().unwrap().post(url);
-                    let toolchain_file = tokio::fs::File::from_std(toolchain_file);
+                    let toolchain_file = tokio::fs::File::from_std(toolchain_file.into());
                     let toolchain_file_stream = tokio_util::io::ReaderStream::new(toolchain_file);
                     let body = Body::wrap_stream(toolchain_file_stream);
                     let req = req.bearer_auth(job_alloc.auth).body(body);

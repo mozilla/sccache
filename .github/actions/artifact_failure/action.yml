@@ -1,0 +1,30 @@
+name: "Upload failure Artifacts"
+description: "Upload failure Artifacts"
+inputs:
+  name:
+    description: ""
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: pack failure artifacts
+      shell: bash
+      run: |
+        echo "Current running processes"
+        ps uax
+        echo "Processes that access current dir"
+        lsof +D `pwd` || true
+        killall sccache || true
+        killall sccache-dist || true
+
+        tar --exclude='target' \
+            --exclude='docs' \
+            --exclude='bins' \
+            --exclude='.git' \
+            -zcf target/failure-${{ inputs.name }}.tar.gz .
+    - uses: actions/upload-artifact@v3
+      with:
+        name: ${{ inputs.name }}
+        path: |
+          target/failure-${{ inputs.name }}.tar.gz
+          /tmp/sccache_*.txt

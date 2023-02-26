@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::dist;
-use std::fs;
+use fs_err as fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::str;
@@ -38,7 +38,7 @@ pub trait OutputsRepackager {
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod toolchain_imp {
     use super::ToolchainPackager;
-    use std::fs;
+    use fs_err as fs;
 
     use crate::errors::*;
 
@@ -54,8 +54,8 @@ mod toolchain_imp {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
     use super::tarify_path;
+    use fs_err as fs;
     use std::collections::BTreeMap;
-    use std::fs;
     use std::io::{Read, Write};
     use std::path::{Component, Path, PathBuf};
     use std::process;
@@ -176,7 +176,7 @@ mod toolchain_imp {
             }
             for (tar_path, file_path) in file_set.into_iter() {
                 let file = &mut fs::File::open(file_path)?;
-                builder.append_file(tar_path, file)?
+                builder.append_file(tar_path, file.file_mut())?
             }
             builder.finish().map_err(Into::into)
         }
@@ -362,7 +362,7 @@ mod toolchain_imp {
 }
 
 pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
-    let metadata_res = fs::metadata(&src);
+    let metadata_res = fs::metadata(src);
 
     let mut file_header = tar::Header::new_ustar();
     // TODO: test this works
@@ -396,7 +396,7 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     // to be like Unix, and the path is (now) relative so there should be no funny results
     // due to Windows
     // TODO: should really use a `set_path_str` or similar
-    file_header.set_path(&dest)?;
+    file_header.set_path(dest)?;
     Ok(file_header)
 }
 

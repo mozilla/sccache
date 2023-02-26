@@ -24,11 +24,11 @@ use crate::dist;
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
+use fs_err as fs;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs;
 use std::hash::Hash;
 #[cfg(feature = "dist-client")]
 use std::io;
@@ -100,6 +100,8 @@ pub struct ParsedArguments {
     pub common_args: Vec<OsString>,
     /// Commandline arguments for the compiler that specify the architecture given
     pub arch_args: Vec<OsString>,
+    /// Commandline arguments for the preprocessor or the compiler that don't affect the computed hash.
+    pub unhashed_args: Vec<OsString>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
@@ -400,6 +402,7 @@ where
                 compiler.plusplus(),
             )
         };
+
         // A compiler binary may be a symlink to another and so has the same digest, but that means
         // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
         // executable path to try and prevent this

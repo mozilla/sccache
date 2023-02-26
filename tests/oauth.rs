@@ -1,7 +1,7 @@
 #![deny(rust_2018_idioms)]
 #![cfg(all(feature = "dist-client"))]
 
-use std::fs;
+use fs_err as fs;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -168,11 +168,11 @@ impl SeleniumContainer {
 impl Drop for SeleniumContainer {
     fn drop(&mut self) {
         let Output { stdout, stderr, .. } = Command::new("docker")
-            .args(&["logs", &self.cid])
+            .args(["logs", &self.cid])
             .output()
             .unwrap();
         let output = Command::new("docker")
-            .args(&["kill", &self.cid])
+            .args(["kill", &self.cid])
             .output()
             .unwrap();
 

@@ -273,6 +273,7 @@ where
         preprocessor_args,
         common_args,
         arch_args: vec![],
+        unhashed_args: vec![],
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
@@ -293,7 +294,7 @@ async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut preprocess = creator.clone().new_command_sync(&executable);
+    let mut preprocess = creator.clone().new_command_sync(executable);
     preprocess
         .arg("-E")
         .arg(&parsed_args.input)
@@ -321,7 +322,7 @@ where
     // you can specify a target name which overrules the default target name.
 
     if let Some(ref depfile) = parsed_args.depfile {
-        let mut generate_depfile = creator.clone().new_command_sync(&executable);
+        let mut generate_depfile = creator.clone().new_command_sync(executable);
         generate_depfile
             .arg("-Em")
             .arg("-o")
@@ -364,6 +365,7 @@ fn generate_compile_commands(
         out_file.path.as_os_str().into(),
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
@@ -695,6 +697,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,
@@ -713,6 +716,57 @@ mod test {
             &[],
         )
         .unwrap();
+        let _ = command.execute(&creator).wait();
+        assert_eq!(Cacheable::Yes, cacheable);
+        // Ensure that we ran all processes.
+        assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_cuda_threads_included_in_compile_command() {
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let parsed_args = ParsedArguments {
+            input: "foo.cu".into(),
+            language: Language::Cuda,
+            compilation_flag: "-c".into(),
+            depfile: None,
+            outputs: vec![(
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            dependency_args: vec![],
+            preprocessor_args: vec![],
+            common_args: vec![],
+            arch_args: vec![],
+            unhashed_args: ovec!["--threads", "2"],
+            extra_hash_files: vec![],
+            msvc_show_includes: false,
+            profile_generate: false,
+            color_mode: ColorMode::Auto,
+            suppress_rewrite_includes_only: false,
+        };
+        let compiler = &f.bins[0];
+        // Compiler invocation.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
+        let mut path_transformer = dist::PathTransformer::default();
+        let (command, _, cacheable) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            ovec!["-c", "foo.cu", "-o", "foo.o", "--threads", "2"],
+            command.arguments
+        );
         let _ = command.execute(&creator).wait();
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.

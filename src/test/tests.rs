@@ -19,10 +19,11 @@ use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
+use fs::File;
+use fs_err as fs;
 use futures::channel::oneshot::{self, Sender};
 #[cfg(not(target_os = "macos"))]
 use serial_test::serial;
-use std::fs::File;
 use std::io::{Cursor, Write};
 #[cfg(not(target_os = "macos"))]
 use std::net::TcpListener;
@@ -155,6 +156,8 @@ fn test_server_stats() {
     // Ask it for stats.
     let info = request_stats(conn).unwrap();
     assert_eq!(0, info.stats.compile_requests);
+    // Include sccache ver (cli) to validate.
+    assert_eq!(env!("CARGO_PKG_VERSION"), info.version);
     // Now signal it to shut down.
     sender.send(ServerMessage::Shutdown).ok().unwrap();
     // Ensure that it shuts down.

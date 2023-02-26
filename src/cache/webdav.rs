@@ -1,6 +1,3 @@
-// Copyright 2018 Benjamin Bader
-// Copyright 2016 Mozilla Foundation
-//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -13,19 +10,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::errors::*;
+use opendal::layers::LoggingLayer;
+use opendal::services::Webdav;
 use opendal::Operator;
 
-use opendal::layers::LoggingLayer;
-use opendal::services::Azblob;
+/// A cache that stores entries in a Webdav.
+pub struct WebdavCache;
 
-use crate::errors::*;
-
-pub struct AzureBlobCache;
-
-impl AzureBlobCache {
-    pub fn build(connection_string: &str, container: &str, key_prefix: &str) -> Result<Operator> {
-        let mut builder = Azblob::from_connection_string(connection_string)?;
-        builder.container(container);
+impl WebdavCache {
+    /// Create a new `WebdavCache`.
+    pub fn build(endpoint: &str, key_prefix: &str) -> Result<Operator> {
+        let mut builder = Webdav::default();
+        builder.endpoint(endpoint);
         builder.root(key_prefix);
 
         let op = Operator::create(builder)?

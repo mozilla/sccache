@@ -25,10 +25,11 @@ use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use fs::File;
+use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -292,6 +293,7 @@ where
         preprocessor_args,
         common_args,
         arch_args: vec![],
+        unhashed_args: vec![],
         extra_hash_files: vec![],
         msvc_show_includes: false,
         profile_generate: false,
@@ -312,7 +314,7 @@ pub async fn preprocess<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut cmd = creator.clone().new_command_sync(&executable);
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.arg("-E")
         .arg(&parsed_args.input)
         .args(&parsed_args.dependency_args)
@@ -349,6 +351,7 @@ pub fn generate_compile_commands(
         out_file.into(),
     ];
     arguments.extend(parsed_args.preprocessor_args.clone());
+    arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
     let command = CompileCommand {
         executable: executable.to_owned(),
@@ -415,7 +418,7 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
 
             let mut contents = String::new();
             let file = self.cwd.join(&value);
-            let res = File::open(&file).and_then(|mut f| f.read_to_string(&mut contents));
+            let res = File::open(file).and_then(|mut f| f.read_to_string(&mut contents));
             if res.is_err() {
                 // Failed to read the file, so return the argument as it is.
                 // This will result in a CannotCache.
@@ -433,13 +436,14 @@ impl<'a> Iterator for ExpandAtArgs<'a> {
 #[cfg(test)]
 mod test {
     use super::{
-        dist, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments, ARGS,
+        dist, fs, generate_compile_commands, parse_arguments, Language, OsString, ParsedArguments,
+        ARGS,
     };
     use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
-    use std::fs::File;
+    use fs::File;
     use std::io::Write;
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
@@ -755,6 +759,7 @@ mod test {
             preprocessor_args: vec![],
             common_args: vec![],
             arch_args: vec![],
+            unhashed_args: vec![],
             extra_hash_files: vec![],
             msvc_show_includes: false,
             profile_generate: false,

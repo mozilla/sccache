@@ -16,9 +16,10 @@ use crate::mock_command::{CommandChild, RunCommand};
 use ar::Archive;
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
+use fs::File;
+use fs_err as fs;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -418,101 +419,6 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
     env.iter().map(|&(ref k, ref v)| (k, v))
 }
 
-#[cfg(feature = "hyperx")]
-pub use self::http_extension::{HeadersExt, RequestExt};
-
-#[cfg(feature = "hyperx")]
-mod http_extension {
-    use reqwest::header::{HeaderMap, HeaderValue};
-    use std::fmt;
-
-    pub trait HeadersExt {
-        fn set<H>(&mut self, header: H)
-        where
-            H: hyperx::header::Header + fmt::Display;
-
-        fn get_hyperx<H>(&self) -> Option<H>
-        where
-            H: hyperx::header::Header;
-    }
-
-    impl HeadersExt for HeaderMap {
-        fn set<H>(&mut self, header: H)
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.insert(
-                H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
-            );
-        }
-
-        fn get_hyperx<H>(&self) -> Option<H>
-        where
-            H: hyperx::header::Header,
-        {
-            http::HeaderMap::get(self, H::header_name())
-                .and_then(|header| H::parse_header(&header).ok())
-        }
-    }
-
-    pub trait RequestExt {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display;
-    }
-
-    impl RequestExt for http::request::Builder {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
-            )
-        }
-    }
-
-    impl RequestExt for http::response::Builder {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
-            )
-        }
-    }
-
-    #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::RequestBuilder {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
-            )
-        }
-    }
-
-    #[cfg(feature = "reqwest")]
-    impl RequestExt for ::reqwest::blocking::RequestBuilder {
-        fn set_header<H>(self, header: H) -> Self
-        where
-            H: hyperx::header::Header + fmt::Display,
-        {
-            self.header(
-                H::header_name(),
-                HeaderValue::from_maybe_shared(header.to_string()).unwrap(),
-            )
-        }
-    }
-}
-
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
@@ -599,6 +505,23 @@ pub fn daemonize() -> Result<()> {
 #[cfg(windows)]
 pub fn daemonize() -> Result<()> {
     Ok(())
+}
+
+/// Disable connection pool to avoid broken connection between runtime
+///
+/// # TODO
+///
+/// We should refactor sccache current model to make sure that we only have
+/// one tokio runtime and keep reqwest alive inside it.
+///
+/// ---
+///
+/// More details could be found at https://github.com/mozilla/sccache/pull/1563
+pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .expect("http client must build with success")
 }
 
 #[cfg(test)]

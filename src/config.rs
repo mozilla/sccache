@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use directories::ProjectDirs;
+use fs::File;
+use fs_err as fs;
 use regex::Regex;
 use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -22,7 +24,6 @@ use serde::ser::{Serialize, Serializer};
 use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
-use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
@@ -198,16 +199,37 @@ pub struct GHACacheConfig {
     pub version: String,
 }
 
+/// Memcached's default value of expiration is 10800s (3 hours), which is too
+/// short for use case of sccache.
+///
+/// We increase the default expiration to 86400s (1 day) to balance between
+/// memory consumpation and cache hit rate.
+///
+/// Please change this value freely if we have a better choice.
+const DEFAULT_MEMCACHED_CACHE_EXPIRATION: u32 = 86400;
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
+    /// the expiration time in seconds.
+    ///
+    /// Default to 24 hours (86400)
+    /// Up to 30 days (2592000)
+    pub expiration: u32,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     pub url: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebdavCacheConfig {
+    pub endpoint: String,
+    pub key_prefix: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +251,7 @@ pub enum CacheType {
     Memcached(MemcachedCacheConfig),
     Redis(RedisCacheConfig),
     S3(S3CacheConfig),
+    Webdav(WebdavCacheConfig),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,6 +264,7 @@ pub struct CacheConfigs {
     pub memcached: Option<MemcachedCacheConfig>,
     pub redis: Option<RedisCacheConfig>,
     pub s3: Option<S3CacheConfig>,
+    pub webdav: Option<WebdavCacheConfig>,
 }
 
 impl CacheConfigs {
@@ -255,6 +279,7 @@ impl CacheConfigs {
             memcached,
             redis,
             s3,
+            webdav,
         } = self;
 
         let cache_type = s3
@@ -263,7 +288,8 @@ impl CacheConfigs {
             .or_else(|| memcached.map(CacheType::Memcached))
             .or_else(|| gcs.map(CacheType::GCS))
             .or_else(|| gha.map(CacheType::GHA))
-            .or_else(|| azure.map(CacheType::Azure));
+            .or_else(|| azure.map(CacheType::Azure))
+            .or_else(|| webdav.map(CacheType::Webdav));
 
         let fallback = disk.unwrap_or_default();
 
@@ -280,6 +306,7 @@ impl CacheConfigs {
             memcached,
             redis,
             s3,
+            webdav,
         } = other;
 
         if azure.is_some() {
@@ -302,6 +329,9 @@ impl CacheConfigs {
         }
         if s3.is_some() {
             self.s3 = s3
+        }
+        if webdav.is_some() {
+            self.webdav = webdav
         }
     }
 }
@@ -511,9 +541,16 @@ fn config_from_env() -> Result<EnvConfig> {
         .map(|url| RedisCacheConfig { url });
 
     // ======= memcached =======
+    let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
+        None => DEFAULT_MEMCACHED_CACHE_EXPIRATION,
+        Some(v) => v
+            .parse()
+            .map_err(|err| anyhow!("SCCACHE_MEMCACHED_EXPIRATION value is invalid: {err:?}"))?,
+    };
+
     let memcached = env::var("SCCACHE_MEMCACHED")
         .ok()
-        .map(|url| MemcachedCacheConfig { url });
+        .map(|url| MemcachedCacheConfig { url, expiration });
 
     // ======= GCP/GCS =======
     if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
@@ -616,6 +653,24 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // ======= WebDAV =======
+    let webdav = if let Ok(endpoint) = env::var("SCCACHE_WEBDAV_ENDPOINT") {
+        let key_prefix = env::var("SCCACHE_WEBDAV_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+
+        Some(WebdavCacheConfig {
+            endpoint,
+            key_prefix,
+        })
+    } else {
+        None
+    };
+
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -639,6 +694,7 @@ fn config_from_env() -> Result<EnvConfig> {
         memcached,
         redis,
         s3,
+        webdav,
     };
 
     Ok(EnvConfig { cache })
@@ -980,6 +1036,7 @@ fn config_overrides() {
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
+                expiration: 24 * 3600,
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
@@ -1092,6 +1149,7 @@ version = "sccache"
 
 [cache.memcached]
 url = "..."
+expiration = 86400
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/1"
@@ -1103,6 +1161,10 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
+
+[cache.webdav]
+endpoint = "http://127.0.0.1:8080"
+key_prefix = "webdavprefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1132,6 +1194,7 @@ no_credentials = true
                 }),
                 memcached: Some(MemcachedCacheConfig {
                     url: "...".to_owned(),
+                    expiration: 24 * 3600
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
@@ -1141,6 +1204,10 @@ no_credentials = true
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
                 }),
+                webdav: Some(WebdavCacheConfig {
+                    endpoint: "http://127.0.0.1:8080".to_string(),
+                    key_prefix: "webdavprefix".into(),
+                })
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
