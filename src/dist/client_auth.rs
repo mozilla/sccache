@@ -86,6 +86,7 @@ mod code_grant_pkce {
     };
     use crate::util::new_reqwest_blocking_client;
     use crate::util::BASE64_URL_SAFE_ENGINE;
+    use base64::Engine;
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use rand::{rngs::OsRng, RngCore};
@@ -146,10 +147,10 @@ mod code_grant_pkce {
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
         OsRng.fill_bytes(&mut code_verifier_bytes);
-        let code_verifier = base64::encode_engine(&code_verifier_bytes, &BASE64_URL_SAFE_ENGINE);
+        let code_verifier = BASE64_URL_SAFE_ENGINE.encode(&code_verifier_bytes);
         let mut hasher = Sha256::new();
         hasher.update(&code_verifier);
-        let code_challenge = base64::encode_engine(hasher.finalize(), &BASE64_URL_SAFE_ENGINE);
+        let code_challenge = BASE64_URL_SAFE_ENGINE.encode(hasher.finalize());
         Ok((code_verifier, code_challenge))
     }
 
