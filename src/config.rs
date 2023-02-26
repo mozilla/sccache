@@ -848,7 +848,7 @@ impl CachedConfig {
     fn save_file_config(c: &CachedFileConfig) -> Result<()> {
         let file_conf_path = &*CACHED_CONFIG_PATH;
         let mut file = File::create(file_conf_path).context("Could not open config for writing")?;
-        file.write_all(&toml::to_vec(c).unwrap())
+        file.write_all(toml::to_string(c).unwrap().as_bytes())
             .map_err(Into::into)
     }
 }

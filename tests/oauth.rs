@@ -261,13 +261,13 @@ fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
         }
     }
     println!("Validating cached config");
-    let mut cached_config_bytes = vec![];
+    let mut cached_config_string = String::new();
     fs::File::open(sccache_cached_config_path)
         .unwrap()
-        .read_to_end(&mut cached_config_bytes)
+        .read_to_string(&mut cached_config_string)
         .unwrap();
     let cached_config: sccache::config::CachedFileConfig =
-        toml::from_slice(&cached_config_bytes).unwrap();
+        toml::from_str(&cached_config_string).unwrap();
     assert_eq!(cached_config.dist.auth_tokens.len(), 1);
 }
 
