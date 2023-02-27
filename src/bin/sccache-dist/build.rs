@@ -280,7 +280,7 @@ impl OverlayBuilder {
         fs::create_dir(&target_dir).context("Failed to create overlay target directory")?;
 
         // If specified, run the build in a new user namespace
-        let namespaced = match std::env::var("CACHEPOT_SANDBOX").as_deref() {
+        let namespaced = match std::env::var("SCCACHE_SANDBOX").as_deref() {
             Ok("userns") => new_userns,
             _ => current_ns,
         };

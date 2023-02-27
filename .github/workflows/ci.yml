@@ -78,8 +78,8 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       DIST_EXEC_STRATEGY: ${{ matrix.dist_exec_strategy }}
-      CACHEPOT_SANDBOX: ${{ matrix.cachepot_sandbox }}
-      CACHEPOT_LOG: ${{ matrix.cachepot_log }}
+      SCCACHE_SANDBOX: ${{ matrix.cachepot_sandbox }}
+      SCCACHE_LOG: ${{ matrix.cachepot_log }}
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
