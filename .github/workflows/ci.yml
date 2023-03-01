@@ -50,7 +50,7 @@ jobs:
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
             sccache_log: sccache=trace
             dist_exec_strategy: docker
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             rustc: 1.60.0
             extra_desc: dist-worker
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
