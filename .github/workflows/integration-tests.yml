@@ -340,3 +340,61 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+  test-mock-msvc:
+    runs-on: windows-2019
+    env:
+      TARGET: x86_64-pc-windows-msvc
+      SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccache.exe
+      SCCACHE_LOG: "trace"
+      SCCACHE_ERROR_LOG: "${{ github.workspace }}\\server_log.txt"
+    
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+          target: $TARGET
+
+      - name: Build
+        run: cargo build --bin sccache --target $env:TARGET --features=openssl/vendored
+
+      - name: Compile MSVC (no cache)
+        shell: bash
+        working-directory: ./tests/msvc
+        run: cl "@args.rsp"
+      
+      - name: Start Server
+        shell: bash
+        run: $SCCACHE_EXE --start-server
+
+      - name: Compile - Cache Miss
+        shell: bash
+        working-directory: ./tests/msvc
+        run: |
+          $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
+          $SCCACHE_EXE --show-stats
+          $SCCACHE_EXE --show-stats | grep -e "Cache misses\s*[1-9]"
+
+      - name: Compile - Cache Hit
+        shell: bash
+        working-directory: ./tests/msvc
+        run: |
+          $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
+          $SCCACHE_EXE --show-stats
+          $SCCACHE_EXE --show-stats | grep -e "Cache hits\s*[1-9]"
+          
+      - name: Stop Server
+        if: success() || failure()
+        shell: bash
+        run: $SCCACHE_EXE --stop-server
+
+      - name: Show Server Log
+        if: success() || failure()
+        shell: bash
+        run: cat "$SCCACHE_ERROR_LOG"
