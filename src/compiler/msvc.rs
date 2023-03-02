@@ -1167,6 +1167,8 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 }
             };
 
+            trace!("Expanded response file {:?} to {:?}", file_path, content);
+
             // Parse the response file contents, taking into account quote-wrapped strings and new-line separators.
             // Special implementation to account for MSVC response file format.
             let resp_file_args = SplitMsvcResponseFileArgs::from(&content).collect::<Vec<_>>();
