@@ -32,8 +32,8 @@ bincode = "1"
 blake3 = "1"
 byteorder = "1.0"
 bytes = "1"
-opendal = { version= "0.27.0", optional=true }
-reqsign = {version="0.8.1", optional=true}
+opendal = { version= "0.27.1", optional=true }
+reqsign = {version="0.8.3", optional=true}
 clap = { version = "4.0.32", features = ["derive", "env", "wrap_help"] }
 directories = "4.0.1"
 env_logger = "0.10"
@@ -41,7 +41,7 @@ filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = ["rust_backend"] }
 fs-err = "2.9"
 futures = "0.3"
-gzp = { version = "0.11.1", default-features = false, features = ["deflate_rust"]  }
+gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"]  }
 http = "0.2"
 hyper = { version = "0.14.24", optional = true, features = ["server"] }
 jobserver = "0.1"
