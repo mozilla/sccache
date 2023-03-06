@@ -88,7 +88,7 @@ pub enum ServerStartup {
     Err { reason: String },
 }
 
-/// Get the time the server should idle for before shutting down.
+/// Get the time the server should idle for before shutting down, in seconds.
 fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
     env::var("SCCACHE_IDLE_TIMEOUT")
