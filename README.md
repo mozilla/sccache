@@ -187,11 +187,10 @@ Separating caches between invocations
 
 In situations where several different compilation invocations
 should not reuse the cached results from each other,
-one can set `SCCACHE_C_CUSTOM_CACHE_BUSTER` to a unique value
+one can set `SCCACHE_C_CUSTOM_CACHE_BUSTER` or `SCCACHE_RUST_CUSTOM_CACHE_BUSTER` to a unique value
 that'll be mixed into the hash.
 `MACOSX_DEPLOYMENT_TARGET` and `IPHONEOS_DEPLOYMENT_TARGET` variables
-already exhibit such reuse-suppression behaviour.
-There are currently no such variables for compiling Rust.
+already exhibit such reuse-suppression behaviour when compiling C/C++.
 
 ---
 
