@@ -128,6 +128,7 @@ webdav = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
 redis = ["url", "opendal/services-redis"]
+vendored-openssl = ["openssl?/vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
