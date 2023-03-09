@@ -357,7 +357,7 @@ where
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
                     "c" => Some(Language::C),
-                    "c++" => Some(Language::Cxx),
+                    "c++" | "c++-header" => Some(Language::Cxx),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
@@ -444,7 +444,10 @@ where
                 .unwrap_or("Can't handle complex arguments through clang",)),
             None => match arg {
                 Argument::Raw(_) if follows_plugin_arg => &mut common_args,
-                Argument::Raw(_) => cannot_cache!("Can't handle Raw arguments with -Xclang"),
+                Argument::Raw(flag) => cannot_cache!(
+                    "Can't handle Raw arguments with -Xclang",
+                    flag.to_str().unwrap_or("").to_string()
+                ),
                 Argument::UnknownFlag(flag) => {
                     cannot_cache!(
                         "Can't handle UnknownFlag arguments with -Xclang",

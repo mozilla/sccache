@@ -171,6 +171,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
+    flag!("-emit-pch", PassThroughFlag),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
@@ -346,6 +347,42 @@ mod test {
     }
 
     #[test]
+    fn test_emit_pch() {
+        let a = parses!(
+            "-Xclang",
+            "-emit-pch",
+            "-Xclang",
+            "-include",
+            "-Xclang",
+            "pch.hxx",
+            "-x",
+            "c++-header",
+            "-o",
+            "pch.hxx.pch",
+            "-c",
+            "pch.hxx.cxx"
+        );
+        assert_eq!(Some("pch.hxx.cxx"), a.input.to_str());
+        assert_eq!(Language::Cxx, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("pch.hxx.pch"),
+                    optional: false
+                }
+            )
+        );
+        println!("{:?}", a);
+        assert_eq!(
+            ovec!["-Xclang", "-include", "-Xclang", "pch.hxx"],
+            a.preprocessor_args
+        );
+        assert_eq!(ovec!["-Xclang", "-emit-pch"], a.common_args)
+    }
+
+    #[test]
     fn test_parse_clang_short_dependency_arguments_can_be_separated() {
         let args = vec!["-MF", "-MT", "-MQ"];
         let formats = vec![
@@ -380,7 +417,10 @@ mod test {
     #[test]
     fn test_parse_xclang_invalid() {
         assert_eq!(
-            CompilerArguments::CannotCache("Can't handle Raw arguments with -Xclang", None),
+            CompilerArguments::CannotCache(
+                "Can't handle Raw arguments with -Xclang",
+                Some("broken".to_string())
+            ),
             parse_arguments_(stringvec![
                 "-c", "foo.c", "-o", "foo.o", "-Xclang", "broken"
             ])
