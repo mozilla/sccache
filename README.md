@@ -10,7 +10,7 @@
 sccache - Shared Compilation Cache
 ==================================
 
-sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](#local) or in one of [several cloud storage backends](#storage-options).
+sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
 
 sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html).
 
@@ -19,13 +19,18 @@ sccache also provides [icecream](https://github.com/icecc/icecream)-style distri
 ---
 
 Table of Contents (ToC)
-======================
+=======================
 
 * [Installation](#installation)
+* [Usage](#usage)
 * [Build Requirements](#build-requirements)
 * [Build](#build)
-* [Usage](#usage)
-* Storage Options
+* [Separating caches between invocations](#separating-caches-between-invocations)
+* [Overwriting the cache](#overwriting-the-cache)
+* [Debugging](#debugging)
+* [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
+* [Known Caveats](#known-caveats)
+* [Storage Options](#storage-options)
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
   * [R2](docs/S3.md#R2)
@@ -35,9 +40,6 @@ Table of Contents (ToC)
   * [Azure](docs/Azure.md)
   * [GitHub Actions](docs/GHA.md)
   * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
-* [Debugging](#debugging)
-* [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
-* [Known Caveats](#known-caveats)
 
 ---
 
@@ -245,3 +247,16 @@ Known Caveats
 ### Symbolic links
 
 * Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`
+
+Storage Options
+---------------
+
+* [Local](docs/Local.md)
+* [S3](docs/S3.md)
+* [R2](docs/S3.md#R2)
+* [Redis](docs/Redis.md)
+* [Memcached](docs/Memcached.md)
+* [Google Cloud Storage](docs/Gcs.md)
+* [Azure](docs/Azure.md)
+* [GitHub Actions](docs/GHA.md)
+* [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
