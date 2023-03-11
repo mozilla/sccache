@@ -20,10 +20,25 @@ pub struct WebdavCache;
 
 impl WebdavCache {
     /// Create a new `WebdavCache`.
-    pub fn build(endpoint: &str, key_prefix: &str) -> Result<Operator> {
+    pub fn build(
+        endpoint: &str,
+        key_prefix: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<Operator> {
         let mut builder = Webdav::default();
         builder.endpoint(endpoint);
         builder.root(key_prefix);
+        if let Some(username) = username {
+            builder.username(username);
+        }
+        if let Some(password) = password {
+            builder.password(password);
+        }
+        if let Some(token) = token {
+            builder.token(token);
+        }
 
         let op = Operator::create(builder)?
             .layer(LoggingLayer::default())

@@ -233,6 +233,9 @@ pub struct RedisCacheConfig {
 pub struct WebdavCacheConfig {
     pub endpoint: String,
     pub key_prefix: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -665,10 +668,16 @@ fn config_from_env() -> Result<EnvConfig> {
             .filter(|s| !s.is_empty())
             .unwrap_or_default()
             .to_owned();
+        let username = env::var("SCCACHE_WEBDAV_USERNAME").ok();
+        let password = env::var("SCCACHE_WEBDAV_PASSWORD").ok();
+        let token = env::var("SCCACHE_WEBDAV_TOKEN").ok();
 
         Some(WebdavCacheConfig {
             endpoint,
             key_prefix,
+            username,
+            password,
+            token,
         })
     } else {
         None
@@ -1171,6 +1180,9 @@ no_credentials = true
 [cache.webdav]
 endpoint = "http://127.0.0.1:8080"
 key_prefix = "webdavprefix"
+username = "webdavusername"
+password = "webdavpassword"
+token = "webdavtoken"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1213,6 +1225,9 @@ key_prefix = "webdavprefix"
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),
                     key_prefix: "webdavprefix".into(),
+                    username: Some("webdavusername".to_string()),
+                    password: Some("webdavpassword".to_string()),
+                    token: Some("webdavtoken".to_string()),
                 })
             },
             dist: DistConfig {

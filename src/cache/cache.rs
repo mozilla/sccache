@@ -557,8 +557,16 @@ pub fn storage_from_config(
             #[cfg(feature = "webdav")]
             CacheType::Webdav(ref c) => {
                 debug!("Init webdav cache with endpoint {}", c.endpoint);
-                let storage = WebdavCache::build(&c.endpoint, &c.key_prefix)
-                    .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
+                let storage = WebdavCache::build(
+                    &c.endpoint,
+                    &c.key_prefix,
+                    c.username.as_deref(),
+                    c.password.as_deref(),
+                    c.token.as_deref(),
+                )
+                .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]
