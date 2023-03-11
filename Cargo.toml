@@ -128,6 +128,9 @@ webdav = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
 redis = ["url", "opendal/services-redis"]
+# Enable features that will build a vendored version of openssl and
+# statically linked with it, instead of linking against the system-wide openssl
+# dynamically or statically.
 vendored-openssl = ["openssl?/vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
