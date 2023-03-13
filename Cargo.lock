@@ -1261,15 +1261,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memcache-async"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a114106a13014b37b174cd14ae13c3ac229f2cecc7174fe2f2c6c999ea4ee7"
-dependencies = [
- "futures",
-]
-
-[[package]]
 name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1491,9 +1482,9 @@ checksum = "6f61fba1741ea2b3d6a1e3178721804bb716a68a6aeba1149b5d52e3d464ea66"
 
 [[package]]
 name = "opendal"
-version = "0.27.1"
+version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39f2018ea448841041cf00a01f6c145b5017753958dbb563c2bf8921ce4b3e49"
+checksum = "b3f51ae9f36eabb51da3a10c491feb406ecf2c65faf1edb0b580f9a1acb0f1e8"
 dependencies = [
  "anyhow",
  "async-compat",
@@ -1508,7 +1499,6 @@ dependencies = [
  "hyper",
  "log",
  "md-5",
- "memcache-async",
  "once_cell",
  "parking_lot",
  "percent-encoding",
