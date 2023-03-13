@@ -26,7 +26,7 @@ pub enum Command {
     Server(config::server::Config),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AuthSubcommand {
     Base64 {
         num_bytes: usize,
