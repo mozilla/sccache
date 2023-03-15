@@ -485,7 +485,7 @@ where
                 .flag_str()
                 .unwrap_or("Can't handle complex arguments through clang",)),
             None => match arg {
-                Argument::Raw(_) if follows_plugin_arg => &mut common_args,
+                _ if follows_plugin_arg => &mut common_args,
                 Argument::Raw(flag) => cannot_cache!(
                     "Can't handle Raw arguments with -Xclang",
                     flag.to_str().unwrap_or("").to_string()
