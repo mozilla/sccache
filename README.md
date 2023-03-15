@@ -10,7 +10,7 @@
 sccache - Shared Compilation Cache
 ==================================
 
-sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](#local) or in one of [several cloud storage backends](#storage-options).
+sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
 
 sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html).
 
@@ -19,13 +19,18 @@ sccache also provides [icecream](https://github.com/icecc/icecream)-style distri
 ---
 
 Table of Contents (ToC)
-======================
+=======================
 
 * [Installation](#installation)
+* [Usage](#usage)
 * [Build Requirements](#build-requirements)
 * [Build](#build)
-* [Usage](#usage)
-* Storage Options
+* [Separating caches between invocations](#separating-caches-between-invocations)
+* [Overwriting the cache](#overwriting-the-cache)
+* [Debugging](#debugging)
+* [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
+* [Known Caveats](#known-caveats)
+* [Storage Options](#storage-options)
   * [Local](docs/Local.md)
   * [S3](docs/S3.md)
   * [R2](docs/S3.md#R2)
@@ -35,9 +40,6 @@ Table of Contents (ToC)
   * [Azure](docs/Azure.md)
   * [GitHub Actions](docs/GHA.md)
   * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
-* [Debugging](#debugging)
-* [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
-* [Known Caveats](#known-caveats)
 
 ---
 
@@ -99,7 +101,7 @@ export RUSTC_WRAPPER=/path/to/sccache
 cargo build
 ```
 
-sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
+sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
@@ -152,6 +154,8 @@ cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|a
 ```
 
 By default, `sccache` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+
+Feature `vendored-openssl` can be used to statically link with openssl if feature openssl is enabled.
 
 ### Building portable binaries
 
@@ -237,7 +241,7 @@ Known Caveats
 
 ### Rust
 
-* Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` create with a thin `bin` wrapper.
+* Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
 * Incrementally compiled crates cannot be cached. By default, in the debug profile Cargo will use incremental compilation for workspace members and path dependencies. [You can disable incremental compilation.](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 
 [More details on Rust caveats](/docs/Rust.md)
@@ -245,3 +249,16 @@ Known Caveats
 ### Symbolic links
 
 * Symbolic links to sccache won't work. Use hardlinks: `ln sccache /usr/local/bin/cc`
+
+Storage Options
+---------------
+
+* [Local](docs/Local.md)
+* [S3](docs/S3.md)
+* [R2](docs/S3.md#R2)
+* [Redis](docs/Redis.md)
+* [Memcached](docs/Memcached.md)
+* [Google Cloud Storage](docs/Gcs.md)
+* [Azure](docs/Azure.md)
+* [GitHub Actions](docs/GHA.md)
+* [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)

@@ -209,6 +209,33 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
     assert_eq!(lines, expected_lines);
 }
 
+fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name: _,
+        exe,
+        env_vars,
+    } = compiler;
+
+    let out_file = tempdir.join(OUTPUT);
+    let cmd_file_name = "test_msvc.rsp";
+    {
+        let mut file = File::create(&tempdir.join(cmd_file_name)).unwrap();
+        let content = format!("-c {INPUT} -Fo{OUTPUT}");
+        file.write_all(content.as_bytes()).unwrap();
+    }
+
+    let args = vec_from!(OsString, exe, &format!("@{cmd_file_name}"));
+    sccache_command()
+        .args(&args)
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    fs::remove_file(&out_file).unwrap();
+}
+
 fn test_gcc_mp_werror(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -375,6 +402,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     test_compile_with_define(compiler.clone(), tempdir);
     if compiler.name == "cl.exe" {
         test_msvc_deps(compiler.clone(), tempdir);
+        test_msvc_responsefile(compiler.clone(), tempdir);
     }
     if compiler.name == "gcc" {
         test_gcc_mp_werror(compiler.clone(), tempdir);

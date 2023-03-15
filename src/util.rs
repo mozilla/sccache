@@ -31,11 +31,8 @@ use std::time::Duration;
 use crate::errors::*;
 
 /// The url safe engine for base64.
-pub const BASE64_URL_SAFE_ENGINE: base64::engine::fast_portable::FastPortable =
-    base64::engine::fast_portable::FastPortable::from(
-        &base64::alphabet::URL_SAFE,
-        base64::engine::fast_portable::NO_PAD,
-    );
+pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
+    base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 #[derive(Clone)]
 pub struct Digest {
@@ -517,6 +514,7 @@ pub fn daemonize() -> Result<()> {
 /// ---
 ///
 /// More details could be found at https://github.com/mozilla/sccache/pull/1563
+#[cfg(any(feature = "dist-server", feature = "dist-client"))]
 pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .pool_max_idle_per_host(0)

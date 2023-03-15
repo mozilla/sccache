@@ -20,14 +20,14 @@ use crate::compiler::{
     clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::run_input_output;
+use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
 use fs::File;
 use fs_err as fs;
 use log::Level::Debug;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 
@@ -353,7 +353,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("EP", SuppressCompilation),
     msvc_take_arg!("F", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("FA", OsString, Concatenated, TooHard),
-    msvc_flag!("FC", TooHardFlag), // Use absolute paths in error messages.
+    msvc_flag!("FC", PassThrough), // Use absolute paths in error messages, does not affect caching, only the debug output of the build
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("FS", Ignore),
@@ -364,7 +364,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
-    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath),
+    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath), // allows users to specify the name for a PCH (when using /Yu or /Yc), PCHs are not supported in sccache.
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
     msvc_flag!("GA", PassThrough),
@@ -382,7 +382,8 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Gd", PassThrough),
     msvc_flag!("Ge", PassThrough),
     msvc_flag!("Gh", PassThrough),
-    msvc_flag!("Gm", TooHardFlag),
+    msvc_flag!("Gm", TooHardFlag), // enable minimal rebuild, we do not support this
+    msvc_flag!("Gm-", PassThrough), // disable minimal rebuild; we prefer no minimal rebuild, so marking it as disabled is fine
     msvc_flag!("Gr", PassThrough),
     msvc_take_arg!("Gs", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Gv", PassThrough),
@@ -443,6 +444,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("W4", PassThrough),
     msvc_flag!("WL", PassThrough),
     msvc_flag!("WX", PassThrough),
+    msvc_flag!("WX-", PassThrough),
     msvc_flag!("Wall", PassThrough),
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
@@ -507,7 +509,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("nologo", PassThrough),
     msvc_take_arg!("o", PathBuf, Separated, Output), // Deprecated but valid
     msvc_flag!("openmp", PassThrough),
+    msvc_flag!("openmp-", PassThrough),
     msvc_flag!("openmp:experimental", PassThrough),
+    msvc_flag!("permissive", PassThrough),
     msvc_flag!("permissive-", PassThrough),
     msvc_flag!("sdl", PassThrough),
     msvc_flag!("sdl-", PassThrough),
@@ -566,7 +570,11 @@ pub fn parse_arguments(
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
 
-    for arg in ArgsIter::new(arguments.iter().cloned(), (&ARGS[..], &SLASH_ARGS[..])) {
+    // Custom iterator to expand `@` arguments which stand for reading a file
+    // and interpreting it as a list of more arguments.
+    let it = ExpandIncludeFile::new(cwd, arguments);
+    let it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..]));
+    for arg in it {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(PassThrough) | Some(PassThroughWithPath(_)) | Some(PassThroughWithSuffix(_)) => {}
@@ -1062,6 +1070,253 @@ fn generate_compile_commands(
     })();
 
     Ok((command, dist_command, cacheable))
+}
+
+/// Iterator that expands @response files in-place.
+///
+/// According to MSDN [1], @file means:
+///
+/// ```text
+///   A text file containing compiler commands.
+///
+///   A response file can contain any commands that you would specify on the
+///   command line. This can be useful if your command-line arguments exceed
+///   127 characters.
+///
+///   It is not possible to specify the @ option from within a response file.
+///   That is, a response file cannot embed another response file.
+///
+///   From the command line you can specify as many response file options (for
+///   example, @respfile.1 @respfile.2) as you want.
+/// ```
+///
+/// Per Microsoft [2], response files are used by MSBuild:
+///
+/// ```text
+///   Response (.rsp) files are text files that contain MSBuild.exe
+///   command-line switches. Each switch can be on a separate line or all
+///   switches can be on one line. Comment lines are prefaced with a # symbol.
+///   The @ switch is used to pass another response file to MSBuild.exe.
+///
+///   The autoresponse file is a special .rsp file that MSBuild.exe automatically
+///   uses when building a project. This file, MSBuild.rsp, must be in the same
+///   directory as MSBuild.exe, otherwise it will not be found. You can edit
+///   this file to specify default command-line switches to MSBuild.exe.
+///   For example, if you use the same logger every time you build a project,
+///   you can add the -logger switch to MSBuild.rsp, and MSBuild.exe will
+///   use the logger every time a project is built.
+/// ```
+///
+/// Note that, in order to conform to the spec, response files are not
+/// recursively expanded.
+///
+/// [1]: https://docs.microsoft.com/en-us/cpp/build/reference/at-specify-a-compiler-response-file
+/// [2]: https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-response-files?view=vs-2019
+struct ExpandIncludeFile<'a> {
+    cwd: &'a Path,
+    /// Arguments provided during initialization, which may include response-file directives (@).
+    /// Order is reversed from the iterator provided,
+    /// so they can be visited in front-to-back order by popping from the end.
+    args: Vec<OsString>,
+    /// Arguments found in provided response-files.
+    /// These are also reversed compared to the order in the response file,
+    /// so they can be visited in front-to-back order by popping from the end.
+    stack: Vec<OsString>,
+}
+
+impl<'a> ExpandIncludeFile<'a> {
+    pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
+        ExpandIncludeFile {
+            // Reverse the provided iterator so we can pop from end to visit in the original order.
+            args: args.iter().rev().map(|a| a.to_owned()).collect(),
+            stack: Vec::new(),
+            cwd,
+        }
+    }
+}
+
+impl<'a> Iterator for ExpandIncludeFile<'a> {
+    type Item = OsString;
+
+    fn next(&mut self) -> Option<OsString> {
+        loop {
+            // Visit all arguments found in the most recently read response file.
+            // Since response files are not recursive, we do not need to worry
+            // about these containing addditional @ directives.
+            if let Some(response_file_arg) = self.stack.pop() {
+                return Some(response_file_arg);
+            }
+
+            // Visit the next argument provided by the original command iterator.
+            let arg = match self.args.pop() {
+                Some(arg) => arg,
+                None => return None,
+            };
+            let file_arg = match arg.split_prefix("@") {
+                Some(file_arg) => file_arg,
+                None => return Some(arg),
+            };
+            let file_path = self.cwd.join(file_arg);
+            // Read the contents of the response file, accounting for non-utf8 encodings.
+            let content = match File::open(&file_path).and_then(|mut file| read_text(&mut file)) {
+                Ok(content) => content,
+                Err(err) => {
+                    debug!("failed to read @-file `{}`: {}", file_path.display(), err);
+                    // If we failed to read the file content, return the orginal arg (including the `@` directive).
+                    return Some(arg);
+                }
+            };
+
+            trace!("Expanded response file {:?} to {:?}", file_path, content);
+
+            // Parse the response file contents, taking into account quote-wrapped strings and new-line separators.
+            // Special implementation to account for MSVC response file format.
+            let resp_file_args = SplitMsvcResponseFileArgs::from(&content).collect::<Vec<_>>();
+            // Pump arguments back to the stack, in reverse order so we can `Vec::pop` and visit in original front-to-back order.
+            let rev_args = resp_file_args.iter().rev().map(|s| s.into());
+            self.stack.extend(rev_args);
+        }
+    }
+}
+
+/// Reads the text stream as a unicode buffer, prioritizing UTF-8, UTF-16 (big and little endian), and falling back on ISO 8859-1.
+fn read_text<R>(reader: &mut R) -> io::Result<String>
+where
+    R: Read,
+{
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+
+    let (result, _) = encoding::decode(
+        &buf,
+        encoding::DecoderTrap::Strict,
+        encoding::all::ISO_8859_1,
+    );
+
+    result.map_err(|err| io::Error::new(io::ErrorKind::Other, err.into_owned()))
+}
+
+/// An iterator over the arguments in a Windows command line.
+///
+/// This produces results identical to `CommandLineToArgvW` except in the
+/// following cases:
+///
+///  1. When passed an empty string, CommandLineToArgvW returns the path to the
+///     current executable file. Here, the iterator will simply be empty.
+///  2. CommandLineToArgvW interprets the first argument differently than the
+///     rest. Here, all arguments are treated in identical fashion.
+///
+/// Parsing rules:
+///
+///  - Arguments are delimited by whitespace (either a space or tab).
+///  - A string surrounded by double quotes is interpreted as a single argument.
+///  - Backslashes are interpreted literally unless followed by a double quote.
+///  - 2n backslashes followed by a double quote reduce to n backslashes and we
+///    enter the "in quote" state.
+///  - 2n+1 backslashes followed by a double quote reduces to n backslashes,
+///    we do *not* enter the "in quote" state, and the double quote is
+///    interpreted literally.
+///
+/// References:
+///  - https://msdn.microsoft.com/en-us/library/windows/desktop/bb776391(v=vs.85).aspx
+///  - https://msdn.microsoft.com/en-us/library/windows/desktop/17w5ykft(v=vs.85).aspx
+#[derive(Clone, Debug)]
+struct SplitMsvcResponseFileArgs<'a> {
+    /// String slice of the file content that is being parsed.
+    /// Slice is mutated as this iterator is executed.
+    file_content: &'a str,
+}
+
+impl<'a, T> From<&'a T> for SplitMsvcResponseFileArgs<'a>
+where
+    T: AsRef<str> + 'static,
+{
+    fn from(file_content: &'a T) -> Self {
+        Self {
+            file_content: file_content.as_ref(),
+        }
+    }
+}
+
+impl<'a> SplitMsvcResponseFileArgs<'a> {
+    /// Appends backslashes to `target` by decrementing `count`.
+    /// If `step` is >1, then `count` is decremented by `step`, resulting in 1 backslash appended for every `step`.
+    fn append_backslashes_to(target: &mut String, count: &mut usize, step: usize) {
+        while *count >= step {
+            target.push('\\');
+            *count -= step;
+        }
+    }
+}
+
+impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        let mut in_quotes = false;
+        let mut backslash_count: usize = 0;
+
+        // Strip any leading whitespace before relevant characters
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n');
+        self.file_content = self.file_content.trim_start_matches(is_whitespace);
+
+        if self.file_content.is_empty() {
+            return None;
+        }
+
+        // The argument string to return, built by analyzing the current slice in the iterator.
+        let mut arg = String::new();
+        // All characters still in the string slice. Will be mutated by consuming
+        // values until the current arg is built.
+        let mut chars = self.file_content.chars();
+        // Build the argument by evaluating each character in the string slice.
+        for c in &mut chars {
+            match c {
+                // In order to handle the escape character based on the char(s) which come after it,
+                // they are counted instead of appended literally, until a non-backslash character is encountered.
+                '\\' => backslash_count += 1,
+                // Either starting or ending a quoted argument, or appending a literal character (if the quote was escaped).
+                '"' => {
+                    // Only append half the number of backslashes encountered, because this is an escaped string.
+                    // This will reduce `backslash_count` to either 0 or 1.
+                    Self::append_backslashes_to(&mut arg, &mut backslash_count, 2);
+                    match backslash_count == 0 {
+                        // If there are no remaining encountered backslashes,
+                        // then we have found either the start or end of a quoted argument.
+                        true => in_quotes = !in_quotes,
+                        // The quote character is escaped, so it is treated as a literal and appended to the arg string.
+                        false => {
+                            backslash_count = 0;
+                            arg.push('"');
+                        }
+                    }
+                }
+                // If whitespace is encountered, only preserve it if we are currently in quotes.
+                // Otherwise it marks the end of the current argument.
+                ' ' | '\t' | '\n' => {
+                    Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
+                    // If not in a quoted string, then this is the end of the argument.
+                    if !in_quotes {
+                        break;
+                    }
+                    // Otherwise, the whitespace must be preserved in the argument.
+                    arg.push(c);
+                }
+                // All other characters treated as is
+                _ => {
+                    Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
+                    arg.push(c);
+                }
+            }
+        }
+
+        // Flush any backslashes at the end of the string.
+        Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
+        // Save the current remaining characters for the next step in the iterator.
+        self.file_content = chars.as_str();
+
+        Some(arg)
+    }
 }
 
 #[cfg(test)]
@@ -1584,11 +1839,229 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_response_file() {
+    fn test_responsefile_missing() {
         assert_eq!(
             CompilerArguments::CannotCache("@", None),
             parse_arguments(ovec!["-c", "foo.c", "@foo", "-Fofoo.obj"])
         );
+    }
+
+    #[test]
+    fn test_responsefile_absolute_path() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"-c foo.c -o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_relative_path() {
+        // Generate the tempdir in the currentdir so we can use a relative path in this test.
+        // MSVC allows relative paths to response files, so we must support that.
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir_in("./")
+            .unwrap();
+        let relative_to_tmp = td
+            .path()
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+        let cmd_file_path = relative_to_tmp.join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"-c foo.c -o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_with_quotes() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"-c \"Foo Bar.c\" -o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("Foo Bar.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_multiline() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"\n-c foo.c\n-o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_encoding_utf16le() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            use encoding::{all::UTF_16LE, EncoderTrap::Strict, Encoding};
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = UTF_16LE.encode("-c foo€.c -o foo.o", Strict).unwrap();
+            file.write_all(&[0xFF, 0xFE]).unwrap(); // little endian BOM
+            file.write_all(&content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo€.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 
     #[test]
