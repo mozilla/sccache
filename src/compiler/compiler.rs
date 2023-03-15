@@ -32,7 +32,6 @@ use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
 use filetime::FileTime;
 use fs::File;
 use fs_err as fs;
-use std::any::Any;
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -138,9 +137,6 @@ where
         env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>>;
     fn box_clone(&self) -> Box<dyn Compiler<T>>;
-
-    #[allow(dead_code)]
-    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: CommandCreatorSync> Clone for Box<dyn Compiler<T>> {
@@ -1366,13 +1362,6 @@ mod test {
             .unwrap()
             .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
-        assert!(
-            !c.as_any()
-                .downcast_ref::<CCompiler<Clang>>()
-                .unwrap()
-                .compiler
-                .has_fminimize_whitespace
-        );
     }
 
     #[test]

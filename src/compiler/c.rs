@@ -25,7 +25,6 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
 use fs_err as fs;
-use std::any::Any;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -46,7 +45,7 @@ where
 {
     executable: PathBuf,
     executable_digest: String,
-    pub compiler: I,
+    compiler: I,
 }
 
 /// A generic implementation of the `CompilerHasher` trait for C/C++ compilers.
@@ -255,11 +254,6 @@ where
             compiler,
         })
     }
-
-    #[allow(dead_code)]
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
@@ -302,10 +296,6 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
 
     fn box_clone(&self) -> Box<dyn Compiler<T>> {
         Box::new((*self).clone())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
