@@ -275,23 +275,19 @@ pub fn try_parse() -> Result<Command> {
                 // If we're running under rr, avoid the `LD_PRELOAD` bits, as it will
                 // almost surely do the wrong thing, as the compiler gets executed
                 // in a different process tree.
-                //
-                // FIXME: Maybe we should strip out `LD_PRELOAD` always?
-                if env::var_os("RUNNING_UNDER_RR").is_some() {
-                    env_vars.retain(|(k, _v)| {
-                        k != "LD_PRELOAD"
-                            && k != "RUNNING_UNDER_RR"
-                            && k != "HOSTNAME"
-                            && k != "PWD"
-                            && k != "HOST"
-                            && k != "RPM_BUILD_ROOT"
-                            && k != "SOURCE_DATE_EPOCH"
-                            && k != "RPM_PACKAGE_RELEASE"
-                            && k != "MINICOM"
-                            && k != "DESTDIR"
-                            && k != "RPM_PACKAGE_VERSION"
-                    });
-                }
+                env_vars.retain(|(k, _v)| {
+                    k != "LD_PRELOAD"
+                        && k != "RUNNING_UNDER_RR"
+                        && k != "HOSTNAME"
+                        && k != "PWD"
+                        && k != "HOST"
+                        && k != "RPM_BUILD_ROOT"
+                        && k != "SOURCE_DATE_EPOCH"
+                        && k != "RPM_PACKAGE_RELEASE"
+                        && k != "MINICOM"
+                        && k != "DESTDIR"
+                        && k != "RPM_PACKAGE_VERSION"
+                });
 
                 let cmd = matches
                     .get_many("CMD")
