@@ -348,7 +348,7 @@ jobs:
       SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccache.exe
       SCCACHE_LOG: "trace"
       SCCACHE_ERROR_LOG: "${{ github.workspace }}\\server_log.txt"
-    
+
     steps:
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -368,7 +368,7 @@ jobs:
         shell: bash
         working-directory: ./tests/msvc
         run: cl "@args.rsp"
-      
+
       - name: Start Server
         shell: bash
         run: $SCCACHE_EXE --start-server
@@ -388,7 +388,7 @@ jobs:
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
           $SCCACHE_EXE --show-stats | grep -e "Cache hits\s*[1-9]"
-          
+
       - name: Stop Server
         if: success() || failure()
         shell: bash
