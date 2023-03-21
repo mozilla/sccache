@@ -2,7 +2,7 @@
 name = "sccache"
 version = "0.4.0"
 license = "Apache-2.0"
-description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using the S3 API."
+description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using various cloud storage."
 repository = "https://github.com/mozilla/sccache/"
 readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
