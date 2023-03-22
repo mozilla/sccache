@@ -442,7 +442,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          rm -f hello_world
           export CXX="${SCCACHE_PATH} clang++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
 
@@ -487,7 +486,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          rm -f hello_world
           export CXX="${SCCACHE_PATH} g++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
 
