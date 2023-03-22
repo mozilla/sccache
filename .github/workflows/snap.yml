@@ -17,6 +17,7 @@ jobs:
         - armhf
         - arm64
         # Broken dependencies: - ppc64el
+        # https://github.com/mozilla/sccache/issues/1442
         # Broken environment: - s390x
 
     steps:
