@@ -442,7 +442,6 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          rm -f hello_world
           export CXX="${SCCACHE_PATH} clang++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
 
@@ -487,9 +486,123 @@ jobs:
 
       - name: Test Twice for Cache Read
         run: |
-          rm -f hello_world
           export CXX="${SCCACHE_PATH} g++"
           $CXX -c `pwd`/tests/test_clang_multicall.c
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+
+  autotools:
+    runs-on: ubuntu-latest
+    needs: build
+
+    env:
+      SCCACHE_GHA_ENABLED: "on"
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure Cache Env
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          ## Install dependencies
+          sudo apt-get update
+          sudo apt-get install autoconf automake libtool
+
+      - name: Test
+        run: |
+          cd `pwd`/tests/autotools/
+          autoreconf||true
+          automake --add-missing
+          ./configure CXX="${SCCACHE_PATH} g++"
+          make
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+      - name: Test Twice for Cache Read
+        run: |
+          cd `pwd`/tests/autotools/
+          make distclean
+          ./configure CXX="${SCCACHE_PATH} g++"
+          make
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+  cmake:
+    runs-on: ubuntu-latest
+    needs: build
+
+    env:
+      SCCACHE_GHA_ENABLED: "on"
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure Cache Env
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          ## Install dependencies
+          sudo apt-get update
+          sudo apt-get install cmake
+
+      - name: Test
+        run: |
+          cd `pwd`/tests/cmake/
+          mkdir build
+          cd build
+          cmake -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH} ..
+          make
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+      - name: Test Twice for Cache Read
+        run: |
+          cd `pwd`/tests/cmake/
+          rm -rf build
+          mkdir build
+          cd build
+          cmake -DCMAKE_C_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_CXX_COMPILER_LAUNCHER=${SCCACHE_PATH} ..
+          make
 
       - name: Output
         run: |
