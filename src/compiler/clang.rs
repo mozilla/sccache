@@ -687,6 +687,37 @@ mod test {
     }
 
     #[test]
+    fn test_parse_xclang_plugin_arg_unknown_flag() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-add-plugin",
+            "-Xclang",
+            "some-plugin",
+            "-Xclang",
+            "-plugin-arg-some-plugin",
+            "-Xclang",
+            "-fsome-unknown-flag"
+        );
+        assert_eq!(
+            ovec![
+                "-Xclang",
+                "-add-plugin",
+                "-Xclang",
+                "some-plugin",
+                "-Xclang",
+                "-plugin-arg-some-plugin",
+                "-Xclang",
+                "-fsome-unknown-flag"
+            ],
+            a.common_args
+        );
+    }
+
+    #[test]
     fn test_parse_xclang_verify() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-verify");
         assert_eq!(ovec!["-Xclang", "-verify"], a.preprocessor_args);
