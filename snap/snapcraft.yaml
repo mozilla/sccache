@@ -26,15 +26,7 @@ confinement: classic
 
 apps:
     sccache:
-        command: bin/sccache.wrapper
-
-    sccache-server:
-        environment:
-            SCCACHE_START_SERVER: 1
-            SCCACHE_NO_DAEMON: 1
-            SCCACHE_IDLE_TIMEOUT: 0
-        command: bin/sccache.wrapper
-        daemon: simple
+        command: bin/sccache
 
 parts:
     sccache:
@@ -54,9 +46,3 @@ parts:
         - s3
         build-attributes:
         - enable-patchelf
-
-    wrapper:
-        plugin: dump
-        source: snap/local
-        organize:
-          sccache.wrapper: bin/sccache.wrapper
