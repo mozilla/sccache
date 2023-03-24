@@ -17,9 +17,15 @@ jobs:
             os: ubuntu-latest
           - component: clippy
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -127,9 +133,15 @@ jobs:
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
