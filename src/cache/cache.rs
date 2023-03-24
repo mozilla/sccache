@@ -425,11 +425,15 @@ impl Storage for opendal::Operator {
             }
         };
 
-        if can_write {
-            Ok(CacheMode::ReadWrite)
+        let mode = if can_write {
+            CacheMode::ReadWrite
         } else {
-            Ok(CacheMode::ReadOnly)
-        }
+            CacheMode::ReadOnly
+        };
+
+        debug!("storage check result: {mode:?}");
+
+        Ok(mode)
     }
 
     fn location(&self) -> String {
