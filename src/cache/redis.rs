@@ -33,8 +33,6 @@ impl RedisCache {
         builder.endpoint(parsed.as_str());
         builder.username(parsed.username());
         builder.password(parsed.password().unwrap_or_default());
-        // Set default ttl to 24 hours.
-        builder.default_ttl(Duration::from_secs(24 * 3600));
 
         let options: HashMap<_, _> = parsed
             .query_pairs()
