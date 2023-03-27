@@ -52,14 +52,14 @@ jobs:
             rustc: "1.64.0"
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-            sccache_log: sccache=trace
+            cachepot_log: cachepot=trace
             dist_exec_strategy: docker
           - os: ubuntu-20.04
-            rustc: 1.60.0
+            rustc: 1.56.1
             extra_desc: dist-worker
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-            sccache_log: sccache=trace
-            sccache_sandbox: userns
+            cachepot_log: cachepot=trace
+            cachepot_sandbox: userns
             dist_exec_strategy: spawn
           - os: ubuntu-20.04
             rustc: stable
@@ -83,8 +83,8 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       DIST_EXEC_STRATEGY: ${{ matrix.dist_exec_strategy }}
-      SCCACHE_SANDBOX: ${{ matrix.sccache_sandbox }}
-      SCCACHE_LOG: ${{ matrix.sccache_log }}
+      SCCACHE_SANDBOX: ${{ matrix.cachepot_sandbox }}
+      SCCACHE_LOG: ${{ matrix.cachepot_log }}
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
