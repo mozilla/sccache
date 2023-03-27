@@ -593,7 +593,6 @@ pub enum SubmitToolchainResult {
 
 // BuildResult
 
-#[derive(Serialize, Deserialize)]
 pub struct BuildResult {
     pub output: ProcessOutput,
     pub outputs: Vec<(String, OutputData)>,
