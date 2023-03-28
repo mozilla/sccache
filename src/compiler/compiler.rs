@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+use crate::compiler::args::*;
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -22,7 +24,7 @@ use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
-use crate::dist;
+use crate::{counted_array, dist};
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
@@ -1029,14 +1031,25 @@ where
         }
     } else {
         let executable = executable.to_owned();
-        let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
+        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
         cc.map(|c| (c, None))
     }
 }
 
+ArgData! { pub
+    PassThrough(OsString),
+}
+use self::ArgData::*;
+
+counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
+]);
+
 async fn detect_c_compiler<T>(
     creator: T,
     executable: PathBuf,
+    arguments: &[OsString],
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
 ) -> Result<Box<dyn Compiler<T>>>
@@ -1085,6 +1098,19 @@ __VERSION__
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
 
+    // To ensure we get nvcc to version detect properly we need
+    // to propagate `-ccbin` flags so we ensure nvcc has a host
+    // compiler, when gcc isn't on the PATH
+    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
+        let arg = arg.unwrap_or(Argument::Raw(OsString::from("")));
+        match arg.get_data() {
+            Some(PassThrough(_)) => {
+                let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
+                cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
+            }
+            None => {}
+        }
+    }
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
     let child = cmd.spawn().await?;
