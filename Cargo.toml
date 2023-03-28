@@ -26,7 +26,6 @@ strip = true
 anyhow = "1.0"
 ar = "0.9"
 async-trait = "0.1"
-atty = "0.2.6"
 base64 = "0.21"
 bincode = "1"
 blake3 = "1"
@@ -45,6 +44,7 @@ futures = "0.3"
 gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"]  }
 http = "0.2"
 hyper = { version = "0.14.24", optional = true, features = ["server"] }
+is-terminal = "0.4.5"
 jobserver = "0.1"
 jsonwebtoken = { version = "8", optional = true }
 lazy_static = "1.0.0"

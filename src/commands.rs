@@ -21,10 +21,10 @@ use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreato
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
-use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
+use is_terminal::IsTerminal;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -409,7 +409,7 @@ fn handle_compile_finished(
 ) -> Result<i32> {
     trace!("handle_compile_finished");
     fn write_output(
-        stream: Stream,
+        stream: impl IsTerminal,
         writer: &mut dyn Write,
         data: &[u8],
         color_mode: ColorMode,
@@ -421,7 +421,7 @@ fn handle_compile_finished(
         // is a terminal and the compiler options didn't explicitly request non-color output,
         // then write the compiler output directly.
         if color_mode == ColorMode::On
-            || (!dumb_term && atty::is(stream) && color_mode != ColorMode::Off)
+            || (!dumb_term && stream.is_terminal() && color_mode != ColorMode::Off)
         {
             writer.write_all(data)?;
         } else {
@@ -435,13 +435,13 @@ fn handle_compile_finished(
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
     write_output(
-        Stream::Stdout,
+        std::io::stdout(),
         stdout,
         &response.stdout,
         response.color_mode,
     )?;
     write_output(
-        Stream::Stderr,
+        std::io::stderr(),
         stderr,
         &response.stderr,
         response.color_mode,
