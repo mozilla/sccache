@@ -475,6 +475,15 @@ pub fn storage_from_config(
     config: &Config,
     pool: &tokio::runtime::Handle,
 ) -> Result<Arc<dyn Storage>> {
+    #[cfg(any(
+        feature = "azure",
+        feature = "gcs",
+        feature = "gha",
+        feature = "memcached",
+        feature = "redis",
+        feature = "s3",
+        feature = "webdav"
+    ))]
     if let Some(cache_type) = &config.cache {
         let op = match cache_type {
             #[cfg(feature = "azure")]
@@ -560,8 +569,6 @@ pub fn storage_from_config(
                 WebdavCache::build(&c.endpoint, &c.key_prefix)
                     .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?
             }
-            #[allow(unreachable_patterns)]
-            _ => bail!("cache type is not enabled"),
         };
 
         let mut op = op.layer(LoggingLayer::default());
