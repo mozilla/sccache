@@ -29,9 +29,11 @@ use crate::dist::pkg;
 use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
+use async_trait::async_trait;
 use filetime::FileTime;
 use fs::File;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -2126,6 +2128,7 @@ mod test_dist {
         PathTransformer, ProcessOutput, RunJobResult, SchedulerStatusResult, ServerId,
         SubmitToolchainResult, Toolchain,
     };
+    use async_trait::async_trait;
     use std::path::{Path, PathBuf};
     use std::sync::{atomic::AtomicBool, Arc};
 

@@ -38,6 +38,7 @@ use crate::config::Config;
     feature = "webdav"
 ))]
 use crate::config::{self, CacheType};
+use async_trait::async_trait;
 use fs_err as fs;
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};

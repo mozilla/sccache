@@ -17,19 +17,10 @@
 #![recursion_limit = "256"]
 
 #[macro_use]
-extern crate async_trait;
-#[cfg(feature = "jsonwebtoken")]
-use jsonwebtoken as jwt;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
 extern crate log;
 #[cfg(feature = "rouille")]
 #[macro_use(router)]
 extern crate rouille;
-#[macro_use]
-extern crate serde_derive;
-
 // To get macros in scope, this has to be first.
 #[cfg(test)]
 #[macro_use]

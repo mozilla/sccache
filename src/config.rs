@@ -15,11 +15,14 @@
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
+use lazy_static::lazy_static;
 use regex::Regex;
-use serde::de::{Deserialize, DeserializeOwned, Deserializer};
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-#[cfg(any(feature = "dist-client", feature = "dist-server"))]
-use serde::ser::{Serialize, Serializer};
+use serde::ser::Serializer;
+use serde::{
+    de::{DeserializeOwned, Deserializer},
+    Deserialize, Serialize,
+};
 #[cfg(test)]
 use serial_test::serial;
 use std::collections::HashMap;
@@ -860,6 +863,8 @@ pub mod scheduler {
 
     use crate::errors::*;
 
+    use serde::{Deserialize, Serialize};
+
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type")]
     #[serde(deny_unknown_fields)]
@@ -911,6 +916,7 @@ pub mod scheduler {
 #[cfg(feature = "dist-server")]
 pub mod server {
     use super::HTTPUrl;
+    use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
 

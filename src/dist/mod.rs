@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::compiler;
+use async_trait::async_trait;
 use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};

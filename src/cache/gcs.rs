@@ -17,6 +17,7 @@ use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
+use serde::Deserialize;
 use url::Url;
 
 #[derive(Copy, Clone)]
