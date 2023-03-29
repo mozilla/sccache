@@ -413,8 +413,8 @@ impl OverlayBuilder {
                     // Bizarrely there's no way to actually get any information from a thread::Result::Err
                 })
                 .join()
+                .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
         })
-        .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
     }
 
     // Failing during cleanup is pretty unexpected, but we can still return the successful compile
