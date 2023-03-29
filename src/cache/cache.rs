@@ -557,7 +557,18 @@ pub fn storage_from_config(
 
         let mut op = op.layer(LoggingLayer::default());
         if !config.disable_cache_retry {
-            op = op.layer(RetryLayer::default());
+            // RetryLayer will retry requests when meeting temporary
+            // errors returned by OpenDAL. For example, network
+            // unreachable, timeout and so on.
+            //
+            // By default, we will retry:
+            //
+            // - jitter: false
+            // - factor: 2
+            // - min_delay: 1s
+            // - max_delay: 60s
+            // - max_times: 3
+            op = op.layer(RetryLayer::default().with_jitter());
         }
 
         return Ok(Arc::new(op));
