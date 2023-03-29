@@ -47,6 +47,7 @@
 
 use crate::errors::*;
 use crate::jobserver::{Acquired, Client};
+use async_trait::async_trait;
 use std::boxed::Box;
 use std::ffi::{OsStr, OsString};
 use std::fmt;

@@ -28,8 +28,10 @@ use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
 use crate::util::{ref_env, HashToDigest, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
+use lazy_static::lazy_static;
 use log::Level::Trace;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]

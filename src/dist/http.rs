@@ -22,6 +22,7 @@ pub use self::server::{
 
 mod common {
     use http::header;
+    use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
     use std::fmt;
@@ -249,12 +250,13 @@ pub mod urls {
 
 #[cfg(feature = "dist-server")]
 mod server {
-    use crate::jwt;
     use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
+    use lazy_static::lazy_static;
     use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
+    use serde::Serialize;
     use std::collections::HashMap;
     use std::io::Read;
     use std::net::SocketAddr;
@@ -1066,6 +1068,7 @@ mod client {
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
 
+    use async_trait::async_trait;
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;

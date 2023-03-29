@@ -1,25 +1,5 @@
-extern crate base64;
-extern crate crossbeam_utils;
-extern crate env_logger;
-extern crate flate2;
-extern crate jsonwebtoken as jwt;
-
-#[cfg(not(target_os = "freebsd"))]
-extern crate libmount;
-
 #[macro_use]
 extern crate log;
-extern crate nix;
-extern crate openssl;
-extern crate rand;
-extern crate reqwest;
-extern crate sccache;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate syslog;
-extern crate tar;
-extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
 use base64::Engine;
@@ -36,6 +16,7 @@ use sccache::dist::{
 };
 use sccache::util::daemonize;
 use sccache::util::BASE64_URL_SAFE_ENGINE;
+use serde::{Deserialize, Serialize};
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;

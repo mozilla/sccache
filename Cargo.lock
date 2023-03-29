@@ -2237,7 +2237,6 @@ dependencies = [
  "rouille",
  "semver",
  "serde",
- "serde_derive",
  "serde_json",
  "serial_test",
  "sha2",
