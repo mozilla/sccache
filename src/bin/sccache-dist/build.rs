@@ -265,9 +265,9 @@ impl OverlayBuilder {
             compile_command.arguments
         );
 
-        crossbeam_utils::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             scope
-                .spawn(|_| {
+                .spawn(|| {
                     // Now mounted filesystems will be automatically unmounted when this thread dies
                     // (and tmpfs filesystems will be completely destroyed)
                     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)
@@ -410,11 +410,9 @@ impl OverlayBuilder {
                         output: compile_output,
                         outputs,
                     })
-
                     // Bizarrely there's no way to actually get any information from a thread::Result::Err
                 })
                 .join()
-                .unwrap_or_else(|_e| Err(anyhow!("Build thread exited unsuccessfully")))
         })
         .unwrap_or_else(|e| Err(anyhow!("Error joining build thread: {:?}", e)))
     }
