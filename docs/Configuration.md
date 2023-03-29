@@ -71,7 +71,7 @@ configuration variables
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
-* `SCCACHE_DISABLE_CACHE_RETRY` set to `1` to disable the cache retry.
+* `SCCACHE_DISABLE_CACHE_RETRY` set to `1` to disable the cache retry. By default, it will retry 3 times. The first retry will at 1s, second at 2s and third at 4s
 
 ### cache configs
 
