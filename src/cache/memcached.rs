@@ -15,7 +15,6 @@
 
 use std::time::Duration;
 
-use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::services::Memcached;
 use opendal::Operator;
 
@@ -30,10 +29,7 @@ impl MemcachedCache {
         builder.endpoint(url);
         builder.default_ttl(Duration::from_secs(expiration as u64));
 
-        let op = Operator::new(builder)?
-            .layer(RetryLayer::default())
-            .layer(LoggingLayer::default())
-            .finish();
+        let op = Operator::new(builder)?.finish();
         Ok(op)
     }
 }

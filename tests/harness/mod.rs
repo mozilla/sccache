@@ -152,6 +152,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
             rewrite_includes_only: false, // TODO
         },
         server_startup_timeout_ms: None,
+        disable_cache_retry: false,
     }
 }
 #[cfg(feature = "dist-server")]

@@ -15,7 +15,6 @@
 
 use opendal::Operator;
 
-use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::services::Azblob;
 
 use crate::errors::*;
@@ -28,10 +27,7 @@ impl AzureBlobCache {
         builder.container(container);
         builder.root(key_prefix);
 
-        let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .layer(RetryLayer::default())
-            .finish();
+        let op = Operator::new(builder)?.finish();
         Ok(op)
     }
 }

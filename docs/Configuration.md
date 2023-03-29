@@ -3,6 +3,9 @@
 ## file
 
 ```toml
+# Disable the cache retry logic
+disable_cache_retry = false
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -68,6 +71,7 @@ configuration variables
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
+* `SCCACHE_DISABLE_CACHE_RETRY` set to `1` to disable the cache retry.
 
 ### cache configs
 

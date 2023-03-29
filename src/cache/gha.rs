@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
 use opendal::services::Ghac;
 use opendal::Operator;
 
@@ -38,9 +37,7 @@ impl GHACache {
             builder.version(&format!("sccache-v{VERSION}-{version}"));
         }
 
-        let op = Operator::new(builder)?
-            .layer(LoggingLayer::default())
-            .finish();
+        let op = Operator::new(builder)?.finish();
         Ok(op)
     }
 }

@@ -463,6 +463,7 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    pub disable_cache_retry: bool,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -729,6 +730,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub disable_cache_retry: bool,
 }
 
 impl Config {
@@ -750,6 +752,7 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
+            disable_cache_retry,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -765,6 +768,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            disable_cache_retry,
         }
     }
 }
@@ -1045,6 +1049,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        disable_cache_retry: false,
     };
 
     assert_eq!(
@@ -1059,6 +1064,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            disable_cache_retry: false,
         }
     );
 }
@@ -1113,6 +1119,7 @@ fn test_gcs_service_account() {
 fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
 server_startup_timeout_ms = 10000
+disable_cache_retry = true
 
 [dist]
 # where to find the scheduler
@@ -1227,6 +1234,7 @@ key_prefix = "webdavprefix"
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
+            disable_cache_retry: true,
         }
     )
 }
