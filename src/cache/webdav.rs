@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use opendal::layers::LoggingLayer;
+use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::services::Webdav;
 use opendal::Operator;
 
@@ -26,6 +26,7 @@ impl WebdavCache {
         builder.root(key_prefix);
 
         let op = Operator::new(builder)?
+            .layer(RetryLayer::default())
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

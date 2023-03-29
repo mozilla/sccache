@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use crate::errors::*;
+use opendal::layers::RetryLayer;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
@@ -71,6 +72,7 @@ impl GCSCache {
         builder.signer(signer_builder.build()?);
 
         let op = Operator::new(builder)?
+            .layer(RetryLayer::default())
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

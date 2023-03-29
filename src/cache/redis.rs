@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use crate::errors::*;
-use opendal::layers::LoggingLayer;
+use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::services::Redis;
 use opendal::Operator;
 use std::collections::HashMap;
@@ -43,6 +43,7 @@ impl RedisCache {
             .unwrap_or_default());
 
         let op = Operator::new(builder)?
+            .layer(RetryLayer::default())
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

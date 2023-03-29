@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use opendal::layers::LoggingLayer;
+use opendal::layers::{LoggingLayer, RetryLayer};
 use opendal::services::S3;
 use opendal::Operator;
 
@@ -43,6 +43,7 @@ impl S3Cache {
         }
 
         let op = Operator::new(builder)?
+            .layer(RetryLayer::default())
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
