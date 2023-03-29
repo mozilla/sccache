@@ -296,7 +296,7 @@ impl OverlayBuilder {
                     fs::create_dir(&target_dir)
                         .context("Failed to create overlay target directory")?;
 
-                    let () = Overlay::writable(
+                    Overlay::writable(
                         iter::once(overlay.toolchain_dir.as_path()),
                         upper_dir,
                         work_dir,
