@@ -46,7 +46,7 @@ http = "0.2"
 hyper = { version = "0.14.24", optional = true, features = ["server"] }
 is-terminal = "0.4.5"
 jobserver = "0.1"
-jsonwebtoken = { version = "8", optional = true }
+jwt = { package = "jsonwebtoken", version = "8", optional = true }
 lazy_static = "1.0.0"
 libc = "0.2.140"
 linked-hash-map = "0.5"
@@ -60,8 +60,7 @@ reqwest = { version = "0.11", features = ["json", "blocking", "stream"], optiona
 retry = "2"
 semver = "1.0"
 sha2 = { version = "0.10.6", optional = true }
-serde = "1.0"
-serde_derive = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 strip-ansi-escapes = "0.1"
 tar = "0.4.36"
@@ -137,7 +136,7 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["flate2", "hyper", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["crossbeam-utils", "jsonwebtoken", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["crossbeam-utils", "jwt", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 

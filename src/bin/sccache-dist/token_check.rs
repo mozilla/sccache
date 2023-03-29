@@ -1,8 +1,8 @@
-use crate::jwt;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::{new_reqwest_blocking_client, BASE64_URL_SAFE_ENGINE};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
