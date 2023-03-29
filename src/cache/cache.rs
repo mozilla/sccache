@@ -39,6 +39,15 @@ use crate::config::Config;
 ))]
 use crate::config::{self, CacheType};
 use fs_err as fs;
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav"
+))]
 use opendal::layers::{LoggingLayer, RetryLayer};
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
