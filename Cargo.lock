@@ -2209,7 +2209,6 @@ dependencies = [
  "cc",
  "chrono",
  "clap",
- "crossbeam-utils",
  "daemonize",
  "directories",
  "encoding",
