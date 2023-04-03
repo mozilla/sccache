@@ -54,6 +54,13 @@ use_ssl = true
 key_prefix = "s3prefix"
 ```
 
+sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
+
+If no such env variable is set, sccache looks at default locations as below:
+- Linux: `~/.config/sccache/config`
+- macOS: `~/Library/Application Support/Mozilla.sccache/config`
+- Windows: `%APPDATA%\Mozilla\sccache\config\config`
+
 ## env
 
 Whatever is set by a file based configuration, it is overruled by the env
