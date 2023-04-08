@@ -28,7 +28,7 @@ impl AzureBlobCache {
         builder.container(container);
         builder.root(key_prefix);
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

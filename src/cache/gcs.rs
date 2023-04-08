@@ -71,7 +71,7 @@ impl GCSCache {
         }
         builder.signer(signer_builder.build()?);
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

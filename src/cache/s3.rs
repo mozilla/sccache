@@ -40,7 +40,7 @@ impl S3Cache {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
