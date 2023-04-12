@@ -512,7 +512,10 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
     let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
         let region = env::var("SCCACHE_REGION").ok();
-        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
+        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS")
+            .ok()
+            .map(|value| value == "true")
+            .unwrap_or_default();
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
             .map(|value| value != "off");
