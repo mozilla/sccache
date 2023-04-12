@@ -13,8 +13,6 @@
 use opendal::services::S3;
 use opendal::Operator;
 
-use std::convert::TryInto;
-
 use crate::errors::*;
 
 pub struct S3Cache;
