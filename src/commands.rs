@@ -292,8 +292,8 @@ fn connect_or_start_server(
                 ServerStartup::AddrInUse => {
                     debug!("AddrInUse: possible parallel server bootstraps, retrying..")
                 }
-                ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
-                ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
+                ServerStartup::TimedOut => bail!("Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"),
+                ServerStartup::Err { reason } => bail!("Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information", reason),
             }
             let server = connect_with_retry(port)?;
             Ok(server)
