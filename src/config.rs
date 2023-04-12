@@ -1084,7 +1084,7 @@ fn config_overrides() {
 #[test]
 #[serial]
 fn test_s3_no_credentials() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
     env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
     env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
