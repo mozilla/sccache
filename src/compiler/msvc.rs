@@ -450,6 +450,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
     msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
@@ -459,6 +460,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Ze", PassThrough),
     msvc_flag!("Zi", DebugInfo),
+    msvc_take_arg!("Zm", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Zo", PassThrough),
     msvc_flag!("Zo-", PassThrough),
     msvc_flag!("Zp1", PassThrough),
@@ -518,6 +520,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
