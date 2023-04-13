@@ -1258,7 +1258,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
         let mut backslash_count: usize = 0;
 
         // Strip any leading whitespace before relevant characters
-        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n');
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
         self.file_content = self.file_content.trim_start_matches(is_whitespace);
 
         if self.file_content.is_empty() {
@@ -1294,7 +1294,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
                 }
                 // If whitespace is encountered, only preserve it if we are currently in quotes.
                 // Otherwise it marks the end of the current argument.
-                ' ' | '\t' | '\n' => {
+                ' ' | '\t' | '\n' | '\r' => {
                     Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
                     // If not in a quoted string, then this is the end of the argument.
                     if !in_quotes {
