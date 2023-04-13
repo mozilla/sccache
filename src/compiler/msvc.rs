@@ -1840,6 +1840,16 @@ mod test {
             CompilerArguments::CannotCache("-FR", None),
             parse_arguments(ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"])
         );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Fp", None),
+            parse_arguments(ovec!["-c", "-Fpfoo.h", "foo.c"])
+        );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Yc", None),
+            parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
+        );
     }
 
     #[test]
