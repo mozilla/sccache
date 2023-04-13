@@ -1325,6 +1325,8 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use super::*;
     use crate::compiler::*;
     use crate::mock_command::*;
@@ -1487,6 +1489,53 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn parse_deps_arguments() {
+        let arg_sets = vec![
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.pp"],
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/sourceDependenciesfoo.obj.pp"],
+            ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/sourceDependencies",
+                "foo.obj.pp"
+            ],
+        ];
+
+        for args in arg_sets {
+            let ParsedArguments {
+                input,
+                language,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                depfile,
+                ..
+            } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.c"), input.to_str());
+            assert_eq!(Language::C, language);
+            assert_eq!(Some(PathBuf::from_str("foo.obj.pp").unwrap()), depfile);
+            assert_map_contains!(
+                outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.obj"),
+                        optional: false
+                    }
+                )
+            );
+            assert!(preprocessor_args.is_empty());
+            assert!(common_args.is_empty());
+            assert!(!msvc_show_includes);
+        }
     }
 
     #[test]
