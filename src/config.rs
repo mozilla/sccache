@@ -1088,7 +1088,7 @@ fn config_overrides() {
 
 #[test]
 #[serial]
-fn test_s3_no_credentials() {
+fn test_s3_no_credentials_conflict() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
     env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
@@ -1104,6 +1104,68 @@ fn test_s3_no_credentials() {
     env::remove_var("SCCACHE_BUCKET");
     env::remove_var("AWS_ACCESS_KEY_ID");
     env::remove_var("AWS_SECRET_ACCESS_KEY");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_invalid() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let error = config_from_env().unwrap_err();
+    assert_eq!(
+        "SCCACHE_S3_NO_CREDENTIALS must be 'true' or 'false'.",
+        error.to_string()
+    );
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_valid_true() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let env_cfg = config_from_env().unwrap();
+    match env_cfg.cache.s3 {
+        Some(S3CacheConfig {
+            ref bucket,
+            no_credentials,
+            ..
+        }) => {
+            assert_eq!(bucket, "my-bucket");
+            assert_eq!(no_credentials, true);
+        }
+        None => unreachable!(),
+    };
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_valid_false() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let env_cfg = config_from_env().unwrap();
+    match env_cfg.cache.s3 {
+        Some(S3CacheConfig {
+            ref bucket,
+            no_credentials,
+            ..
+        }) => {
+            assert_eq!(bucket, "my-bucket");
+            assert_eq!(no_credentials, false);
+        }
+        None => unreachable!(),
+    };
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
 }
 
 #[test]
