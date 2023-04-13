@@ -510,12 +510,14 @@ pub struct EnvConfig {
 
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
-    let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
+    let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let region = env::var("SCCACHE_REGION").ok();
-        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS")
-            .ok()
-            .map(|value| value == "true")
-            .unwrap_or_default();
+        let no_credentials =
+            env::var("SCCACHE_S3_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true' or 'false'."),
+            })?;
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
             .map(|value| value != "off");
@@ -528,15 +530,18 @@ fn config_from_env() -> Result<EnvConfig> {
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
 
-        S3CacheConfig {
+        Some(S3CacheConfig {
             bucket,
             region,
             no_credentials,
             key_prefix,
             endpoint,
             use_ssl,
-        }
-    });
+        })
+    } else {
+        None
+    };
+
     if s3.as_ref().map(|s3| s3.no_credentials).unwrap_or_default()
         && (env::var_os("AWS_ACCESS_KEY_ID").is_some()
             || env::var_os("AWS_SECRET_ACCESS_KEY").is_some())
