@@ -1136,7 +1136,7 @@ fn test_s3_no_credentials_valid_true() {
             ..
         }) => {
             assert_eq!(bucket, "my-bucket");
-            assert_eq!(no_credentials, true);
+            assert!(no_credentials);
         }
         None => unreachable!(),
     };
@@ -1159,7 +1159,7 @@ fn test_s3_no_credentials_valid_false() {
             ..
         }) => {
             assert_eq!(bucket, "my-bucket");
-            assert_eq!(no_credentials, false);
+            assert!(!no_credentials);
         }
         None => unreachable!(),
     };
