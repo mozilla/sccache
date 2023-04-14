@@ -300,6 +300,8 @@ jobs:
 
     env:
       SCCACHE_WEBDAV_ENDPOINT: "http://127.0.0.1:8080"
+      SCCACHE_WEBDAV_USERNAME: "bar"
+      SCCACHE_WEBDAV_PASSWORD: "baz"
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
 
     steps:
@@ -309,6 +311,7 @@ jobs:
         shell: bash
         run: |
           mkdir /tmp/static
+          cp `pwd`/tests/htpasswd /tmp/htpasswd
           nginx -c `pwd`/tests/nginx_http_cache.conf
 
       - name: Install rust
