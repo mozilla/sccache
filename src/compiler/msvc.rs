@@ -22,6 +22,7 @@ use crate::compiler::{
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Debug;
@@ -1257,7 +1258,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
         let mut backslash_count: usize = 0;
 
         // Strip any leading whitespace before relevant characters
-        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n');
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
         self.file_content = self.file_content.trim_start_matches(is_whitespace);
 
         if self.file_content.is_empty() {
@@ -1293,7 +1294,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
                 }
                 // If whitespace is encountered, only preserve it if we are currently in quotes.
                 // Otherwise it marks the end of the current argument.
-                ' ' | '\t' | '\n' => {
+                ' ' | '\t' | '\n' | '\r' => {
                     Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
                     // If not in a quoted string, then this is the end of the argument.
                     if !in_quotes {
@@ -1988,6 +1989,48 @@ mod test {
         {
             let mut file = File::create(&cmd_file_path).unwrap();
             let content = b"\n-c foo.c\n-o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_multiline_cr() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"\r-c foo.c\r-o foo.o";
             file.write_all(content).unwrap();
         }
         let arg = format!("@{}", cmd_file_path.display());

@@ -89,7 +89,9 @@ mod code_grant_pkce {
     use base64::Engine;
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
+    use lazy_static::lazy_static;
     use rand::{rngs::OsRng, RngCore};
+    use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
     use std::sync::mpsc;
@@ -279,6 +281,7 @@ mod implicit {
     };
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
+    use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::sync::mpsc;
     use std::sync::Mutex;

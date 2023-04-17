@@ -20,6 +20,7 @@ use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArgum
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Trace;

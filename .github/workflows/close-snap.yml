@@ -1,0 +1,19 @@
+name: Close Snaps
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 5
+
+    steps:
+    - name: Close obsolete channels
+      uses: canonical/actions/close-snap@release
+      continue-on-error: true
+      with:
+        channel: edge/pr${{ github.event.number }}
+        snapcraft-token: ${{ secrets.SNAPCRAFT_TOKEN }}

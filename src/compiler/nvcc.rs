@@ -23,6 +23,7 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Trace;

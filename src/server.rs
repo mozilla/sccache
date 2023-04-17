@@ -35,6 +35,7 @@ use futures::channel::mpsc;
 use futures::future::FutureExt;
 use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
 use number_prefix::NumberPrefix;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};

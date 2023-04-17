@@ -15,6 +15,7 @@
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
 use crate::lru_disk_cache::Error as LruError;
 use crate::lru_disk_cache::LruDiskCache;
+use async_trait::async_trait;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

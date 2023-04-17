@@ -1,8 +1,8 @@
-use crate::jwt;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use sccache::dist::http::{ClientAuthCheck, ClientVisibleMsg};
 use sccache::util::{new_reqwest_blocking_client, BASE64_URL_SAFE_ENGINE};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
@@ -168,7 +168,7 @@ impl MozillaCheck {
         }
 
         // The API didn't return a HTTP error code, let's check the response
-        let () = check_mozilla_profile(&user, &self.required_groups, &res_text)
+        check_mozilla_profile(&user, &self.required_groups, &res_text)
             .with_context(|| format!("Validation of the user profile failed for {}", user))?;
 
         // Validation success, cache the token

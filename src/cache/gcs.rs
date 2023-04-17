@@ -17,6 +17,7 @@ use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
 use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
+use serde::Deserialize;
 use url::Url;
 
 #[derive(Copy, Clone)]
@@ -95,10 +96,14 @@ struct TaskClusterTokenLoader {
 
 impl GoogleTokenLoad for TaskClusterTokenLoader {
     fn load_token(&self) -> Result<Option<GoogleToken>> {
+        debug!("gcs: start to load token from: {}", &self.url);
+
         let res = self.client.get(&self.url).send()?;
 
         if res.status().is_success() {
             let resp = res.json::<TaskClusterToken>()?;
+
+            debug!("gcs: token load succeeded for scope: {}", &self.scope);
 
             // TODO: we can parse expire time instead using hardcode 1 hour.
             Ok(Some(GoogleToken::new(

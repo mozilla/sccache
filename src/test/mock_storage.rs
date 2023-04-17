@@ -14,6 +14,7 @@
 
 use crate::cache::{Cache, CacheWrite, Storage};
 use crate::errors::*;
+use async_trait::async_trait;
 use futures::channel::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
