@@ -48,7 +48,7 @@ is-terminal = "0.4.5"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "8", optional = true }
 lazy_static = "1.0.0"
-libc = "0.2.140"
+libc = "0.2.141"
 linked-hash-map = "0.5"
 log = "0.4"
 num_cpus = "1.15"
