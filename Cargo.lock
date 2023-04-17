@@ -485,7 +485,7 @@ version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f51c5d4ddabd36886dd3e1438cb358cdcb0d7c499cb99cb4ac2e38e18b5cb210"
 dependencies = [
- "dirs-sys",
+ "dirs-sys 0.3.7",
 ]
 
 [[package]]
@@ -494,7 +494,16 @@ version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca3aa72a6f96ea37bbc5aa912f6788242832f75369bdfdadcb0e38423f100059"
 dependencies = [
- "dirs-sys",
+ "dirs-sys 0.3.7",
+]
+
+[[package]]
+name = "dirs"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dece029acd3353e3a58ac2e3eb3c8d6c35827a892edc6cc4138ef9c33df46ecd"
+dependencies = [
+ "dirs-sys 0.4.0",
 ]
 
 [[package]]
@@ -506,6 +515,17 @@ dependencies = [
  "libc",
  "redox_users",
  "winapi",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04414300db88f70d74c5ff54e50f9e1d1737d9a5b90f53fcf2e95ca2a9ab554b"
+dependencies = [
+ "libc",
+ "redox_users",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -1514,7 +1534,7 @@ dependencies = [
  "pin-project",
  "quick-xml 0.27.1",
  "redis",
- "reqsign",
+ "reqsign 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
@@ -1967,7 +1987,7 @@ dependencies = [
  "backon",
  "base64 0.21.0",
  "bytes",
- "dirs",
+ "dirs 4.0.0",
  "form_urlencoded",
  "hex",
  "hmac",
@@ -1986,6 +2006,38 @@ dependencies = [
  "sha2",
  "time 0.3.17",
  "ureq",
+]
+
+[[package]]
+name = "reqsign"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3875de6d7d0468315194cb8332913aae0d6803cfd5c7f089dc174ff5350f7b29"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.21.0",
+ "bytes",
+ "chrono",
+ "dirs 5.0.0",
+ "form_urlencoded",
+ "hex",
+ "hmac",
+ "http",
+ "jsonwebtoken",
+ "log",
+ "once_cell",
+ "percent-encoding",
+ "quick-xml 0.28.1",
+ "rand 0.8.5",
+ "reqwest",
+ "rsa",
+ "rust-ini",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -2240,7 +2292,7 @@ dependencies = [
  "predicates",
  "rand 0.8.5",
  "regex",
- "reqsign",
+ "reqsign 0.9.1",
  "reqwest",
  "retry",
  "rouille",
