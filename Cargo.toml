@@ -53,7 +53,6 @@ linked-hash-map = "0.5"
 log = "0.4"
 num_cpus = "1.15"
 number_prefix = "0.4"
-openssl = { version = "0.10.48", optional = true }
 rand = "0.8.4"
 regex = "1.7.3"
 reqwest = { version = "0.11", features = ["json", "blocking", "stream", "rustls-tls", "trust-dns"], optional = true }
@@ -83,10 +82,11 @@ zstd = "0.12"
 
 # dist-server only
 nix = { version = "0.26.2", optional = true }
-rouille = { version = "3.5", optional = true, default-features = false, features = ["ssl"] }
+rouille = { version = "3.5", optional = true, default-features = false, features = ["rustls"] }
 syslog = { version = "6", optional = true }
 void = { version = "1", optional = true }
 version-compare = { version = "0.1.1", optional = true }
+pkcs1 = { version = "0.7.3", features = ["alloc"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.10"
@@ -128,16 +128,14 @@ webdav = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
 redis = ["url", "opendal/services-redis"]
-# Enable features that will build a vendored version of openssl and
-# statically linked with it, instead of linking against the system-wide openssl
-# dynamically or statically.
-vendored-openssl = ["openssl?/vendored"]
+# Kept for backwards compatibility.
+vendored-openssl = []
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["flate2", "hyper", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["jwt", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["jwt", "flate2", "libmount", "nix", "pkcs1", "reqwest", "rouille", "syslog", "void", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 

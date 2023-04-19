@@ -468,6 +468,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "der"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b10af9f9f9f2134a42d3f8aa74658660f2e0234b0eb81bd171df8aa32779ed"
+dependencies = [
+ "const-oid",
+ "zeroize",
+]
+
+[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,15 +1623,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
-name = "openssl-src"
-version = "111.25.1+1.1.1t"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ef9a9cc6ea7d9d5e7c4a913dc4b48d0e359eddf01af1dfec96ba7064b4aba10"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1630,7 +1631,6 @@ dependencies = [
  "autocfg",
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -1750,9 +1750,21 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eff33bdbdfc54cc98a2eca766ebdec3e1b8fb7387523d5c9c9a2891da856f719"
 dependencies = [
- "der",
- "pkcs8",
- "spki",
+ "der 0.6.1",
+ "pkcs8 0.9.0",
+ "spki 0.6.0",
+ "zeroize",
+]
+
+[[package]]
+name = "pkcs1"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a80397ccad3b40508254eee787bcd28ba48cb82710de5b33cc40c5b2c21bde9"
+dependencies = [
+ "der 0.7.3",
+ "pkcs8 0.10.2",
+ "spki 0.7.1",
  "zeroize",
 ]
 
@@ -1762,8 +1774,18 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eca2c590a5f85da82668fa685c09ce2888b9430e83299debf1f34b65fd4a4ba"
 dependencies = [
- "der",
- "spki",
+ "der 0.6.1",
+ "spki 0.6.0",
+]
+
+[[package]]
+name = "pkcs8"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+dependencies = [
+ "der 0.7.3",
+ "spki 0.7.1",
 ]
 
 [[package]]
@@ -2072,7 +2094,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-native-certs",
- "rustls-pemfile",
+ "rustls-pemfile 1.0.1",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -2160,8 +2182,8 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "pkcs1",
- "pkcs8",
+ "pkcs1 0.4.1",
+ "pkcs8 0.9.0",
  "rand_core 0.6.4",
  "sha2",
  "signature",
@@ -2226,9 +2248,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0167bac7a9f490495f3c33013e7722b53cb087ecbe082fb0c6387c96f634ea50"
 dependencies = [
  "openssl-probe",
- "rustls-pemfile",
+ "rustls-pemfile 1.0.1",
  "schannel",
  "security-framework",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eebeaeb360c87bfb72e84abdb3447159c0eaececf1bef2aecd65a8be949d1c9"
+dependencies = [
+ "base64 0.13.1",
 ]
 
 [[package]]
@@ -2303,8 +2334,8 @@ dependencies = [
  "number_prefix",
  "once_cell",
  "opendal",
- "openssl",
  "parity-tokio-ipc",
+ "pkcs1 0.7.3",
  "predicates",
  "rand 0.8.5",
  "regex",
@@ -2589,7 +2620,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67cf02bbac7a337dc36e4f5a693db6c21e7863f45070f7064577eb4367a3212b"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.6.1",
+]
+
+[[package]]
+name = "spki"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37a5be806ab6f127c3da44b7378837ebf01dadca8510a0e572460216b228bd0e"
+dependencies = [
+ "base64ct",
+ "der 0.7.3",
 ]
 
 [[package]]
@@ -2827,7 +2868,8 @@ dependencies = [
  "chunked_transfer",
  "httpdate",
  "log",
- "openssl",
+ "rustls",
+ "rustls-pemfile 0.2.1",
  "zeroize",
 ]
 
