@@ -1540,7 +1540,7 @@ where
             outputs.insert(
                 gcno.to_string_lossy().into_owned(),
                 ArtifactDescriptor {
-                    path: p.clone(),
+                    path: p,
                     optional: true,
                 },
             );
