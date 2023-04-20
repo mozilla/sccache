@@ -259,14 +259,7 @@ impl CacheWrite {
                             format!("failed to put object `{:?}` in cache entry", path)
                         })?;
                     }
-                    (Err(e), false) => {
-                        if let Some(io_err) = e.downcast_ref::<io::Error>() {
-                            if io_err.kind() == io::ErrorKind::NotFound {
-                                continue
-                            }
-                        }
-                        return Err(e)
-                    }
+                    (Err(e), false) => return Err(e),
                     (Err(_), true) => continue,
                 }
             }
