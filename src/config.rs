@@ -514,9 +514,9 @@ fn config_from_env() -> Result<EnvConfig> {
         let region = env::var("SCCACHE_REGION").ok();
         let no_credentials =
             env::var("SCCACHE_S3_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true' or 'false'."),
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
             })?;
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
@@ -1109,12 +1109,12 @@ fn test_s3_no_credentials_conflict() {
 #[test]
 #[serial]
 fn test_s3_no_credentials_invalid() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
 
     let error = config_from_env().unwrap_err();
     assert_eq!(
-        "SCCACHE_S3_NO_CREDENTIALS must be 'true' or 'false'.",
+        "SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'.",
         error.to_string()
     );
 
