@@ -628,10 +628,23 @@ jobs:
       - name: Chmod for binary
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Coverage test
+      - name: Prepare
         run: |
           rustup toolchain install nightly
-          cargo new hello
-          cd hello
+          cargo new coverage-test
+          cd coverage-test
           echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
-          cargo +nightly test
+
+      - name: "Coverage test #1"
+        run: cargo clean && cargo +nightly test
+
+      - name: Output
+        run: ${SCCACHE_PATH} --show-stats
+
+      - name: "Coverage test #2"
+        run: cargo clean && cargo +nightly test
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
