@@ -636,12 +636,14 @@ jobs:
           echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
 
       - name: "Coverage test #1"
+        working-directory: ./coverage-test
         run: cargo clean && cargo +nightly test
 
       - name: Output
         run: ${SCCACHE_PATH} --show-stats
 
       - name: "Coverage test #2"
+        working-directory: ./coverage-test
         run: cargo clean && cargo +nightly test
 
       - name: Output
