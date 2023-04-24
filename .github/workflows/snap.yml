@@ -1,0 +1,25 @@
+name: Snap
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  Snap:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 45
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # needed for version determination
+
+    - name: Build and publish the snap
+      uses: canonical/actions/build-snap@release
+      with:
+        review-opts: --allow-classic
+        snapcraft-token: ${{ secrets.SNAPCRAFT_TOKEN }}
+        publish: ${{ github.event_name == 'pull_request' && github.repository == github.event.pull_request.head.repo.full_name }}
+        publish-channel: edge/pr${{ github.event.number }}

@@ -450,6 +450,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
     msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
@@ -459,6 +460,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Ze", PassThrough),
     msvc_flag!("Zi", DebugInfo),
+    msvc_take_arg!("Zm", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Zo", PassThrough),
     msvc_flag!("Zo-", PassThrough),
     msvc_flag!("Zp1", PassThrough),
@@ -518,6 +520,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
@@ -1258,7 +1261,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
         let mut backslash_count: usize = 0;
 
         // Strip any leading whitespace before relevant characters
-        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n');
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
         self.file_content = self.file_content.trim_start_matches(is_whitespace);
 
         if self.file_content.is_empty() {
@@ -1294,7 +1297,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
                 }
                 // If whitespace is encountered, only preserve it if we are currently in quotes.
                 // Otherwise it marks the end of the current argument.
-                ' ' | '\t' | '\n' => {
+                ' ' | '\t' | '\n' | '\r' => {
                     Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
                     // If not in a quoted string, then this is the end of the argument.
                     if !in_quotes {
@@ -1322,6 +1325,8 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use super::*;
     use crate::compiler::*;
     use crate::mock_command::*;
@@ -1484,6 +1489,53 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn parse_deps_arguments() {
+        let arg_sets = vec![
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.pp"],
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/sourceDependenciesfoo.obj.pp"],
+            ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/sourceDependencies",
+                "foo.obj.pp"
+            ],
+        ];
+
+        for args in arg_sets {
+            let ParsedArguments {
+                input,
+                language,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                depfile,
+                ..
+            } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.c"), input.to_str());
+            assert_eq!(Language::C, language);
+            assert_eq!(Some(PathBuf::from_str("foo.obj.pp").unwrap()), depfile);
+            assert_map_contains!(
+                outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.obj"),
+                        optional: false
+                    }
+                )
+            );
+            assert!(preprocessor_args.is_empty());
+            assert!(common_args.is_empty());
+            assert!(!msvc_show_includes);
+        }
     }
 
     #[test]
@@ -1837,6 +1889,16 @@ mod test {
             CompilerArguments::CannotCache("-FR", None),
             parse_arguments(ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"])
         );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Fp", None),
+            parse_arguments(ovec!["-c", "-Fpfoo.h", "foo.c"])
+        );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Yc", None),
+            parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
+        );
     }
 
     #[test]
@@ -1989,6 +2051,48 @@ mod test {
         {
             let mut file = File::create(&cmd_file_path).unwrap();
             let content = b"\n-c foo.c\n-o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_multiline_cr() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"\r-c foo.c\r-o foo.o";
             file.write_all(content).unwrap();
         }
         let arg = format!("@{}", cmd_file_path.display());
