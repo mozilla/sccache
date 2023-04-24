@@ -1,6 +1,6 @@
 [package]
 name = "sccache"
-version = "0.4.1"
+version = "0.4.2"
 license = "Apache-2.0"
 description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible, storing a cache in a remote storage using various cloud storage."
 repository = "https://github.com/mozilla/sccache/"
