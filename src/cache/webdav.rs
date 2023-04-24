@@ -40,7 +40,7 @@ impl WebdavCache {
             builder.token(token);
         }
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)
