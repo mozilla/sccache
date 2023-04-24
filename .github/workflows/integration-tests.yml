@@ -612,3 +612,44 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
+  rust-test-coverage:
+    runs-on: ubuntu-latest
+    needs: build
+
+    env:
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+      RUSTDOCFLAGS: "-Cpanic=abort"
+
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: integration-tests
+          path: /home/runner/.cargo/bin/
+      - name: Chmod for binary
+        run: chmod +x ${SCCACHE_PATH}
+
+      - name: Prepare
+        run: |
+          rustup toolchain install nightly
+          cargo new coverage-test
+          cd coverage-test
+          echo "serde = { version = \"1.0\", features = [\"derive\"] }" >> Cargo.toml
+
+      - name: "Coverage test #1"
+        working-directory: ./coverage-test
+        run: cargo clean && cargo +nightly test
+
+      - name: Output
+        run: ${SCCACHE_PATH} --show-stats
+
+      - name: "Coverage test #2"
+        working-directory: ./coverage-test
+        run: cargo clean && cargo +nightly test
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
