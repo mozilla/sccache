@@ -138,7 +138,7 @@ mod toolchain_imp {
             // Although by not following symlinks we could break a custom
             // constructed toolchain with links everywhere, this is just a
             // best-effort auto packaging
-            for entry in WalkDir::new(&dir_path).follow_links(false) {
+            for entry in WalkDir::new(dir_path).follow_links(false) {
                 let entry = entry?;
                 let file_type = entry.file_type();
                 if file_type.is_dir() {
