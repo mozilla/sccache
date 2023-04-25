@@ -1102,7 +1102,7 @@ __VERSION__
     // to propagate `-ccbin` flags so we ensure nvcc has a host
     // compiler, when gcc isn't on the PATH
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
-        let arg = arg.unwrap_or(Argument::Raw(OsString::from("")));
+        let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
         if let Some(Detect_PassThrough(_)) = arg.get_data() {
             let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
             cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
