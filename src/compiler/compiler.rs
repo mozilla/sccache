@@ -24,13 +24,13 @@ use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
-use crate::{counted_array, dist};
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
+use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs::File;
@@ -1039,11 +1039,11 @@ where
 ArgData! { pub
     PassThrough(OsString),
 }
-use self::ArgData::*;
+use self::ArgData::PassThrough as Detect_PassThrough;
 
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
-    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), Detect_PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
 ]);
 
 async fn detect_c_compiler<T>(
@@ -1103,14 +1103,12 @@ __VERSION__
     // compiler, when gcc isn't on the PATH
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = arg.unwrap_or(Argument::Raw(OsString::from("")));
-        match arg.get_data() {
-            Some(PassThrough(_)) => {
-                let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
-                cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
-            }
-            None => {}
+        if let Some(Detect_PassThrough(_)) = arg.get_data() {
+            let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
+            cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
         }
     }
+
     cmd.arg("-E").arg(src);
     trace!("compiler {:?}", cmd);
     let child = cmd.spawn().await?;
