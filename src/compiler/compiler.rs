@@ -1036,12 +1036,12 @@ where
     }
 }
 
-ArgData! { pub
+ArgData! {
     PassThrough(OsString),
 }
 use self::ArgData::PassThrough as Detect_PassThrough;
 
-counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
+counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), Detect_PassThrough),
     take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
 ]);
