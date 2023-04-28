@@ -1044,11 +1044,11 @@ use self::ArgData::PassThrough as Detect_PassThrough;
 // Establish a set of compiler flags that are required for
 // valid execution of the compiler even in preprocessor mode.
 // If the requested compiler invocatiomn has any of these arguments
-// propagate them when doing our compiler vendor detection 
+// propagate them when doing our compiler vendor detection
 //
 // Current known required flags:
 // ccbin/compiler-bindir needed for nvcc
-//  This flag specifies the host compiler to use otherwise 
+//  This flag specifies the host compiler to use otherwise
 //  gcc is expected to exist on the PATH. So if gcc doesn't exist
 //  compiler detection fails if we don't pass along the ccbin arg
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
