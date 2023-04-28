@@ -1041,6 +1041,16 @@ ArgData! {
 }
 use self::ArgData::PassThrough as Detect_PassThrough;
 
+// Establish a set of compiler flags that are required for
+// valid execution of the compiler even in preprocessor mode.
+// If the requested compiler invocatiomn has any of these arguments
+// propagate them when doing our compiler vendor detection 
+//
+// Current known required flags:
+// ccbin/compiler-bindir needed for nvcc
+//  This flag specifies the host compiler to use otherwise 
+//  gcc is expected to exist on the PATH. So if gcc doesn't exist
+//  compiler detection fails if we don't pass along the ccbin arg
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), Detect_PassThrough),
     take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
@@ -1098,9 +1108,9 @@ __VERSION__
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
 
-    // To ensure we get nvcc to version detect properly we need
-    // to propagate `-ccbin` flags so we ensure nvcc has a host
-    // compiler, when gcc isn't on the PATH
+    // Iterate over all the arguments for compilation and extract
+    // any that are required for any valid execution of the compiler.
+    // Allowing our compiler vendor detection to always properly execute
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
         if let Some(Detect_PassThrough(_)) = arg.get_data() {
