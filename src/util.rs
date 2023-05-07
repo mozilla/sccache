@@ -119,7 +119,7 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
     let start = time::Instant::now();
     let count = files.len();
     let iter = files.iter().map(move |f| Digest::file(f, pool));
-    let hashes = futures::future::try_join_all(iter).await?;
+    let hashes = futures_util::future::try_join_all(iter).await?;
     trace!(
         "Hashed {} files in {}",
         count,
@@ -157,7 +157,7 @@ pub async fn hash_all_archives(
         })
     });
 
-    let mut hashes = futures::future::try_join_all(iter).await?;
+    let mut hashes = futures_util::future::try_join_all(iter).await?;
     if let Some(i) = hashes.iter().position(|res| res.is_err()) {
         return Err(hashes.swap_remove(i).unwrap_err());
     }
@@ -241,7 +241,7 @@ where
         child.wait().await.context("failed to wait for child")
     };
 
-    let (status, stdout, stderr) = futures::future::try_join3(status, stdout, stderr).await?;
+    let (status, stdout, stderr) = futures_util::future::try_join3(status, stdout, stderr).await?;
 
     Ok(process::Output {
         status,

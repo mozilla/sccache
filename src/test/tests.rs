@@ -21,7 +21,7 @@ use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
 use crate::test::utils::*;
 use fs::File;
 use fs_err as fs;
-use futures::channel::oneshot::{self, Sender};
+use futures_channel::oneshot::{self, Sender};
 #[cfg(not(target_os = "macos"))]
 use serial_test::serial;
 use std::io::{Cursor, Write};

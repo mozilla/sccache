@@ -619,7 +619,7 @@ where
         Ok((DistType::Ok(server_id), jc.output.into()))
     };
 
-    use futures::TryFutureExt;
+    use futures_util::TryFutureExt;
     do_dist_compile
         .or_else(move |e| async move {
             if let Some(HttpClientError(_)) = e.downcast_ref::<HttpClientError>() {
@@ -966,7 +966,7 @@ where
                     creator.clone(),
                     env,
                 );
-                use futures::TryFutureExt;
+                use futures_util::TryFutureExt;
                 let res = proxy.and_then(move |proxy| async move {
                     match proxy {
                         Ok(Some(proxy)) => {

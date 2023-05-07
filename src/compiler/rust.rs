@@ -439,7 +439,7 @@ impl Rust {
 
         #[cfg(feature = "dist-client")]
         {
-            use futures::TryFutureExt;
+            use futures_util::TryFutureExt;
             let rlib_dep_reader = {
                 let executable = executable.clone();
                 let env_vars = env_vars.to_owned();
@@ -448,7 +448,7 @@ impl Rust {
             };
 
             let ((sysroot, libs), rlib_dep_reader) =
-                futures::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
+                futures_util::future::try_join(sysroot_and_libs, rlib_dep_reader).await?;
 
             let rlib_dep_reader = match rlib_dep_reader {
                 Ok(r) => Some(Arc::new(r)),
@@ -1362,7 +1362,7 @@ where
         let abs_staticlibs = staticlibs.iter().map(|s| cwd.join(s)).collect::<Vec<_>>();
         let staticlib_hashes = hash_all_archives(&abs_staticlibs, pool);
 
-        let ((source_files, source_hashes, mut env_deps), extern_hashes, staticlib_hashes) = futures::try_join!(
+        let ((source_files, source_hashes, mut env_deps), extern_hashes, staticlib_hashes) = futures_util::try_join!(
             source_files_and_hashes_and_env_deps,
             extern_hashes,
             staticlib_hashes

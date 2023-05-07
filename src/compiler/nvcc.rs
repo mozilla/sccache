@@ -152,7 +152,7 @@ impl CCompilerImpl for Nvcc {
             // TODO: If we need to chain these to emulate a frontend, shouldn't
             // we explicitly wait on the first one before starting the second one?
             // (rather than via which drives these concurrently)
-            let (_f, s) = futures::future::try_join(first, second).await?;
+            let (_f, s) = futures_util::future::try_join(first, second).await?;
             Ok(s)
         } else {
             run_input_output(cmd, None).await

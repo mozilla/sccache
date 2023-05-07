@@ -31,9 +31,8 @@ use bytes::{buf::BufMut, Bytes, BytesMut};
 use filetime::FileTime;
 use fs::metadata;
 use fs_err as fs;
-use futures::channel::mpsc;
-use futures::future::FutureExt;
-use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
+use futures_channel::mpsc;
+use futures_util::{future, stream, FutureExt, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -139,7 +138,7 @@ fn get_signal(_status: ExitStatus) -> i32 {
 pub struct DistClientContainer {
     // The actual dist client state
     #[cfg(feature = "dist-client")]
-    state: futures::lock::Mutex<DistClientState>,
+    state: futures_util::lock::Mutex<DistClientState>,
 }
 
 #[cfg(feature = "dist-client")]
@@ -207,13 +206,13 @@ impl DistClientContainer {
         let state = Self::create_state(config);
         let state = pool.block_on(state);
         Self {
-            state: futures::lock::Mutex::new(state),
+            state: futures_util::lock::Mutex::new(state),
         }
     }
 
     pub fn new_disabled() -> Self {
         Self {
-            state: futures::lock::Mutex::new(DistClientState::Disabled),
+            state: futures_util::lock::Mutex::new(DistClientState::Disabled),
         }
     }
 
@@ -622,7 +621,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         };
 
         runtime.block_on(async {
-            futures::select! {
+            futures_util::select! {
                 server = server.fuse() => server,
                 _res = shutdown.fuse() => Ok(()),
                 _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
@@ -811,8 +810,7 @@ where
     }
 }
 
-use futures::future::Either;
-use futures::TryStreamExt;
+use futures_util::{future::Either, TryStreamExt};
 
 impl<C> SccacheService<C>
 where
@@ -892,7 +890,7 @@ where
         let stats = self.stats.lock().await.clone();
         let cache_location = self.storage.location();
         let version = env!("CARGO_PKG_VERSION").to_string();
-        futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
+        futures_util::try_join!(self.storage.current_size(), self.storage.max_size()).map(
             move |(cache_size, max_cache_size)| ServerInfo {
                 stats,
                 cache_location,
@@ -1335,7 +1333,7 @@ where
                 Ok(())
             };
 
-            futures::future::try_join(send, cache_write).await?;
+            futures_util::future::try_join(send, cache_write).await?;
 
             Ok::<_, Error>(())
         };
@@ -1670,7 +1668,7 @@ impl<R> Body<R> {
     }
 }
 
-impl<R> futures::Stream for Body<R> {
+impl<R> futures_util::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -1737,8 +1735,8 @@ where
 ///   below.
 struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
     inner: Framed<
-        futures::stream::ErrInto<
-            futures::sink::SinkErrInto<
+        futures_util::stream::ErrInto<
+            futures_util::sink::SinkErrInto<
                 tokio_util::codec::Framed<I, LengthDelimitedCodec>,
                 Bytes,
                 Error,

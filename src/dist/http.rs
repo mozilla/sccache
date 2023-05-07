@@ -1070,7 +1070,7 @@ mod client {
     use byteorder::{BigEndian, WriteBytesExt};
     use flate2::write::ZlibEncoder as ZlibWriteEncoder;
     use flate2::Compression;
-    use futures::TryFutureExt;
+    use futures_util::TryFutureExt;
     use reqwest::Body;
     use std::collections::HashMap;
     use std::io::Write;

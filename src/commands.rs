@@ -160,7 +160,7 @@ fn redirect_error_log(f: File) -> Result<()> {
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
 fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
-    use futures::StreamExt;
+    use futures_util::StreamExt;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -263,13 +263,13 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let startup = async move {
         let pipe = create_named_pipe(pipe_name, true)?;
 
-        let incoming = futures::stream::try_unfold(pipe, |listener| async move {
+        let incoming = futures_util::stream::try_unfold(pipe, |listener| async move {
             listener.connect().await?;
             let new_listener = create_named_pipe(pipe_name, false)?;
             Ok::<_, io::Error>(Some((listener, new_listener)))
         });
 
-        futures::pin_mut!(incoming);
+        futures_util::pin_mut!(incoming);
         let socket = incoming.next().await;
         let socket = socket.unwrap(); // incoming() never returns None
 

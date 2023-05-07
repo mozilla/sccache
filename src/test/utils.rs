@@ -239,7 +239,7 @@ pub fn single_threaded_runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-/// An add on trait, to allow calling `.wait()` for `futures::Future`
+/// An add on trait, to allow calling `.wait()` for `std::future::Future`
 /// as it was possible for `futures` at `0.1`.
 ///
 /// Intended for test only!

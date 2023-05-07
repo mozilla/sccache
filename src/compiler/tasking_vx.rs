@@ -28,7 +28,7 @@ use crate::{
     util::run_input_output,
 };
 use async_trait::async_trait;
-use futures::TryFutureExt;
+use futures_util::TryFutureExt;
 use log::Level::Trace;
 use std::{
     collections::HashMap,

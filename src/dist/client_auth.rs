@@ -1,4 +1,4 @@
-use futures::channel::oneshot;
+use futures_channel::oneshot;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::StatusCode;
 use hyper::server::conn::AddrIncoming;
@@ -87,7 +87,7 @@ mod code_grant_pkce {
     use crate::util::new_reqwest_blocking_client;
     use crate::util::BASE64_URL_SAFE_ENGINE;
     use base64::Engine;
-    use futures::channel::oneshot;
+    use futures_channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use once_cell::sync::Lazy;
     use rand::{rngs::OsRng, RngCore};
@@ -277,7 +277,7 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
-    use futures::channel::oneshot;
+    use futures_channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
     use once_cell::sync::Lazy;
     use std::collections::HashMap;
