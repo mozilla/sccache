@@ -89,7 +89,7 @@ mod code_grant_pkce {
     use base64::Engine;
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use rand::{rngs::OsRng, RngCore};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -142,9 +142,7 @@ mod code_grant_pkce {
         pub shutdown_tx: Option<oneshot::Sender<()>>,
     }
 
-    lazy_static! {
-        pub static ref STATE: Mutex<Option<State>> = Mutex::new(None);
-    }
+    pub static STATE: Lazy<Mutex<Option<State>>> = Lazy::new(|| Mutex::new(None));
 
     pub fn generate_verifier_and_challenge() -> Result<(String, String)> {
         let mut code_verifier_bytes = vec![0; NUM_CODE_VERIFIER_BYTES];
@@ -281,7 +279,7 @@ mod implicit {
     };
     use futures::channel::oneshot;
     use hyper::{Body, Method, Request, Response, StatusCode};
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use std::collections::HashMap;
     use std::sync::mpsc;
     use std::sync::Mutex;
@@ -310,9 +308,7 @@ mod implicit {
         pub shutdown_tx: Option<oneshot::Sender<()>>,
     }
 
-    lazy_static! {
-        pub static ref STATE: Mutex<Option<State>> = Mutex::new(None);
-    }
+    pub static STATE: Lazy<Mutex<Option<State>>> = Lazy::new(|| Mutex::new(None));
 
     pub fn finish_url(client_id: &str, url: &mut Url, redirect_uri: &str, state: &str) {
         url.query_pairs_mut()
