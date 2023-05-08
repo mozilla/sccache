@@ -31,8 +31,8 @@ use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
-use lazy_static::lazy_static;
 use log::Level::Trace;
+use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
@@ -208,14 +208,9 @@ pub struct CrateTypes {
     staticlib: bool,
 }
 
-lazy_static! {
-    /// Emit types that we will cache.
-    static ref ALLOWED_EMIT: HashSet<&'static str> = [
-        "link",
-        "metadata",
-        "dep-info",
-    ].iter().copied().collect();
-}
+/// Emit types that we will cache.
+static ALLOWED_EMIT: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";

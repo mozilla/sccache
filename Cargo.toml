@@ -47,7 +47,7 @@ hyper = { version = "0.14.24", optional = true, features = ["server"] }
 is-terminal = "0.4.5"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "8", optional = true }
-lazy_static = "1.0.0"
+once_cell = "1.17"
 libc = "0.2.140"
 linked-hash-map = "0.5"
 log = "0.4"
@@ -95,7 +95,6 @@ chrono = "0.4.24"
 itertools = "0.10"
 predicates = "=3.0.2"
 thirtyfour_sync = "0.27"
-once_cell = "1.17"
 serial_test = "2.0"
 
 [target.'cfg(unix)'.dependencies]

@@ -15,7 +15,7 @@
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use regex::Regex;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
@@ -35,10 +35,8 @@ use std::sync::Mutex;
 
 use crate::errors::*;
 
-lazy_static! {
-    static ref CACHED_CONFIG_PATH: PathBuf = CachedConfig::file_config_path();
-    static ref CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
-}
+static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
+static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
 
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";

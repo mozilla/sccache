@@ -2293,7 +2293,6 @@ dependencies = [
  "itertools",
  "jobserver",
  "jsonwebtoken",
- "lazy_static",
  "libc",
  "libmount",
  "linked-hash-map",
