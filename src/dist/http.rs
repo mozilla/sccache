@@ -258,6 +258,7 @@ mod server {
     use rouille::accept;
     use serde::Serialize;
     use std::collections::HashMap;
+    use std::convert::Infallible;
     use std::io::Read;
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
@@ -265,7 +266,6 @@ mod server {
     use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
-    use void::Void;
 
     use super::common::{
         AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
@@ -678,7 +678,7 @@ mod server {
             }
         }
 
-        pub fn start(self) -> Result<Void> {
+        pub fn start(self) -> Result<Infallible> {
             let Self {
                 public_addr,
                 handler,
@@ -918,7 +918,7 @@ mod server {
             })
         }
 
-        pub fn start(self) -> Result<Void> {
+        pub fn start(self) -> Result<Infallible> {
             let Self {
                 public_addr,
                 scheduler_url,

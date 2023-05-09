@@ -85,7 +85,6 @@ zstd = "0.12"
 nix = { version = "0.26.2", optional = true }
 rouille = { version = "3.5", optional = true, default-features = false, features = ["ssl"] }
 syslog = { version = "6", optional = true }
-void = { version = "1", optional = true }
 version-compare = { version = "0.1.1", optional = true }
 
 [dev-dependencies]
@@ -133,7 +132,7 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = ["flate2", "hyper", "reqwest", "url", "sha2"]
 # Enables the sccache-dist binary
-dist-server = ["jwt", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "void", "version-compare"]
+dist-server = ["jwt", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 
