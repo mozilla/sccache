@@ -29,11 +29,16 @@ impl S3Cache {
     ) -> Result<Operator> {
         let mut builder = S3::default();
         builder.bucket(bucket);
-        builder.region(region.unwrap_or("us-east-1"));
         builder.root(key_prefix);
+
+        if let Some(region) = region {
+            builder.region(region);
+        }
+
         if no_credentials {
             builder.disable_config_load();
         }
+
         if let Some(endpoint) = endpoint {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
