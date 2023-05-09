@@ -104,9 +104,6 @@ daemonize = "0.5"
 optional = true
 version = "0.1.10"
 
-[target.'cfg(windows)'.dependencies]
-parity-tokio-ipc = "0.9"
-
 [target.'cfg(windows)'.dependencies.winapi]
 version = "0.3"
 features = [
