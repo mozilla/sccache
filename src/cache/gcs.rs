@@ -16,7 +16,8 @@
 use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
-use reqsign::{GoogleBuilder, GoogleToken, GoogleTokenLoad};
+use reqsign::{GoogleToken, GoogleTokenLoad};
+use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
@@ -51,25 +52,25 @@ impl GCSCache {
         let mut builder = Gcs::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
+        builder.scope(rw_mode.to_scope());
 
-        let mut signer_builder = GoogleBuilder::default();
-        signer_builder.scope(rw_mode.to_scope());
         if let Some(service_account) = service_account {
-            signer_builder.service_account(service_account);
+            builder.service_account(service_account);
         }
+
         if let Some(path) = cred_path {
-            signer_builder.credential_path(path);
+            builder.credential_path(path);
         }
+
         if let Some(cred_url) = credential_url {
             let _ = Url::parse(cred_url)
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
-            signer_builder.customed_token_loader(TaskClusterTokenLoader {
-                client: reqwest::blocking::Client::default(),
+
+            builder.customed_token_loader(Box::new(TaskClusterTokenLoader {
                 scope: rw_mode.to_scope().to_string(),
                 url: cred_url.to_string(),
-            });
+            }));
         }
-        builder.signer(signer_builder.build()?);
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
@@ -89,19 +90,19 @@ impl GCSCache {
 /// Reference: [gcpCredentials](https://docs.taskcluster.net/docs/reference/platform/auth/api#gcpCredentials)
 #[derive(Debug)]
 struct TaskClusterTokenLoader {
-    client: reqwest::blocking::Client,
     scope: String,
     url: String,
 }
 
+#[async_trait::async_trait]
 impl GoogleTokenLoad for TaskClusterTokenLoader {
-    fn load_token(&self) -> Result<Option<GoogleToken>> {
+    async fn load(&self, client: Client) -> Result<Option<GoogleToken>> {
         debug!("gcs: start to load token from: {}", &self.url);
 
-        let res = self.client.get(&self.url).send()?;
+        let res = client.get(&self.url).send().await?;
 
         if res.status().is_success() {
-            let resp = res.json::<TaskClusterToken>()?;
+            let resp = res.json::<TaskClusterToken>().await?;
 
             debug!("gcs: token load succeeded for scope: {}", &self.scope);
 
@@ -113,7 +114,7 @@ impl GoogleTokenLoad for TaskClusterTokenLoader {
             )))
         } else {
             let status_code = res.status();
-            let content = res.text()?;
+            let content = res.text().await?;
             Err(anyhow!(
                 "token load failed for: code: {status_code}, {content}"
             ))

@@ -29,9 +29,7 @@ impl S3Cache {
     ) -> Result<Operator> {
         let mut builder = S3::default();
         builder.bucket(bucket);
-        if let Some(region) = region {
-            builder.region(region);
-        }
+        builder.region(region.unwrap_or("us-east-1"));
         builder.root(key_prefix);
         if no_credentials {
             builder.disable_config_load();
