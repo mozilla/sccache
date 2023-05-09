@@ -400,6 +400,13 @@ jobs:
           test -e ./foo.o || { echo "No compiler output found"; exit -1; }
           test -e ./foo.o.json || { echo "No dependency list found"; exit -1; }
 
+      - name: Compile - Preprocessing Compiler Bug
+        shell: bash
+        working-directory: ./tests/msvc-preprocessing
+        run: |
+          $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
+          $SCCACHE_EXE --show-stats
+
       - name: Stop Server
         if: success() || failure()
         shell: bash
