@@ -87,11 +87,12 @@ configuration variables
 
 * `SCCACHE_BUCKET` s3 bucket to be used
 * `SCCACHE_ENDPOINT` s3 endpoint
-* `SCCACHE_REGION` s3 region
+* `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
-If `SCCACHE_REGION` is undefined, it will default to `us-east-1`.
+If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it
+will default to `us-east-1`.
 
 #### cloudflare r2
 
