@@ -950,9 +950,8 @@ where
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
         // Windows SDK generates C4668 during preprocessing, but compiles fine.
-        // Making sure that 4668 is a level 4 warning prevents failing preprocessing on it.
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
-        .arg("/w44668")
+        .arg("/wd4668")
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
