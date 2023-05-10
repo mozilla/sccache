@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +14,7 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+use crate::compiler::args::*;
 use crate::compiler::c::{CCompiler, CCompilerKind};
 use crate::compiler::clang::Clang;
 use crate::compiler::diab::Diab;
@@ -22,13 +24,13 @@ use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
-use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
+use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs::File;
@@ -1029,14 +1031,35 @@ where
         }
     } else {
         let executable = executable.to_owned();
-        let cc = detect_c_compiler(creator, executable, env.to_vec(), pool).await;
+        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
         cc.map(|c| (c, None))
     }
 }
 
+ArgData! {
+    PassThrough(OsString),
+}
+use self::ArgData::PassThrough as Detect_PassThrough;
+
+// Establish a set of compiler flags that are required for
+// valid execution of the compiler even in preprocessor mode.
+// If the requested compiler invocatiomn has any of these arguments
+// propagate them when doing our compiler vendor detection
+//
+// Current known required flags:
+// ccbin/compiler-bindir needed for nvcc
+//  This flag specifies the host compiler to use otherwise
+//  gcc is expected to exist on the PATH. So if gcc doesn't exist
+//  compiler detection fails if we don't pass along the ccbin arg
+counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), Detect_PassThrough),
+    take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
+]);
+
 async fn detect_c_compiler<T>(
     creator: T,
     executable: PathBuf,
+    arguments: &[OsString],
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
 ) -> Result<Box<dyn Compiler<T>>>
@@ -1085,7 +1108,19 @@ __VERSION__
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
 
+    // Iterate over all the arguments for compilation and extract
+    // any that are required for any valid execution of the compiler.
+    // Allowing our compiler vendor detection to always properly execute
+    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
+        let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
+        if let Some(Detect_PassThrough(_)) = arg.get_data() {
+            let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
+            cmd.args(&Vec::from_iter(required_arg.iter_os_strings()));
+        }
+    }
+
     cmd.arg("-E").arg(src.clone());
+
     trace!("compiler {:?}", cmd);
     let child = cmd.spawn().await?;
     let output = child

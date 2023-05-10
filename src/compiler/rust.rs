@@ -15,8 +15,8 @@
 use crate::cache::FileObjectSource;
 use crate::compiler::args::*;
 use crate::compiler::{
-    Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, HashResult,
+    c::ArtifactDescriptor, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -31,8 +31,8 @@ use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
 use fs_err as fs;
-use lazy_static::lazy_static;
 use log::Level::Trace;
+use once_cell::sync::Lazy;
 #[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
@@ -186,7 +186,7 @@ pub struct RustCompilation {
     /// The compiler inputs.
     inputs: Vec<PathBuf>,
     /// The compiler outputs.
-    outputs: HashMap<String, PathBuf>,
+    outputs: HashMap<String, ArtifactDescriptor>,
     /// The directories searched for rlibs
     crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
@@ -208,14 +208,9 @@ pub struct CrateTypes {
     staticlib: bool,
 }
 
-lazy_static! {
-    /// Emit types that we will cache.
-    static ref ALLOWED_EMIT: HashSet<&'static str> = [
-        "link",
-        "metadata",
-        "dep-info",
-    ].iter().copied().collect();
-}
+/// Emit types that we will cache.
+static ALLOWED_EMIT: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| ["link", "metadata", "dep-info"].iter().copied().collect());
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
@@ -1513,19 +1508,37 @@ where
             .into_iter()
             .map(|o| {
                 let p = output_dir.join(&o);
-                (o, p)
+                (
+                    o,
+                    ArtifactDescriptor {
+                        path: p,
+                        optional: false,
+                    },
+                )
             })
             .collect::<HashMap<_, _>>();
         let dep_info = if let Some(dep_info) = dep_info {
             let p = output_dir.join(&dep_info);
-            outputs.insert(dep_info.to_string_lossy().into_owned(), p.clone());
+            outputs.insert(
+                dep_info.to_string_lossy().into_owned(),
+                ArtifactDescriptor {
+                    path: p.clone(),
+                    optional: false,
+                },
+            );
             Some(p)
         } else {
             None
         };
         if let Some(gcno) = gcno {
             let p = output_dir.join(&gcno);
-            outputs.insert(gcno.to_string_lossy().into_owned(), p);
+            outputs.insert(
+                gcno.to_string_lossy().into_owned(),
+                ArtifactDescriptor {
+                    path: p,
+                    optional: true,
+                },
+            );
         }
         let mut arguments = arguments;
         // Request color output unless json was requested. The client will strip colors if needed.
@@ -1761,8 +1774,8 @@ impl Compilation for RustCompilation {
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = FileObjectSource> + 'a> {
         Box::new(self.outputs.iter().map(|(k, v)| FileObjectSource {
             key: k.to_string(),
-            path: v.clone(),
-            optional: false,
+            path: v.path.clone(),
+            optional: v.optional,
         }))
     }
 }

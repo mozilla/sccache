@@ -26,7 +26,7 @@ use crate::mock_command::CommandCreatorSync;
 use crate::util::{hash_all, Digest, HashToDigest};
 use async_trait::async_trait;
 use fs_err as fs;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -687,9 +687,9 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 /// The cache is versioned by the inputs to `hash_key`.
 pub const CACHE_VERSION: &[u8] = b"11";
 
-lazy_static! {
-    /// Environment variables that are factored into the cache key.
-    static ref CACHED_ENV_VARS: HashSet<&'static OsStr> = [
+/// Environment variables that are factored into the cache key.
+static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
+    [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
         // serving as a way for the user to factor custom data into the hash.
         // One can set it to different values for different invocations
@@ -701,8 +701,11 @@ lazy_static! {
         "WATCHOS_DEPLOYMENT_TARGET",
         "SDKROOT",
         "CCC_OVERRIDE_OPTIONS",
-    ].iter().map(OsStr::new).collect();
-}
+    ]
+    .iter()
+    .map(OsStr::new)
+    .collect()
+});
 
 /// Compute the hash key of `compiler` compiling `preprocessor_output` with `args`.
 pub fn hash_key(

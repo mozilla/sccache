@@ -405,7 +405,8 @@ impl DistSystem {
             ForkResult::Child => {
                 env::set_var("SCCACHE_LOG", "sccache=trace");
                 env_logger::try_init().unwrap();
-                void::unreachable(server.start().unwrap())
+                server.start().unwrap();
+                unreachable!();
             }
         };
 

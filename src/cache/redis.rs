@@ -42,7 +42,7 @@ impl RedisCache {
             .map(|v| v.parse().unwrap_or_default())
             .unwrap_or_default());
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

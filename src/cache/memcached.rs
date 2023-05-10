@@ -30,7 +30,7 @@ impl MemcachedCache {
         builder.endpoint(url);
         builder.default_ttl(Duration::from_secs(expiration as u64));
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

@@ -78,10 +78,10 @@ configuration variables
 
 ### cache configs
 
-#### disk
+#### disk (local)
 
 * `SCCACHE_DIR` local on disk artifact cache directory
-* `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `10G`
+* `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
 
 #### s3 compatible
 

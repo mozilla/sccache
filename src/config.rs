@@ -15,7 +15,7 @@
 use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use regex::Regex;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
@@ -35,10 +35,8 @@ use std::sync::Mutex;
 
 use crate::errors::*;
 
-lazy_static! {
-    static ref CACHED_CONFIG_PATH: PathBuf = CachedConfig::file_config_path();
-    static ref CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
-}
+static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
+static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
 
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
@@ -233,6 +231,9 @@ pub struct RedisCacheConfig {
 pub struct WebdavCacheConfig {
     pub endpoint: String,
     pub key_prefix: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,9 +508,14 @@ pub struct EnvConfig {
 
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
-    let s3 = env::var("SCCACHE_BUCKET").ok().map(|bucket| {
+    let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let region = env::var("SCCACHE_REGION").ok();
-        let no_credentials = env::var("SCCACHE_S3_NO_CREDENTIALS").ok().is_some();
+        let no_credentials =
+            env::var("SCCACHE_S3_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
+            })?;
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
             .map(|value| value != "off");
@@ -522,15 +528,18 @@ fn config_from_env() -> Result<EnvConfig> {
             .map(|s| s.to_owned() + "/")
             .unwrap_or_default();
 
-        S3CacheConfig {
+        Some(S3CacheConfig {
             bucket,
             region,
             no_credentials,
             key_prefix,
             endpoint,
             use_ssl,
-        }
-    });
+        })
+    } else {
+        None
+    };
+
     if s3.as_ref().map(|s3| s3.no_credentials).unwrap_or_default()
         && (env::var_os("AWS_ACCESS_KEY_ID").is_some()
             || env::var_os("AWS_SECRET_ACCESS_KEY").is_some())
@@ -665,10 +674,16 @@ fn config_from_env() -> Result<EnvConfig> {
             .filter(|s| !s.is_empty())
             .unwrap_or_default()
             .to_owned();
+        let username = env::var("SCCACHE_WEBDAV_USERNAME").ok();
+        let password = env::var("SCCACHE_WEBDAV_PASSWORD").ok();
+        let token = env::var("SCCACHE_WEBDAV_TOKEN").ok();
 
         Some(WebdavCacheConfig {
             endpoint,
             key_prefix,
+            username,
+            password,
+            token,
         })
     } else {
         None
@@ -1071,8 +1086,8 @@ fn config_overrides() {
 
 #[test]
 #[serial]
-fn test_s3_no_credentials() {
-    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "1");
+fn test_s3_no_credentials_conflict() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
     env::set_var("AWS_ACCESS_KEY_ID", "aws-access-key-id");
     env::set_var("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key");
@@ -1087,6 +1102,68 @@ fn test_s3_no_credentials() {
     env::remove_var("SCCACHE_BUCKET");
     env::remove_var("AWS_ACCESS_KEY_ID");
     env::remove_var("AWS_SECRET_ACCESS_KEY");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_invalid() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let error = config_from_env().unwrap_err();
+    assert_eq!(
+        "SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'.",
+        error.to_string()
+    );
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_valid_true() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let env_cfg = config_from_env().unwrap();
+    match env_cfg.cache.s3 {
+        Some(S3CacheConfig {
+            ref bucket,
+            no_credentials,
+            ..
+        }) => {
+            assert_eq!(bucket, "my-bucket");
+            assert!(no_credentials);
+        }
+        None => unreachable!(),
+    };
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+}
+
+#[test]
+#[serial]
+fn test_s3_no_credentials_valid_false() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "false");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    let env_cfg = config_from_env().unwrap();
+    match env_cfg.cache.s3 {
+        Some(S3CacheConfig {
+            ref bucket,
+            no_credentials,
+            ..
+        }) => {
+            assert_eq!(bucket, "my-bucket");
+            assert!(!no_credentials);
+        }
+        None => unreachable!(),
+    };
+
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
 }
 
 #[test]
@@ -1171,6 +1248,9 @@ no_credentials = true
 [cache.webdav]
 endpoint = "http://127.0.0.1:8080"
 key_prefix = "webdavprefix"
+username = "webdavusername"
+password = "webdavpassword"
+token = "webdavtoken"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1213,6 +1293,9 @@ key_prefix = "webdavprefix"
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),
                     key_prefix: "webdavprefix".into(),
+                    username: Some("webdavusername".to_string()),
+                    password: Some("webdavpassword".to_string()),
+                    token: Some("webdavtoken".to_string()),
                 })
             },
             dist: DistConfig {

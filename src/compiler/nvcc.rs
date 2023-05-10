@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -183,7 +184,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
 
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("--compiler-bindir", PathBuf, CanBeSeparated('='), ExtraHashFile),
+    take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
@@ -207,7 +208,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-Xnvlink", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xptxas", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
-    take_arg!("-ccbin", PathBuf, CanBeSeparated('='), ExtraHashFile),
+    take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
     flag!("-dc", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
@@ -283,6 +284,44 @@ mod test {
         );
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_ccbin_no_path() {
+        let a = parses!("-ccbin=gcc", "-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-ccbin", "gcc"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_ccbin_dir() {
+        let a = parses!("-ccbin=/usr/bin/", "-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-ccbin", "/usr/bin/"], a.common_args);
     }
 
     #[test]
