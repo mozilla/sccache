@@ -361,7 +361,7 @@ where
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
                     "c" => Some(Language::C),
-                    "c++" | "c++-header" => Some(Language::Cxx),
+                    "c++" => Some(Language::Cxx),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
