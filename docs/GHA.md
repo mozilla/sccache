@@ -4,7 +4,7 @@ To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workf
 
 By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
 
-This cache type will needs token like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
+This cache type will need tokens like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
 
 ```yaml
 - name: Configure sccache
@@ -17,4 +17,4 @@ This cache type will needs token like `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_T
 
 ## Behavior
 
-In case sccache reaches the rate limit of the service, the build will continue but the storage might not be performed.
+In case sccache reaches the rate limit of the service, the build will continue, but the storage might not be performed.
