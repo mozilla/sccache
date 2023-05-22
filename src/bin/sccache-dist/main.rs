@@ -43,6 +43,18 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 fn main() {
     init_logging();
 
+    let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+    incr_env_strs
+        .iter()
+        .for_each(|incr_str| match env::var(incr_str) {
+            Ok(incr_val) if incr_val == "true" => {
+                println!("sccache: increment compilation is  prohibited.");
+                std::process::exit(1);
+            }
+            Ok(_) => (),
+            Err(_) => (),
+        });
+
     let command = match cmdline::try_parse_from(env::args()) {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
