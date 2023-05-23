@@ -47,12 +47,11 @@ fn main() {
     incr_env_strs
         .iter()
         .for_each(|incr_str| match env::var(incr_str) {
-            Ok(incr_val) if incr_val == "true" => {
+            Ok(incr_val) if incr_val == "1" => {
                 println!("sccache: increment compilation is  prohibited.");
                 std::process::exit(1);
             }
-            Ok(_) => (),
-            Err(_) => (),
+            _ => (),
         });
 
     let command = match cmdline::try_parse_from(env::args()) {
