@@ -919,9 +919,19 @@ where
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
-    if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
-        cmd.arg("-showIncludes");
+
+    if is_clang {
+        if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
+            cmd.arg("-showIncludes");
+        }
+    } else {
+        // cl.exe can product the dep list itself, in a JSON format that some tools will be expecting.
+        if let Some(ref depfile) = parsed_args.depfile {
+            cmd.arg("/sourceDependencies");
+            cmd.arg(depfile);
+        }
     }
+
     if rewrite_includes_only && is_clang {
         cmd.arg("-clang:-frewrite-includes");
     }
@@ -935,6 +945,10 @@ where
     let cwd = cwd.to_owned();
 
     let output = run_input_output(cmd, None).await?;
+
+    if !is_clang {
+        return Ok(output);
+    }
 
     let parsed_args = &parsed_args;
     if let (Some(obj), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile)
@@ -1494,14 +1508,19 @@ mod test {
     #[test]
     fn parse_deps_arguments() {
         let arg_sets = vec![
-            ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.pp"],
-            ovec!["-c", "foo.c", "/Fofoo.obj", "/sourceDependenciesfoo.obj.pp"],
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.json"],
+            ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/sourceDependenciesfoo.obj.json"
+            ],
             ovec![
                 "-c",
                 "foo.c",
                 "/Fofoo.obj",
                 "/sourceDependencies",
-                "foo.obj.pp"
+                "foo.obj.json"
             ],
         ];
 
@@ -1521,7 +1540,7 @@ mod test {
             };
             assert_eq!(Some("foo.c"), input.to_str());
             assert_eq!(Language::C, language);
-            assert_eq!(Some(PathBuf::from_str("foo.obj.pp").unwrap()), depfile);
+            assert_eq!(Some(PathBuf::from_str("foo.obj.json").unwrap()), depfile);
             assert_map_contains!(
                 outputs,
                 (
