@@ -3085,9 +3085,9 @@ proc_macro false
             Ok(())
         })
         .unwrap();
+
         let mut m = Digest::new();
-        m.update(b"baz.o");
-        m.update(&vec![0; BAZ_O_SIZE as usize]);
+        m.update(&fs::read(f.tempdir.path().join("libbaz.a")).unwrap());
         let libbaz_a_digest = m.finish();
 
         let mut emit = HashSet::new();
