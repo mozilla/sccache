@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::mock_command::{CommandChild, RunCommand};
-use ar::Archive;
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use fs::File;
@@ -145,14 +144,10 @@ pub async fn hash_all_archives(
         let path = path.clone();
         pool.spawn_blocking(move || -> Result<String> {
             let mut m = Digest::new();
+            debug!("start hash file {:?}", path);
             let reader = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
-            let mut archive = Archive::new(reader);
-            while let Some(entry) = archive.next_entry() {
-                let entry = entry?;
-                m.update(entry.header().identifier());
-                update_from_reader(&mut m, entry)?;
-            }
+            update_from_reader(&mut m, reader)?;
             Ok(m.finish())
         })
     });

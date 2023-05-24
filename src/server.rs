@@ -1290,7 +1290,7 @@ where
                             Err(err) => {
                                 use std::fmt::Write;
 
-                                error!("[{:?}] fatal error: {}", out_pretty, err);
+                                error!("[{:?}] fatal error: {:?}", out_pretty, err);
 
                                 let mut error = "sccache: encountered fatal error\n".to_string();
                                 let _ = writeln!(error, "sccache: error: {}", err);
