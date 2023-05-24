@@ -129,11 +129,6 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
 
 /// Calculate the digest of each static library archive in `files` on background threads in
 /// `pool`.
-///
-/// The hash is calculated by adding the filename of each archive entry followed
-/// by its contents, ignoring headers and other file metadata. This primarily
-/// exists because Apple's `ar` tool inserts timestamps for each file with
-/// no way to disable this behavior.
 pub async fn hash_all_archives(
     files: &[PathBuf],
     pool: &tokio::runtime::Handle,
