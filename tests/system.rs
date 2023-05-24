@@ -184,9 +184,9 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
         env_vars,
     } = compiler;
     // Check that -deps works.
-    trace!("compile with -deps");
+    trace!("compile with /sourceDependencies");
     let mut args = compile_cmdline(name, exe, INPUT, OUTPUT, Vec::new());
-    args.push("-depstest.d".into());
+    args.push("/sourceDependenciestest.o.json".into());
     sccache_command()
         .args(&args)
         .current_dir(tempdir)
@@ -194,19 +194,18 @@ fn test_msvc_deps(compiler: Compiler, tempdir: &Path) {
         .assert()
         .success();
     // Check the contents
-    let mut f = File::open(tempdir.join("test.d")).expect("Failed to open dep file");
-    let mut buf = String::new();
-    // read_to_string should be safe because we're supplying all the filenames here,
-    // and there are no absolute paths.
-    f.read_to_string(&mut buf).expect("Failed to read dep file");
-    let lines: Vec<_> = buf.lines().map(|l| l.trim_end()).collect();
-    let expected = format!(
-        "{output}: {input}\n{input}:\n",
-        output = OUTPUT,
-        input = INPUT
-    );
-    let expected_lines: Vec<_> = expected.lines().collect();
-    assert_eq!(lines, expected_lines);
+    let f = File::open(tempdir.join("test.o.json")).expect("Failed to open dep file");
+    // MSVC deps files are JSON, which we can validate properties of, but will be
+    // subtly different on different systems (Windows SDK version, for example)
+    let deps: serde_json::Value = serde_json::from_reader(f).expect("Failed to read dep file");
+    let source = deps["Data"]["Source"].as_str().expect("No source found");
+    let source = Path::new(source).file_name().expect("No source file name");
+    assert_eq!(source, INPUT);
+
+    let includes = deps["Data"]["Includes"]
+        .as_array()
+        .expect("No includes found");
+    assert_ne!(includes.len(), 0);
 }
 
 fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
