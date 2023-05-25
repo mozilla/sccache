@@ -23,7 +23,7 @@ lto = true
 strip = true
 
 [dependencies]
-anyhow = "1.0"
+anyhow = { version = "1.0", features = ["backtrace"] }
 ar = "0.9"
 async-trait = "0.1"
 base64 = "0.21"
