@@ -129,6 +129,14 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
 
 /// Calculate the digest of each static library archive in `files` on background threads in
 /// `pool`.
+///
+/// # TODO
+///
+/// To resolve [#1250](https://github.com/mozilla/sccache/issues/1250),
+/// we removed the process of cleaning up the metadata of AR files by
+/// first unarchiving them and remove all the metadata like timestamps.
+/// However, this may lead to unexpected cache misses. Therefore, we
+/// should reinstate this logic.
 pub async fn hash_all_archives(
     files: &[PathBuf],
     pool: &tokio::runtime::Handle,
