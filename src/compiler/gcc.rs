@@ -277,7 +277,7 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
-    let dont_cache_multiarch = !env::var("SCCACHE_CACHE_MULTIARCH").is_ok();
+    let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -371,7 +371,9 @@ where
             Some(Arch(arch)) => {
                 match seen_arch {
                     Some(s) if &s != arch && dont_cache_multiarch => {
-                        cannot_cache!("multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set")
+                        cannot_cache!(
+                            "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set"
+                        )
                     }
                     _ => {}
                 };
@@ -661,7 +663,7 @@ fn preprocess_cmd<T>(
                 .map(|arg_string| format!("-D__{}__=1", arg_string).into())
         })
         .collect::<Vec<OsString>>();
-    
+
     let mut arch_args_to_use = &rewritten_arch_args;
     let mut unique_rewritten = rewritten_arch_args.clone();
     unique_rewritten.sort();
@@ -1766,7 +1768,6 @@ mod test {
         }
 
         with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
-
             match parse_arguments_(
                 stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
                 false,
@@ -1775,8 +1776,9 @@ mod test {
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
 
-            let args =
-                stringvec!["-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"];
+            let args = stringvec![
+                "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+            ];
             let ParsedArguments {
                 input,
                 language,
