@@ -25,6 +25,7 @@ use fs::File;
 use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -275,6 +276,8 @@ where
     let mut outputs_gcno = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
+    let mut seen_arch = None;
+    let dont_cache_multiarch = env::var("SCCACHE_NOCACHE_MULTIARCH").is_ok();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -365,7 +368,15 @@ where
                     _ => cannot_cache!("-x"),
                 };
             }
-            Some(Arch(_)) => {}
+            Some(Arch(arch)) => {
+                match seen_arch {
+                    Some(s) if &s != arch && dont_cache_multiarch => {
+                        cannot_cache!("multiple different -arch, and SCCACHE_NOCACHE_MULTIARCH set")
+                    }
+                    _ => {}
+                };
+                seen_arch = Some(arch.clone());
+            }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
                 Argument::Raw(ref val) => {
@@ -883,6 +894,8 @@ mod test {
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::test::utils::*;
+
+    use temp_env::with_var;
 
     fn parse_arguments_(
         arguments: Vec<String>,
@@ -1679,6 +1692,24 @@ mod test {
             CompilerArguments::CannotCache("@", None),
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"], false)
         );
+    }
+
+    #[test]
+    fn test_parse_arguments_multiarch_cache_disabled() {
+        with_var("SCCACHE_NOCACHE_MULTIARCH", Some("1"), || {
+            assert_eq!(
+                CompilerArguments::CannotCache(
+                    "multiple different -arch, and SCCACHE_NOCACHE_MULTIARCH set",
+                    None
+                ),
+                parse_arguments_(
+                    stringvec![
+                        "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                    ],
+                    false
+                )
+            )
+        });
     }
 
     #[test]

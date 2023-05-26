@@ -2316,6 +2316,7 @@ dependencies = [
  "strip-ansi-escapes",
  "syslog",
  "tar",
+ "temp-env",
  "tempfile",
  "thirtyfour_sync",
  "tokio",
@@ -2667,6 +2668,15 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "temp-env"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9547444bfe52cbd79515c6c8087d8ae6ca8d64d2d31a27746320f5cb81d1a15c"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]
