@@ -97,6 +97,7 @@ itertools = "0.10"
 predicates = "=3.0.2"
 thirtyfour_sync = "0.27"
 serial_test = "2.0"
+temp-env = "0.3.4"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5"
