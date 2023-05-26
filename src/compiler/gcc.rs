@@ -277,7 +277,7 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
-    let dont_cache_multiarch = env::var("SCCACHE_NOCACHE_MULTIARCH").is_ok();
+    let dont_cache_multiarch = !env::var("SCCACHE_CACHE_MULTIARCH").is_ok();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -371,7 +371,7 @@ where
             Some(Arch(arch)) => {
                 match seen_arch {
                     Some(s) if &s != arch && dont_cache_multiarch => {
-                        cannot_cache!("multiple different -arch, and SCCACHE_NOCACHE_MULTIARCH set")
+                        cannot_cache!("multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set")
                     }
                     _ => {}
                 };
@@ -661,12 +661,21 @@ fn preprocess_cmd<T>(
                 .map(|arg_string| format!("-D__{}__=1", arg_string).into())
         })
         .collect::<Vec<OsString>>();
+    
+    let mut arch_args_to_use = &rewritten_arch_args;
+    let mut unique_rewritten = rewritten_arch_args.clone();
+    unique_rewritten.sort();
+    unique_rewritten.dedup();
+    if unique_rewritten.len() <= 1 {
+        // don't use rewritten arch args if there is only one arch
+        arch_args_to_use = &parsed_args.arch_args;
+    }
 
     cmd.arg(&parsed_args.input)
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
-        .args(&rewritten_arch_args)
+        .args(arch_args_to_use)
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
@@ -1441,7 +1450,43 @@ mod test {
 
     #[test]
     fn test_preprocess_cmd_rewrites_archs() {
-        let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
+        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+            let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
+            let parsed_args = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let mut cmd = MockCommand {
+                child: None,
+                args: vec![],
+            };
+            preprocess_cmd(
+                &mut cmd,
+                &parsed_args,
+                Path::new(""),
+                &[],
+                true,
+                CCompilerKind::Gcc,
+                true,
+                vec![],
+            );
+            // make sure the architectures were rewritten to prepocessor defines
+            let expected_args = ovec![
+                "-x",
+                "c++",
+                "-E",
+                "-fdirectives-only",
+                "foo.cc",
+                "-D__arm64__=1",
+                "-D__i386__=1"
+            ];
+            assert_eq!(cmd.args, expected_args);
+        });
+    }
+
+    #[test]
+    fn test_preprocess_cmd_doesnt_rewrite_single_arch() {
+        let args = stringvec!["-arch", "arm64", "-c", "foo.cc"];
         let parsed_args = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
@@ -1467,8 +1512,8 @@ mod test {
             "-E",
             "-fdirectives-only",
             "foo.cc",
-            "-D__arm64__=1",
-            "-D__i386__=1"
+            "-arch",
+            "arm64"
         ];
         assert_eq!(cmd.args, expected_args);
     }
@@ -1696,20 +1741,18 @@ mod test {
 
     #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
-        with_var("SCCACHE_NOCACHE_MULTIARCH", Some("1"), || {
-            assert_eq!(
-                CompilerArguments::CannotCache(
-                    "multiple different -arch, and SCCACHE_NOCACHE_MULTIARCH set",
-                    None
-                ),
-                parse_arguments_(
-                    stringvec![
-                        "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                    ],
-                    false
-                )
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
+                None
+            ),
+            parse_arguments_(
+                stringvec![
+                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                ],
+                false
             )
-        });
+        )
     }
 
     #[test]
@@ -1722,47 +1765,50 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         }
 
-        match parse_arguments_(
-            stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
-            false,
-        ) {
-            CompilerArguments::Ok(_) => {}
-            o => panic!("Got unexpected parse result: {:?}", o),
-        }
+        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
 
-        let args =
-            stringvec!["-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"];
-        let ParsedArguments {
-            input,
-            language,
-            compilation_flag,
-            outputs,
-            preprocessor_args,
-            msvc_show_includes,
-            common_args,
-            arch_args,
-            ..
-        } = match parse_arguments_(args, false) {
-            CompilerArguments::Ok(args) => args,
-            o => panic!("Got unexpected parse result: {:?}", o),
-        };
-        assert_eq!(Some("foo.cpp"), input.to_str());
-        assert_eq!(Language::Cxx, language);
-        assert_eq!(Some("-c"), compilation_flag.to_str());
-        assert_map_contains!(
-            outputs,
-            (
-                "obj",
-                ArtifactDescriptor {
-                    path: "foo.o".into(),
-                    optional: false
-                }
-            )
-        );
-        assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-fPIC"], common_args);
-        assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
-        assert!(!msvc_show_includes);
+            match parse_arguments_(
+                stringvec!["-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"],
+                false,
+            ) {
+                CompilerArguments::Ok(_) => {}
+                o => panic!("Got unexpected parse result: {:?}", o),
+            }
+
+            let args =
+                stringvec!["-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"];
+            let ParsedArguments {
+                input,
+                language,
+                compilation_flag,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                arch_args,
+                ..
+            } = match parse_arguments_(args, false) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.cpp"), input.to_str());
+            assert_eq!(Language::Cxx, language);
+            assert_eq!(Some("-c"), compilation_flag.to_str());
+            assert_map_contains!(
+                outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: "foo.o".into(),
+                        optional: false
+                    }
+                )
+            );
+            assert!(preprocessor_args.is_empty());
+            assert_eq!(ovec!["-fPIC"], common_args);
+            assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
+            assert!(!msvc_show_includes);
+        });
     }
 
     #[test]
