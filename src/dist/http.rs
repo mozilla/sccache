@@ -253,11 +253,12 @@ mod server {
     use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
     use serde::Serialize;
     use std::collections::HashMap;
+    use std::convert::Infallible;
     use std::io::Read;
     use std::net::SocketAddr;
     use std::result::Result as StdResult;
@@ -265,7 +266,6 @@ mod server {
     use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
-    use void::Void;
 
     use super::common::{
         AllocJobHttpResponse, HeartbeatServerHttpRequest, JobJwt, ReqwestRequestBuilderExt,
@@ -400,16 +400,14 @@ mod server {
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
     const JWT_KEY_LENGTH: usize = 256 / 8;
-    lazy_static! {
-        static ref JWT_HEADER: jwt::Header = jwt::Header::new(jwt::Algorithm::HS256);
-        static ref JWT_VALIDATION: jwt::Validation = {
-            let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
-            validation.leeway = 0;
-            validation.validate_exp = false;
-            validation.validate_nbf = false;
-            validation
-        };
-    }
+    static JWT_HEADER: Lazy<jwt::Header> = Lazy::new(|| jwt::Header::new(jwt::Algorithm::HS256));
+    static JWT_VALIDATION: Lazy<jwt::Validation> = Lazy::new(|| {
+        let mut validation = jwt::Validation::new(jwt::Algorithm::HS256);
+        validation.leeway = 0;
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        validation
+    });
 
     // Based on rouille::input::json::json_input
     #[derive(Debug)]
@@ -680,7 +678,7 @@ mod server {
             }
         }
 
-        pub fn start(self) -> Result<Void> {
+        pub fn start(self) -> Result<Infallible> {
             let Self {
                 public_addr,
                 handler,
@@ -920,7 +918,7 @@ mod server {
             })
         }
 
-        pub fn start(self) -> Result<Void> {
+        pub fn start(self) -> Result<Infallible> {
             let Self {
                 public_addr,
                 scheduler_url,

@@ -43,6 +43,17 @@ pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 fn main() {
     init_logging();
 
+    let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+    incr_env_strs
+        .iter()
+        .for_each(|incr_str| match env::var(incr_str) {
+            Ok(incr_val) if incr_val == "1" => {
+                println!("sccache: increment compilation is  prohibited.");
+                std::process::exit(1);
+            }
+            _ => (),
+        });
+
     let command = match cmdline::try_parse_from(env::args()) {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
@@ -206,7 +217,8 @@ fn run(command: Command) -> Result<i32> {
                 check_client_auth,
                 check_server_auth,
             );
-            void::unreachable(http_scheduler.start()?);
+            http_scheduler.start()?;
+            unreachable!();
         }
 
         Command::Server(server_config::Config {
@@ -282,7 +294,8 @@ fn run(command: Command) -> Result<i32> {
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
-            void::unreachable(http_server.start()?)
+            http_server.start()?;
+            unreachable!();
         }
     }
 }

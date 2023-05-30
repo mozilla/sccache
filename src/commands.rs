@@ -164,6 +164,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
+    use tokio::net::windows::named_pipe;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
     use winapi::um::handleapi::CloseHandle;
@@ -176,7 +177,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 
     // Create a mini event loop and register our named pipe server
     let runtime = Runtime::new()?;
-    let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
+    let pipe_name = &format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
 
     // Spawn a server which should come back and connect to us
     let exe_path = env::current_exe()?;
@@ -245,9 +246,29 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         return Err(io::Error::last_os_error().into());
     }
 
+    fn create_named_pipe(
+        pipe_name: &str,
+        is_first: bool,
+    ) -> io::Result<named_pipe::NamedPipeServer> {
+        named_pipe::ServerOptions::new()
+            .first_pipe_instance(is_first)
+            .reject_remote_clients(true)
+            .access_inbound(true)
+            .access_outbound(true)
+            .in_buffer_size(65536)
+            .out_buffer_size(65536)
+            .create(pipe_name)
+    }
+
     let startup = async move {
-        let listener = parity_tokio_ipc::Endpoint::new(pipe_name);
-        let incoming = listener.incoming()?;
+        let pipe = create_named_pipe(pipe_name, true)?;
+
+        let incoming = futures::stream::try_unfold(pipe, |listener| async move {
+            listener.connect().await?;
+            let new_listener = create_named_pipe(pipe_name, false)?;
+            Ok::<_, io::Error>(Some((listener, new_listener)))
+        });
+
         futures::pin_mut!(incoming);
         let socket = incoming.next().await;
         let socket = socket.unwrap(); // incoming() never returns None
