@@ -16,10 +16,7 @@ jobs:
       with:
         fetch-depth: 0  # needed for version determination
 
-    - name: Build and publish the snap
+    - name: Build the snap
       uses: canonical/actions/build-snap@release
       with:
         review-opts: --allow-classic
-        snapcraft-token: ${{ secrets.SNAPCRAFT_TOKEN }}
-        publish: ${{ github.event_name == 'pull_request' && github.repository == github.event.pull_request.head.repo.full_name }}
-        publish-channel: edge/pr${{ github.event.number }}
