@@ -112,8 +112,8 @@ jobs:
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
-#          - os: ubuntu-20.04
-#            target: aarch64-unknown-linux-musl
+          - os: ubuntu-20.04
+            target: aarch64-unknown-linux-musl
           - os: macOS-11
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
@@ -144,7 +144,8 @@ jobs:
       - name: Install musl-tools
         run: |
           set -x
-          echo deb [arch=arm64] http://azure.ports.ubuntu.com/ubuntu-ports/ $(lsb_release -c -s) main restricted universe multiverse | sudo tee /etc/apt/sources.list.d/99ports.list > /dev/null
+          sed 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch-=amd64,i386] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list > /etc/apt/sources.list.d/ports.list
+          sed -i 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch=amd64,i386] http:\/\/\1.archive.ubuntu.com\/ubuntu\//g' /etc/apt/sources.list
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
           sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross
