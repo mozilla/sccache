@@ -71,7 +71,7 @@ If you have a Rust toolchain installed you can install sccache using cargo. **No
 
 
 ```bash
-cargo install sccache
+cargo install sccache --locked
 ```
 
 ---
