@@ -22,6 +22,7 @@ use crate::compiler::{
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use log::Level::Debug;
@@ -449,6 +450,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Wv:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("X", PassThrough),
     msvc_take_arg!("Xclang", OsString, Separated, XClang),
+    msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
     msvc_flag!("Yd", PassThrough),
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
     msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
@@ -458,6 +460,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Zc:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Ze", PassThrough),
     msvc_flag!("Zi", DebugInfo),
+    msvc_take_arg!("Zm", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("Zo", PassThrough),
     msvc_flag!("Zo-", PassThrough),
     msvc_flag!("Zp1", PassThrough),
@@ -517,6 +520,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("sdl-", PassThrough),
     msvc_flag!("showIncludes", ShowIncludes),
     msvc_take_arg!("source-charset:", OsString, Concatenated, PassThroughWithSuffix),
+    msvc_take_arg!("sourceDependencies", PathBuf, CanBeSeparated, DepFile),
     msvc_take_arg!("std:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("u", PassThrough),
     msvc_flag!("utf-8", PassThrough),
@@ -803,6 +807,39 @@ pub fn parse_arguments(
             }
         }
     }
+    if language == Language::Cxx {
+        if let Some(obj) = outputs.get("obj") {
+            // MSVC can produce "type library headers"[1], with the extensions "tlh" and "tli".
+            // These files can be used in later compilation steps to interact with COM interfaces.
+            //
+            // These files are only created when the `#import` directive is used.
+            // Figuring out if an import directive is used would require parsing C++, which would be a lot of work.
+            // To avoid that problem, we just optionally cache these headers if they happen to be produced.
+            // This isn't perfect, but it is easy!
+            //
+            // [1]: https://learn.microsoft.com/en-us/cpp/preprocessor/hash-import-directive-cpp?view=msvc-170#_predir_the_23import_directive_header_files_created_by_import
+            let tlh = obj.path.with_extension("tlh");
+            let tli = obj.path.with_extension("tli");
+
+            // Primary type library header
+            outputs.insert(
+                "tlh",
+                ArtifactDescriptor {
+                    path: tlh,
+                    optional: true,
+                },
+            );
+
+            // Secondary type library header
+            outputs.insert(
+                "tli",
+                ArtifactDescriptor {
+                    path: tli,
+                    optional: true,
+                },
+            );
+        }
+    }
     // -Fd is not taken into account unless -Zi or -ZI are given
     // Clang is currently unable to generate PDB files
     if debug_info && !is_clang {
@@ -912,12 +949,25 @@ where
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
+        // Windows SDK generates C4668 during preprocessing, but compiles fine.
+        // Read for more info: https://github.com/mozilla/sccache/issues/1725
+        .arg("/wd4668")
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);
-    if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
-        cmd.arg("-showIncludes");
+
+    if is_clang {
+        if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
+            cmd.arg("-showIncludes");
+        }
+    } else {
+        // cl.exe can product the dep list itself, in a JSON format that some tools will be expecting.
+        if let Some(ref depfile) = parsed_args.depfile {
+            cmd.arg("/sourceDependencies");
+            cmd.arg(depfile);
+        }
     }
+
     if rewrite_includes_only && is_clang {
         cmd.arg("-clang:-frewrite-includes");
     }
@@ -931,6 +981,10 @@ where
     let cwd = cwd.to_owned();
 
     let output = run_input_output(cmd, None).await?;
+
+    if !is_clang {
+        return Ok(output);
+    }
 
     let parsed_args = &parsed_args;
     if let (Some(obj), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile)
@@ -1257,7 +1311,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
         let mut backslash_count: usize = 0;
 
         // Strip any leading whitespace before relevant characters
-        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n');
+        let is_whitespace = |c| matches!(c, ' ' | '\t' | '\n' | '\r');
         self.file_content = self.file_content.trim_start_matches(is_whitespace);
 
         if self.file_content.is_empty() {
@@ -1293,7 +1347,7 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
                 }
                 // If whitespace is encountered, only preserve it if we are currently in quotes.
                 // Otherwise it marks the end of the current argument.
-                ' ' | '\t' | '\n' => {
+                ' ' | '\t' | '\n' | '\r' => {
                     Self::append_backslashes_to(&mut arg, &mut backslash_count, 1);
                     // If not in a quoted string, then this is the end of the argument.
                     if !in_quotes {
@@ -1321,6 +1375,8 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use super::*;
     use crate::compiler::*;
     use crate::mock_command::*;
@@ -1385,6 +1441,72 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_cpp_parse_arguments_collects_type_library_headers() {
+        let args = ovec!["-c", "foo.cpp", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.cpp"), input.to_str());
+        assert_eq!(Language::Cxx, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            ),
+            (
+                "tlh",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tlh"),
+                    optional: true
+                }
+            ),
+            (
+                "tli",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.tli"),
+                    optional: true
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_c_parse_arguments_does_not_collect_type_library_headers() {
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.obj"),
+                    optional: false
+                }
+            )
+        );
     }
 
     #[test]
@@ -1483,6 +1605,58 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn parse_deps_arguments() {
+        let arg_sets = vec![
+            ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.json"],
+            ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/sourceDependenciesfoo.obj.json"
+            ],
+            ovec![
+                "-c",
+                "foo.c",
+                "/Fofoo.obj",
+                "/sourceDependencies",
+                "foo.obj.json"
+            ],
+        ];
+
+        for args in arg_sets {
+            let ParsedArguments {
+                input,
+                language,
+                outputs,
+                preprocessor_args,
+                msvc_show_includes,
+                common_args,
+                depfile,
+                ..
+            } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(Some("foo.c"), input.to_str());
+            assert_eq!(Language::C, language);
+            assert_eq!(Some(PathBuf::from_str("foo.obj.json").unwrap()), depfile);
+            assert_map_contains!(
+                outputs,
+                (
+                    "obj",
+                    ArtifactDescriptor {
+                        path: PathBuf::from("foo.obj"),
+                        optional: false
+                    }
+                )
+            );
+            assert!(preprocessor_args.is_empty());
+            assert!(common_args.is_empty());
+            assert!(!msvc_show_includes);
+        }
     }
 
     #[test]
@@ -1836,6 +2010,16 @@ mod test {
             CompilerArguments::CannotCache("-FR", None),
             parse_arguments(ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"])
         );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Fp", None),
+            parse_arguments(ovec!["-c", "-Fpfoo.h", "foo.c"])
+        );
+
+        assert_eq!(
+            CompilerArguments::CannotCache("-Yc", None),
+            parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
+        );
     }
 
     #[test]
@@ -1988,6 +2172,48 @@ mod test {
         {
             let mut file = File::create(&cmd_file_path).unwrap();
             let content = b"\n-c foo.c\n-o foo.o";
+            file.write_all(content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_responsefile_multiline_cr() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            let content = b"\r-c foo.c\r-o foo.o";
             file.write_all(content).unwrap();
         }
         let arg = format!("@{}", cmd_file_path.display());

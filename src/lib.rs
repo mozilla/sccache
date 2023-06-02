@@ -17,19 +17,10 @@
 #![recursion_limit = "256"]
 
 #[macro_use]
-extern crate async_trait;
-#[cfg(feature = "jsonwebtoken")]
-use jsonwebtoken as jwt;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
 extern crate log;
 #[cfg(feature = "rouille")]
 #[macro_use(router)]
 extern crate rouille;
-#[macro_use]
-extern crate serde_derive;
-
 // To get macros in scope, this has to be first.
 #[cfg(test)]
 #[macro_use]
@@ -67,6 +58,17 @@ pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
     init_logging();
+
+    let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+    incr_env_strs
+        .iter()
+        .for_each(|incr_str| match env::var(incr_str) {
+            Ok(incr_val) if incr_val == "1" => {
+                println!("sccache: increment compilation is  prohibited.");
+                std::process::exit(1);
+            }
+            _ => (),
+        });
 
     let command = match cmdline::try_parse() {
         Ok(cmd) => cmd,

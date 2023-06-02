@@ -21,10 +21,10 @@ use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreato
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 use crate::util::daemonize;
-use atty::Stream;
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
+use is_terminal::IsTerminal;
 use log::Level::Trace;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -164,6 +164,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
+    use tokio::net::windows::named_pipe;
     use uuid::Uuid;
     use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
     use winapi::um::handleapi::CloseHandle;
@@ -176,7 +177,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 
     // Create a mini event loop and register our named pipe server
     let runtime = Runtime::new()?;
-    let pipe_name = format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
+    let pipe_name = &format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
 
     // Spawn a server which should come back and connect to us
     let exe_path = env::current_exe()?;
@@ -245,9 +246,29 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         return Err(io::Error::last_os_error().into());
     }
 
+    fn create_named_pipe(
+        pipe_name: &str,
+        is_first: bool,
+    ) -> io::Result<named_pipe::NamedPipeServer> {
+        named_pipe::ServerOptions::new()
+            .first_pipe_instance(is_first)
+            .reject_remote_clients(true)
+            .access_inbound(true)
+            .access_outbound(true)
+            .in_buffer_size(65536)
+            .out_buffer_size(65536)
+            .create(pipe_name)
+    }
+
     let startup = async move {
-        let listener = parity_tokio_ipc::Endpoint::new(pipe_name);
-        let incoming = listener.incoming()?;
+        let pipe = create_named_pipe(pipe_name, true)?;
+
+        let incoming = futures::stream::try_unfold(pipe, |listener| async move {
+            listener.connect().await?;
+            let new_listener = create_named_pipe(pipe_name, false)?;
+            Ok::<_, io::Error>(Some((listener, new_listener)))
+        });
+
         futures::pin_mut!(incoming);
         let socket = incoming.next().await;
         let socket = socket.unwrap(); // incoming() never returns None
@@ -292,8 +313,8 @@ fn connect_or_start_server(
                 ServerStartup::AddrInUse => {
                     debug!("AddrInUse: possible parallel server bootstraps, retrying..")
                 }
-                ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
-                ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
+                ServerStartup::TimedOut => bail!("Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"),
+                ServerStartup::Err { reason } => bail!("Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information", reason),
             }
             let server = connect_with_retry(port)?;
             Ok(server)
@@ -409,7 +430,7 @@ fn handle_compile_finished(
 ) -> Result<i32> {
     trace!("handle_compile_finished");
     fn write_output(
-        stream: Stream,
+        stream: impl IsTerminal,
         writer: &mut dyn Write,
         data: &[u8],
         color_mode: ColorMode,
@@ -421,7 +442,7 @@ fn handle_compile_finished(
         // is a terminal and the compiler options didn't explicitly request non-color output,
         // then write the compiler output directly.
         if color_mode == ColorMode::On
-            || (!dumb_term && atty::is(stream) && color_mode != ColorMode::Off)
+            || (!dumb_term && stream.is_terminal() && color_mode != ColorMode::Off)
         {
             writer.write_all(data)?;
         } else {
@@ -435,13 +456,13 @@ fn handle_compile_finished(
     // ran, but then it would have to also save them in the cache as
     // interleaved streams to really make it work.
     write_output(
-        Stream::Stdout,
+        std::io::stdout(),
         stdout,
         &response.stdout,
         response.color_mode,
     )?;
     write_output(
-        Stream::Stderr,
+        std::io::stderr(),
         stderr,
         &response.stderr,
         response.color_mode,

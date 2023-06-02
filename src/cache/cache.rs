@@ -38,6 +38,7 @@ use crate::config::Config;
     feature = "webdav"
 ))]
 use crate::config::{self, CacheType};
+use async_trait::async_trait;
 use fs_err as fs;
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
@@ -367,12 +368,12 @@ pub trait Storage: Send + Sync {
 #[async_trait]
 impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
-        match self.object(&normalize_key(key)).read().await {
+        match self.read(&normalize_key(key)).await {
             Ok(res) => {
                 let hit = CacheRead::from(io::Cursor::new(res))?;
                 Ok(Cache::Hit(hit))
             }
-            Err(e) if e.kind() == opendal::ErrorKind::ObjectNotFound => Ok(Cache::Miss),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
             Err(e) => {
                 warn!("Got unexpected error: {:?}", e);
                 Ok(Cache::Miss)
@@ -383,9 +384,7 @@ impl Storage for opendal::Operator {
     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration> {
         let start = std::time::Instant::now();
 
-        self.object(&normalize_key(key))
-            .write(entry.finish()?)
-            .await?;
+        self.write(&normalize_key(key), entry.finish()?).await?;
 
         Ok(start.elapsed())
     }
@@ -396,10 +395,10 @@ impl Storage for opendal::Operator {
         let path = ".sccache_check";
 
         // Read is required, return error directly if we can't read .
-        match self.object(path).read().await {
+        match self.read(path).await {
             Ok(_) => (),
             // Read not exist file with not found is ok.
-            Err(err) if err.kind() == ErrorKind::ObjectNotFound => (),
+            Err(err) if err.kind() == ErrorKind::NotFound => (),
             // Tricky Part.
             //
             // We tolerate rate limited here to make sccache keep running.
@@ -409,15 +408,15 @@ impl Storage for opendal::Operator {
             // and hitting other services rate limit. There are few things we
             // can do, so we will print our the error here to make users know
             // about it.
-            Err(err) if err.kind() == ErrorKind::ObjectRateLimited => {
+            Err(err) if err.kind() == ErrorKind::RateLimited => {
                 eprintln!("cache storage read check: {err:?}, but we decide to keep running")
             }
             Err(err) => bail!("cache storage failed to read: {:?}", err),
         };
 
-        let can_write = match self.object(path).write("Hello, World!").await {
+        let can_write = match self.write(path, "Hello, World!").await {
             Ok(_) => true,
-            Err(err) if err.kind() == ErrorKind::ObjectAlreadyExists => true,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
             // Toralte all other write errors because we can do read as least.
             Err(err) => {
                 eprintln!("storage write check failed: {err:?}");
@@ -425,15 +424,19 @@ impl Storage for opendal::Operator {
             }
         };
 
-        if can_write {
-            Ok(CacheMode::ReadWrite)
+        let mode = if can_write {
+            CacheMode::ReadWrite
         } else {
-            Ok(CacheMode::ReadOnly)
-        }
+            CacheMode::ReadOnly
+        };
+
+        debug!("storage check result: {mode:?}");
+
+        Ok(mode)
     }
 
     fn location(&self) -> String {
-        let meta = self.metadata();
+        let meta = self.info();
         format!(
             "{}, name: {}, prefix: {}",
             meta.scheme(),
@@ -552,8 +555,16 @@ pub fn storage_from_config(
             #[cfg(feature = "webdav")]
             CacheType::Webdav(ref c) => {
                 debug!("Init webdav cache with endpoint {}", c.endpoint);
-                let storage = WebdavCache::build(&c.endpoint, &c.key_prefix)
-                    .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
+                let storage = WebdavCache::build(
+                    &c.endpoint,
+                    &c.key_prefix,
+                    c.username.as_deref(),
+                    c.password.as_deref(),
+                    c.token.as_deref(),
+                )
+                .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]

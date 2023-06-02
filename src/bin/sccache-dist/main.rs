@@ -1,25 +1,5 @@
-extern crate base64;
-extern crate crossbeam_utils;
-extern crate env_logger;
-extern crate flate2;
-extern crate jsonwebtoken as jwt;
-
-#[cfg(not(target_os = "freebsd"))]
-extern crate libmount;
-
 #[macro_use]
 extern crate log;
-extern crate nix;
-extern crate openssl;
-extern crate rand;
-extern crate reqwest;
-extern crate sccache;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate syslog;
-extern crate tar;
-extern crate void;
 
 use anyhow::{bail, Context, Error, Result};
 use base64::Engine;
@@ -36,6 +16,7 @@ use sccache::dist::{
 };
 use sccache::util::daemonize;
 use sccache::util::BASE64_URL_SAFE_ENGINE;
+use serde::{Deserialize, Serialize};
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io;
@@ -67,8 +48,18 @@ fn main() {
     let mut sigterm = signal(SignalKind::terminate())?;
 
     init_logging();
-    
-    
+
+    let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
+    incr_env_strs
+        .iter()
+        .for_each(|incr_str| match env::var(incr_str) {
+            Ok(incr_val) if incr_val == "1" => {
+                println!("sccache: increment compilation is  prohibited.");
+                std::process::exit(1);
+            }
+            _ => (),
+        });
+
     let command = match cmdline::try_parse_from(env::args()) {
         Ok(cmd) => cmd,
         Err(e) => match e.downcast::<clap::error::Error>() {
@@ -245,7 +236,8 @@ fn run(command: Command) -> Result<i32> {
                 check_client_auth,
                 check_server_auth,
             );
-            void::unreachable(http_scheduler.start()?);
+            http_scheduler.start()?;
+            unreachable!();
         }
 
         Command::Server(server_config::Config {
@@ -321,7 +313,8 @@ fn run(command: Command) -> Result<i32> {
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
-            void::unreachable(http_server.start()?)
+            http_server.start()?;
+            unreachable!();
         }
     }
 }

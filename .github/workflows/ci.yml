@@ -1,5 +1,6 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
   lint:
     name: ${{ matrix.component }} ${{ matrix.os }}
@@ -24,7 +25,8 @@ jobs:
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
-          toolchain: 1.60.0
+          # Oldest supported version, keep in sync with README.md
+          toolchain: "1.65.0"
 
       - name: clippy version
         run: cargo clippy --version
@@ -34,7 +36,7 @@ jobs:
         run: cargo ${{ matrix.cargo_cmd }}
 
   test:
-    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }} ${{ matrix.dist_exec_strategy }}
+    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 30
@@ -43,20 +45,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-20.04
-            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.65.0"
           - os: ubuntu-22.04
-            rustc: 1.60.0
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.65.0"
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-            sccache_log: sccache=trace
-            dist_exec_strategy: docker
-          - os: ubuntu-22.04
-            rustc: 1.60.0
-            extra_desc: dist-worker
-            extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-            sccache_log: sccache=trace
-            sccache_sandbox: userns
-            dist_exec_strategy: spawn
           - os: ubuntu-20.04
             rustc: stable
           - os: ubuntu-20.04
@@ -68,7 +63,8 @@ jobs:
           - os: ubuntu-22.04
           - os: macOS-11
           - os: windows-2019
-            rustc: 1.60.0 # Oldest supported version, keep in sync with README.md
+            # Oldest supported version, keep in sync with README.md
+            rustc: "1.65.0"
           - os: windows-2019
             rustc: nightly
             allow_failure: true
@@ -77,16 +73,9 @@ jobs:
             rustc: beta
     env:
       RUST_BACKTRACE: 1
-      DIST_EXEC_STRATEGY: ${{ matrix.dist_exec_strategy }}
-      SCCACHE_SANDBOX: ${{ matrix.sccache_sandbox }}
-      SCCACHE_LOG: ${{ matrix.sccache_log }}
     steps:
       - name: Clone repository
         uses: actions/checkout@v3
-
-      - name: Install bubblewrap (needed for dist test suite)
-        if: contains(matrix.extra_desc, 'dist-worker')
-        run: sudo apt install bubblewrap -y
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -155,7 +144,8 @@ jobs:
       - name: Install musl-tools
         run: |
           set -x
-          echo deb [arch=arm64] http://azure.ports.ubuntu.com/ubuntu-ports/ $(lsb_release -c -s) main restricted universe multiverse | sudo tee /etc/apt/sources.list.d/99ports.list > /dev/null
+          sed 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch-=amd64,i386] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
+          sudo sed -i 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch=amd64,i386] http:\/\/\1.archive.ubuntu.com\/ubuntu\//g' /etc/apt/sources.list
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
           sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross

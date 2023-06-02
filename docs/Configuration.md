@@ -54,6 +54,13 @@ use_ssl = true
 key_prefix = "s3prefix"
 ```
 
+sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
+
+If no such env variable is set, sccache looks at default locations as below:
+- Linux: `~/.config/sccache/config`
+- macOS: `~/Library/Application Support/Mozilla.sccache/config`
+- Windows: `%APPDATA%\Mozilla\sccache\config\config`
+
 ## env
 
 Whatever is set by a file based configuration, it is overruled by the env
@@ -68,23 +75,25 @@ configuration variables
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
+* `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
 
 ### cache configs
 
-#### disk
+#### disk (local)
 
 * `SCCACHE_DIR` local on disk artifact cache directory
-* `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `10G`
+* `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
 
 #### s3 compatible
 
 * `SCCACHE_BUCKET` s3 bucket to be used
 * `SCCACHE_ENDPOINT` s3 endpoint
-* `SCCACHE_REGION` s3 region
+* `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
-If `SCCACHE_REGION` is undefined, it will default to `us-east-1`.
+If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it
+will default to `us-east-1`.
 
 #### cloudflare r2
 

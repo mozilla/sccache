@@ -38,7 +38,7 @@ impl GHACache {
             builder.version(&format!("sccache-v{VERSION}-{version}"));
         }
 
-        let op = Operator::create(builder)?
+        let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
             .finish();
         Ok(op)

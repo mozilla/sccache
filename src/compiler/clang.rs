@@ -23,6 +23,7 @@ use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerA
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
+use async_trait::async_trait;
 use fs::File;
 use fs_err as fs;
 use semver::{BuildMetadata, Prerelease, Version};
@@ -177,6 +178,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
     flag!("-fmodules", TooHardFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
+    flag!("-fno-pch-timestamp", PassThroughFlag),
     flag!("-fno-profile-instr-generate", TooHardFlag),
     flag!("-fno-profile-instr-use", TooHardFlag),
     take_arg!("-fplugin", PathBuf, CanBeConcatenated('='), ExtraHashFile),
@@ -590,6 +592,19 @@ mod test {
             "-no-opaque-pointers"
         );
         assert_eq!(ovec!["-Xclang", "-no-opaque-pointers"], a.preprocessor_args);
+    }
+
+    #[test]
+    fn test_parse_xclang_fno_pch_timestamp() {
+        let a = parses!(
+            "-c",
+            "foo.c",
+            "-o",
+            "foo.o",
+            "-Xclang",
+            "-fno-pch-timestamp"
+        );
+        assert_eq!(ovec!["-Xclang", "-fno-pch-timestamp"], a.common_args);
     }
 
     #[test]

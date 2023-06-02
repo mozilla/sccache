@@ -71,7 +71,7 @@ If you have a Rust toolchain installed you can install sccache using cargo. **No
 
 
 ```bash
-cargo install sccache
+cargo install sccache --locked
 ```
 
 ---
@@ -144,7 +144,7 @@ By default, sccache will fail your build if it fails to successfully communicate
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.60.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.65.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----
