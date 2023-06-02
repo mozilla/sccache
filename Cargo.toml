@@ -48,7 +48,7 @@ is-terminal = "0.4.5"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "8", optional = true }
 once_cell = "1.17"
-libc = "0.2.140"
+libc = "0.2.144"
 linked-hash-map = "0.5"
 log = "0.4"
 num_cpus = "1.15"
