@@ -41,12 +41,8 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v3
 
-      - uses: taiki-e/cache-cargo-install-action@v1
-        with:
-          tool: taplo-cli
-
       - name: Check
-        run: taplo fmt --check
+        run: npx --yes @taplo/cli fmt --check
 
   test:
     name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
