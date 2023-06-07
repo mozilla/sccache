@@ -37,6 +37,8 @@ impl S3Cache {
 
         if no_credentials {
             builder.disable_config_load();
+            builder.disable_ec2_metadata();
+            builder.allow_anonymous();
         }
 
         if let Some(endpoint) = endpoint {
