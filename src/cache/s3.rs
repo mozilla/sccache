@@ -37,7 +37,13 @@ impl S3Cache {
 
         if no_credentials {
             builder.disable_config_load();
+            // Disable EC2 metadata to avoid OpenDAL trying to load
+            // credentials from EC2 metadata.
+            //
+            // A.k.a, don't try to visit `htpp://169.254.169.254`
             builder.disable_ec2_metadata();
+            // Allow anonymous access to S3 so that OpenDAL will not
+            // throw error when no credentials are provided.
             builder.allow_anonymous();
         }
 
