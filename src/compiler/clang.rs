@@ -365,7 +365,7 @@ mod test {
             "pch.hxx.cxx"
         );
         assert_eq!(Some("pch.hxx.cxx"), a.input.to_str());
-        assert_eq!(Language::Cxx, a.language);
+        assert_eq!(Language::CxxHeader, a.language);
         assert_map_contains!(
             a.outputs,
             (

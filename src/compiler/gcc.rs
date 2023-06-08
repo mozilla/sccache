@@ -361,7 +361,9 @@ where
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
                     "c" => Some(Language::C),
+                    "c-header" => Some(Language::CHeader),
                     "c++" => Some(Language::Cxx),
+                    "c++-header" => Some(Language::CxxHeader),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
@@ -618,13 +620,19 @@ fn preprocess_cmd<T>(
     T: RunCommand,
 {
     let language = match parsed_args.language {
-        Language::C => "c",
-        Language::Cxx => "c++",
-        Language::ObjectiveC => "objective-c",
-        Language::ObjectiveCxx => "objective-c++",
-        Language::Cuda => "cu",
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::Cuda => Some("cu"),
+        Language::GenericHeader => None, // Let the compiler decide
     };
-    cmd.arg("-x").arg(language).arg("-E");
+    if let Some(lang) = &language {
+        cmd.arg("-x").arg(lang);
+    }
+    cmd.arg("-E");
     // When performing distributed compilation, line number info is important for error
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
@@ -744,20 +752,25 @@ pub fn generate_compile_commands(
     // Pass the language explicitly as we might have gotten it from the
     // command line.
     let language = match parsed_args.language {
-        Language::C => "c",
-        Language::Cxx => "c++",
-        Language::ObjectiveC => "objective-c",
-        Language::ObjectiveCxx => "objective-c++",
-        Language::Cuda => "cu",
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::Cuda => Some("cu"),
+        Language::GenericHeader => None, // Let the compiler decide
     };
-    let mut arguments: Vec<OsString> = vec![
-        "-x".into(),
-        language.into(),
+    let mut arguments: Vec<OsString> = vec![];
+    if let Some(lang) = &language {
+        arguments.extend(vec!["-x".into(), lang.into()])
+    }
+    arguments.extend(vec![
         parsed_args.compilation_flag.clone(),
         parsed_args.input.clone().into(),
         "-o".into(),
         out_file.into(),
-    ];
+    ]);
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
@@ -774,28 +787,35 @@ pub fn generate_compile_commands(
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let mut language: String = match parsed_args.language {
-            Language::C => "c",
-            Language::Cxx => "c++",
-            Language::ObjectiveC => "objective-c",
-            Language::ObjectiveCxx => "objective-c++",
-            Language::Cuda => "cu",
-        }
-        .into();
+        let mut language: Option<String> = match parsed_args.language {
+            Language::C => Some("c".into()),
+            Language::CHeader => Some("c-header".into()),
+            Language::Cxx => Some("c++".into()),
+            Language::CxxHeader => Some("c++-header".into()),
+            Language::ObjectiveC => Some("objective-c".into()),
+            Language::ObjectiveCxx => Some("objective-c++".into()),
+            Language::Cuda => Some("cu".into()),
+            Language::GenericHeader => None, // Let the compiler decide
+        };
         if !rewrite_includes_only {
             match parsed_args.language {
-                Language::C => language = "cpp-output".into(),
-                _ => language.push_str("-cpp-output"),
+                Language::C => language = Some("cpp-output".into()),
+                Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
+                _ => language.as_mut()?.push_str("-cpp-output"),
             }
         }
-        let mut arguments: Vec<String> = vec![
-            "-x".into(),
-            language,
+
+        let mut arguments: Vec<String> = vec![];
+        // Language needs to be before input
+        if let Some(lang) = &language {
+            arguments.extend(vec!["-x".into(), lang.into()])
+        }
+        arguments.extend(vec![
             parsed_args.compilation_flag.clone().into_string().ok()?,
             path_transformer.as_dist(&parsed_args.input)?,
             "-o".into(),
             path_transformer.as_dist(out_file)?,
-        ];
+        ]);
         if let CCompilerKind::Gcc = kind {
             // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
             //

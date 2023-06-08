@@ -82,12 +82,13 @@ impl CCompilerImpl for Nvcc {
         T: CommandCreatorSync,
     {
         let language = match parsed_args.language {
-            Language::C => "c",
-            Language::Cxx => "c++",
-            Language::ObjectiveC => "objective-c",
-            Language::ObjectiveCxx => "objective-c++",
-            Language::Cuda => "cu",
-        };
+            Language::C => Ok("c"),
+            Language::Cxx => Ok("c++"),
+            Language::ObjectiveC => Ok("objective-c"),
+            Language::ObjectiveCxx => Ok("objective-c++"),
+            Language::Cuda => Ok("cu"),
+            _ => Err(anyhow!("PCH not supported by nvcc")),
+        }?;
 
         let initialize_cmd_and_args = || {
             let mut command = creator.clone().new_command_sync(executable);
