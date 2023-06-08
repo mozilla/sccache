@@ -1963,4 +1963,76 @@ mod test {
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
     }
+
+    #[test]
+    fn test_pch_explicit() {
+        let args = stringvec!["-c", "-x", "c++-header", "pch.h", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(cmd.args.contains(&"-x".into()) && cmd.args.contains(&"c++-header".into()));
+    }
+
+    #[test]
+    fn test_pch_implicit() {
+        let args = stringvec!["-c", "pch.hpp", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(cmd.args.contains(&"-x".into()) && cmd.args.contains(&"c++-header".into()));
+    }
+
+    #[test]
+    fn test_pch_generic() {
+        let args = stringvec!["-c", "pch.h", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(!cmd.args.contains(&"-x".into()));
+    }
 }
