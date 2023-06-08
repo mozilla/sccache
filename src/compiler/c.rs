@@ -66,6 +66,9 @@ where
 pub enum Language {
     C,
     Cxx,
+    GenericHeader,
+    CHeader,
+    CxxHeader,
     ObjectiveC,
     ObjectiveCxx,
     Cuda,
@@ -131,12 +134,14 @@ impl Language {
         match file.extension().and_then(|e| e.to_str()) {
             // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
             Some("c") => Some(Language::C),
+            // Could be C or C++
+            Some("h") => Some(Language::GenericHeader),
             // TODO i
             Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
             | Some("c++") => Some(Language::Cxx),
             // TODO ii
-            // TODO H hh hp hpp HPP hxx h++
-            // TODO tcc
+            Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
+            | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
             Some("m") => Some(Language::ObjectiveC),
             // TODO mi
             Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
@@ -151,8 +156,9 @@ impl Language {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Language::C => "c",
-            Language::Cxx => "c++",
+            Language::C | Language::CHeader => "c",
+            Language::Cxx | Language::CxxHeader => "c++",
+            Language::GenericHeader => "c/c++",
             Language::ObjectiveC => "objc",
             Language::ObjectiveCxx => "objc++",
             Language::Cuda => "cuda",
@@ -874,6 +880,17 @@ mod test {
         t("cxx", Language::Cxx);
         t("c++", Language::Cxx);
 
+        t("h", Language::GenericHeader);
+
+        t("hh", Language::CxxHeader);
+        t("H", Language::CxxHeader);
+        t("hp", Language::CxxHeader);
+        t("hxx", Language::CxxHeader);
+        t("hpp", Language::CxxHeader);
+        t("HPP", Language::CxxHeader);
+        t("h++", Language::CxxHeader);
+        t("tcc", Language::CxxHeader);
+
         t("m", Language::ObjectiveC);
 
         t("M", Language::ObjectiveCxx);
@@ -895,6 +912,8 @@ mod test {
         // gcc parses file-extensions as case-sensitive
         t("Cp");
         t("Cpp");
+        t("Hp");
+        t("Hpp");
         t("Mm");
         t("Cu");
     }
