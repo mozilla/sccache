@@ -782,10 +782,8 @@ pub fn generate_compile_commands(
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let mut language: Option<String> = match language_to_gcc_arg(parsed_args.language) {
-            Some(lang) => Some(lang.into()),
-            None => None,
-        };
+        let mut language: Option<String> =
+            language_to_gcc_arg(parsed_args.language).map(|lang| lang.into());
         if !rewrite_includes_only {
             match parsed_args.language {
                 Language::C => language = Some("cpp-output".into()),
