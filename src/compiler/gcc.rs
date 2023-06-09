@@ -606,6 +606,19 @@ where
     })
 }
 
+fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::Cuda => Some("cu"),
+        Language::GenericHeader => None, // Let the compiler decide
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn preprocess_cmd<T>(
     cmd: &mut T,
@@ -619,16 +632,7 @@ fn preprocess_cmd<T>(
 ) where
     T: RunCommand,
 {
-    let language = match parsed_args.language {
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::Cuda => Some("cu"),
-        Language::GenericHeader => None, // Let the compiler decide
-    };
+    let language = language_to_gcc_arg(parsed_args.language);
     if let Some(lang) = &language {
         cmd.arg("-x").arg(lang);
     }
@@ -751,16 +755,7 @@ pub fn generate_compile_commands(
 
     // Pass the language explicitly as we might have gotten it from the
     // command line.
-    let language = match parsed_args.language {
-        Language::C => Some("c"),
-        Language::CHeader => Some("c-header"),
-        Language::Cxx => Some("c++"),
-        Language::CxxHeader => Some("c++-header"),
-        Language::ObjectiveC => Some("objective-c"),
-        Language::ObjectiveCxx => Some("objective-c++"),
-        Language::Cuda => Some("cu"),
-        Language::GenericHeader => None, // Let the compiler decide
-    };
+    let language = language_to_gcc_arg(parsed_args.language);
     let mut arguments: Vec<OsString> = vec![];
     if let Some(lang) = &language {
         arguments.extend(vec!["-x".into(), lang.into()])
@@ -787,15 +782,9 @@ pub fn generate_compile_commands(
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let mut language: Option<String> = match parsed_args.language {
-            Language::C => Some("c".into()),
-            Language::CHeader => Some("c-header".into()),
-            Language::Cxx => Some("c++".into()),
-            Language::CxxHeader => Some("c++-header".into()),
-            Language::ObjectiveC => Some("objective-c".into()),
-            Language::ObjectiveCxx => Some("objective-c++".into()),
-            Language::Cuda => Some("cu".into()),
-            Language::GenericHeader => None, // Let the compiler decide
+        let mut language: Option<String> = match language_to_gcc_arg(parsed_args.language) {
+            Some(lang) => Some(lang.into()),
+            None => None,
         };
         if !rewrite_includes_only {
             match parsed_args.language {
