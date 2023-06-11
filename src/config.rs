@@ -1100,6 +1100,32 @@ fn test_s3_no_credentials_conflict() {
 
 #[test]
 #[serial]
+fn test_s3_use_ssl_env() {
+    env::set_var("SCCACHE_S3_NO_CREDENTIALS", "true");
+    env::set_var("SCCACHE_BUCKET", "my-bucket");
+
+    env::set_var("SCCACHE_S3_USE_SSL", "random");
+    let error = config_from_env().unwrap_err();
+    assert_eq!(
+        "environment variable SCCACHE_S3_USE_SSL is not a valid boolean: random",
+        error.to_string()
+    );
+
+    env::set_var("SCCACHE_S3_USE_SSL", "true");
+    let use_ssl = config_from_env().unwrap().cache.s3.unwrap().use_ssl;
+    assert_eq!(use_ssl, Some(true));
+
+    env::set_var("SCCACHE_S3_USE_SSL", "false");
+    let use_ssl = config_from_env().unwrap().cache.s3.unwrap().use_ssl;
+    assert_eq!(use_ssl, Some(false));
+
+    env::remove_var("SCCACHE_S3_USE_SSL");
+    env::remove_var("SCCACHE_S3_NO_CREDENTIALS");
+    env::remove_var("SCCACHE_BUCKET");
+}
+
+#[test]
+#[serial]
 fn test_s3_no_credentials_invalid() {
     env::set_var("SCCACHE_S3_NO_CREDENTIALS", "yes");
     env::set_var("SCCACHE_BUCKET", "my-bucket");
