@@ -34,6 +34,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use crate::errors::*;
+use crate::util::human_bool_env;
 
 static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -510,15 +511,8 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
     let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let region = env::var("SCCACHE_REGION").ok();
-        let no_credentials =
-            env::var("SCCACHE_S3_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
-                "true" | "1" => Ok(true),
-                "false" | "0" => Ok(false),
-                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
-            })?;
-        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
-            .ok()
-            .map(|value| value != "off");
+        let no_credentials = human_bool_env("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
+        let use_ssl = human_bool_env("SCCACHE_S3_USE_SSL")?;
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
