@@ -427,12 +427,12 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
 /// Parse a bool from a string, with the following rules:
 /// - case insensitive
 /// - leading and trailing whitespace is ignored
-/// - "1", "true", "t", "yes", "y", and "on" are true
-/// - "0", "false", "f", "no", "n", and "off" are false
+/// - "1", "true", and "yes" are true
+/// - "0", "false", and "no" are false
 /// - anything else is an None
 pub fn human_bool(text: &str) -> Option<bool> {
-    const TRUE: &[&str] = &["1", "true", "t", "yes", "y", "on"];
-    const FALSE: &[&str] = &["0", "false", "f", "no", "n", "off"];
+    const TRUE: &[&str] = &["1", "true", "yes"];
+    const FALSE: &[&str] = &["0", "false", "no"];
 
     let text = text.trim();
     if TRUE.iter().any(|&t| t.eq_ignore_ascii_case(text)) {
