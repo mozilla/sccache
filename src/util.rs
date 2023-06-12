@@ -424,48 +424,6 @@ pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString,
     env.iter().map(|&(ref k, ref v)| (k, v))
 }
 
-/// Parse a bool from a string, with the following rules:
-/// - case insensitive
-/// - leading and trailing whitespace is ignored
-/// - "1", "true", and "yes" are true
-/// - "0", "false", and "no" are false
-/// - anything else is an None
-pub fn human_bool(text: &str) -> Option<bool> {
-    const TRUE: &[&str] = &["1", "true", "yes"];
-    const FALSE: &[&str] = &["0", "false", "no"];
-
-    let text = text.trim();
-    if TRUE.iter().any(|&t| t.eq_ignore_ascii_case(text)) {
-        return Some(true);
-    }
-    if FALSE.iter().any(|&t| t.eq_ignore_ascii_case(text)) {
-        return Some(false);
-    }
-    None
-}
-
-/// Parse a bool from an environment variable, return None if the variable is not set,
-/// return an error if the variable is set but not a valid bool.
-///
-/// See `human_bool` for the parsing rules.
-pub fn human_bool_env(env_name: &str) -> Result<Option<bool>> {
-    let env_val = match std::env::var(env_name) {
-        Ok(val) => val,
-        Err(std::env::VarError::NotPresent) => return Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            bail!("environment variable {} is not valid unicode", env_name);
-        }
-    };
-    let val = human_bool(&env_val).ok_or_else(|| {
-        anyhow!(
-            "environment variable {} is not a valid boolean: {}",
-            env_name,
-            env_val
-        )
-    })?;
-    Ok(Some(val))
-}
-
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
