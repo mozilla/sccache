@@ -361,7 +361,9 @@ where
             Some(Language(lang)) => {
                 language = match lang.to_string_lossy().as_ref() {
                     "c" => Some(Language::C),
-                    "c++" | "c++-header" => Some(Language::Cxx),
+                    "c-header" => Some(Language::CHeader),
+                    "c++" => Some(Language::Cxx),
+                    "c++-header" => Some(Language::CxxHeader),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
@@ -604,6 +606,19 @@ where
     })
 }
 
+fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::C => Some("c"),
+        Language::CHeader => Some("c-header"),
+        Language::Cxx => Some("c++"),
+        Language::CxxHeader => Some("c++-header"),
+        Language::ObjectiveC => Some("objective-c"),
+        Language::ObjectiveCxx => Some("objective-c++"),
+        Language::Cuda => Some("cu"),
+        Language::GenericHeader => None, // Let the compiler decide
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn preprocess_cmd<T>(
     cmd: &mut T,
@@ -617,14 +632,11 @@ fn preprocess_cmd<T>(
 ) where
     T: RunCommand,
 {
-    let language = match parsed_args.language {
-        Language::C => "c",
-        Language::Cxx => "c++",
-        Language::ObjectiveC => "objective-c",
-        Language::ObjectiveCxx => "objective-c++",
-        Language::Cuda => "cu",
-    };
-    cmd.arg("-x").arg(language).arg("-E");
+    let language = language_to_gcc_arg(parsed_args.language);
+    if let Some(lang) = &language {
+        cmd.arg("-x").arg(lang);
+    }
+    cmd.arg("-E");
     // When performing distributed compilation, line number info is important for error
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
@@ -743,21 +755,17 @@ pub fn generate_compile_commands(
 
     // Pass the language explicitly as we might have gotten it from the
     // command line.
-    let language = match parsed_args.language {
-        Language::C => "c",
-        Language::Cxx => "c++",
-        Language::ObjectiveC => "objective-c",
-        Language::ObjectiveCxx => "objective-c++",
-        Language::Cuda => "cu",
-    };
-    let mut arguments: Vec<OsString> = vec![
-        "-x".into(),
-        language.into(),
+    let language = language_to_gcc_arg(parsed_args.language);
+    let mut arguments: Vec<OsString> = vec![];
+    if let Some(lang) = &language {
+        arguments.extend(vec!["-x".into(), lang.into()])
+    }
+    arguments.extend(vec![
         parsed_args.compilation_flag.clone(),
         parsed_args.input.clone().into(),
         "-o".into(),
         out_file.into(),
-    ];
+    ]);
     arguments.extend(parsed_args.preprocessor_args.clone());
     arguments.extend(parsed_args.unhashed_args.clone());
     arguments.extend(parsed_args.common_args.clone());
@@ -774,28 +782,27 @@ pub fn generate_compile_commands(
     #[cfg(feature = "dist-client")]
     let dist_command = (|| {
         // https://gcc.gnu.org/onlinedocs/gcc-4.9.0/gcc/Overall-Options.html
-        let mut language: String = match parsed_args.language {
-            Language::C => "c",
-            Language::Cxx => "c++",
-            Language::ObjectiveC => "objective-c",
-            Language::ObjectiveCxx => "objective-c++",
-            Language::Cuda => "cu",
-        }
-        .into();
+        let mut language: Option<String> =
+            language_to_gcc_arg(parsed_args.language).map(|lang| lang.into());
         if !rewrite_includes_only {
             match parsed_args.language {
-                Language::C => language = "cpp-output".into(),
-                _ => language.push_str("-cpp-output"),
+                Language::C => language = Some("cpp-output".into()),
+                Language::GenericHeader | Language::CHeader | Language::CxxHeader => {}
+                _ => language.as_mut()?.push_str("-cpp-output"),
             }
         }
-        let mut arguments: Vec<String> = vec![
-            "-x".into(),
-            language,
+
+        let mut arguments: Vec<String> = vec![];
+        // Language needs to be before input
+        if let Some(lang) = &language {
+            arguments.extend(vec!["-x".into(), lang.into()])
+        }
+        arguments.extend(vec![
             parsed_args.compilation_flag.clone().into_string().ok()?,
             path_transformer.as_dist(&parsed_args.input)?,
             "-o".into(),
             path_transformer.as_dist(out_file)?,
-        ];
+        ]);
         if let CCompilerKind::Gcc = kind {
             // From https://gcc.gnu.org/onlinedocs/gcc/Preprocessor-Options.html:
             //
@@ -1942,5 +1949,77 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_pch_explicit() {
+        let args = stringvec!["-c", "-x", "c++-header", "pch.h", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(cmd.args.contains(&"-x".into()) && cmd.args.contains(&"c++-header".into()));
+    }
+
+    #[test]
+    fn test_pch_implicit() {
+        let args = stringvec!["-c", "pch.hpp", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(cmd.args.contains(&"-x".into()) && cmd.args.contains(&"c++-header".into()));
+    }
+
+    #[test]
+    fn test_pch_generic() {
+        let args = stringvec!["-c", "pch.h", "-o", "pch.pch"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Gcc,
+            true,
+            vec![],
+        );
+        assert!(!cmd.args.contains(&"-x".into()));
     }
 }
