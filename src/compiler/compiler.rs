@@ -321,7 +321,12 @@ where
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
             (Ok(Err(err)), duration) => {
-                error!("[{}]: Cache read error: {:?} in {}", out_pretty, err, fmt_duration_as_secs(&duration));
+                error!(
+                    "[{}]: Cache read error: {:?} in {}",
+                    out_pretty,
+                    err,
+                    fmt_duration_as_secs(&duration)
+                );
                 Ok(CacheLookupResult::Miss(MissType::CacheReadError))
             }
             (Err(_), duration) => {
@@ -1265,13 +1270,13 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::cache::CacheRead;
     use crate::cache::disk::DiskCache;
+    use crate::cache::CacheRead;
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
-    use std::io::{Write, Cursor};
+    use std::io::{Cursor, Write};
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
@@ -1915,9 +1920,15 @@ LLVM version: 6.0",
         let obj_file: &[u8] = &[1, 2, 3, 4];
         // A cache entry to hand out
         let mut cachewrite = CacheWrite::new();
-        cachewrite.put_stdout(COMPILER_STDOUT).expect("Failed to store stdout");
-        cachewrite.put_stderr(COMPILER_STDERR).expect("Failed to store stderr");
-        cachewrite.put_object("obj", &mut Cursor::new(obj_file), None).expect("Failed to store cache object");
+        cachewrite
+            .put_stdout(COMPILER_STDOUT)
+            .expect("Failed to store stdout");
+        cachewrite
+            .put_stderr(COMPILER_STDERR)
+            .expect("Failed to store stderr");
+        cachewrite
+            .put_object("obj", &mut Cursor::new(obj_file), None)
+            .expect("Failed to store cache object");
         let entry = cachewrite.finish().expect("Failed to finish cache entry");
         let entry = CacheRead::from(Cursor::new(entry)).expect("Failed to re-read cache entry");
 
