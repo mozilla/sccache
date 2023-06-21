@@ -262,10 +262,13 @@ where
         // Set a maximum time limit for the cache to respond before we forge
         // ahead ourselves with a compilation.
         let timeout = Duration::new(60, 0);
-        let cache_status = tokio::time::timeout(timeout, cache_status);
+        let cache_status = async {
+            let res = tokio::time::timeout(timeout, cache_status).await;
+            let duration = start.elapsed();
+            (res, duration)
+        };
 
         // Check the result of the cache lookup.
-        let duration = start.elapsed();
         let outputs = compilation
             .outputs()
             .map(|output| FileObjectSource {
@@ -275,7 +278,7 @@ where
             .collect::<Vec<_>>();
 
         let lookup = match cache_status.await {
-            Ok(Ok(Cache::Hit(mut entry))) => {
+            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
                 debug!(
                     "[{}]: Cache hit in {}",
                     out_pretty,
@@ -301,7 +304,7 @@ where
                     }
                 }
             }
-            Ok(Ok(Cache::Miss)) => {
+            (Ok(Ok(Cache::Miss)), duration) => {
                 debug!(
                     "[{}]: Cache miss in {}",
                     out_pretty,
@@ -309,7 +312,7 @@ where
                 );
                 Ok(CacheLookupResult::Miss(MissType::Normal))
             }
-            Ok(Ok(Cache::Recache)) => {
+            (Ok(Ok(Cache::Recache)), duration) => {
                 debug!(
                     "[{}]: Cache recache in {}",
                     out_pretty,
@@ -317,11 +320,11 @@ where
                 );
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
-            Ok(Err(err)) => {
-                error!("[{}]: Cache read error: {:?}", out_pretty, err);
+            (Ok(Err(err)), duration) => {
+                error!("[{}]: Cache read error: {:?} in {}", out_pretty, err, fmt_duration_as_secs(&duration));
                 Ok(CacheLookupResult::Miss(MissType::CacheReadError))
             }
-            Err(_elapsed) => {
+            (Err(_), duration) => {
                 debug!(
                     "[{}]: Cache timed out {}",
                     out_pretty,
@@ -1262,12 +1265,13 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::cache::CacheRead;
     use crate::cache::disk::DiskCache;
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
-    use std::io::Write;
+    use std::io::{Write, Cursor};
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
@@ -1803,7 +1807,7 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = MockStorage::new();
+        let storage = MockStorage::new(None);
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
@@ -1872,6 +1876,76 @@ LLVM version: 6.0",
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
+    }
+
+    #[test]
+    /// Test that cache read timing is recorded.
+    fn test_compiler_get_cached_or_compile_cache_get_timing() {
+        drop(env_logger::try_init());
+        let creator = new_creator();
+        let f = TestFixture::new();
+        let runtime = Runtime::new().unwrap();
+        let pool = runtime.handle().clone();
+        // Make our storage wait 2ms for each get/put operation.
+        let storage_delay = Duration::from_millis(2);
+        let storage = MockStorage::new(Some(storage_delay));
+        let storage: Arc<MockStorage> = Arc::new(storage);
+        // Pretend to be GCC.
+        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        let c = get_compiler_info(
+            creator.clone(),
+            &f.bins[0],
+            f.tempdir.path(),
+            &[],
+            &[],
+            &pool,
+            None,
+        )
+        .wait()
+        .unwrap()
+        .0;
+        // The preprocessor invocation.
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+        );
+        // The compiler invocation.
+        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+        const COMPILER_STDERR: &[u8] = b"compiler stderr";
+        let obj_file: &[u8] = &[1, 2, 3, 4];
+        // A cache entry to hand out
+        let mut cachewrite = CacheWrite::new();
+        cachewrite.put_stdout(COMPILER_STDOUT).expect("Failed to store stdout");
+        cachewrite.put_stderr(COMPILER_STDERR).expect("Failed to store stderr");
+        cachewrite.put_object("obj", &mut Cursor::new(obj_file), None).expect("Failed to store cache object");
+        let entry = cachewrite.finish().expect("Failed to finish cache entry");
+        let entry = CacheRead::from(Cursor::new(entry)).expect("Failed to re-read cache entry");
+
+        let cwd = f.tempdir.path();
+        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+        let hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+            CompilerArguments::Ok(h) => h,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        storage.next_get(Ok(Cache::Hit(entry)));
+        let (cached, _res) = runtime
+            .block_on(hasher.get_cached_or_compile(
+                None,
+                creator,
+                storage,
+                arguments.clone(),
+                cwd.to_path_buf(),
+                vec![],
+                CacheControl::Default,
+                pool,
+            ))
+            .unwrap();
+        match cached {
+            CompileResult::CacheHit(duration) => {
+                assert!(duration >= storage_delay);
+            }
+            _ => panic!("Unexpected compile result: {:?}", cached),
+        }
     }
 
     #[test]
