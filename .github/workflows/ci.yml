@@ -331,7 +331,7 @@ jobs:
       - name: Check versions
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          v=$(grep -m 1 version Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
+          v=$(grep -m 1 "^version" Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
           if ! echo $tag_name|grep -q $v; then
              echo "Mistmatch of the version:"
              echo "Cargo.toml says $v while the tag is $tag_name"
