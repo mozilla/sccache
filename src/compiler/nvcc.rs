@@ -183,7 +183,7 @@ impl CCompilerImpl for Nvcc {
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
-
+    take_arg!("--Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
@@ -203,6 +203,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("--threads", OsString, CanBeSeparated('='), Unhashed),
 
+    take_arg!("-Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-Xarchive", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-Xcompiler", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-Xlinker", OsString, CanBeSeparated('='), PassThrough),
@@ -408,7 +409,10 @@ mod test {
             "foo.o",
             "--include-path",
             "include-file",
-            "-isystem=/system/include/file"
+            "-isystem=/system/include/file",
+            "-Werror",
+            "cross-execution-space-call",
+            "-Werror=all-warnings"
         );
         assert_eq!(Some("foo.cpp"), a.input.to_str());
         assert_eq!(Language::Cxx, a.language);
@@ -428,7 +432,11 @@ mod test {
                 "--include-path",
                 "include-file",
                 "-isystem",
-                "/system/include/file"
+                "/system/include/file",
+                "-Werror",
+                "cross-execution-space-call",
+                "-Werror",
+                "all-warnings"
             ],
             a.preprocessor_args
         );
