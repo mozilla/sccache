@@ -213,6 +213,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
     flag!("--no-host-device-initializer-list", PreprocessorArgumentFlag),
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
+    take_arg!("--options-file", PathBuf, CanBeSeparated('='), ExtraHashFile),
     flag!("--optix-ir", DoCompilation),
     flag!("--ptx", DoCompilation),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
