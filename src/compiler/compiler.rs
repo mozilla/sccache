@@ -248,7 +248,7 @@ where
                 weak_toolchain_key,
             }) => (key, compilation, weak_toolchain_key),
         };
-        trace!("[{}]: Hash key: {}", out_pretty, key);
+        debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
         let cache_status = async {
