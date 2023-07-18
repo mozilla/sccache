@@ -1,0 +1,1 @@
+foo.cpp -Fofoo.o -W4 -WX -Wall

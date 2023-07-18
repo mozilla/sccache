@@ -370,7 +370,9 @@ jobs:
       - name: Compile MSVC (no cache)
         shell: bash
         working-directory: ./tests/msvc
-        run: cl "@args.rsp"
+        run: |
+          cl "@args.rsp"
+          test -e ./foo.o || { echo "No compiler output found"; exit -1; }
 
       - name: Start Server
         shell: bash
@@ -380,17 +382,30 @@ jobs:
         shell: bash
         working-directory: ./tests/msvc
         run: |
+          rm ./foo.o || true
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
           $SCCACHE_EXE --show-stats | grep -e "Cache misses\s*[1-9]"
+          test -e ./foo.o || { echo "No compiler output found"; exit -1; }
+          test -e ./foo.o.json || { echo "No dependency list found"; exit -1; }
 
       - name: Compile - Cache Hit
         shell: bash
         working-directory: ./tests/msvc
         run: |
+          rm ./foo.o || true
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
           $SCCACHE_EXE --show-stats | grep -e "Cache hits\s*[1-9]"
+          test -e ./foo.o || { echo "No compiler output found"; exit -1; }
+          test -e ./foo.o.json || { echo "No dependency list found"; exit -1; }
+
+      - name: Compile - Preprocessing Compiler Bug
+        shell: bash
+        working-directory: ./tests/msvc-preprocessing
+        run: |
+          $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
+          $SCCACHE_EXE --show-stats
 
       - name: Stop Server
         if: success() || failure()

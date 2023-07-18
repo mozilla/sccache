@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use crate::mock_command::{CommandChild, RunCommand};
-use ar::Archive;
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
 use fs::File;
 use fs_err as fs;
+use object::{macho, read::archive::ArchiveFile, read::macho::FatArch};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
@@ -145,13 +145,24 @@ pub async fn hash_all_archives(
         let path = path.clone();
         pool.spawn_blocking(move || -> Result<String> {
             let mut m = Digest::new();
-            let reader = File::open(&path)
+            let archive_file = File::open(&path)
                 .with_context(|| format!("Failed to open file for hashing: {:?}", path))?;
-            let mut archive = Archive::new(reader);
-            while let Some(entry) = archive.next_entry() {
-                let entry = entry?;
-                m.update(entry.header().identifier());
-                update_from_reader(&mut m, entry)?;
+            let archive_mmap =
+                unsafe { memmap2::MmapOptions::new().map_copy_read_only(&archive_file)? };
+
+            match macho::FatHeader::parse(&*archive_mmap) {
+                Ok(h) if h.magic.get(object::endian::BigEndian) == macho::FAT_MAGIC => {
+                    for arch in macho::FatHeader::parse_arch32(&*archive_mmap)? {
+                        hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
+                    }
+                }
+                Ok(h) if h.magic.get(object::endian::BigEndian) == macho::FAT_MAGIC_64 => {
+                    for arch in macho::FatHeader::parse_arch64(&*archive_mmap)? {
+                        hash_regular_archive(&mut m, arch.data(&*archive_mmap)?)?;
+                    }
+                }
+                // Not a FatHeader at all, regular archive.
+                _ => hash_regular_archive(&mut m, &archive_mmap)?,
             }
             Ok(m.finish())
         })
@@ -170,15 +181,12 @@ pub async fn hash_all_archives(
     Ok(hashes.into_iter().map(|res| res.unwrap()).collect())
 }
 
-/// Update the digest `m` with all data from `reader`.
-fn update_from_reader<R: Read>(m: &mut Digest, mut reader: R) -> Result<()> {
-    loop {
-        let mut buffer = [0; 1024];
-        let count = reader.read(&mut buffer[..])?;
-        if count == 0 {
-            break;
-        }
-        m.update(&buffer[..count]);
+fn hash_regular_archive(m: &mut Digest, data: &[u8]) -> Result<()> {
+    let archive = ArchiveFile::parse(data)?;
+    for entry in archive.members() {
+        let entry = entry?;
+        m.update(entry.name());
+        m.update(entry.data(data)?);
     }
     Ok(())
 }

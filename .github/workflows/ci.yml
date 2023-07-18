@@ -35,6 +35,15 @@ jobs:
       - name: Check
         run: cargo ${{ matrix.cargo_cmd }}
 
+  toml_format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Check
+        run: npx --yes @taplo/cli fmt --check
+
   test:
     name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
     runs-on: ${{ matrix.os }}
@@ -144,7 +153,8 @@ jobs:
       - name: Install musl-tools
         run: |
           set -x
-          echo deb [arch=arm64] http://azure.ports.ubuntu.com/ubuntu-ports/ $(lsb_release -c -s) main restricted universe multiverse | sudo tee /etc/apt/sources.list.d/99ports.list > /dev/null
+          sed 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch-=amd64,i386] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
+          sudo sed -i 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch=amd64,i386] http:\/\/\1.archive.ubuntu.com\/ubuntu\//g' /etc/apt/sources.list
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
           sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross
@@ -321,7 +331,7 @@ jobs:
       - name: Check versions
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          v=$(grep -m 1 version Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
+          v=$(grep -m 1 "^version" Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
           if ! echo $tag_name|grep -q $v; then
              echo "Mistmatch of the version:"
              echo "Cargo.toml says $v while the tag is $tag_name"
