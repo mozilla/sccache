@@ -398,14 +398,15 @@ where
                 let future = async move {
                     let start = Instant::now();
                     match storage.put(&key, entry).await {
-                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
-                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
+                        Ok(_) => {
+                            debug!("[{}]: Stored in cache successfully!", out_pretty2);
+                            Ok(CacheWriteInfo {
+                                object_file_pretty: out_pretty2,
+                                duration: start.elapsed(),
+                            })
+                        }
+                        Err(e) => Err(e),
                     }
-
-                    Ok(CacheWriteInfo {
-                        object_file_pretty: out_pretty2,
-                        duration: start.elapsed(),
-                    })
                 };
                 let future = Box::pin(future);
                 Ok((
