@@ -1965,7 +1965,7 @@ mod test {
             s = &s[4..];
         }
         let prefix = String::from("blah: ");
-        let stdout = format!("{}{}\r\n", prefix, s);
+        let stderr = format!("{}{}\r\n", prefix, s);
         // Compiler detection output
         next_command(
             &creator,
@@ -1982,7 +1982,7 @@ mod test {
         // showincludes prefix detection output
         next_command(
             &creator,
-            Ok(MockChild::new(exit_status(0), stdout, String::new())),
+            Ok(MockChild::new(exit_status(0), String::new(), stderr)),
         );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
