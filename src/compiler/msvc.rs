@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{self, Stdio};
+use std::process;
 
 use crate::errors::*;
 
@@ -201,13 +201,9 @@ where
     if is_clang {
         cmd.arg("--driver-mode=cl");
     }
-    cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I."])
+    cmd.args(&["-nologo", "-showIncludes", "-c", "-Fonul", "-I.", "-E"])
         .arg(&input)
-        .current_dir(tempdir.path())
-        // The MSDN docs say the -showIncludes output goes to stderr,
-        // but that's not true unless running with -E.
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .current_dir(tempdir.path());
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -216,16 +212,20 @@ where
     let output = run_input_output(cmd, None).await?;
 
     if !output.status.success() {
-        bail!("Failed to detect showIncludes prefix")
+        warn!(
+            "Failed to detect showIncludes prefix (status: {:?})",
+            output.status.code().unwrap_or(-1)
+        );
     }
 
     let process::Output {
-        stdout: stdout_bytes,
+        stderr: stderr_bytes,
         ..
     } = output;
-    let stdout = from_local_codepage(&stdout_bytes)
-        .context("Failed to convert compiler stdout while detecting showIncludes prefix")?;
-    for line in stdout.lines() {
+    let preprocessor_output = from_local_codepage(&stderr_bytes)
+        .context("Failed to convert compiler stderr while detecting showIncludes prefix")?;
+
+    for line in preprocessor_output.lines() {
         if !line.ends_with("test.h") {
             continue;
         }
@@ -246,7 +246,7 @@ where
 
     debug!(
         "failed to detect showIncludes prefix with output: {}",
-        stdout
+        preprocessor_output
     );
 
     bail!("Failed to detect showIncludes prefix")
@@ -1416,8 +1416,8 @@ mod test {
         if s.starts_with("\\\\?\\") {
             s = &s[4..];
         }
-        let stdout = format!("blah: {}\r\n", s);
-        let stderr = String::from("some\r\nstderr\r\n");
+        let stderr = format!("blah: {}\r\n", s);
+        let stdout = String::from("some\r\nstdout\r\n");
         next_command(&creator, Ok(MockChild::new(exit_status(0), stdout, stderr)));
         assert_eq!(
             "blah: ",
