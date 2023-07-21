@@ -23,6 +23,7 @@ mod diab;
 mod gcc;
 mod msvc;
 mod nvcc;
+mod nvhpc;
 mod rust;
 mod tasking_vx;
 #[macro_use]

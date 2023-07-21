@@ -190,6 +190,8 @@ pub enum CCompilerKind {
     Msvc,
     /// NVIDIA cuda compiler
     Nvcc,
+    /// NVIDIA hpc c, c++ compiler
+    Nvhpc,
     /// Tasking VX
     TaskingVX,
 }
@@ -680,6 +682,15 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "fatbinary")?;
                 add_named_prog(&mut package_builder, "nvlink")?;
                 add_named_prog(&mut package_builder, "ptxas")?;
+            }
+
+            CCompilerKind::Nvhpc => {
+                // Various programs called by the nvc nvc++ front end.
+                add_named_file(&mut package_builder, "cpp1")?;
+                add_named_file(&mut package_builder, "cpp2")?;
+                add_named_file(&mut package_builder, "opt")?;
+                add_named_prog(&mut package_builder, "llc")?;
+                add_named_prog(&mut package_builder, "acclnk")?;
             }
 
             _ => unreachable!(),

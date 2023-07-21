@@ -51,7 +51,7 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
+const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
@@ -77,7 +77,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut arg = match compiler {
-        "gcc" | "clang" | "clang++" | "nvcc" => {
+        "gcc" | "clang" | "clang++" | "nvc" | "nvc++" | "nvcc" => {
             vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output)
         }
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),

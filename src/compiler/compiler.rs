@@ -23,6 +23,7 @@ use crate::compiler::msvc;
 use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::nvcc::NvccHostCompiler;
+use crate::compiler::nvhpc::Nvhpc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
 #[cfg(feature = "dist-client")]
@@ -1083,6 +1084,8 @@ where
     // Both clang and clang-cl define _MSC_VER on Windows, so we first
     // check for MSVC, then check whether _MT is defined, which is the
     // difference between clang and clang-cl.
+    // NVHPC needs a custom version line since `__VERSION__` evaluates
+    // to the EDG version.
     //
     // We prefix the information we need with `compiler_id` and `compiler_version`
     // so that we can support compilers that insert pre-amble code even in `-E` mode
@@ -1097,6 +1100,9 @@ compiler_id=nvcc
 compiler_id=msvc
 #elif defined(_MSC_VER) && defined(_MT)
 compiler_id=msvc-clang
+#elif defined(__NVCOMPILER)
+compiler_id=nvhpc
+compiler_version=__NVCOMPILER_MAJOR__.__NVCOMPILER_MINOR__.__NVCOMPILER_PATCHLEVEL__
 #elif defined(__clang__) && defined(__cplusplus) && defined(__apple_build_version__)
 compiler_id=apple-clang++
 #elif defined(__clang__) && defined(__cplusplus)
@@ -1250,6 +1256,19 @@ compiler_version=__VERSION__
                 .await
                 .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
+            "nvhpc" => {
+                debug!("Found NVHPC");
+                return CCompiler::new(
+                    Nvhpc {
+                        nvcplusplus: kind == "nvc++",
+                        version: version.clone(),
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+            }
             "tasking_vx" => {
                 debug!("Found Tasking VX");
                 return CCompiler::new(TaskingVX, executable, &pool)
@@ -1380,6 +1399,23 @@ mod test {
             .unwrap()
             .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Nvcc), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_nvhpc() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=nvhpc\n", "")),
+        );
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+            .wait()
+            .unwrap()
+            .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Nvhpc), c.kind());
     }
 
     #[test]
