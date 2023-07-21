@@ -362,6 +362,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Qfast_transcendentals", PassThrough),
     msvc_flag!("Qimprecise_fwaits", PassThrough),
     msvc_flag!("Qpar", PassThrough),
+    msvc_flag!("Qpar-", PassThrough),
     msvc_flag!("Qsafe_fp_loads", PassThrough),
     msvc_flag!("Qspectre", PassThrough),
     msvc_flag!("Qspectre-load", PassThrough),
@@ -1986,6 +1987,8 @@ mod test {
     fn test_parse_arguments_passthrough() {
         let args = ovec![
             "-Oy",
+            "-Qpar",
+            "-Qpar-",
             "-Gw",
             "-EHa",
             "-Fmdictionary-map",
@@ -2009,7 +2012,7 @@ mod test {
         assert!(!common_args.is_empty());
         assert_eq!(
             common_args,
-            ovec!("-Oy", "-Gw", "-EHa", "-Fmdictionary-map")
+            ovec!("-Oy", "-Qpar", "-Qpar-", "-Gw", "-EHa", "-Fmdictionary-map")
         );
     }
 
