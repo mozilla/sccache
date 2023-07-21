@@ -750,7 +750,21 @@ pub fn parse_arguments(
             );
         }
         Some(o) => {
-            if o.extension().is_none() && compilation {
+            if o.as_os_str()
+                .to_string_lossy()
+                .ends_with(std::path::MAIN_SEPARATOR)
+            {
+                match Path::new(&input).file_name() {
+                    Some(i) => outputs.insert(
+                        "obj",
+                        ArtifactDescriptor {
+                            path: o.join(Path::new(i)).with_extension("obj"),
+                            optional: false,
+                        },
+                    ),
+                    None => cannot_cache!("invalid input file"),
+                };
+            } else if o.extension().is_none() {
                 outputs.insert(
                     "obj",
                     ArtifactDescriptor {
@@ -1854,6 +1868,39 @@ mod test {
         assert_eq!(dependency_args, ovec!["/showIncludes"]);
         assert_eq!(common_args, ovec!["/winsysroot../../some/dir"]);
         assert!(msvc_show_includes);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn parse_argument_output_file_trailing_backslash() {
+        let args = ovec!["-c", "foo.c", "/Fomyrelease\\folder\\"];
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("myrelease/folder/foo.obj"),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
     }
 
     #[test]
