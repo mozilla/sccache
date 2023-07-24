@@ -1660,7 +1660,7 @@ dependencies = [
  "pin-project",
  "quick-xml 0.27.1",
  "redis",
- "reqsign",
+ "reqsign 0.13.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -1948,6 +1948,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81b9228215d82c7b61490fec1de287136b5de6f5700f6e58ea9ad61a7964ca51"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2071,6 +2081,37 @@ dependencies = [
  "once_cell",
  "percent-encoding",
  "quick-xml 0.28.1",
+ "rand",
+ "reqwest",
+ "rsa",
+ "rust-ini",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "reqsign"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f88838c22f5c35c2e8d5552842427a425b34d0693189091a3607d24949894414"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.21.0",
+ "chrono",
+ "form_urlencoded",
+ "hex",
+ "hmac",
+ "home",
+ "http",
+ "jsonwebtoken",
+ "log",
+ "once_cell",
+ "percent-encoding",
+ "quick-xml 0.29.0",
  "rand",
  "reqwest",
  "rsa",
@@ -2388,7 +2429,7 @@ dependencies = [
  "predicates",
  "rand",
  "regex",
- "reqsign",
+ "reqsign 0.14.0",
  "reqwest",
  "retry",
  "rouille",
