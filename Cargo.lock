@@ -2166,21 +2166,20 @@ dependencies = [
 
 [[package]]
 name = "rouille"
-version = "3.6.1"
+version = "3.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f86e4c51a773f953f02bbab5fd049f004bfd384341d62da2a079aff812ab176"
+checksum = "3716fbf57fc1084d7a706adf4e445298d123e4a44294c4e8213caf1b85fcc921"
 dependencies = [
  "base64 0.13.1",
  "chrono",
  "filetime",
  "multipart",
- "num_cpus",
  "percent-encoding",
  "rand",
  "serde",
  "serde_derive",
  "serde_json",
- "sha1",
+ "sha1_smol",
  "threadpool",
  "time",
  "tiny_http",

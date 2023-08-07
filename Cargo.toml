@@ -109,7 +109,7 @@ zstd = "0.12"
 memmap2 = "0.9.0"
 nix = { version = "0.26.2", optional = true }
 object = "0.30"
-rouille = { version = "3.5", optional = true, default-features = false, features = [
+rouille = { version = "3.6", optional = true, default-features = false, features = [
   "ssl",
 ] }
 syslog = { version = "6", optional = true }
