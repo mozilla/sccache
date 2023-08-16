@@ -950,6 +950,9 @@ where
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
+        // Windows SDK generates C4668 during preprocessing, but compiles fine.
+        // Read for more info: https://github.com/mozilla/sccache/issues/1725
+        .arg("/wd4668")
         .env_clear()
         .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
         .current_dir(cwd);

@@ -19,20 +19,23 @@ use futures::channel::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 /// A mock `Storage` implementation.
 pub struct MockStorage {
     rx: Arc<Mutex<mpsc::UnboundedReceiver<Result<Cache>>>>,
     tx: mpsc::UnboundedSender<Result<Cache>>,
+    delay: Option<Duration>,
 }
 
 impl MockStorage {
-    /// Create a new `MockStorage`.
-    pub(crate) fn new() -> MockStorage {
+    /// Create a new `MockStorage`. if `delay` is `Some`, wait for that amount of time before returning from operations.
+    pub(crate) fn new(delay: Option<Duration>) -> MockStorage {
         let (tx, rx) = mpsc::unbounded();
         Self {
             tx,
             rx: Arc::new(Mutex::new(rx)),
+            delay,
         }
     }
 
@@ -45,12 +48,20 @@ impl MockStorage {
 #[async_trait]
 impl Storage for MockStorage {
     async fn get(&self, _key: &str) -> Result<Cache> {
+        if let Some(delay) = self.delay {
+            sleep(delay).await;
+        }
         let next = self.rx.lock().await.try_next().unwrap();
 
         next.expect("MockStorage get called but no get results available")
     }
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
-        Ok(Duration::from_secs(0))
+        Ok(if let Some(delay) = self.delay {
+            sleep(delay).await;
+            delay
+        } else {
+            Duration::from_secs(0)
+        })
     }
     fn location(&self) -> String {
         "Mock Storage".to_string()
