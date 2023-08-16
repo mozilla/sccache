@@ -16,7 +16,7 @@ use crate::compiler::args::*;
 use crate::compiler::c::{
     ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
 };
-use crate::compiler::response_file::SplitMsvcResponseFileArgs;
+use crate::compiler::response_file::SplitResponseFileArgs;
 use crate::compiler::{
     clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
 };
@@ -1222,7 +1222,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
             trace!("Expanded response file {:?} to {:?}", file_path, content);
 
             // Parse the response file contents, taking into account quote-wrapped strings and new-line separators.
-            let resp_file_args = SplitMsvcResponseFileArgs::from(&content).collect::<Vec<_>>();
+            let resp_file_args = SplitResponseFileArgs::from(&content).collect::<Vec<_>>();
             // Pump arguments back to the stack, in reverse order so we can `Vec::pop` and visit in original front-to-back order.
             let rev_args = resp_file_args.iter().rev().map(|s| s.into());
             self.stack.extend(rev_args);

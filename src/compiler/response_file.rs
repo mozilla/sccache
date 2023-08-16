@@ -1,5 +1,4 @@
-
-/// An iterator over the arguments in a Windows command line.
+/// An iterator over the arguments in a response file.
 ///
 /// This produces results identical to `CommandLineToArgvW` except in the
 /// following cases:
@@ -24,13 +23,13 @@
 ///  - https://msdn.microsoft.com/en-us/library/windows/desktop/bb776391(v=vs.85).aspx
 ///  - https://msdn.microsoft.com/en-us/library/windows/desktop/17w5ykft(v=vs.85).aspx
 #[derive(Clone, Debug)]
-pub struct SplitMsvcResponseFileArgs<'a> {
+pub struct SplitResponseFileArgs<'a> {
     /// String slice of the file content that is being parsed.
     /// Slice is mutated as this iterator is executed.
     file_content: &'a str,
 }
 
-impl<'a, T> From<&'a T> for SplitMsvcResponseFileArgs<'a>
+impl<'a, T> From<&'a T> for SplitResponseFileArgs<'a>
 where
     T: AsRef<str> + 'static,
 {
@@ -41,7 +40,7 @@ where
     }
 }
 
-impl<'a> SplitMsvcResponseFileArgs<'a> {
+impl<'a> SplitResponseFileArgs<'a> {
     /// Appends backslashes to `target` by decrementing `count`.
     /// If `step` is >1, then `count` is decremented by `step`, resulting in 1 backslash appended for every `step`.
     fn append_backslashes_to(target: &mut String, count: &mut usize, step: usize) {
@@ -52,7 +51,7 @@ impl<'a> SplitMsvcResponseFileArgs<'a> {
     }
 }
 
-impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
+impl<'a> Iterator for SplitResponseFileArgs<'a> {
     type Item = String;
 
     fn next(&mut self) -> Option<String> {
@@ -119,5 +118,48 @@ impl<'a> Iterator for SplitMsvcResponseFileArgs<'a> {
         self.file_content = chars.as_str();
 
         Some(arg)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parse_simple_args() {
+        let content = "-A1 -A2 -A3 -I ../includes";
+        let args = SplitResponseFileArgs::from(&content).collect::<Vec<_>>();
+        assert_eq!(args[0], "-A1");
+        assert_eq!(args[1], "-A2");
+        assert_eq!(args[2], "-A3");
+        assert_eq!(args[3], "-I");
+        assert_eq!(args[4], "../includes");
+    }
+
+    #[test]
+    fn parse_quoted_path_arg() {
+        let content = "-I \"../included headers\"";
+        let args = SplitResponseFileArgs::from(&content).collect::<Vec<_>>();
+        assert_eq!(args[0], "-I");
+        assert_eq!(args[1], "../included headers");
+    }
+
+    #[test]
+    fn parse_escaped_quoted_path_arg() {
+        let content = "-I \"../included \\\"headers\\\"\"";
+        let args = SplitResponseFileArgs::from(&content).collect::<Vec<_>>();
+        assert_eq!(args[0], "-I");
+        assert_eq!(args[1], "../included \"headers\"");
+    }
+
+    #[test]
+    fn parse_various_whitespace_characters() {
+        let content = "-A1  -A2\n-A3\n\r-A4\r-A5\n ";
+        let args = SplitResponseFileArgs::from(&content).collect::<Vec<_>>();
+        assert_eq!(args[0], "-A1");
+        assert_eq!(args[1], "-A2");
+        assert_eq!(args[2], "-A3");
+        assert_eq!(args[3], "-A4");
+        assert_eq!(args[4], "-A5");
     }
 }
