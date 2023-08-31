@@ -70,14 +70,12 @@ impl CCompilerImpl for Nvcc {
             CompilerArguments::Ok(pargs) => {
                 if pargs.compilation_flag != "-c" {
                     let mut new_args = pargs.clone();
-                    new_args.common_args.push(pargs.compilation_flag.clone());
+                    new_args.common_args.push(pargs.compilation_flag);
                     return CompilerArguments::Ok(new_args);
                 }
-                return CompilerArguments::Ok(pargs);
+                CompilerArguments::Ok(pargs)
             }
-            CompilerArguments::CannotCache(_, _) | CompilerArguments::NotCompilation => {
-                return parsed_args;
-            }
+            CompilerArguments::CannotCache(_, _) | CompilerArguments::NotCompilation => parsed_args,
         }
     }
 
