@@ -420,6 +420,46 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_fatbin_compile_flag() {
+        let a = parses!("-x", "cu", "-fatbin", "foo.c", "-o", "foo.o");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-fatbin"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fatbin"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cubin_compile_flag() {
+        let a = parses!("-x", "cu", "-cubin", "foo.c", "-o", "foo.o");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-cubin"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-cubin"], a.common_args);
+    }
+
+    #[test]
     fn test_parse_arguments_values() {
         let a = parses!(
             "-c",
