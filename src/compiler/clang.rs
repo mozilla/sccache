@@ -254,40 +254,34 @@ mod test {
 
     #[test]
     fn test_is_minversion() {
-        assert_eq!(
-            Clang {
-                clangplusplus: false,
-                is_appleclang: false,
-                version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
-            }
-            .is_minversion(14),
-            true
-        );
-        assert_eq!(
-            Clang {
-                clangplusplus: false,
-                is_appleclang: false,
-                version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
-            }
-            .is_minversion(14),
-            false
-        );
-        assert_eq!(Clang {
+        assert!(Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(Clang {
             clangplusplus: false,
             is_appleclang: false,
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
-        }.is_minversion(14), true);
-        assert_eq!(Clang {
+        }.is_minversion(14));
+        assert!(!Clang {
             clangplusplus: false,
             is_appleclang: false,
             version: Some("\"FreeBSD Clang 13.0.0 (git@github.com:llvm/llvm-project.git llvmorg-13.0.0-0-gd7b669b3a303)\"".to_string()),
-        }.is_minversion(14), false);
+        }.is_minversion(14));
 
-        assert_eq!(Clang {
+        assert!(!Clang {
             clangplusplus: false,
             is_appleclang: true,
             version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
-        }.is_minversion(14), false); // is_appleclang wins
+        }.is_minversion(14)); // is_appleclang wins
     }
 
     #[test]
