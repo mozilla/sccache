@@ -63,7 +63,7 @@ impl Clang {
             None => return false,
         };
 
-        let parsed_version = match Version::parse(version_str) {
+        let parsed_version = match Version::parse(version_str.trim_end_matches('"')) {
             Ok(parsed_version) => parsed_version,
             Err(e) => return false,
         };
