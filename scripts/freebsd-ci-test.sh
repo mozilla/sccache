@@ -78,7 +78,8 @@ build_and_test_project()
 	export RUSTFLAGS="-C debuginfo=0"
 	cargo build --features "dist-client,dist-server" || FAULT=1
 	echo "#### testing sccache (cargo)"
-	cargo test --features "dist-client,dist-server" || FAULT=1
+	cargo test --features "dist-client,dist-server" -- \
+	  --test-threads 1 || FAULT=1
 	unset RUSTFLAGS
 	if [ "$FAULT" -eq 0 ]; then
 		# save build time by avoiding "cargo install"
