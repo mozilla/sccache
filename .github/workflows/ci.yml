@@ -19,7 +19,7 @@ jobs:
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Check
         run: npx --yes @taplo/cli fmt --check
@@ -84,7 +84,7 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -138,7 +138,7 @@ jobs:
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -211,7 +211,7 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -268,7 +268,7 @@ jobs:
           - { os: macos-12 }
         release: ["13.1"]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Prepare, build and test
         uses: vmactions/freebsd-vm@v0
         with:
@@ -326,7 +326,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Check versions
         run: |
