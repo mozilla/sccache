@@ -38,9 +38,9 @@ use crate::errors::*;
 /// A struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
 pub struct Clang {
-    /// true iff this is clang++.
+    /// true if this is clang++.
     pub clangplusplus: bool,
-    /// true iff this is Apple's clang(++).
+    /// true if this is Apple's clang(++).
     pub is_appleclang: bool,
     /// String from __VERSION__ macro.
     pub version: Option<String>,
@@ -63,7 +63,7 @@ impl Clang {
             None => return false,
         };
 
-        let parsed_version = match Version::parse(version_str) {
+        let parsed_version = match Version::parse(version_str.trim_end_matches('"')) {
             Ok(parsed_version) => parsed_version,
             Err(e) => return false,
         };
