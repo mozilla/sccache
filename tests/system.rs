@@ -415,8 +415,8 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
-    if compiler.name == "clang" {
-        let version_cmd = Command::new(compiler.name)
+    if compiler.name == "clang" || compiler.name == "clang++" {
+        let version_cmd = Command::new(compiler.exe.clone())
             .arg("--version")
             .output()
             .expect("Failure when getting compiler version");
@@ -432,7 +432,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
-                c.name("apple").is_none(),
+                c.name("apple").is_some(),
             ),
             None => panic!(
                 "Version info not found in --version output: {}",

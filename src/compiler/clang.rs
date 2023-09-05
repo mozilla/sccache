@@ -63,7 +63,7 @@ impl Clang {
             None => return false,
         };
 
-        let parsed_version = match Version::parse(version_str) {
+        let parsed_version = match Version::parse(version_str.trim_end_matches('"')) {
             Ok(parsed_version) => parsed_version,
             Err(e) => return false,
         };
@@ -250,6 +250,38 @@ mod test {
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
         }
+    }
+
+    #[test]
+    fn test_is_minversion() {
+        assert!(Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+        }.is_minversion(14));
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"FreeBSD Clang 13.0.0 (git@github.com:llvm/llvm-project.git llvmorg-13.0.0-0-gd7b669b3a303)\"".to_string()),
+        }.is_minversion(14));
+
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: true,
+            version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+        }.is_minversion(14)); // is_appleclang wins
     }
 
     #[test]
