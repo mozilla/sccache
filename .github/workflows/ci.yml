@@ -258,7 +258,7 @@ jobs:
           fail_ci_if_error: false
 
   test_freebsd:
-    name: test freebsd-13.1 rust stable
+    name: test freebsd-13.2 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -266,7 +266,7 @@ jobs:
       matrix:
         job:
           - { os: macos-12 }
-        release: ["13.1"]
+        release: ["13.2"]
     steps:
       - uses: actions/checkout@v4
       - name: Prepare, build and test
@@ -317,7 +317,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-13.1-stable
+          name: test-freebsd-13.2-stable
 
   release:
     name: release
