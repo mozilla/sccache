@@ -153,7 +153,7 @@ set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
 ```
 
-And you can build you code as usual without any additonal flags in the command line, useful for IDEs.
+And you can build code as usual without any additional flags in the command line, useful for IDEs.
 
 
 ---
