@@ -58,13 +58,25 @@ impl CCompilerImpl for Nvcc {
         arguments: &[OsString],
         cwd: &Path,
     ) -> CompilerArguments<ParsedArguments> {
-        gcc::parse_arguments(
+        let parsed_args = gcc::parse_arguments(
             arguments,
             cwd,
             (&gcc::ARGS[..], &ARGS[..]),
             false,
             self.kind(),
-        )
+        );
+
+        match parsed_args {
+            CompilerArguments::Ok(pargs) => {
+                if pargs.compilation_flag != "-c" {
+                    let mut new_args = pargs.clone();
+                    new_args.common_args.push(pargs.compilation_flag);
+                    return CompilerArguments::Ok(new_args);
+                }
+                CompilerArguments::Ok(pargs)
+            }
+            CompilerArguments::CannotCache(_, _) | CompilerArguments::NotCompilation => parsed_args,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -185,11 +197,14 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     //todo: refactor show_includes into dependency_args
     take_arg!("--Werror", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--archive-options options", OsString, CanBeSeparated('='), PassThrough),
+    flag!("--compile", DoCompilation),
     take_arg!("--compiler-bindir", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--compiler-options", OsString, CanBeSeparated('='), PreprocessorArgument),
+    flag!("--cubin", DoCompilation),
     flag!("--expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("--expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("--extended-lambda", PreprocessorArgumentFlag),
+    flag!("--fatbin", DoCompilation),
     take_arg!("--generate-code", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-architecture", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--gpu-code", OsString, CanBeSeparated('='), PassThrough),
@@ -198,6 +213,8 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--maxrregcount", OsString, CanBeSeparated('='), PassThrough),
     flag!("--no-host-device-initializer-list", PreprocessorArgumentFlag),
     take_arg!("--nvlink-options", OsString, CanBeSeparated('='), PassThrough),
+    flag!("--optix-ir", DoCompilation),
+    flag!("--ptx", DoCompilation),
     take_arg!("--ptxas-options", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("--relocatable-device-code", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("--system-include", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
@@ -212,14 +229,17 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-arch", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-ccbin", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-code", OsString, CanBeSeparated('='), PassThrough),
+    flag!("-cubin", DoCompilation),
     flag!("-dc", DoCompilation),
     flag!("-expt-extended-lambda", PreprocessorArgumentFlag),
     flag!("-expt-relaxed-constexpr", PreprocessorArgumentFlag),
     flag!("-extended-lambda", PreprocessorArgumentFlag),
+    flag!("-fatbin", DoCompilation),
     take_arg!("-gencode", OsString, CanBeSeparated('='), PassThrough),
     take_arg!("-isystem", PathBuf, CanBeSeparated('='), PreprocessorArgumentPath),
     take_arg!("-maxrregcount", OsString, CanBeSeparated('='), PassThrough),
     flag!("-nohdinitlist", PreprocessorArgumentFlag),
+    flag!("-optix-ir", DoCompilation),
     flag!("-ptx", DoCompilation),
     take_arg!("-rdc", OsString, CanBeSeparated('='), PreprocessorArgument),
     take_arg!("-t", OsString, CanBeSeparated('='), Unhashed),
@@ -394,7 +414,47 @@ mod test {
             )
         );
         assert!(a.preprocessor_args.is_empty());
-        assert!(a.common_args.is_empty());
+        assert_eq!(ovec!["-dc"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_fatbin_compile_flag() {
+        let a = parses!("-x", "cu", "-fatbin", "foo.c", "-o", "foo.o");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-fatbin"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-fatbin"], a.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cubin_compile_flag() {
+        let a = parses!("-x", "cu", "-cubin", "foo.c", "-o", "foo.o");
+        assert_eq!(Some("foo.c"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_eq!(Some("-cubin"), a.compilation_flag.to_str());
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["-cubin"], a.common_args);
     }
 
     #[test]
