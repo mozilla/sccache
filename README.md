@@ -57,6 +57,12 @@ On macOS sccache can be installed via [Homebrew](https://brew.sh/):
 brew install sccache
 ```
 
+or via [MacPorts](https://www.macports.org/):
+
+```bash
+sudo port install sccache
+```
+
 ### Windows
 
 On Windows, sccache can be installed via [scoop](https://scoop.sh/):
