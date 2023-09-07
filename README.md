@@ -124,7 +124,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 
 To generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 
-```
+```cmake
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
   string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
@@ -138,6 +138,23 @@ endif()
 ```
 
 By default, sccache will fail your build if it fails to successfully communicate with its associated server. To have sccache instead gracefully failover to the local compiler without stopping, set the environment variable `SCCACHE_IGNORE_SERVER_IO_ERROR=1`.
+
+Update: On CMake 3.25, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag:
+```cmake
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+```
+
+Example configuration where we automatically look for `sccache` in the `PATH`:
+```cmake
+find_program(SCCACHE sccache REQUIRED)
+
+set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE})
+set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+```
+
+And you can build code as usual without any additional flags in the command line, useful for IDEs.
+
 
 ---
 
