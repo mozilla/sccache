@@ -39,6 +39,7 @@ use crate::errors::*;
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
 pub struct Nvcc {
+    pub is_msvc: bool,
     pub version: Option<String>,
 }
 
@@ -148,8 +149,12 @@ impl CCompilerImpl for Nvcc {
 
         //NVCC only supports `-E` when it comes after preprocessor
         //and common flags.
+        let no_line_nums = match self.is_msvc {
+            true => "-Xcompiler=-EP",
+            false => "-Xcompiler=-P",
+        };
         cmd.arg("-E")
-            .arg("-Xcompiler=-P")
+            .arg(no_line_nums)
             .env_clear()
             .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
             .current_dir(cwd);
@@ -259,7 +264,11 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        Nvcc { version: None }.parse_arguments(&arguments, ".".as_ref())
+        Nvcc {
+            is_msvc: false,
+            version: None,
+        }
+        .parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
