@@ -1082,8 +1082,10 @@ where
     // Both clang and clang-cl define _MSC_VER on Windows, so we first
     // check for MSVC, then check whether _MT is defined, which is the
     // difference between clang and clang-cl.
-    let test = b"#if defined(__NVCC__)
+    let test = b"#if defined(__NVCC__) && !defined(_MSC_VER)
 nvcc
+#elif defined(__NVCC__) && defined(_MSC_VER)
+nvcc-msvc
 #elif defined(_MSC_VER) && !defined(__clang__)
 msvc
 #elif defined(_MSC_VER) && defined(_MT)
@@ -1221,10 +1223,12 @@ __VERSION__
                 .await
                 .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
-            "nvcc" => {
+            "nvcc" | "nvcc-msvc" => {
+                let is_msvc = kind == "nvcc-msvc";
                 debug!("Found NVCC");
                 return CCompiler::new(
                     Nvcc {
+                        is_msvc,
                         version: version.clone(),
                     },
                     executable,
