@@ -29,6 +29,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use predicates::prelude::*;
 use regex::Regex;
+use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -56,6 +57,8 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
+const CUDA_COMPILERS: &[&str] = &["nvcc"];
+
 //TODO: could test gcc when targeting mingw.
 
 macro_rules! vec_from {
@@ -74,7 +77,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut arg = match compiler {
-        "gcc" | "clang" | "clang++" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "gcc" | "clang" | "clang++" | "nvcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     };
@@ -91,6 +94,8 @@ const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+const INPUT_FOR_CUDA_A : &str = "test_a.cu";
+const INPUT_FOR_CUDA_B : &str = "test_b.cu";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -445,6 +450,78 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 }
 
+
+fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile A");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_A, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+    });
+    trace!("compile A");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_A, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+    });
+    // By compiling another input source we verify that the pre-processor
+    // phase is correctly running and outputing text
+    trace!("compile B");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_B, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(3, info.stats.compile_requests);
+        assert_eq!(3, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
+    });
+}
+
+
+fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
+    test_cuda_compiles(compiler.clone(), tempdir);
+}
+
 fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -566,11 +643,28 @@ fn find_compilers() -> Vec<Compiler> {
     }]
 }
 
+fn find_cuda_compilers() -> Vec<Compiler> {
+    let cwd = env::current_dir().unwrap();
+    CUDA_COMPILERS
+        .iter()
+        .filter_map(|c| {
+            which_in(c, env::var_os("PATH"), &cwd)
+                .ok()
+                .map(|full_path| Compiler {
+                    name: c,
+                    exe: full_path.into(),
+                    env_vars: vec![],
+                })
+        })
+        .collect::<Vec<_>>()
+}
+
 // TODO: This runs multiple test cases, for multiple compilers. It should be
 // split up to run them individually. In the current form, it is hard to see
 // which sub test cases are executed, and if one fails, the remaining tests
 // are not run.
 #[test]
+#[serial]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command() {
     let _ = env_logger::try_init();
@@ -596,6 +690,39 @@ fn test_sccache_command() {
         );
         for compiler in compilers {
             run_sccache_command_tests(compiler, tempdir.path());
+            zero_stats();
+        }
+        stop_local_daemon();
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(any(unix, target_env = "msvc"))]
+fn test_cuda_sccache_command() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    let compilers = find_cuda_compilers();
+    if compilers.is_empty() {
+        warn!("No compilers found, skipping test");
+    } else {
+        // Ensure there's no existing sccache server running.
+        stop_local_daemon();
+        // Create the configurations
+        let sccache_cfg = sccache_client_cfg(tempdir.path());
+        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
+        // Start a server.
+        trace!("start server");
+        start_local_daemon(
+            &tempdir.path().join("sccache-cfg.json"),
+            &sccache_cached_cfg_path,
+        );
+        for compiler in compilers {
+            run_sccache_cuda_command_tests(compiler, tempdir.path());
             zero_stats();
         }
         stop_local_daemon();
