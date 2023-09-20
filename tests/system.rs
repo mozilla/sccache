@@ -77,7 +77,9 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut arg = match compiler {
-        "gcc" | "clang" | "clang++" | "nvcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "gcc" | "clang" | "clang++" | "nvcc" => {
+            vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output)
+        }
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
         _ => panic!("Unsupported compiler: {}", compiler),
     };
@@ -94,8 +96,8 @@ const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
-const INPUT_FOR_CUDA_A : &str = "test_a.cu";
-const INPUT_FOR_CUDA_B : &str = "test_b.cu";
+const INPUT_FOR_CUDA_A: &str = "test_a.cu";
+const INPUT_FOR_CUDA_B: &str = "test_b.cu";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -450,7 +452,6 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 }
 
-
 fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -464,7 +465,13 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_A, OUTPUT, Vec::new()))
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_A,
+            OUTPUT,
+            Vec::new(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -481,7 +488,13 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_A, OUTPUT, Vec::new()))
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_A,
+            OUTPUT,
+            Vec::new(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars.clone())
         .assert()
@@ -500,7 +513,13 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     // phase is correctly running and outputing text
     trace!("compile B");
     sccache_command()
-        .args(&compile_cmdline(name, &exe, INPUT_FOR_CUDA_B, OUTPUT, Vec::new()))
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_B,
+            OUTPUT,
+            Vec::new(),
+        ))
         .current_dir(tempdir)
         .envs(env_vars)
         .assert()
@@ -516,7 +535,6 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
         assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
     });
 }
-
 
 fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
     test_cuda_compiles(compiler, tempdir);
