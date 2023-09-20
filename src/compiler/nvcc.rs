@@ -263,7 +263,11 @@ mod test {
 
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        Nvcc { is_msvc: false, version: None }.parse_arguments(&arguments, ".".as_ref())
+        Nvcc {
+            is_msvc: false,
+            version: None,
+        }
+        .parse_arguments(&arguments, ".".as_ref())
     }
 
     macro_rules! parses {
