@@ -519,7 +519,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
 
 
 fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_cuda_compiles(compiler.clone(), tempdir);
+    test_cuda_compiles(compiler, tempdir);
 }
 
 fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
