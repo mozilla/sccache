@@ -161,7 +161,14 @@ vendored-openssl = ["openssl?/vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["flate2", "hyper", "reqwest", "url", "sha2", "trust-dns-resolver"]
+dist-client = [
+  "flate2",
+  "hyper",
+  "reqwest",
+  "url",
+  "sha2",
+  "trust-dns-resolver",
+]
 # Enables the sccache-dist binary
 dist-server = [
   "jwt",
