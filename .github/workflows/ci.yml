@@ -147,7 +147,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install musl-tools
-        run: sudo apt-get install musl-tools
+        run: sudo apt-get install musl-tools musl-dev
         if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
 
       - name: Build
