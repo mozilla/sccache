@@ -148,7 +148,7 @@ jobs:
 
       - name: Install musl-tools
         run: sudo apt-get install musl-tools
-        if: ${{ contains(matrix.target, 'unknown-linux-musl' }}
+        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
 
       - name: Build
         run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
