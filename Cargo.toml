@@ -157,7 +157,7 @@ webdav = ["opendal"]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.
-vendored-openssl = ["openssl?/vendored"]
+vendored-openssl = ["openssl?/vendored", "opendal?/native-tls-vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
