@@ -311,6 +311,8 @@ jobs:
       - name: Start nginx
         shell: bash
         run: |
+          sudo apt install -y nginx-extras libnginx-mod-http-dav-ext
+
           mkdir /tmp/static
           cp `pwd`/tests/htpasswd /tmp/htpasswd
           nginx -c `pwd`/tests/nginx_http_cache.conf
