@@ -92,6 +92,7 @@ jobs:
     env:
       SCCACHE_BUCKET: test
       SCCACHE_ENDPOINT: http://127.0.0.1:9000/
+      SCCACHE_REGION: us-east-1
       AWS_ACCESS_KEY_ID: "minioadmin"
       AWS_SECRET_ACCESS_KEY: "minioadmin"
       AWS_EC2_METADATA_DISABLED: "true"
@@ -310,6 +311,8 @@ jobs:
       - name: Start nginx
         shell: bash
         run: |
+          sudo apt install -y nginx-full
+
           mkdir /tmp/static
           cp `pwd`/tests/htpasswd /tmp/htpasswd
           nginx -c `pwd`/tests/nginx_http_cache.conf
