@@ -38,8 +38,15 @@ use crate::errors::*;
 
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
+pub enum NvccHostCompiler {
+    GCC,
+    MSVC,
+    NVHPC,
+}
+
+#[derive(Clone, Debug)]
 pub struct Nvcc {
-    pub is_msvc: bool,
+    pub host_compiler: NvccHostCompiler,
     pub version: Option<String>,
 }
 
@@ -149,12 +156,17 @@ impl CCompilerImpl for Nvcc {
 
         //NVCC only supports `-E` when it comes after preprocessor
         //and common flags.
-        let no_line_nums = match self.is_msvc {
-            true => "-Xcompiler=-EP",
-            false => "-Xcompiler=-P",
+        //
+        // nvc/nvc++  don't support no line numbers to console
+        // msvc requires the `-EP` flag to output no line numbers to console
+        // other host compilers are presumed to match `gcc` behavior
+        let no_line_num_flag = match self.host_compiler {
+            NvccHostCompiler::NVHPC => "",
+            NvccHostCompiler::MSVC => "-Xcompiler=-EP",
+            NvccHostCompiler::GCC => "-Xcompiler=-P",
         };
         cmd.arg("-E")
-            .arg(no_line_nums)
+            .arg(no_line_num_flag)
             .env_clear()
             .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
             .current_dir(cwd);
@@ -262,10 +274,18 @@ mod test {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
+    fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
-            is_msvc: false,
+            host_compiler: NvccHostCompiler::GCC,
+            version: None,
+        }
+        .parse_arguments(&arguments, ".".as_ref())
+    }
+    fn parse_arguments_nvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        Nvcc {
+            host_compiler: NvccHostCompiler::NVHPC,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
@@ -273,7 +293,15 @@ mod test {
 
     macro_rules! parses {
         ( $( $s:expr ),* ) => {
-            match parse_arguments_(vec![ $( $s.to_string(), )* ]) {
+            match parse_arguments_gcc(vec![ $( $s.to_string(), )* ]) {
+                CompilerArguments::Ok(a) => a,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            }
+        }
+    }
+    macro_rules! parses_nvc {
+        ( $( $s:expr ),* ) => {
+            match parse_arguments_nvc(vec![ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
@@ -300,8 +328,27 @@ mod test {
     }
 
     #[test]
-    fn test_parse_arguments_simple_cu() {
+    fn test_parse_arguments_simple_cu_gcc() {
         let a = parses!("-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_simple_cu_nvc() {
+        let a = parses_nvc!("-c", "foo.cu", "-o", "foo.o");
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(
@@ -663,7 +710,18 @@ mod test {
     fn test_parse_dlink_is_not_compilation() {
         assert_eq!(
             CompilerArguments::NotCompilation,
-            parse_arguments_(stringvec![
+            parse_arguments_gcc(stringvec![
+                "-forward-unknown-to-host-compiler",
+                "--generate-code=arch=compute_50,code=[compute_50,sm_50,sm_52]",
+                "-dlink",
+                "main.cu.o",
+                "-o",
+                "device_link.o"
+            ])
+        );
+        assert_eq!(
+            CompilerArguments::NotCompilation,
+            parse_arguments_nvc(stringvec![
                 "-forward-unknown-to-host-compiler",
                 "--generate-code=arch=compute_50,code=[compute_50,sm_50,sm_52]",
                 "-dlink",
@@ -677,12 +735,20 @@ mod test {
     fn test_parse_cant_cache_flags() {
         assert_eq!(
             CompilerArguments::CannotCache("-E", None),
-            parse_arguments_(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
+            parse_arguments_gcc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-E", None),
+            parse_arguments_nvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
         );
 
         assert_eq!(
             CompilerArguments::CannotCache("-M", None),
-            parse_arguments_(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
+            parse_arguments_gcc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-M", None),
+            parse_arguments_nvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
         );
     }
 }
