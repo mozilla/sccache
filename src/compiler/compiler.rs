@@ -1233,14 +1233,14 @@ compiler_version=__VERSION__
             }
             "nvcc" | "nvcc-msvc" | "nvcc-nvhpc" => {
                 let host_compiler = match kind {
-                    "nvcc-nvhpc" => NvccHostCompiler::NVHPC,
-                    "nvcc-msvc" => NvccHostCompiler::MSVC,
-                    "nvcc" => NvccHostCompiler::GCC,
-                    &_ => NvccHostCompiler::GCC,
+                    "nvcc-nvhpc" => NvccHostCompiler::Nvhpc,
+                    "nvcc-msvc" => NvccHostCompiler::Msvc,
+                    "nvcc" => NvccHostCompiler::Gcc,
+                    &_ => NvccHostCompiler::Gcc,
                 };
                 return CCompiler::new(
                     Nvcc {
-                        host_compiler: host_compiler,
+                        host_compiler,
                         version: version.clone(),
                     },
                     executable,
