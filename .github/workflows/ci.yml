@@ -147,7 +147,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Install zig & cargo-zigbuild
-        run: pip install cargo-zigbuild
+        run: pip3 install cargo-zigbuild
 
       - name: Build
         run: cargo zigbuild --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
