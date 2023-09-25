@@ -1086,7 +1086,8 @@ where
     //
     // We prefix the information we need with `compiler_id` and `compiler_version`
     // so that we can support compilers that insert pre-amble code even in `-E` mode
-    let test = b"#if defined(__NVCC__) && defined(__NVCOMPILER)
+    let test = b"
+#if defined(__NVCC__) && defined(__NVCOMPILER)
 compiler_id=nvcc-nvhpc
 #elif defined(__NVCC__) && defined(_MSC_VER)
 compiler_id=nvcc-msvc
