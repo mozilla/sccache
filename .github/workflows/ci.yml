@@ -152,9 +152,8 @@ jobs:
 
       - name: Install musl-tools
         run: |
-          sudo apt-get install -y clang musl-dev
-          echo "CC_aarch64_unknown_linux_musl=clang" >> $GITHUB_ENV
-          echo "CFLAGS_aarch64_unknown_linux_musl=--target=aarch64-unknown-linux-musl" >> $GITHUB_ENV
+          sudo apt-get install -y musl-tools
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" >> $GITHUB_ENV
         if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
 
       - name: Build
