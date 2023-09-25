@@ -39,9 +39,9 @@ use crate::errors::*;
 /// A unit struct on which to implement `CCompilerImpl`.
 #[derive(Clone, Debug)]
 pub enum NvccHostCompiler {
-    GCC,
-    MSVC,
-    NVHPC,
+    Gcc,
+    Msvc,
+    Nvhpc,
 }
 
 #[derive(Clone, Debug)]
@@ -161,9 +161,9 @@ impl CCompilerImpl for Nvcc {
         // msvc requires the `-EP` flag to output no line numbers to console
         // other host compilers are presumed to match `gcc` behavior
         let no_line_num_flag = match self.host_compiler {
-            NvccHostCompiler::NVHPC => "",
-            NvccHostCompiler::MSVC => "-Xcompiler=-EP",
-            NvccHostCompiler::GCC => "-Xcompiler=-P",
+            NvccHostCompiler::Nvhpc => "",
+            NvccHostCompiler::Msvc => "-Xcompiler=-EP",
+            NvccHostCompiler::Gcc => "-Xcompiler=-P",
         };
         cmd.arg("-E")
             .arg(no_line_num_flag)
@@ -277,7 +277,7 @@ mod test {
     fn parse_arguments_gcc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
-            host_compiler: NvccHostCompiler::GCC,
+            host_compiler: NvccHostCompiler::Gcc,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
@@ -285,7 +285,7 @@ mod test {
     fn parse_arguments_nvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
-            host_compiler: NvccHostCompiler::NVHPC,
+            host_compiler: NvccHostCompiler::Nvhpc,
             version: None,
         }
         .parse_arguments(&arguments, ".".as_ref())
