@@ -282,6 +282,14 @@ mod test {
         }
         .parse_arguments(&arguments, ".".as_ref())
     }
+    fn parse_arguments_msvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
+        let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        Nvcc {
+            host_compiler: NvccHostCompiler::Msvc,
+            version: None,
+        }
+        .parse_arguments(&arguments, ".".as_ref())
+    }
     fn parse_arguments_nvc(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         Nvcc {
@@ -294,6 +302,14 @@ mod test {
     macro_rules! parses {
         ( $( $s:expr ),* ) => {
             match parse_arguments_gcc(vec![ $( $s.to_string(), )* ]) {
+                CompilerArguments::Ok(a) => a,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            }
+        }
+    }
+    macro_rules! parses_msvc {
+        ( $( $s:expr ),* ) => {
+            match parse_arguments_msvc(vec![ $( $s.to_string(), )* ]) {
                 CompilerArguments::Ok(a) => a,
                 o => panic!("Got unexpected parse result: {:?}", o),
             }
@@ -349,6 +365,24 @@ mod test {
     #[test]
     fn test_parse_arguments_simple_cu_nvc() {
         let a = parses_nvc!("-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
+    }
+
+    fn test_parse_arguments_simple_cu_msvc() {
+        let a = parses_msvc!("-c", "foo.cu", "-o", "foo.o");
         assert_eq!(Some("foo.cu"), a.input.to_str());
         assert_eq!(Language::Cuda, a.language);
         assert_map_contains!(
@@ -739,12 +773,20 @@ mod test {
         );
         assert_eq!(
             CompilerArguments::CannotCache("-E", None),
+            parse_arguments_msvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-E", None),
             parse_arguments_nvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-E"])
         );
 
         assert_eq!(
             CompilerArguments::CannotCache("-M", None),
             parse_arguments_gcc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("-M", None),
+            parse_arguments_msvc(stringvec!["-x", "cu", "-c", "foo.c", "-o", "foo.o", "-M"])
         );
         assert_eq!(
             CompilerArguments::CannotCache("-M", None),
