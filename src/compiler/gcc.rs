@@ -367,6 +367,7 @@ where
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
+                    "cuda" => Some(Language::Cuda),
                     _ => cannot_cache!("-x"),
                 };
             }

@@ -38,7 +38,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
-use which::which_in;
+use which::{which, which_in};
 
 mod harness;
 
@@ -57,7 +57,7 @@ const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
 
-const CUDA_COMPILERS: &[&str] = &["nvcc"];
+const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
 
 //TODO: could test gcc when targeting mingw.
 
@@ -81,6 +81,34 @@ fn compile_cmdline<T: AsRef<OsStr>>(
             vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output)
         }
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
+        _ => panic!("Unsupported compiler: {}", compiler),
+    };
+    if !extra_args.is_empty() {
+        arg.append(&mut extra_args)
+    }
+    arg
+}
+// TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
+// default case on Fedora, e.g.
+fn compile_cuda_cmdline<T: AsRef<OsStr>>(
+    compiler: &str,
+    exe: T,
+    input: &str,
+    output: &str,
+    mut extra_args: Vec<OsString>,
+) -> Vec<OsString> {
+    let mut arg = match compiler {
+        "nvcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "clang++" => {
+            vec_from!(
+                OsString,
+                exe,
+                "-c",
+                input,
+                "--cuda-gpu-arch=sm_50",
+                format!("-Fo{}", output)
+            )
+        }
         _ => panic!("Unsupported compiler: {}", compiler),
     };
     if !extra_args.is_empty() {
@@ -465,7 +493,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     trace!("compile A");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(&compile_cuda_cmdline(
             name,
             &exe,
             INPUT_FOR_CUDA_A,
@@ -488,7 +516,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
     sccache_command()
-        .args(&compile_cmdline(
+        .args(&compile_cuda_cmdline(
             name,
             &exe,
             INPUT_FOR_CUDA_A,
@@ -513,7 +541,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     // phase is correctly running and outputing text
     trace!("compile B");
     sccache_command()
-        .args(&compile_cmdline(
+        .args(&compile_cuda_cmdline(
             name,
             &exe,
             INPUT_FOR_CUDA_B,
@@ -663,18 +691,24 @@ fn find_compilers() -> Vec<Compiler> {
 
 fn find_cuda_compilers() -> Vec<Compiler> {
     let cwd = env::current_dir().unwrap();
-    CUDA_COMPILERS
-        .iter()
-        .filter_map(|c| {
-            which_in(c, env::var_os("PATH"), &cwd)
-                .ok()
-                .map(|full_path| Compiler {
-                    name: c,
-                    exe: full_path.into(),
-                    env_vars: vec![],
-                })
-        })
-        .collect::<Vec<_>>()
+    // CUDA compilers like clang don't come with all of the components for compilation.
+    // To consider a machine to have any cuda compilers we rely on the existence of `nvcc`
+    let compilers = match which("nvcc") {
+        Ok(_) => CUDA_COMPILERS
+            .iter()
+            .filter_map(|c| {
+                which_in(c, env::var_os("PATH"), &cwd)
+                    .ok()
+                    .map(|full_path| Compiler {
+                        name: c,
+                        exe: full_path.into(),
+                        env_vars: vec![],
+                    })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+    compilers
 }
 
 // TODO: This runs multiple test cases, for multiple compilers. It should be
