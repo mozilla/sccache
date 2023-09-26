@@ -30,7 +30,7 @@ pub enum RWMode {
 impl RWMode {
     fn to_scope(self) -> &'static str {
         match self {
-            RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.readonly",
+            RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
         }
     }
