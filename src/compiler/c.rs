@@ -441,6 +441,10 @@ where
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }
+
+    fn language(&self) -> &'static str {
+        return self.parsed_args.language.as_str();
+    }
 }
 
 impl<I: CCompilerImpl> Compilation for CCompilation<I> {

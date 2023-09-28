@@ -1589,6 +1589,10 @@ where
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }
+
+    fn language(&self) -> &'static str {
+        return "Rust";
+    }
 }
 
 impl Compilation for RustCompilation {

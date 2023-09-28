@@ -101,13 +101,17 @@ pub enum CompilerKind {
 }
 
 impl CompilerKind {
-    pub fn lang_kind(&self) -> String {
+    pub fn lang_kind(&self, lang: &'static str) -> String {
+        let lang_and_compiler = lang.to_string();
         match self {
-            CompilerKind::C(CCompilerKind::Nvcc) => "CUDA",
-            CompilerKind::C(_) => "C/C++",
-            CompilerKind::Rust => "Rust",
+            CompilerKind::C(CCompilerKind::Clang) => lang_and_compiler + " [clang]",
+            CompilerKind::C(CCompilerKind::Diab) => lang_and_compiler + " [diab]",
+            CompilerKind::C(CCompilerKind::Gcc) => lang_and_compiler + " [gcc]",
+            CompilerKind::C(CCompilerKind::Msvc) => lang_and_compiler + " [msvc]",
+            CompilerKind::C(CCompilerKind::Nvcc) => lang_and_compiler + " [nvcc]",
+            CompilerKind::C(CCompilerKind::TaskingVX) => lang_and_compiler + " [taskingVX]",
+            CompilerKind::Rust => "Rust".to_string(),
         }
-        .to_string()
     }
 }
 
@@ -425,6 +429,8 @@ where
     fn output_pretty(&self) -> Cow<'_, str>;
 
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
+
+    fn language(&self) -> &'static str;
 }
 
 #[cfg(not(feature = "dist-client"))]
