@@ -13,11 +13,9 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
+    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
