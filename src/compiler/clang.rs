@@ -337,6 +337,80 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_cuda() {
+        let a = parses!("-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_cuda_flags() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "cuda",
+            "--cuda-gpu-arch=sm_50",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["--cuda-gpu-arch=sm_50"], a.common_args);
+
+        let b = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "cu",
+            "--cuda-gpu-arch=sm_50",
+            "--no-cuda-include-ptx=sm_50",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), b.input.to_str());
+        assert_eq!(Language::Cuda, b.language);
+        assert_map_contains!(
+            b.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(b.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec!["--cuda-gpu-arch=sm_50", "--no-cuda-include-ptx=sm_50"],
+            b.common_args
+        );
+    }
+
+    #[test]
     fn test_dependent_lib() {
         let a = parses!(
             "-c",
