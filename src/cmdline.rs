@@ -58,7 +58,7 @@ impl Default for StatsFormat {
 /// A specific command to run.
 pub enum Command {
     /// Show cache statistics and exit.
-    ShowStats(StatsFormat),
+    ShowStats(StatsFormat, bool),
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
@@ -124,6 +124,9 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long_and_short("show-stats")
                 .help("show cache statistics")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("show-adv-stats")
+                .help("show advanced cache statistics")
+                .action(ArgAction::SetTrue),
             flag_infer_long("start-server")
                 .help("start background server")
                 .action(ArgAction::SetTrue),
@@ -160,6 +163,7 @@ fn get_clap_command() -> clap::Command {
                     "dist-auth",
                     "dist-status",
                     "show-stats",
+                    "show-adv-stats",
                     "start-server",
                     "stop-server",
                     "zero-stats",
@@ -246,7 +250,13 @@ pub fn try_parse() -> Result<Command> {
                     .get_one("stats-format")
                     .cloned()
                     .expect("There is a default value");
-                Ok(Command::ShowStats(fmt))
+                Ok(Command::ShowStats(fmt, false))
+            } else if matches.get_flag("show-adv-stats") {
+                let fmt = matches
+                    .get_one("stats-format")
+                    .cloned()
+                    .expect("There is a default value");
+                Ok(Command::ShowStats(fmt, true))
             } else if matches.get_flag("start-server") {
                 Ok(Command::StartServer)
             } else if matches.get_flag("stop-server") {
