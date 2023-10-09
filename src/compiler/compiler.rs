@@ -170,6 +170,19 @@ impl CompilerKind {
         }
         .to_string()
     }
+    pub fn lang_comp_kind(&self, lang: &Language) -> String {
+        let textual_lang = lang.as_str().to_owned();
+        match self {
+            CompilerKind::C(CCompilerKind::Clang) => textual_lang + " [clang]",
+            CompilerKind::C(CCompilerKind::Diab) => textual_lang + " [diab]",
+            CompilerKind::C(CCompilerKind::Gcc) => textual_lang + " [gcc]",
+            CompilerKind::C(CCompilerKind::Msvc) => textual_lang + " [msvc]",
+            CompilerKind::C(CCompilerKind::Nvhpc) => textual_lang + " [nvhpc]",
+            CompilerKind::C(CCompilerKind::Nvcc) => textual_lang + " [nvcc]",
+            CompilerKind::C(CCompilerKind::TaskingVX) => textual_lang + " [taskingvx]",
+            CompilerKind::Rust => textual_lang,
+        }
+    }
 }
 
 #[cfg(feature = "dist-client")]

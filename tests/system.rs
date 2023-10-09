@@ -59,6 +59,22 @@ const COMPILERS: &[&str] = &["clang", "clang++"];
 
 const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
 
+fn adv_key_kind(lang: &str, compiler: &str) -> String {
+    let language = lang.to_owned();
+    match compiler {
+        "clang" | "clang++" => language + " [clang]",
+        "gcc" | "g++" => language + " [gcc]",
+        "cl" => language + " [msvc]",
+        "nvc" | "nvc++" => language + " [nvhpc]",
+        "nvcc" => language + " [nvcc]",
+        _ => {
+            trace!("Unknown compiler type: {}", compiler);
+            language + "unknown"
+        }
+    }
+    .to_string()
+}
+
 //TODO: could test gcc when targeting mingw.
 
 macro_rules! vec_from {
@@ -165,6 +181,8 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        let adv_key = adv_key_kind("c", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
     });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
@@ -183,6 +201,9 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        let adv_key = adv_key_kind("c", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
     });
 }
 
@@ -513,6 +534,8 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     });
     trace!("compile A");
     fs::remove_file(&out_file).unwrap();
@@ -537,6 +560,9 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     });
     // By compiling another input source we verify that the pre-processor
     // phase is correctly running and outputing text
@@ -562,6 +588,9 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         assert_eq!(2, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
         assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     });
 }
 

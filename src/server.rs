@@ -1351,10 +1351,15 @@ where
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PerLanguageCount {
     counts: HashMap<String, u64>,
+    adv_counts: HashMap<String, u64>,
 }
 
 impl PerLanguageCount {
     fn increment(&mut self, kind: &CompilerKind, lang: &Language) {
+        let lang_comp_key = kind.lang_comp_kind(lang);
+        let adv_count = self.adv_counts.entry(lang_comp_key).or_insert(0);
+        *adv_count += 1;
+
         let lang_key = kind.lang_kind(lang);
         let count = self.counts.entry(lang_key).or_insert(0);
         *count += 1;
@@ -1366,6 +1371,10 @@ impl PerLanguageCount {
 
     pub fn get(&self, key: &str) -> Option<&u64> {
         self.counts.get(key)
+    }
+
+    pub fn get_adv(&self, key: &str) -> Option<&u64> {
+        self.adv_counts.get(key)
     }
 
     pub fn new() -> PerLanguageCount {
@@ -1473,7 +1482,7 @@ impl ServerStats {
     /// Print stats to stdout in a human-readable format.
     ///
     /// Return the formatted width of each of the (name, value) columns.
-    fn print(&self) -> (usize, usize) {
+    fn print(&self, advanced: bool) -> (usize, usize) {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 // name, value, suffix length
@@ -1485,6 +1494,16 @@ impl ServerStats {
             ($vec:ident, $var:expr, $name:expr) => {{
                 $vec.push(($name.to_string(), $var.all().to_string(), 0));
                 let mut sorted_stats: Vec<_> = $var.counts.iter().collect();
+                sorted_stats.sort_by_key(|v| v.0);
+                for (lang, count) in sorted_stats.iter() {
+                    $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
+                }
+            }};
+        }
+        macro_rules! set_compiler_stat {
+            ($vec:ident, $var:expr, $name:expr) => {{
+                $vec.push(($name.to_string(), $var.all().to_string(), 0));
+                let mut sorted_stats: Vec<_> = $var.adv_counts.iter().collect();
                 sorted_stats.sort_by_key(|v| v.0);
                 for (lang, count) in sorted_stats.iter() {
                     $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
@@ -1512,14 +1531,24 @@ impl ServerStats {
             self.requests_executed,
             "Compile requests executed"
         );
-        set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
-        set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+        if advanced {
+            set_compiler_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_compiler_stat!(stats_vec, self.cache_misses, "Cache misses");
+        } else {
+            set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+        }
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
-        set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
+        if advanced {
+            set_compiler_stat!(stats_vec, self.cache_errors, "Cache errors");
+        } else {
+            set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
+        }
+
         set_stat!(
             stats_vec,
             self.non_cacheable_compilations,
@@ -1617,8 +1646,8 @@ impl ServerStats {
 
 impl ServerInfo {
     /// Print info to stdout in a human-readable format.
-    pub fn print(&self) {
-        let (name_width, stat_width) = self.stats.print();
+    pub fn print(&self, advanced: bool) {
+        let (name_width, stat_width) = self.stats.print(advanced);
         println!(
             "{:<name_width$} {}",
             "Cache location",

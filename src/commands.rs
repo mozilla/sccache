@@ -604,12 +604,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     let startup_timeout = config.server_startup_timeout;
 
     match cmd {
-        Command::ShowStats(fmt) => {
+        Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
             let srv = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_stats(srv).context("failed to get stats from server")?;
             match fmt {
-                StatsFormat::Text => stats.print(),
+                StatsFormat::Text => stats.print(advanced),
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
             }
         }
@@ -647,13 +647,13 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             println!("Stopping sccache server...");
             let server = connect_to_server(get_port()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
-            stats.print();
+            stats.print(false);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             let conn = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_zero_stats(conn).context("couldn't zero stats on server")?;
-            stats.print();
+            stats.print(false);
         }
         #[cfg(feature = "dist-client")]
         Command::DistAuth => {
