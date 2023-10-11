@@ -15,7 +15,7 @@
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
-use crate::config::Config;
+use crate::config::{default_disk_cache_dir, Config};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -37,6 +37,7 @@ use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::Runtime;
+use walkdir::WalkDir;
 use which::which_in;
 
 use crate::errors::*;
@@ -611,6 +612,23 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             match fmt {
                 StatsFormat::Text => stats.print(advanced),
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+            }
+        }
+        Command::DebugManifests => {
+            trace!("Command::DebugManifests");
+            let manifest_dir = default_disk_cache_dir().join("manifests");
+            for entry in WalkDir::new(manifest_dir).sort_by_file_name().into_iter() {
+                let manifest_file = entry?;
+                let path = manifest_file.path();
+                if !path.is_file() {
+                    continue;
+                }
+                println!("=========================");
+                println!("Showing manifest file {}", &path.display());
+                let contents = std::fs::read(path)?;
+                let manifest = crate::compiler::Manifest::read(&contents)?;
+                println!("{:#?}", manifest);
+                println!("=========================");
             }
         }
         Command::InternalStartServer => {
