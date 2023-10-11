@@ -18,15 +18,15 @@ use byteorder::{BigEndian, ByteOrder};
 use fs::File;
 use fs_err as fs;
 use object::{macho, read::archive::ArchiveFile, read::macho::FatArch};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
-use std::time;
 use std::time::Duration;
+use std::time::{self, SystemTime};
 
 use crate::errors::*;
 
@@ -523,6 +523,85 @@ pub fn multi_byte_to_wide_char(
             }
         }
         Err(std::io::Error::last_os_error())
+    }
+}
+
+/// A Unix timestamp with nanoseconds precision
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Timestamp {
+    seconds: i64,
+    /// Always in the `0 .. 1_000_000_000` range.
+    nanoseconds: u32,
+}
+
+const NSEC_PER_SEC: u32 = 1_000_000_000;
+
+impl From<std::time::SystemTime> for Timestamp {
+    #[cfg(unix)]
+    fn from(system_time: std::time::SystemTime) -> Self {
+        // On Unix, `SystemTime` is a wrapper for the `timespec` C struct:
+        // https://www.gnu.org/software/libc/manual/html_node/Time-Types.html#index-struct-timespec
+        // On Windows, `SystemTime` wraps a 100ns intervals-based struct.
+        // We want to effectively access the inner fields, but the Rust standard
+        // library does not expose them. The best we can do is:
+        let seconds;
+        let nanoseconds;
+        match system_time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => {
+                seconds = duration.as_secs() as i64;
+                nanoseconds = duration.subsec_nanos();
+            }
+            Err(error) => {
+                // `system_time` is before `UNIX_EPOCH`.
+                // We need to undo this algorithm:
+                // https://github.com/rust-lang/rust/blob/6bed1f0bc3cc50c10aab26d5f94b16a00776b8a5/library/std/src/sys/unix/time.rs#L40-L41
+                let negative = error.duration();
+                let negative_secs = negative.as_secs() as i64;
+                let negative_nanos = negative.subsec_nanos();
+                if negative_nanos == 0 {
+                    seconds = -negative_secs;
+                    nanoseconds = 0;
+                } else {
+                    // For example if `system_time` was 4.3 seconds before
+                    // the Unix epoch we get a Duration that represents
+                    // `(-4, -0.3)` but we want `(-5, +0.7)`:
+                    seconds = -1 - negative_secs;
+                    nanoseconds = NSEC_PER_SEC - negative_nanos;
+                }
+            }
+        };
+        Self {
+            seconds,
+            nanoseconds,
+        }
+    }
+}
+
+impl PartialEq<SystemTime> for Timestamp {
+    fn eq(&self, other: &SystemTime) -> bool {
+        self == &Self::from(*other)
+    }
+}
+
+/// Adds a fallback for trying Unix's `ctime` semantics on Windows systems.
+pub trait MetadataCtimeExt {
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp>;
+}
+
+impl MetadataCtimeExt for std::fs::Metadata {
+    #[cfg(unix)]
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp> {
+        use std::os::unix::prelude::MetadataExt;
+        Ok(Timestamp {
+            seconds: self.ctime(),
+            nanoseconds: self.ctime_nsec().try_into().unwrap_or(0),
+        })
+    }
+    #[cfg(windows)]
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp> {
+        // Windows does not have the actual notion of ctime in the Unix sense.
+        // Best effort is creation time (also called ctime in windows libs...)
+        self.created().map(Into::into)
     }
 }
 
