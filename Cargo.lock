@@ -2364,6 +2364,7 @@ dependencies = [
  "libmount",
  "linked-hash-map",
  "log",
+ "memchr",
  "memmap2",
  "mime",
  "nix 0.26.2",
