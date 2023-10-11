@@ -405,6 +405,127 @@ impl OsStrExt for OsStr {
     }
 }
 
+#[cfg(unix)]
+pub fn encode_path(dst: &mut dyn Write, path: &Path) -> std::io::Result<()> {
+    use std::os::unix::prelude::*;
+
+    let bytes = path.as_os_str().as_bytes();
+    dst.write_all(bytes)
+}
+
+#[cfg(windows)]
+pub fn encode_path(dst: &mut dyn Write, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::prelude::*;
+
+    let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let bytes = wide_char_to_multi_byte(&points)?; // use_default_char_flag
+    dst.write_all(&bytes)
+}
+
+#[cfg(unix)]
+pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::os::unix::prelude::*;
+    Ok(OsStr::from_bytes(bytes).into())
+}
+
+#[cfg(windows)]
+pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+
+    Ok(OsString::from_wide(&multi_byte_to_wide_char(codepage, flags, bytes)?).into())
+}
+
+#[cfg(windows)]
+pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = 0;
+    // Empty string
+    if wide_char_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    unsafe {
+        // Get length of multibyte string
+        let len = winapi::um::stringapiset::WideCharToMultiByte(
+            codepage,
+            flags,
+            wide_char_str.as_ptr(),
+            wide_char_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+
+        if len > 0 {
+            // Convert from UTF-16 to multibyte
+            let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::WideCharToMultiByte(
+                codepage,
+                flags,
+                wide_char_str.as_ptr(),
+                wide_char_str.len() as i32,
+                astr.as_mut_ptr() as _,
+                len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            if len > 0 {
+                astr.set_len(len as usize);
+                if (len as usize) == astr.len() {
+                    return Ok(astr);
+                } else {
+                    return Ok(astr[0..(len as usize)].to_vec());
+                }
+            }
+        }
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+/// Wrapper for MultiByteToWideChar.
+///
+/// See https://msdn.microsoft.com/en-us/library/windows/desktop/dd319072(v=vs.85).aspx
+/// for more details.
+pub fn multi_byte_to_wide_char(
+    codepage: winapi::shared::minwindef::DWORD,
+    flags: winapi::shared::minwindef::DWORD,
+    multi_byte_str: &[u8],
+) -> std::io::Result<Vec<u16>> {
+    if multi_byte_str.is_empty() {
+        return Ok(vec![]);
+    }
+    unsafe {
+        // Get length of UTF-16 string
+        let len = winapi::um::stringapiset::MultiByteToWideChar(
+            codepage,
+            flags,
+            multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+            multi_byte_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len > 0 {
+            // Convert to UTF-16
+            let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::MultiByteToWideChar(
+                codepage,
+                flags,
+                multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+                multi_byte_str.len() as i32,
+                wstr.as_mut_ptr(),
+                len,
+            );
+            wstr.set_len(len as usize);
+            if len > 0 {
+                return Ok(wstr);
+            }
+        }
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 pub struct HashToDigest<'a> {
     pub digest: &'a mut Digest,
 }
