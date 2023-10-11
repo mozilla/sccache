@@ -27,6 +27,7 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
+use crate::compiler::Manifest;
 use crate::config::Config;
 #[cfg(any(
     feature = "azure",
@@ -40,6 +41,7 @@ use crate::config::Config;
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -361,6 +363,64 @@ pub trait Storage: Send + Sync {
 
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
+
+    /// Return the config for direct mode if applicable
+    fn direct_mode_config(&self) -> DirectModeConfig {
+        // Disabled by default, only enabled in local mode
+        DirectModeConfig::default()
+    }
+    /// Return the manifest for a given manifest key, if it exists.
+    /// Only applicable when using direct mode.
+    fn get_manifest(&self, _key: &str) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+        Ok(None)
+    }
+    /// Insert a manifest at the given manifest key, overwriting the entry if it
+    /// exists.
+    /// Only applicable when using direct mode.
+    fn put_manifest(&self, _key: &str, _manifest: Manifest) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Configuration switches for direct mode (preprocessor caching).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct DirectModeConfig {
+    /// Whether to use direct mode entirely
+    pub use_direct_mode: bool,
+    /// If false (default), only compare header files by hashing their contents.
+    /// If true, will use size + ctime + mtime to check whether a file has changed.
+    /// See other flags below for more control over this behavior.
+    pub file_stat_matches: bool,
+    /// If true (default), uses the ctime (file status change on UNIX,
+    /// creation time on Windows) to check that a file has/hasn't changed.
+    /// Can be useful to disable when backdating modification times
+    /// in a controlled manner.
+    pub use_ctime_for_stat: bool,
+    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
+    /// in the source code. Will speed up direct mode, but can result in false
+    /// positives.
+    pub ignore_time_macros: bool,
+    /// If true, direct mode will not cache system headers, only add them to the
+    /// hash.
+    pub skip_system_headers: bool,
+    /// If true (default), will add the current working directory in the hash to
+    /// distinguish two compilations from different directories.
+    pub hash_working_directory: bool,
+}
+
+impl Default for DirectModeConfig {
+    fn default() -> Self {
+        Self {
+            use_direct_mode: false,
+            file_stat_matches: false,
+            use_ctime_for_stat: true,
+            ignore_time_macros: false,
+            skip_system_headers: false,
+            hash_working_directory: true,
+        }
+    }
 }
 
 /// Implement storage for operator.
@@ -455,8 +515,7 @@ impl Storage for opendal::Operator {
 }
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
-#[allow(dead_code)]
-fn normalize_key(key: &str) -> String {
+pub(in crate::cache) fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
 
@@ -574,8 +633,14 @@ pub fn storage_from_config(
     }
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
+    let direct_mode_config = config.fallback_cache.direct_mode;
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(dir, size, pool)))
+    Ok(Arc::new(DiskCache::new(
+        dir,
+        size,
+        pool,
+        direct_mode_config,
+    )))
 }
 
 #[cfg(test)]

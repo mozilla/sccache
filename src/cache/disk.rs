@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::lru_disk_cache::Error as LruError;
+use crate::compiler::Manifest;
 use crate::lru_disk_cache::LruDiskCache;
+use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
+
+use super::{normalize_key, DirectModeConfig};
 
 enum LazyDiskCache {
     Uninit { root: OsString, max_size: u64 },
@@ -60,6 +63,8 @@ pub struct DiskCache {
     lru: Arc<Mutex<LazyDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
+    direct_mode_config: DirectModeConfig,
+    manifests_cache: Arc<Mutex<LazyDiskCache>>,
 }
 
 impl DiskCache {
@@ -68,6 +73,7 @@ impl DiskCache {
         root: T,
         max_size: u64,
         pool: &tokio::runtime::Handle,
+        direct_mode_config: DirectModeConfig,
     ) -> DiskCache {
         DiskCache {
             lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
@@ -75,6 +81,11 @@ impl DiskCache {
                 max_size,
             })),
             pool: pool.clone(),
+            direct_mode_config,
+            manifests_cache: Arc::new(Mutex::new(LazyDiskCache::Uninit {
+                root: Path::new(root.as_ref()).join("manifests").into_os_string(),
+                max_size,
+            })),
         }
     }
 }
@@ -139,5 +150,29 @@ impl Storage for DiskCache {
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(self.lru.lock().unwrap().get().map(|l| l.capacity()))
+    }
+    fn direct_mode_config(&self) -> DirectModeConfig {
+        self.direct_mode_config
+    }
+    fn get_manifest(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
+        let key = normalize_key(key);
+        Ok(self
+            .manifests_cache
+            .lock()
+            .unwrap()
+            .get_or_init()?
+            .get(key)
+            .ok())
+    }
+    fn put_manifest(&self, key: &str, manifest: Manifest) -> Result<()> {
+        let key = normalize_key(key);
+        let mut buf = vec![];
+        manifest.write(&mut buf)?;
+        Ok(self
+            .manifests_cache
+            .lock()
+            .unwrap()
+            .get_or_init()?
+            .insert_bytes(key, &buf)?)
     }
 }

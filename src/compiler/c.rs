@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::FileObjectSource;
+use crate::cache::{DirectModeConfig, FileObjectSource, Storage};
+use crate::compiler::manifest::manifest_hash_key;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -23,7 +24,9 @@ use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
-use crate::util::{hash_all, Digest, HashToDigest};
+use crate::util::{
+    decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder,
+};
 use async_trait::async_trait;
 use fs_err as fs;
 use once_cell::sync::Lazy;
@@ -32,12 +35,15 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::hash::Hash;
-#[cfg(feature = "dist-client")]
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Arc;
 
 use crate::errors::*;
+
+use super::manifest::Manifest;
+use super::CacheControl;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
@@ -274,13 +280,87 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
+        storage: Arc<dyn Storage>,
+        cache_control: CacheControl,
     ) -> Result<HashResult> {
+        let start_of_compilation = std::time::SystemTime::now();
         let CCompilerHasher {
             parsed_args,
             executable,
             executable_digest,
             compiler,
         } = *self;
+
+        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
+        // Create an argument vector containing both preprocessor and arch args, to
+        // use in creating a hash key
+        let mut preprocessor_and_arch_args = parsed_args.preprocessor_args.clone();
+        preprocessor_and_arch_args.extend(parsed_args.arch_args.to_vec());
+
+        let absolute_input_path: Cow<'_, _> = if parsed_args.input.is_absolute() {
+            Cow::Borrowed(&parsed_args.input)
+        } else {
+            Cow::Owned(cwd.join(&parsed_args.input))
+        };
+
+        // Try to look for a cached preprocessing step for this compilation
+        // request.
+        let direct_mode_config = storage.direct_mode_config();
+        let mut manifest_key = if direct_mode_config.use_direct_mode {
+            manifest_hash_key(
+                &executable_digest,
+                parsed_args.language,
+                &preprocessor_and_arch_args,
+                &extra_hashes,
+                &env_vars,
+                &absolute_input_path,
+                compiler.plusplus(),
+                direct_mode_config,
+            )?
+        } else {
+            None
+        };
+        if let Some(manifest_key) = &manifest_key {
+            if cache_control == CacheControl::Default {
+                if let Some(mut seekable) = storage.get_manifest(manifest_key)? {
+                    let mut buf = vec![];
+                    seekable.read_to_end(&mut buf)?;
+                    let mut manifest = Manifest::read(&buf)?;
+                    let mut updated = false;
+                    let hit = manifest.lookup_result_digest(direct_mode_config, &mut updated);
+                    if updated {
+                        // Time macros have been found, we need to update
+                        // the manifest. See [`Manifest::result_matches`].
+                        debug!("Manifest updated because of time macros: {manifest_key}");
+                        storage.put_manifest(manifest_key, manifest)?;
+                    }
+                    if let Some(key) = hit {
+                        debug!("Direct mode cache hit: {manifest_key}");
+                        // A compiler binary may be a symlink to another and
+                        // so has the same digest, but that means
+                        // the toolchain will not contain the correct path
+                        // to invoke the compiler! Add the compiler
+                        // executable path to try and prevent this
+                        let weak_toolchain_key =
+                            format!("{}-{}", executable.to_string_lossy(), executable_digest);
+                        return Ok(HashResult {
+                            key,
+                            compilation: Box::new(CCompilation {
+                                parsed_args: parsed_args.to_owned(),
+                                #[cfg(feature = "dist-client")]
+                                // TODO or is it never relevant since dist?
+                                preprocessed_input: vec![],
+                                executable: executable.to_owned(),
+                                compiler: compiler.to_owned(),
+                                cwd: cwd.to_owned(),
+                                env_vars: env_vars.to_owned(),
+                            }),
+                            weak_toolchain_key,
+                        });
+                    }
+                }
+            }
+        }
 
         let result = compiler
             .preprocess(
@@ -299,11 +379,10 @@ where
             e
         });
 
-        let extra_hashes = hash_all(&parsed_args.extra_hash_files, &pool.clone()).await?;
         let outputs = parsed_args.outputs.clone();
         let args_cwd = cwd.clone();
 
-        let preprocessor_result = result.or_else(move |err| {
+        let mut preprocessor_result = result.or_else(move |err| {
             // Errors remove all traces of potential output.
             debug!("removing files {:?}", &outputs);
 
@@ -341,6 +420,23 @@ where
             }
         })?;
 
+        // Remember include files needed in this preprocessing step
+        let mut include_files = HashMap::new();
+        if manifest_key.is_some() {
+            // TODO how to propagate stats and which stats?
+            if !process_preprocessed_file(
+                &absolute_input_path,
+                &cwd,
+                &mut preprocessor_result.stdout,
+                &mut include_files,
+                direct_mode_config,
+                start_of_compilation,
+            )? {
+                debug!("Disabling direct mode");
+                manifest_key = None;
+            }
+        }
+
         trace!(
             "[{}]: Preprocessor output is {} bytes",
             parsed_args.output_pretty(),
@@ -363,6 +459,21 @@ where
                 compiler.plusplus(),
             )
         };
+
+        // Cache the preprocessing step
+        if let Some(manifest_key) = manifest_key {
+            if !include_files.is_empty() {
+                let mut manifest = Manifest::new();
+                manifest.add_result(
+                    start_of_compilation,
+                    &key,
+                    include_files
+                        .into_iter()
+                        .map(|(path, digest)| (digest, path)),
+                );
+                storage.put_manifest(&manifest_key, manifest)?;
+            }
+        }
 
         // A compiler binary may be a symlink to another and so has the same digest, but that means
         // the toolchain will not contain the correct path to invoke the compiler! Add the compiler
@@ -398,6 +509,388 @@ where
     fn language(&self) -> Language {
         self.parsed_args.language
     }
+}
+
+const PRAGMA_GCC_PCH_PREPROCESS: &[u8] = b"pragma GCC pch_preprocess";
+const HASH_31_COMMAND_LINE_NEWLINE: &[u8] = b"# 31 \"<command-line>\"\n";
+const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
+const INCBIN_DIRECTIVE: &[u8] = b".incbin";
+
+/// Remember the include files in the preprocessor output if it can be cached.
+/// Returns `false` if direct mode should be disabled.
+fn process_preprocessed_file(
+    input_file: &Path,
+    cwd: &Path,
+    bytes: &mut Vec<u8>,
+    included_files: &mut HashMap<PathBuf, String>,
+    config: DirectModeConfig,
+    time_of_compilation: std::time::SystemTime,
+) -> Result<bool> {
+    let mut start = 0;
+    let mut hash_start = 0;
+    let total_len = bytes.len();
+    let mut digest = Digest::new();
+    let mut normalized_include_paths: HashMap<Vec<u8>, Option<Vec<u8>>> = HashMap::new();
+    // There must be at least 7 characters (# 1 "x") left to potentially find an
+    // include file path.
+    while start < total_len - 7 {
+        let mut slice = &bytes[start..];
+        // Check if we look at a line containing the file name of an included file.
+        // At least the following formats exist (where N is a positive integer):
+        //
+        // GCC:
+        //
+        //   # N "file"
+        //   # N "file" N
+        //   #pragma GCC pch_preprocess "file"
+        //
+        // HP's compiler:
+        //
+        //   #line N "file"
+        //
+        // AIX's compiler:
+        //
+        //   #line N "file"
+        //   #line N
+        //
+        // Note that there may be other lines starting with '#' left after
+        // preprocessing as well, for instance "#    pragma".
+        if slice[0] == b'#'
+        // GCC:
+        && ((slice[1] == b' ' && slice[2] >= b'0' && slice[2] <= b'9')
+            // GCC precompiled header:
+            || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
+            // HP/AIX:
+            || (&slice[1..5] == b"line "))
+        && (start == 0 || bytes[start - 1] == b'\n')
+        {
+            // Workarounds for preprocessor linemarker bugs in GCC version 6.
+            if slice[2] == b'3' {
+                if slice.starts_with(HASH_31_COMMAND_LINE_NEWLINE) {
+                    // Bogus extra line with #31, after the regular #1:
+                    // Ignore the whole line, and continue parsing.
+                    digest.update(&bytes[hash_start..start]);
+                    while start < hash_start && slice[0] != b'\n' {
+                        start += 1;
+                    }
+                    start += 1;
+                    hash_start = start;
+                    continue;
+                } else if slice.starts_with(HASH_32_COMMAND_LINE_2_NEWLINE) {
+                    // Bogus wrong line with #32, instead of regular #1:
+                    // Replace the line number with the usual one.
+                    digest.update(&bytes[hash_start..start]);
+                    start += 1;
+                    bytes[start..start + 2].copy_from_slice(b"# 1");
+                    hash_start = start;
+                    slice = &bytes[start..];
+                }
+            }
+            while start < total_len && slice[0] != b'"' && slice[0] != b'\n' {
+                start += 1;
+                if start < total_len {
+                    slice = &bytes[start..];
+                }
+            }
+            slice = &bytes[start..];
+            if start < total_len && slice[0] == b'\n' {
+                // a newline before the quotation mark -> no match
+                continue;
+            }
+            start += 1;
+            if start >= total_len {
+                bail!("Failed to parse included file path");
+            }
+            // `start` points to the beginning of an include file path
+            digest.update(&bytes[hash_start..start]);
+            hash_start = start;
+            slice = &bytes[start..];
+            while start < total_len && slice[0] != b'"' {
+                start += 1;
+                if start < total_len {
+                    slice = &bytes[start..];
+                }
+            }
+            if start == hash_start {
+                // Skip empty file name.
+                continue;
+            }
+            // Look for preprocessor flags, after the "filename".
+            let mut system = false;
+            let mut pointer = start + 1;
+            while pointer < total_len && bytes[pointer] != b'\n' {
+                if bytes[pointer] == b'3' {
+                    // System header.
+                    system = true;
+                }
+                pointer += 1;
+            }
+
+            // `hash_start` and `start` span the include file path.
+            let include_path = &bytes[hash_start..start];
+            // We need to normalize the path now since it's part of the
+            // hash and since we need to deduplicate the include files.
+            // We cache the results since they are often quite a bit repeated.
+            let include_path: &[u8] = if let Some(opt) = normalized_include_paths.get(include_path)
+            {
+                match opt {
+                    Some(normalized) => normalized,
+                    None => include_path,
+                }
+            } else {
+                let path_buf = decode_path(include_path)?;
+                let normalized = normalize_path(&path_buf);
+                if normalized == path_buf {
+                    // `None` is a marker that the normalization is the same
+                    normalized_include_paths.insert(include_path.to_owned(), None);
+                    include_path
+                } else {
+                    let mut encoded = Vec::with_capacity(include_path.len());
+                    encode_path(&mut encoded, &normalized)?;
+                    normalized_include_paths.insert(include_path.to_owned(), Some(encoded));
+                    // No entry API on hashmaps, so we need to query again
+                    normalized_include_paths
+                        .get(include_path)
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                }
+            };
+
+            if !remember_include_file(
+                include_path,
+                input_file,
+                cwd,
+                included_files,
+                &mut digest,
+                system,
+                config,
+                time_of_compilation,
+            )? {
+                return Ok(false);
+            };
+            // Everything of interest between hash_start and start has been hashed now.
+            hash_start = start;
+        } else if &bytes[start..start + INCBIN_DIRECTIVE.len()] == INCBIN_DIRECTIVE
+            && ((slice[7] == b' ' && (slice[8] == b'"' || (slice[8] == b'\\' && slice[9] == b'"')))
+                || slice[7] == b'"')
+        {
+            // An assembler .inc bin (without the space) statement, which could be
+            // part of inline assembly, refers to an external file. If the file
+            // changes, the hash should change as well, but finding out what file to
+            // hash is too hard for sccache, so just bail out.
+            debug!("Found potential unsupported .inc bin directive in source code");
+            return Ok(false);
+        } else if slice.starts_with(b"___________") && (start == 0 || bytes[start - 1] == b'\n') {
+            // Unfortunately the distcc-pump wrapper outputs standard output lines:
+            // __________Using distcc-pump from /usr/bin
+            // __________Using # distcc servers in pump mode
+            // __________Shutting down distcc-pump include server
+            digest.update(&bytes[hash_start..start]);
+            while start < total_len && slice[0] != b'\n' {
+                start += 1;
+                if start < total_len {
+                    slice = &bytes[start..];
+                }
+            }
+            slice = &bytes[start..];
+            if slice[0] == b'\n' {
+                start += 1;
+            }
+            hash_start = start;
+            continue;
+        } else {
+            start += 1;
+        }
+    }
+    digest.update(&bytes[hash_start..]);
+
+    Ok(true)
+}
+
+/// Copied from cargo.
+///
+/// Normalize a path, removing things like `.` and `..`.
+///
+/// CAUTION: This does not resolve symlinks (unlike
+/// [`std::fs::canonicalize`]).
+pub fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut components = path.components().peekable();
+    let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
+        components.next();
+        PathBuf::from(c.as_os_str())
+    } else {
+        PathBuf::new()
+    };
+
+    for component in components {
+        match component {
+            Component::Prefix(..) => unreachable!(),
+            Component::RootDir => {
+                ret.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                ret.pop();
+            }
+            Component::Normal(c) => {
+                ret.push(c);
+            }
+        }
+    }
+    ret
+}
+
+// Returns false if the include file was "too new" and therefore should disable
+// the direct mode, otherwise true.
+#[allow(clippy::too_many_arguments)]
+fn remember_include_file(
+    mut path: &[u8],
+    input_file: &Path,
+    cwd: &Path,
+    included_files: &mut HashMap<PathBuf, String>,
+    digest: &mut Digest,
+    system: bool,
+    config: DirectModeConfig,
+    time_of_compilation: std::time::SystemTime,
+) -> Result<bool> {
+    // TODO if precompiled header.
+    if path.len() >= 2 && path[0] == b'<' && path[path.len() - 1] == b'>' {
+        // Typically <built-in> or <command-line>.
+        digest.update(path);
+        return Ok(true);
+    }
+
+    if system && config.skip_system_headers {
+        // Don't remember this system header, only hash its path.
+        digest.update(path);
+        return Ok(true);
+    }
+
+    let original_path = path;
+    // Canonicalize path for comparison; Clang uses ./header.h.
+    #[cfg(windows)]
+    {
+        if path.starts_with(br".\") || path.starts_with(b"./") {
+            path = &path[2..];
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if path.starts_with(b"./") {
+            path = &path[2..];
+        }
+    }
+    let mut path = decode_path(path).context("failed to decode path")?;
+    if path.is_relative() {
+        path = cwd.join(path);
+    }
+    if path != cwd || config.hash_working_directory {
+        digest.update(original_path);
+    }
+
+    if included_files.contains_key(&path) {
+        // Already known include file
+        return Ok(true);
+    }
+
+    if path == input_file {
+        // Don't remember the input file.
+        return Ok(true);
+    }
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) => {
+            debug!("Failed to stat include file {}: {}", path.display(), e);
+            return Ok(false);
+        }
+    };
+    if meta.is_dir() {
+        // Ignore directory, typically $PWD.
+        return Ok(true);
+    }
+    if !meta.is_file() {
+        // Device, pipe, socket or other strange creature.
+        debug!("Non-regular include file {}", path.display());
+        return Ok(false);
+    }
+
+    // TODO add an option to ignore some header files?
+    if include_is_too_new(&path, &meta, time_of_compilation) {
+        // Opt out of direct mode because of a race condition.
+        //
+        // The race condition consists of these events:
+        //
+        // - the preprocessor is run
+        // - an include file is modified by someone
+        // - the new include file is hashed by sccache
+        // - the real compiler is run on the preprocessor's output, which contains
+        //   data from the old header file
+        // - the wrong object file is stored in the cache.
+        return Ok(false);
+    }
+
+    // Let's hash the include file content.
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            debug!("Failed to open header file {}: {}", path.display(), e);
+            return Ok(false);
+        }
+    };
+
+    let (file_digest, finder) = if config.ignore_time_macros {
+        match Digest::reader_sync(file) {
+            Ok(file_digest) => (file_digest, TimeMacroFinder::new()),
+            Err(e) => {
+                debug!("Failed to read header file {}: {}", path.display(), e);
+                return Ok(false);
+            }
+        }
+    } else {
+        match Digest::reader_sync_time_macros(file) {
+            Ok((file_digest, finder)) => (file_digest, finder),
+            Err(e) => {
+                debug!("Failed to read header file {}: {}", path.display(), e);
+                return Ok(false);
+            }
+        }
+    };
+
+    if finder.found_time() {
+        debug!("Found __TIME__ in header file {}", path.display());
+        return Ok(false);
+    }
+
+    included_files.insert(path, file_digest);
+
+    Ok(true)
+}
+
+fn include_is_too_new(
+    path: &Path,
+    meta: &std::fs::Metadata,
+    time_of_compilation: std::time::SystemTime,
+) -> bool {
+    // The comparison using >= is intentional, due to a possible race between
+    // starting compilation and writing the include file.
+    if let Ok(mtime) = meta.modified() {
+        if mtime >= time_of_compilation {
+            debug!("Include file {} is too new", path.display());
+            return true;
+        }
+    }
+
+    // The same >= logic as above applies to the change time of the file.
+    if let Ok(ctime) = meta.ctime_or_creation() {
+        if ctime >= time_of_compilation.into() {
+            debug!("Include file {} is too new", path.display());
+            return true;
+        }
+    }
+
+    false
 }
 
 impl<I: CCompilerImpl> Compilation for CCompilation<I> {
@@ -882,5 +1375,47 @@ mod test {
         t("Hpp");
         t("Mm");
         t("Cu");
+    }
+
+    #[test]
+    fn test_process_preprocessed_file() {
+        env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+        let input_file = Path::new("tests/test.c");
+        let path = Path::new(file!())
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        // This should be portable since the only headers present in this
+        // output are system headers, which aren't interacted with
+        // on the filesystem if configured.
+        let path = path.join("tests/test.c.gcc-13.2.0-preproc");
+        let mut bytes = std::fs::read(path).unwrap();
+        let original_bytes = bytes.clone();
+        let mut include_files = HashMap::new();
+
+        let config = DirectModeConfig {
+            use_direct_mode: true,
+            skip_system_headers: true,
+            ..Default::default()
+        };
+        let success = process_preprocessed_file(
+            input_file,
+            Path::new(""),
+            &mut bytes,
+            &mut include_files,
+            config,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+        assert_eq!(&bytes, &original_bytes);
+        assert!(success);
+        assert_eq!(include_files.len(), 0);
     }
 }

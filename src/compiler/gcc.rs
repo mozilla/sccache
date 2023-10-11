@@ -80,7 +80,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-            vec!["-P".to_string()],
+            vec![], // TODO if direct mode
         )
         .await
     }

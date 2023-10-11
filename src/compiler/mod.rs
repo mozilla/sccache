@@ -21,6 +21,7 @@ mod clang;
 mod compiler;
 mod diab;
 mod gcc;
+mod manifest;
 mod msvc;
 mod nvcc;
 mod nvhpc;
@@ -30,3 +31,4 @@ mod tasking_vx;
 mod counted_array;
 
 pub use crate::compiler::compiler::*;
+pub use crate::compiler::manifest::Manifest;

@@ -33,7 +33,7 @@ use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use crate::errors::*;
+use crate::{cache::DirectModeConfig, errors::*};
 
 static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -160,6 +160,7 @@ pub struct DiskCacheConfig {
     pub dir: PathBuf,
     // TODO: use deserialize_with to allow human-readable sizes in toml
     pub size: u64,
+    pub direct_mode: DirectModeConfig,
 }
 
 impl Default for DiskCacheConfig {
@@ -167,6 +168,7 @@ impl Default for DiskCacheConfig {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
+            direct_mode: Default::default(),
         }
     }
 }
@@ -707,10 +709,28 @@ fn config_from_env() -> Result<EnvConfig> {
         .ok()
         .and_then(|v| parse_size(&v));
 
+    let mut direct_mode_config = DirectModeConfig::default();
+    match env::var("SCCACHE_DIRECT").as_deref() {
+        Ok("on") | Ok("true") => direct_mode_config.use_direct_mode = true,
+        Ok("off") | Ok("false") => direct_mode_config.use_direct_mode = false,
+        _ => {}
+    };
+    // Disabling has precedence over enabling
+    match env::var("SCCACHE_NODIRECT").as_deref() {
+        Ok("on") | Ok("true") => direct_mode_config.use_direct_mode = false,
+        Ok("off") | Ok("false") => direct_mode_config.use_direct_mode = true,
+        _ => {}
+    };
+
+    if env::var("SCCACHE_DIRECT").is_ok() && env::var("SCCACHE_NODIRECT").is_ok() {
+        warn!("Both `SCCACHE_DIRECT` && `SCCACHE_NODIRECT` are defined");
+    }
+
     let disk = if disk_dir.is_some() || disk_sz.is_some() {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
+            direct_mode: direct_mode_config,
         })
     } else {
         None
@@ -1053,6 +1073,7 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
+                direct_mode: Default::default(),
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
@@ -1066,6 +1087,7 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/file-cache".into(),
                 size: 15,
+                direct_mode: Default::default(),
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
@@ -1089,6 +1111,7 @@ fn config_overrides() {
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
+                direct_mode: Default::default(),
             },
             dist: Default::default(),
             server_startup_timeout: None,
@@ -1275,6 +1298,7 @@ token = "webdavtoken"
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
+                    direct_mode: Default::default(),
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),
