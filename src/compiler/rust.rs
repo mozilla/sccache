@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::FileObjectSource;
+use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
     c::ArtifactDescriptor, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
@@ -54,8 +54,9 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process;
+use std::sync::Arc;
 #[cfg(feature = "dist-client")]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time;
 
 use crate::errors::*;
@@ -998,6 +999,8 @@ ArgData! {
 
 use self::ArgData::*;
 
+use super::CacheControl;
+
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
@@ -1285,6 +1288,8 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
+        _storage: Arc<dyn Storage>,
+        _cache_control: CacheControl,
     ) -> Result<HashResult> {
         let RustHasher {
             executable,
@@ -2423,6 +2428,7 @@ mod test {
 
     use crate::compiler::*;
     use crate::mock_command::*;
+    use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use fs::File;
     use itertools::Itertools;
@@ -3154,6 +3160,8 @@ proc_macro false
                 false,
                 &pool,
                 false,
+                Arc::new(MockStorage::new(None)),
+                CacheControl::Default,
             )
             .wait()
             .unwrap();
@@ -3243,6 +3251,8 @@ proc_macro false
                 false,
                 &pool,
                 false,
+                Arc::new(MockStorage::new(None)),
+                CacheControl::Default,
             )
             .wait()
             .unwrap()

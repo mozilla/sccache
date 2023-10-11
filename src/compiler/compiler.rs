@@ -259,6 +259,7 @@ where
     /// Given information about a compiler command, generate a hash key
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
+    #[allow(clippy::too_many_arguments)]
     async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
@@ -267,6 +268,8 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
+        storage: Arc<dyn Storage>,
+        cache_control: CacheControl,
     ) -> Result<HashResult>;
 
     /// Return the state of any `--color` option passed to the compiler.
@@ -302,6 +305,8 @@ where
                 may_dist,
                 &pool,
                 rewrite_includes_only,
+                storage.clone(),
+                cache_control,
             )
             .await;
         debug!(
@@ -929,7 +934,7 @@ pub enum Cacheable {
 }
 
 /// Control of caching behavior.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheControl {
     /// Default caching behavior.
     Default,
@@ -1699,7 +1704,16 @@ LLVM version: 6.0",
                     o => panic!("Bad result from parse_arguments: {:?}", o),
                 };
                 hasher
-                    .generate_hash_key(&creator, cwd.to_path_buf(), vec![], false, pool, false)
+                    .generate_hash_key(
+                        &creator,
+                        cwd.to_path_buf(),
+                        vec![],
+                        false,
+                        pool,
+                        false,
+                        Arc::new(MockStorage::new(None)),
+                        CacheControl::Default,
+                    )
                     .wait()
                     .unwrap()
             })
@@ -1734,7 +1748,12 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -1848,7 +1867,12 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -2118,7 +2142,12 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -2232,7 +2261,12 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
@@ -2312,7 +2346,12 @@ LLVM version: 6.0",
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
         ];
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(

@@ -118,7 +118,7 @@ impl CCompilerImpl for Clang {
     where
         T: CommandCreatorSync,
     {
-        let mut ignorable_whitespace_flags = vec!["-P".to_string()];
+        let mut ignorable_whitespace_flags = vec![]; // TODO only if direct mode
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
         if self.is_minversion(14) {
