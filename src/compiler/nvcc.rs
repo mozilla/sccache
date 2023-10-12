@@ -97,6 +97,7 @@ impl CCompilerImpl for Nvcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        _direct_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,

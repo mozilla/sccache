@@ -114,11 +114,16 @@ impl CCompilerImpl for Clang {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        direct_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
-        let mut ignorable_whitespace_flags = vec![]; // TODO only if direct mode
+        let mut ignorable_whitespace_flags = if direct_mode {
+            vec![]
+        } else {
+            vec!["-P".to_string()]
+        };
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
         if self.is_minversion(14) {
