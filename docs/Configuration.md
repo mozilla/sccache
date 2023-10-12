@@ -24,6 +24,14 @@ token = "secrettoken"
 dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
+[cache.disk.direct_mode]
+use_direct_mode = true
+file_stat_matches = true
+use_ctime_for_stat = true
+ignore_time_macros = false
+skip_system_headers = false
+hash_working_directory = true
+
 [cache.gcs]
 # optional oauth url
 oauth_url = "..."
@@ -84,6 +92,8 @@ configuration variables
 
 * `SCCACHE_DIR` local on disk artifact cache directory
 * `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
+* `SCCACHE_DIRECT` enable direct mode
+* `SCCACHE_NODIRECT` disable direct mode
 
 #### s3 compatible
 
