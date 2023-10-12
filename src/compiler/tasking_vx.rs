@@ -280,6 +280,7 @@ where
         profile_generate: false,
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
+        too_hard_for_direct_mode: false,
     })
 }
 
@@ -704,6 +705,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_direct_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -751,6 +753,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_direct_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
