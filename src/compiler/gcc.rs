@@ -67,10 +67,16 @@ impl CCompilerImpl for Gcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        direct_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
+        let ignorable_whitespace_flags = if direct_mode {
+            vec![]
+        } else {
+            vec!["-P".to_string()]
+        };
         preprocess(
             creator,
             executable,
@@ -80,7 +86,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-            vec![], // TODO if direct mode
+            ignorable_whitespace_flags,
         )
         .await
     }
