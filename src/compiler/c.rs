@@ -111,6 +111,8 @@ pub struct ParsedArguments {
     pub color_mode: ColorMode,
     /// arguments are incompatible with rewrite_includes_only
     pub suppress_rewrite_includes_only: bool,
+    /// Arguments are incompatible with direct mode
+    pub too_hard_for_direct_mode: bool,
 }
 
 impl ParsedArguments {

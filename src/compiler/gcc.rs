@@ -287,6 +287,8 @@ where
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
 
+    let mut too_hard_for_direct_mode = false;
+
     for arg in ArgsIter::new(it, arg_info) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
@@ -432,6 +434,11 @@ where
                 Argument::UnknownFlag(_) => &mut common_args,
                 _ => unreachable!(),
             },
+        };
+
+        too_hard_for_direct_mode = match arg.flag_str() {
+            Some(s) => s == "-Xpreprocessor",
+            _ => false,
         };
 
         // Normalize attributes such as "-I foo", "-D FOO=bar", as
@@ -609,6 +616,7 @@ where
         profile_generate,
         color_mode,
         suppress_rewrite_includes_only,
+        too_hard_for_direct_mode,
     })
 }
 
@@ -1899,6 +1907,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_direct_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2028,5 +2037,22 @@ mod test {
             vec![],
         );
         assert!(!cmd.args.contains(&"-x".into()));
+    }
+
+    #[test]
+    fn test_too_hard_for_direct_mode() {
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(!parsed_args.too_hard_for_direct_mode);
+
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o", "-Xpreprocessor", "-M"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(parsed_args.too_hard_for_direct_mode);
     }
 }
