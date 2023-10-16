@@ -24,7 +24,7 @@ In parallel, we also take into account in the hash:
 
 For C/C++, the hash is generated with a blake3 digest of the preprocessed
 file (-E with gcc/clang). For compilations that specify multiple `-arch` flags,
-these flags are rewritten to their corresponding preprocessor defines to allow 
+these flags are rewritten to their corresponding preprocessor defines to allow
 pre-processing the file (e.g `-arch x86_64` is rewritten to `-D__X86_64__=1`),
 this can be enabled by setting the environment variable
 `SCCACHE_CACHE_MULTIARCH` but is disabled by default as it may not work in all
@@ -43,3 +43,15 @@ We also take into account in the hash:
 * Color mode
 * Environment variables
 See https://github.com/mozilla/sccache/blob/8567bbe2ba493153e76177c1f9a6f98cc7ba419f/src/compiler/c.rs#L84
+
+### C/C++ preprocessor
+
+In "preprocessor cache mode", [explained in the local doc](Local.md), an
+extra key is computed to cache the preprocessor output itself. It is very close
+to the C/C++ compiler one, but with additional elements:
+
+* The path of the input file
+* The hash of the input file
+
+Note that some compiler options can disable preprocessor cache mode. As of this
+writing, only `-Xpreprocessor` does.
