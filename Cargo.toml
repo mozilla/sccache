@@ -60,7 +60,7 @@ opendal = { version = "0.40.0", optional = true }
 openssl = { version = "0.10.55", optional = true }
 rand = "0.8.4"
 regex = "1.7.3"
-reqsign = { version = "0.14", optional = true }
+reqsign = { version = "0.14.1", optional = true }
 reqwest = { version = "0.11", features = [
   "json",
   "blocking",
@@ -151,7 +151,7 @@ gcs = ["opendal", "reqsign", "url", "reqwest/blocking", "trust-dns-resolver"]
 gha = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
-redis = ["url", "opendal/services-redis"]
+redis = ["url", "opendal/services-redis", "opendal/services-redis-rustls"]
 s3 = ["opendal", "reqsign"]
 webdav = ["opendal"]
 # Enable features that will build a vendored version of openssl and
