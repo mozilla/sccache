@@ -27,7 +27,7 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
-use crate::compiler::Manifest;
+use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 #[cfg(any(
     feature = "azure",
@@ -364,31 +364,39 @@ pub trait Storage: Send + Sync {
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
 
-    /// Return the config for direct mode if applicable
-    fn direct_mode_config(&self) -> DirectModeConfig {
+    /// Return the config for preprocessor cache mode if applicable
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         // Disabled by default, only enabled in local mode
-        DirectModeConfig::default()
+        PreprocessorCacheModeConfig::default()
     }
-    /// Return the manifest for a given manifest key, if it exists.
-    /// Only applicable when using direct mode.
-    fn get_manifest(&self, _key: &str) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+    /// Return the preprocessor cache entry for a given preprocessor key,
+    /// if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn get_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
         Ok(None)
     }
-    /// Insert a manifest at the given manifest key, overwriting the entry if it
-    /// exists.
-    /// Only applicable when using direct mode.
-    fn put_manifest(&self, _key: &str, _manifest: Manifest) -> Result<()> {
+    /// Insert a preprocessor cache entry at the given preprocessor key,
+    /// overwriting the entry if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn put_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+        _preprocessor_cache_entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
         Ok(())
     }
 }
 
-/// Configuration switches for direct mode (preprocessor caching).
+/// Configuration switches for preprocessor cache mode.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
-pub struct DirectModeConfig {
-    /// Whether to use direct mode entirely
-    pub use_direct_mode: bool,
+pub struct PreprocessorCacheModeConfig {
+    /// Whether to use preprocessor cache mode entirely
+    pub use_preprocessor_cache_mode: bool,
     /// If false (default), only compare header files by hashing their contents.
     /// If true, will use size + ctime + mtime to check whether a file has changed.
     /// See other flags below for more control over this behavior.
@@ -399,21 +407,21 @@ pub struct DirectModeConfig {
     /// in a controlled manner.
     pub use_ctime_for_stat: bool,
     /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
-    /// in the source code. Will speed up direct mode, but can result in false
-    /// positives.
+    /// in the source code. Will speed up preprocessor cache mode,
+    /// but can result in false positives.
     pub ignore_time_macros: bool,
-    /// If true, direct mode will not cache system headers, only add them to the
-    /// hash.
+    /// If true, preprocessor cache mode will not cache system headers, only
+    /// add them to the hash.
     pub skip_system_headers: bool,
     /// If true (default), will add the current working directory in the hash to
     /// distinguish two compilations from different directories.
     pub hash_working_directory: bool,
 }
 
-impl Default for DirectModeConfig {
+impl Default for PreprocessorCacheModeConfig {
     fn default() -> Self {
         Self {
-            use_direct_mode: false,
+            use_preprocessor_cache_mode: false,
             file_stat_matches: false,
             use_ctime_for_stat: true,
             ignore_time_macros: false,
@@ -633,13 +641,13 @@ pub fn storage_from_config(
     }
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
-    let direct_mode_config = config.fallback_cache.direct_mode;
+    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
-        direct_mode_config,
+        preprocessor_cache_mode_config,
     )))
 }
 

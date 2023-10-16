@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{DirectModeConfig, FileObjectSource, Storage};
-use crate::compiler::manifest::manifest_hash_key;
+use crate::cache::{FileObjectSource, PreprocessorCacheModeConfig, Storage};
+use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, HashResult, Language,
@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use crate::errors::*;
 
-use super::manifest::Manifest;
+use super::preprocessor_cache::PreprocessorCacheEntry;
 use super::CacheControl;
 
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
@@ -113,8 +113,8 @@ pub struct ParsedArguments {
     pub color_mode: ColorMode,
     /// arguments are incompatible with rewrite_includes_only
     pub suppress_rewrite_includes_only: bool,
-    /// Arguments are incompatible with direct mode
-    pub too_hard_for_direct_mode: bool,
+    /// Arguments are incompatible with preprocessor cache mode
+    pub too_hard_for_preprocessor_cache_mode: bool,
 }
 
 impl ParsedArguments {
@@ -183,7 +183,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        direct_mode: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync;
@@ -310,9 +310,9 @@ where
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
-        let direct_mode_config = storage.direct_mode_config();
-        let mut manifest_key = if direct_mode_config.use_direct_mode {
-            manifest_hash_key(
+        let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let mut preprocessor_key = if preprocessor_cache_mode_config.use_preprocessor_cache_mode {
+            preprocessor_cache_entry_hash_key(
                 &executable_digest,
                 parsed_args.language,
                 &preprocessor_and_arch_args,
@@ -320,27 +320,35 @@ where
                 &env_vars,
                 &absolute_input_path,
                 compiler.plusplus(),
-                direct_mode_config,
+                preprocessor_cache_mode_config,
             )?
         } else {
             None
         };
-        if let Some(manifest_key) = &manifest_key {
+        if let Some(preprocessor_key) = &preprocessor_key {
             if cache_control == CacheControl::Default {
-                if let Some(mut seekable) = storage.get_manifest(manifest_key)? {
+                if let Some(mut seekable) =
+                    storage.get_preprocessor_cache_entry(preprocessor_key)?
+                {
                     let mut buf = vec![];
                     seekable.read_to_end(&mut buf)?;
-                    let mut manifest = Manifest::read(&buf)?;
+                    let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                     let mut updated = false;
-                    let hit = manifest.lookup_result_digest(direct_mode_config, &mut updated);
+                    let hit = preprocessor_cache_entry
+                        .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
                     if updated {
                         // Time macros have been found, we need to update
-                        // the manifest. See [`Manifest::result_matches`].
-                        debug!("Manifest updated because of time macros: {manifest_key}");
-                        storage.put_manifest(manifest_key, manifest)?;
+                        // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
+                        debug!(
+                            "Preprocessor cache updated because of time macros: {preprocessor_key}"
+                        );
+                        storage.put_preprocessor_cache_entry(
+                            preprocessor_key,
+                            preprocessor_cache_entry,
+                        )?;
                     }
                     if let Some(key) = hit {
-                        debug!("Direct mode cache hit: {manifest_key}");
+                        debug!("Preprocessor cache hit: {preprocessor_key}");
                         // A compiler binary may be a symlink to another and
                         // so has the same digest, but that means
                         // the toolchain will not contain the correct path
@@ -362,6 +370,8 @@ where
                             }),
                             weak_toolchain_key,
                         });
+                    } else {
+                        debug!("Preprocessor cache miss: {preprocessor_key}");
                     }
                 }
             }
@@ -376,7 +386,7 @@ where
                 &env_vars,
                 may_dist,
                 rewrite_includes_only,
-                direct_mode_config.use_direct_mode,
+                preprocessor_cache_mode_config.use_preprocessor_cache_mode,
             )
             .await;
         let out_pretty = parsed_args.output_pretty().into_owned();
@@ -428,19 +438,19 @@ where
 
         // Remember include files needed in this preprocessing step
         let mut include_files = HashMap::new();
-        if manifest_key.is_some() {
+        if preprocessor_key.is_some() {
             // TODO how to propagate stats and which stats?
             if !process_preprocessed_file(
                 &absolute_input_path,
                 &cwd,
                 &mut preprocessor_result.stdout,
                 &mut include_files,
-                direct_mode_config,
+                preprocessor_cache_mode_config,
                 start_of_compilation,
                 StandardFsAbstraction,
             )? {
-                debug!("Disabling direct mode");
-                manifest_key = None;
+                debug!("Disabling preprocessor cache mode");
+                preprocessor_key = None;
             }
         }
 
@@ -468,17 +478,18 @@ where
         };
 
         // Cache the preprocessing step
-        if let Some(manifest_key) = manifest_key {
+        if let Some(preprocessor_key) = preprocessor_key {
             if !include_files.is_empty() {
-                let mut manifest = Manifest::new();
-                manifest.add_result(
+                let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
+                preprocessor_cache_entry.add_result(
                     start_of_compilation,
                     &key,
                     include_files
                         .into_iter()
                         .map(|(path, digest)| (digest, path)),
                 );
-                storage.put_manifest(&manifest_key, manifest)?;
+                storage
+                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)?;
             }
         }
 
@@ -524,13 +535,13 @@ const HASH_32_COMMAND_LINE_2_NEWLINE: &[u8] = b"# 32 \"<command-line>\" 2\n";
 const INCBIN_DIRECTIVE: &[u8] = b".incbin";
 
 /// Remember the include files in the preprocessor output if it can be cached.
-/// Returns `false` if direct mode should be disabled.
+/// Returns `false` if preprocessor cache mode should be disabled.
 fn process_preprocessed_file(
     input_file: &Path,
     cwd: &Path,
     bytes: &mut Vec<u8>,
     included_files: &mut HashMap<PathBuf, String>,
-    config: DirectModeConfig,
+    config: PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     fs_impl: impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
@@ -590,8 +601,8 @@ fn process_preprocessed_file(
                     start = s;
                     hash_start = h;
                 }
-                ControlFlow::Break((s, h, continue_direct_mode)) => {
-                    if !continue_direct_mode {
+                ControlFlow::Break((s, h, continue_preprocessor_cache_mode)) => {
+                    if !continue_preprocessor_cache_mode {
                         return Ok(false);
                     }
                     start = s;
@@ -637,7 +648,7 @@ fn process_preprocessed_file(
 }
 
 /// What to do after handling a preprocessor number line.
-/// The `Break` variant is `(start, hash_start, continue_direct_mode)`.
+/// The `Break` variant is `(start, hash_start, continue_preprocessor_cache_mode)`.
 /// The `Continue` variant is `(start, hash_start)`.
 type PreprocessedLineAction = ControlFlow<(usize, usize, bool), (usize, usize)>;
 
@@ -646,7 +657,7 @@ fn process_preprocessor_line(
     input_file: &Path,
     cwd: &Path,
     included_files: &mut HashMap<PathBuf, String>,
-    config: DirectModeConfig,
+    config: PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     bytes: &mut [u8],
     mut start: usize,
@@ -844,7 +855,7 @@ impl PreprocessorFSAbstraction for StandardFsAbstraction {}
 
 // Returns false if the include file was "too new" (meaning modified during or
 // after the start of the compilation) and therefore should disable
-// the direct mode, otherwise true.
+// the preprocessor cache mode, otherwise true.
 #[allow(clippy::too_many_arguments)]
 fn remember_include_file(
     mut path: &[u8],
@@ -853,7 +864,7 @@ fn remember_include_file(
     included_files: &mut HashMap<PathBuf, String>,
     digest: &mut Digest,
     system: bool,
-    config: DirectModeConfig,
+    config: PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
     fs_impl: &impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
@@ -960,7 +971,7 @@ fn remember_include_file(
     Ok(true)
 }
 
-/// Opt out of direct mode because of a race condition.
+/// Opt out of preprocessor cache mode because of a race condition.
 ///
 /// The race condition consists of these events:
 ///
@@ -1504,8 +1515,8 @@ mod test {
         let original_bytes = bytes.clone();
         let mut include_files = HashMap::new();
 
-        let config = DirectModeConfig {
-            use_direct_mode: true,
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
             skip_system_headers: true,
             ..Default::default()
         };
@@ -1576,8 +1587,8 @@ mod test {
     ) -> PreprocessedLineAction {
         let input_file = Path::new("tests/test.c");
 
-        let config = DirectModeConfig {
-            use_direct_mode: true,
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
             skip_system_headers,
             ..Default::default()
         };
@@ -1762,7 +1773,7 @@ mod test {
                 &fs_impl,
                 false,
             ),
-            // Direct mode is disabled
+            // preprocessor cache mode is disabled
             ControlFlow::Break((63, 9, false)),
         );
 
@@ -1791,7 +1802,7 @@ mod test {
                 &fs_impl,
                 false,
             ),
-            // Direct mode is *not* disabled,
+            // preprocessor cache mode is *not* disabled,
             ControlFlow::Continue((63, 63)),
         );
         assert_eq!(include_files.len(), 0);

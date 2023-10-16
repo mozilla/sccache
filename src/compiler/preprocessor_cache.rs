@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The manifest is a description of all information needed to cache
-//! pre-processor output in C-family languages for a given input file.
-//! The current implementation is very much inspired from the manifest
+//! The preprocessor cache entry is a description of all information needed
+//! to cache pre-processor output in C-family languages for a given input file.
+//! The current implementation is very much inspired from the "manifest"
 //! that `ccache` uses for its "direct mode", though the on-disk format is
 //! different.
 
@@ -33,22 +33,23 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    cache::DirectModeConfig,
+    cache::PreprocessorCacheModeConfig,
     util::{encode_path, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp},
 };
 
 use super::Language;
 
 /// The current format is 1 header byte for the version + bincode encoding
-/// of the [`Manifest`] struct.
+/// of the [`PreprocessorCacheEntry`] struct.
 const FORMAT_VERSION: u8 = 0;
-const MAX_MANIFEST_ENTRIES: usize = 100;
-const MAX_MANIFEST_FILE_INFO_ENTRIES: usize = 10000;
+const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
+const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
 #[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
-pub struct Manifest {
-    /// A counter of the overall number of [`IncludeEntry`] in the manifest,
-    /// as an optimization when checking we're not ballooning in size.
+pub struct PreprocessorCacheEntry {
+    /// A counter of the overall number of [`IncludeEntry`] in this
+    /// preprocessor cache entry, as an optimization when checking
+    /// we're not ballooning in size.
     number_of_entries: usize,
     /// The digest of a result is computed by hashing the output of the
     /// C preprocessor. Entries correspond to the included files during the
@@ -56,12 +57,12 @@ pub struct Manifest {
     results: BTreeMap<String, Vec<IncludeEntry>>,
 }
 
-impl Manifest {
+impl PreprocessorCacheEntry {
     pub fn new() -> Self {
         Default::default()
     }
 
-    /// Tries to deserialize a manifest from `contents`
+    /// Tries to deserialize a preprocessor cache entry from `contents`
     pub fn read(contents: &[u8]) -> Result<Self, Error> {
         if contents.is_empty() {
             Ok(Self {
@@ -75,7 +76,7 @@ impl Manifest {
         }
     }
 
-    /// Serialize the manifest to `buf`
+    /// Serialize the preprocessor cache entry to `buf`
     pub fn write(&self, buf: &mut impl Write) -> Result<(), Error> {
         // Add the starting byte for version check since `bincode` doesn't
         // support it.
@@ -94,21 +95,24 @@ impl Manifest {
         result_key: &str,
         included_files: impl IntoIterator<Item = (String, PathBuf)>,
     ) {
-        if self.results.len() > MAX_MANIFEST_ENTRIES {
-            // Normally, there shouldn't be many result entries in the manifest since
-            // new entries are added only if an include file has changed but not the
-            // source file, and you typically change source files more often than header
-            // files. However, it's certainly possible to imagine cases where the
-            // manifest will grow large (for instance, a generated header file that
-            // changes for every build), and this must be taken care of since processing
-            // an ever growing manifest eventually will take too much time. A good way
-            // of solving this would be to maintain the result entries in LRU order and
-            // discarding the old ones. An easy way is to throw away all entries when
-            // there are too many. Let's do that for now.
+        if self.results.len() > MAX_PREPROCESSOR_CACHE_ENTRIES {
+            // Normally, there shouldn't be many result entries in the
+            // preprocessor cache entry since new entries are added only if
+            // an include file has changed but not the source file, and you
+            // typically change source files more often than header files.
+            // However, it's certainly possible to imagine cases where the
+            // preprocessor cache entry will grow large (for instance,
+            // a generated header file that changes for every build), and this
+            // must be taken care of since processing an ever growing
+            // preprocessor cache entry eventually will take too much time.
+            // A good way of solving this would be to maintain the
+            // result entries in LRU order and discarding the old ones.
+            // An easy way is to throw away all entries when there are too many.
+            // Let's do that for now.
             debug!(
-                "Too many entries in manifest file ({}/{}), starting over",
+                "Too many entries in preprocessor cache entry file ({}/{}), starting over",
                 self.results.len(),
-                MAX_MANIFEST_ENTRIES
+                MAX_PREPROCESSOR_CACHE_ENTRIES
             );
             self.results.clear();
             self.number_of_entries = 0;
@@ -138,14 +142,14 @@ impl Manifest {
         match includes {
             Ok(includes) => {
                 let new_number_of_entries = includes.len() + self.number_of_entries;
-                if new_number_of_entries > MAX_MANIFEST_FILE_INFO_ENTRIES {
+                if new_number_of_entries > MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES {
                     // Rarely, entries can grow large in pathological cases
                     // where many included files change, but the main file
                     // does not. This also puts an upper bound on the number
                     // of entries.
                     debug!(
-                        "Too many include entries in manifest file ({}/{}), starting over",
-                        new_number_of_entries, MAX_MANIFEST_FILE_INFO_ENTRIES
+                        "Too many include entries in preprocessor cache entry file ({}/{}), starting over",
+                        new_number_of_entries, MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES
                     );
                     self.results.clear();
                 }
@@ -160,10 +164,10 @@ impl Manifest {
                         vacant.insert(includes);
                     }
                 };
-                debug!("Added result key {result_key} to manifest");
+                debug!("Added result key {result_key} to preprocessor cache entry");
             }
             Err(e) => {
-                debug!("Could not add result key {result_key} to manifest: {e}");
+                debug!("Could not add result key {result_key} to preprocessor cache entry: {e}");
             }
         }
     }
@@ -172,7 +176,7 @@ impl Manifest {
     /// are already on disk and have not changed.
     pub fn lookup_result_digest(
         &mut self,
-        config: DirectModeConfig,
+        config: PreprocessorCacheModeConfig,
         updated: &mut bool,
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
@@ -189,7 +193,7 @@ impl Manifest {
     fn result_matches(
         digest: &str,
         includes: &mut [IncludeEntry],
-        config: DirectModeConfig,
+        config: PreprocessorCacheModeConfig,
         updated: &mut bool,
     ) -> bool {
         for include in includes {
@@ -203,7 +207,7 @@ impl Manifest {
                 }
                 Err(e) => {
                     debug!(
-                        "{} is in a manifest entry but can't be read ({})",
+                        "{} is in a preprocessor cache entry but can't be read ({})",
                         path.display(),
                         e
                     );
@@ -241,7 +245,7 @@ impl Manifest {
                 Ok(file) => file,
                 Err(e) => {
                     debug!(
-                        "{} is in a manifest entry but can't be opened ({})",
+                        "{} is in a preprocessor cache entry but can't be opened ({})",
                         path.display(),
                         e
                     );
@@ -254,7 +258,7 @@ impl Manifest {
                     Ok(new_digest) => (new_digest, TimeMacroFinder::new()),
                     Err(e) => {
                         debug!(
-                            "{} is in a manifest entry but can't be read ({})",
+                            "{} is in a preprocessor cache entry but can't be read ({})",
                             path.display(),
                             e
                         );
@@ -267,7 +271,7 @@ impl Manifest {
                     Ok((new_digest, finder)) => (new_digest, finder),
                     Err(e) => {
                         debug!(
-                            "{} is in a manifest entry but can't be read ({})",
+                            "{} is in a preprocessor cache entry but can't be read ({})",
                             path.display(),
                             e
                         );
@@ -285,7 +289,7 @@ impl Manifest {
                 // but we have to assume it anyway and hash the time stamp. However, that's
                 // not very useful since the chance that we get a cache hit later the same
                 // second should be quite slim... So, just signal back to the caller that
-                // __TIME__ has been found so that the direct mode can be disabled.
+                // __TIME__ has been found so that the preprocessor cache mode can be disabled.
                 debug!("Found __TIME__ in {}", path.display());
                 return false;
             }
@@ -320,7 +324,7 @@ impl Manifest {
                     Ok(meta) => meta,
                     Err(e) => {
                         debug!(
-                            "{} is in a manifest entry but can't be read ({})",
+                            "{} is in a preprocessor cache entry but can't be read ({})",
                             path.display(),
                             e
                         );
@@ -341,7 +345,7 @@ impl Manifest {
                 new_digest.delimiter(b"timestamp");
                 new_digest.update(&mtime.naive_local().timestamp().to_le_bytes());
                 include.digest = new_digest.finish();
-                // Signal that the manifest has been updated and needs to be
+                // Signal that the preprocessor cache entry has been updated and needs to be
                 // written to disk.
                 *updated = true;
             }
@@ -350,7 +354,7 @@ impl Manifest {
     }
 }
 
-/// Environment variables that are factored into the manifest cached key.
+/// Environment variables that are factored into the preprocessor cache entry cached key.
 static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
     [
         // SCCACHE_C_CUSTOM_CACHE_BUSTER has no particular meaning behind it,
@@ -371,7 +375,7 @@ static CACHED_ENV_VARS: Lazy<HashSet<&'static OsStr>> = Lazy::new(|| {
 
 /// Compute the hash key of compiler preprocessing `input` with `args`.
 #[allow(clippy::too_many_arguments)]
-pub fn manifest_hash_key(
+pub fn preprocessor_cache_entry_hash_key(
     compiler_digest: &str,
     language: Language,
     arguments: &[OsString],
@@ -379,7 +383,7 @@ pub fn manifest_hash_key(
     env_vars: &[(OsString, OsString)],
     input_file: &Path,
     plusplus: bool,
-    config: DirectModeConfig,
+    config: PreprocessorCacheModeConfig,
 ) -> anyhow::Result<Option<String>> {
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();
@@ -408,9 +412,9 @@ pub fn manifest_hash_key(
     // - a/r.h exists.
     // - a/x.c has #include "r.h".
     // - b/x.c is identical to a/x.c.
-    // - Compiling a/x.c records a/r.h in the manifest.
+    // - Compiling a/x.c records a/r.h in the preprocessor cache entry.
     // - Compiling b/x.c results in a false cache hit since a/x.c and b/x.c
-    // share manifests and a/r.h exists.
+    // share preprocessor cache entries and a/r.h exists.
     let mut buf = vec![];
     encode_path(&mut buf, input_file)?;
     m.update(&buf);
@@ -422,7 +426,7 @@ pub fn manifest_hash_key(
         Digest::reader_sync_time_macros(reader)?
     };
     if finder.found_time() {
-        // Disable direct mode
+        // Disable preprocessor cache mode
         debug!("Found __TIME__ in {}", input_file.display());
         return Ok(None);
     }
@@ -469,9 +473,10 @@ impl std::fmt::Display for Error {
         match self {
             Error::Io(e) => e.fmt(f),
             Error::Deserialization(e) => e.fmt(f),
-            Error::UnknownFormat(format) => {
-                f.write_fmt(format_args!("Unknown manifest format {:x}", format))
-            }
+            Error::UnknownFormat(format) => f.write_fmt(format_args!(
+                "Unknown preprocessor cache entry format {:x}",
+                format
+            )),
         }
     }
 }
