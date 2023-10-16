@@ -614,20 +614,21 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
             }
         }
-        Command::DebugManifests => {
-            trace!("Command::DebugManifests");
-            let manifest_dir = default_disk_cache_dir().join("manifests");
-            for entry in WalkDir::new(manifest_dir).sort_by_file_name().into_iter() {
-                let manifest_file = entry?;
-                let path = manifest_file.path();
+        Command::DebugPreprocessorCacheEntries => {
+            trace!("Command::DebugPreprocessorCacheEntries");
+            let entries_dir = default_disk_cache_dir().join("preprocessor");
+            for entry in WalkDir::new(entries_dir).sort_by_file_name().into_iter() {
+                let preprocessor_cache_entry_file = entry?;
+                let path = preprocessor_cache_entry_file.path();
                 if !path.is_file() {
                     continue;
                 }
                 println!("=========================");
-                println!("Showing manifest file {}", &path.display());
+                println!("Showing preprocessor entry file {}", &path.display());
                 let contents = std::fs::read(path)?;
-                let manifest = crate::compiler::Manifest::read(&contents)?;
-                println!("{:#?}", manifest);
+                let preprocessor_cache_entry =
+                    crate::compiler::PreprocessorCacheEntry::read(&contents)?;
+                println!("{:#?}", preprocessor_cache_entry);
                 println!("=========================");
             }
         }

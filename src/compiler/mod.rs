@@ -21,14 +21,14 @@ mod clang;
 mod compiler;
 mod diab;
 mod gcc;
-mod manifest;
 mod msvc;
 mod nvcc;
 mod nvhpc;
+mod preprocessor_cache;
 mod rust;
 mod tasking_vx;
 #[macro_use]
 mod counted_array;
 
 pub use crate::compiler::compiler::*;
-pub use crate::compiler::manifest::Manifest;
+pub use crate::compiler::preprocessor_cache::PreprocessorCacheEntry;
