@@ -26,6 +26,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     decode_path, encode_path, hash_all, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder,
+    Timestamp,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -36,6 +37,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::hash::Hash;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
@@ -435,6 +437,7 @@ where
                 &mut include_files,
                 direct_mode_config,
                 start_of_compilation,
+                StandardFsAbstraction,
             )? {
                 debug!("Disabling direct mode");
                 manifest_key = None;
@@ -529,6 +532,7 @@ fn process_preprocessed_file(
     included_files: &mut HashMap<PathBuf, String>,
     config: DirectModeConfig,
     time_of_compilation: std::time::SystemTime,
+    fs_impl: impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
     let mut start = 0;
     let mut hash_start = 0;
@@ -568,113 +572,33 @@ fn process_preprocessed_file(
             || (&slice[1..5] == b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
-            // Workarounds for preprocessor linemarker bugs in GCC version 6.
-            if slice[2] == b'3' {
-                if slice.starts_with(HASH_31_COMMAND_LINE_NEWLINE) {
-                    // Bogus extra line with #31, after the regular #1:
-                    // Ignore the whole line, and continue parsing.
-                    digest.update(&bytes[hash_start..start]);
-                    while start < hash_start && slice[0] != b'\n' {
-                        start += 1;
-                    }
-                    start += 1;
-                    hash_start = start;
-                    continue;
-                } else if slice.starts_with(HASH_32_COMMAND_LINE_2_NEWLINE) {
-                    // Bogus wrong line with #32, instead of regular #1:
-                    // Replace the line number with the usual one.
-                    digest.update(&bytes[hash_start..start]);
-                    start += 1;
-                    bytes[start..start + 2].copy_from_slice(b"# 1");
-                    hash_start = start;
-                    slice = &bytes[start..];
-                }
-            }
-            while start < total_len && slice[0] != b'"' && slice[0] != b'\n' {
-                start += 1;
-                if start < total_len {
-                    slice = &bytes[start..];
-                }
-            }
-            slice = &bytes[start..];
-            if start < total_len && slice[0] == b'\n' {
-                // a newline before the quotation mark -> no match
-                continue;
-            }
-            start += 1;
-            if start >= total_len {
-                bail!("Failed to parse included file path");
-            }
-            // `start` points to the beginning of an include file path
-            digest.update(&bytes[hash_start..start]);
-            hash_start = start;
-            slice = &bytes[start..];
-            while start < total_len && slice[0] != b'"' {
-                start += 1;
-                if start < total_len {
-                    slice = &bytes[start..];
-                }
-            }
-            if start == hash_start {
-                // Skip empty file name.
-                continue;
-            }
-            // Look for preprocessor flags, after the "filename".
-            let mut system = false;
-            let mut pointer = start + 1;
-            while pointer < total_len && bytes[pointer] != b'\n' {
-                if bytes[pointer] == b'3' {
-                    // System header.
-                    system = true;
-                }
-                pointer += 1;
-            }
-
-            // `hash_start` and `start` span the include file path.
-            let include_path = &bytes[hash_start..start];
-            // We need to normalize the path now since it's part of the
-            // hash and since we need to deduplicate the include files.
-            // We cache the results since they are often quite a bit repeated.
-            let include_path: &[u8] = if let Some(opt) = normalized_include_paths.get(include_path)
-            {
-                match opt {
-                    Some(normalized) => normalized,
-                    None => include_path,
-                }
-            } else {
-                let path_buf = decode_path(include_path)?;
-                let normalized = normalize_path(&path_buf);
-                if normalized == path_buf {
-                    // `None` is a marker that the normalization is the same
-                    normalized_include_paths.insert(include_path.to_owned(), None);
-                    include_path
-                } else {
-                    let mut encoded = Vec::with_capacity(include_path.len());
-                    encode_path(&mut encoded, &normalized)?;
-                    normalized_include_paths.insert(include_path.to_owned(), Some(encoded));
-                    // No entry API on hashmaps, so we need to query again
-                    normalized_include_paths
-                        .get(include_path)
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                }
-            };
-
-            if !remember_include_file(
-                include_path,
+            match process_preprocessor_line(
                 input_file,
                 cwd,
                 included_files,
-                &mut digest,
-                system,
                 config,
                 time_of_compilation,
+                bytes,
+                start,
+                hash_start,
+                &mut digest,
+                total_len,
+                &mut normalized_include_paths,
+                &fs_impl,
             )? {
-                return Ok(false);
+                ControlFlow::Continue((s, h)) => {
+                    start = s;
+                    hash_start = h;
+                }
+                ControlFlow::Break((s, h, continue_direct_mode)) => {
+                    if !continue_direct_mode {
+                        return Ok(false);
+                    }
+                    start = s;
+                    hash_start = h;
+                    continue;
+                }
             };
-            // Everything of interest between hash_start and start has been hashed now.
-            hash_start = start;
         } else if &bytes[start..start + INCBIN_DIRECTIVE.len()] == INCBIN_DIRECTIVE
             && ((slice[7] == b' ' && (slice[8] == b'"' || (slice[8] == b'\\' && slice[9] == b'"')))
                 || slice[7] == b'"')
@@ -712,6 +636,137 @@ fn process_preprocessed_file(
     Ok(true)
 }
 
+/// What to do after handling a preprocessor number line.
+/// The `Break` variant is `(start, hash_start, continue_direct_mode)`.
+/// The `Continue` variant is `(start, hash_start)`.
+type PreprocessedLineAction = ControlFlow<(usize, usize, bool), (usize, usize)>;
+
+#[allow(clippy::too_many_arguments)]
+fn process_preprocessor_line(
+    input_file: &Path,
+    cwd: &Path,
+    included_files: &mut HashMap<PathBuf, String>,
+    config: DirectModeConfig,
+    time_of_compilation: std::time::SystemTime,
+    bytes: &mut [u8],
+    mut start: usize,
+    mut hash_start: usize,
+    digest: &mut Digest,
+    total_len: usize,
+    normalized_include_paths: &mut HashMap<Vec<u8>, Option<Vec<u8>>>,
+    fs_impl: &impl PreprocessorFSAbstraction,
+) -> Result<PreprocessedLineAction> {
+    let mut slice = &bytes[start..];
+    // Workarounds for preprocessor linemarker bugs in GCC version 6.
+    if slice[2] == b'3' {
+        if slice.starts_with(HASH_31_COMMAND_LINE_NEWLINE) {
+            // Bogus extra line with #31, after the regular #1:
+            // Ignore the whole line, and continue parsing.
+            digest.update(&bytes[hash_start..start]);
+            while start < hash_start && slice[0] != b'\n' {
+                start += 1;
+            }
+            start += 1;
+            hash_start = start;
+            return Ok(ControlFlow::Break((start, hash_start, true)));
+        } else if slice.starts_with(HASH_32_COMMAND_LINE_2_NEWLINE) {
+            // Bogus wrong line with #32, instead of regular #1:
+            // Replace the line number with the usual one.
+            digest.update(&bytes[hash_start..start]);
+            start += 1;
+            bytes[start..start + 2].copy_from_slice(b"# 1");
+            hash_start = start;
+            slice = &bytes[start..];
+        }
+    }
+    while start < total_len && slice[0] != b'"' && slice[0] != b'\n' {
+        start += 1;
+        if start < total_len {
+            slice = &bytes[start..];
+        }
+    }
+    slice = &bytes[start..];
+    if start < total_len && slice[0] == b'\n' {
+        // a newline before the quotation mark -> no match
+        return Ok(ControlFlow::Break((start, hash_start, true)));
+    }
+    start += 1;
+    if start >= total_len {
+        bail!("Failed to parse included file path");
+    }
+    // `start` points to the beginning of an include file path
+    digest.update(&bytes[hash_start..start]);
+    hash_start = start;
+    slice = &bytes[start..];
+    while start < total_len && slice[0] != b'"' {
+        start += 1;
+        if start < total_len {
+            slice = &bytes[start..];
+        }
+    }
+    if start == hash_start {
+        // Skip empty file name.
+        return Ok(ControlFlow::Break((start, hash_start, true)));
+    }
+    // Look for preprocessor flags, after the "filename".
+    let mut system = false;
+    let mut pointer = start + 1;
+    while pointer < total_len && bytes[pointer] != b'\n' {
+        if bytes[pointer] == b'3' {
+            // System header.
+            system = true;
+        }
+        pointer += 1;
+    }
+
+    // `hash_start` and `start` span the include file path.
+    let include_path = &bytes[hash_start..start];
+    // We need to normalize the path now since it's part of the
+    // hash and since we need to deduplicate the include files.
+    // We cache the results since they are often quite a bit repeated.
+    let include_path: &[u8] = if let Some(opt) = normalized_include_paths.get(include_path) {
+        match opt {
+            Some(normalized) => normalized,
+            None => include_path,
+        }
+    } else {
+        let path_buf = decode_path(include_path)?;
+        let normalized = normalize_path(&path_buf);
+        if normalized == path_buf {
+            // `None` is a marker that the normalization is the same
+            normalized_include_paths.insert(include_path.to_owned(), None);
+            include_path
+        } else {
+            let mut encoded = Vec::with_capacity(include_path.len());
+            encode_path(&mut encoded, &normalized)?;
+            normalized_include_paths.insert(include_path.to_owned(), Some(encoded));
+            // No entry API on hashmaps, so we need to query again
+            normalized_include_paths
+                .get(include_path)
+                .unwrap()
+                .as_ref()
+                .unwrap()
+        }
+    };
+
+    if !remember_include_file(
+        include_path,
+        input_file,
+        cwd,
+        included_files,
+        digest,
+        system,
+        config,
+        time_of_compilation,
+        fs_impl,
+    )? {
+        return Ok(ControlFlow::Break((start, hash_start, false)));
+    };
+    // Everything of interest between hash_start and start has been hashed now.
+    hash_start = start;
+    Ok(ControlFlow::Continue((start, hash_start)))
+}
+
 /// Copied from cargo.
 ///
 /// Normalize a path, removing things like `.` and `..`.
@@ -746,7 +801,49 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     ret
 }
 
-// Returns false if the include file was "too new" and therefore should disable
+/// Limited abstraction of `std::fs::Metadata`, allowing us to create fake
+/// values during testing.
+#[derive(Debug, Eq, PartialEq, Clone)]
+struct PreprocessorFileMetadata {
+    is_dir: bool,
+    is_file: bool,
+    modified: Option<Timestamp>,
+    ctime_or_creation: Option<Timestamp>,
+}
+
+impl From<std::fs::Metadata> for PreprocessorFileMetadata {
+    fn from(meta: std::fs::Metadata) -> Self {
+        Self {
+            is_dir: meta.is_dir(),
+            is_file: meta.is_file(),
+            modified: meta.modified().ok().map(Into::into),
+            ctime_or_creation: meta.ctime_or_creation().ok(),
+        }
+    }
+}
+
+/// An abstraction to filesystem access for use during the preprocessor
+/// caching phase, to make testing easier.
+///
+/// This may help non-local preprocessor caching in the future, if it ends up
+/// being viable.
+trait PreprocessorFSAbstraction {
+    fn metadata(&self, path: impl AsRef<Path>) -> io::Result<PreprocessorFileMetadata> {
+        std::fs::metadata(path).map(Into::into)
+    }
+
+    fn open(&self, path: impl AsRef<Path>) -> io::Result<Box<dyn std::io::Read>> {
+        Ok(Box::new(std::fs::File::open(path)?))
+    }
+}
+
+/// Provides filesystem access with the expected standard library functions.
+struct StandardFsAbstraction;
+
+impl PreprocessorFSAbstraction for StandardFsAbstraction {}
+
+// Returns false if the include file was "too new" (meaning modified during or
+// after the start of the compilation) and therefore should disable
 // the direct mode, otherwise true.
 #[allow(clippy::too_many_arguments)]
 fn remember_include_file(
@@ -758,6 +855,7 @@ fn remember_include_file(
     system: bool,
     config: DirectModeConfig,
     time_of_compilation: std::time::SystemTime,
+    fs_impl: &impl PreprocessorFSAbstraction,
 ) -> Result<bool> {
     // TODO if precompiled header.
     if path.len() >= 2 && path[0] == b'<' && path[path.len() - 1] == b'>' {
@@ -803,18 +901,18 @@ fn remember_include_file(
         // Don't remember the input file.
         return Ok(true);
     }
-    let meta = match std::fs::metadata(&path) {
+    let meta = match fs_impl.metadata(&path) {
         Ok(meta) => meta,
         Err(e) => {
             debug!("Failed to stat include file {}: {}", path.display(), e);
             return Ok(false);
         }
     };
-    if meta.is_dir() {
+    if meta.is_dir {
         // Ignore directory, typically $PWD.
         return Ok(true);
     }
-    if !meta.is_file() {
+    if !meta.is_file {
         // Device, pipe, socket or other strange creature.
         debug!("Non-regular include file {}", path.display());
         return Ok(false);
@@ -822,21 +920,11 @@ fn remember_include_file(
 
     // TODO add an option to ignore some header files?
     if include_is_too_new(&path, &meta, time_of_compilation) {
-        // Opt out of direct mode because of a race condition.
-        //
-        // The race condition consists of these events:
-        //
-        // - the preprocessor is run
-        // - an include file is modified by someone
-        // - the new include file is hashed by sccache
-        // - the real compiler is run on the preprocessor's output, which contains
-        //   data from the old header file
-        // - the wrong object file is stored in the cache.
         return Ok(false);
     }
 
     // Let's hash the include file content.
-    let file = match fs::File::open(&path) {
+    let file = match fs_impl.open(&path) {
         Ok(file) => file,
         Err(e) => {
             debug!("Failed to open header file {}: {}", path.display(), e);
@@ -872,22 +960,32 @@ fn remember_include_file(
     Ok(true)
 }
 
+/// Opt out of direct mode because of a race condition.
+///
+/// The race condition consists of these events:
+///
+/// - the preprocessor is run
+/// - an include file is modified by someone
+/// - the new include file is hashed by sccache
+/// - the real compiler is run on the preprocessor's output, which contains
+///   data from the old header file
+/// - the wrong object file is stored in the cache.
 fn include_is_too_new(
     path: &Path,
-    meta: &std::fs::Metadata,
+    meta: &PreprocessorFileMetadata,
     time_of_compilation: std::time::SystemTime,
 ) -> bool {
     // The comparison using >= is intentional, due to a possible race between
     // starting compilation and writing the include file.
-    if let Ok(mtime) = meta.modified() {
-        if mtime >= time_of_compilation {
+    if let Some(mtime) = meta.modified {
+        if mtime >= time_of_compilation.into() {
             debug!("Include file {} is too new", path.display());
             return true;
         }
     }
 
     // The same >= logic as above applies to the change time of the file.
-    if let Ok(ctime) = meta.ctime_or_creation() {
+    if let Some(ctime) = meta.ctime_or_creation {
         if ctime >= time_of_compilation.into() {
             debug!("Include file {} is too new", path.display());
             return true;
@@ -1214,6 +1312,8 @@ pub fn hash_key(
 
 #[cfg(test)]
 mod test {
+    use std::{collections::VecDeque, sync::Mutex};
+
     use super::*;
 
     #[test]
@@ -1416,10 +1516,329 @@ mod test {
             &mut include_files,
             config,
             std::time::SystemTime::now(),
+            StandardFsAbstraction,
         )
         .unwrap();
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    /// A filesystem interface that only panics to test that we don't access it.
+    struct PanicFs;
+
+    impl PreprocessorFSAbstraction for PanicFs {
+        fn metadata(&self, path: impl AsRef<Path>) -> io::Result<PreprocessorFileMetadata> {
+            panic!("called metadata at {}", path.as_ref().display());
+        }
+
+        fn open(&self, path: impl AsRef<Path>) -> io::Result<Box<dyn std::io::Read>> {
+            panic!("called open at {}", path.as_ref().display());
+        }
+    }
+
+    /// A filesystem interface that gives back expected values.
+    struct TestFs {
+        metadata_results: Mutex<VecDeque<(PathBuf, PreprocessorFileMetadata)>>,
+        open_results: Mutex<VecDeque<(PathBuf, Box<dyn std::io::Read>)>>,
+    }
+
+    impl PreprocessorFSAbstraction for TestFs {
+        fn metadata(&self, path: impl AsRef<Path>) -> io::Result<PreprocessorFileMetadata> {
+            let (expected_path, meta) = self
+                .metadata_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("not enough 'metadata' results");
+            assert_eq!(expected_path, path.as_ref(), "{}", path.as_ref().display());
+            Ok(meta)
+        }
+
+        fn open(&self, path: impl AsRef<Path>) -> io::Result<Box<dyn std::io::Read>> {
+            let (expected_path, impls_read) = self
+                .open_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("not enough 'open' results");
+            assert_eq!(expected_path, path.as_ref(), "{}", path.as_ref().display());
+            Ok(impls_read)
+        }
+    }
+
+    // Short-circuit the parameters we don't need to change during tests
+    fn do_single_preprocessor_line_call(
+        line: &[u8],
+        include_files: &mut HashMap<PathBuf, String>,
+        fs_impl: &impl PreprocessorFSAbstraction,
+        skip_system_headers: bool,
+    ) -> PreprocessedLineAction {
+        let input_file = Path::new("tests/test.c");
+
+        let config = DirectModeConfig {
+            use_direct_mode: true,
+            skip_system_headers,
+            ..Default::default()
+        };
+
+        let mut bytes = line.to_vec();
+        let total_len = bytes.len();
+        process_preprocessor_line(
+            input_file,
+            Path::new(""),
+            include_files,
+            config,
+            std::time::SystemTime::now(),
+            &mut bytes,
+            0,
+            0,
+            &mut Digest::new(),
+            total_len,
+            &mut HashMap::new(),
+            fs_impl,
+        )
+        .unwrap()
+    }
+
+    /// Test cases where we don't access the filesystem
+    #[test]
+    fn test_process_preprocessor_line_simple() {
+        env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+
+        let mut include_files = HashMap::new();
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 0 "tests/test.c""#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((20, 20)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 0 "<built-in>""#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((18, 18)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 0 "<command-line>""#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((22, 22)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 0 "<command-line>" 2"#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((22, 22)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 1 "tests/test.c""#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((20, 20)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 1 "/usr/include/stdc-predef.h" 1 3 4"#,
+                &mut include_files,
+                &PanicFs,
+                true,
+            ),
+            ControlFlow::Continue((34, 34)),
+        );
+        assert_eq!(include_files.len(), 0);
+    }
+
+    /// Test cases where we test our tests...
+    #[test]
+    fn test_test_helpers() {
+        env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+
+        // Test PanicFs
+        let res = std::panic::catch_unwind(|| {
+            let mut include_files = HashMap::new();
+            assert_eq!(
+                do_single_preprocessor_line_call(
+                    br#"// # 1 "/usr/include/stdc-predef.h" 1 3 4"#,
+                    &mut include_files,
+                    &PanicFs,
+                    false,
+                ),
+                ControlFlow::Continue((34, 34)),
+            );
+        });
+        assert_eq!(
+            res.unwrap_err().downcast_ref::<String>().unwrap(),
+            "called metadata at /usr/include/stdc-predef.h"
+        );
+
+        // Test TestFs's safeguard
+        let res = std::panic::catch_unwind(|| {
+            let mut include_files = HashMap::new();
+            let fs_impl = TestFs {
+                metadata_results: Mutex::new(VecDeque::new()),
+                open_results: Mutex::new(VecDeque::new()),
+            };
+            assert_eq!(
+                do_single_preprocessor_line_call(
+                    br#"// # 33 "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h" 3 4"#,
+                    &mut include_files,
+                    &fs_impl,
+                    false,
+                ),
+                ControlFlow::Continue((34, 34)),
+            );
+        });
+        assert_eq!(
+            res.unwrap_err().downcast_ref::<String>().unwrap(),
+            "not enough 'metadata' results"
+        );
+    }
+
+    /// Test cases where we test filesystem access
+    #[test]
+    fn test_process_preprocessor_line_fs_access() {
+        env_logger::builder()
+            .is_test(true)
+            .filter_level(log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+
+        // Test "too new" include file
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("/usr/include/x86_64-linux-gnu/bits/libc-header-start.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(i64::MAX - 1, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(VecDeque::new()),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h" 3 4"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            // Direct mode is disabled
+            ControlFlow::Break((63, 9, false)),
+        );
+
+        // Test invalid include file is actually a dir
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("/usr/include/x86_64-linux-gnu/bits/libc-header-start.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: true,
+                        is_file: false,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(VecDeque::new()),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h" 3 4"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            // Direct mode is *not* disabled,
+            ControlFlow::Continue((63, 63)),
+        );
+        assert_eq!(include_files.len(), 0);
+
+        // Test correct include file
+        let mut include_files = HashMap::new();
+        let fs_impl = TestFs {
+            metadata_results: Mutex::new(
+                [(
+                    PathBuf::from("/usr/include/x86_64-linux-gnu/bits/libc-header-start.h"),
+                    PreprocessorFileMetadata {
+                        is_dir: false,
+                        is_file: true,
+                        modified: Some(Timestamp::new(12341234, 0)),
+                        ctime_or_creation: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            open_results: Mutex::new(
+                [(
+                    PathBuf::from("/usr/include/x86_64-linux-gnu/bits/libc-header-start.h"),
+                    Box::new(&b"contents"[..]) as Box<dyn std::io::Read>,
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        };
+        assert_eq!(
+            do_single_preprocessor_line_call(
+                br#"// # 33 "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h" 3 4"#,
+                &mut include_files,
+                &fs_impl,
+                false,
+            ),
+            ControlFlow::Continue((63, 63)),
+        );
+        assert_eq!(include_files.len(), 1);
+        assert_eq!(
+            include_files
+                .get(Path::new(
+                    "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h",
+                ))
+                .unwrap(),
+            // hash of `b"contents"`
+            "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
+        );
     }
 }

@@ -788,6 +788,15 @@ impl PartialEq<SystemTime> for Timestamp {
     }
 }
 
+impl Timestamp {
+    pub fn new(seconds: i64, nanoseconds: u32) -> Self {
+        Self {
+            seconds,
+            nanoseconds,
+        }
+    }
+}
+
 /// Adds a fallback for trying Unix's `ctime` semantics on Windows systems.
 pub trait MetadataCtimeExt {
     fn ctime_or_creation(&self) -> std::io::Result<Timestamp>;
