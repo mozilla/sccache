@@ -1006,7 +1006,7 @@ where
 
         let opt = match me1.compilers.read().await.get(&resolved_compiler_path) {
             // It's a hit only if the mtime and dist archive data matches.
-            Some(&Some(ref entry)) => {
+            Some(Some(entry)) => {
                 if entry.mtime == mtime && entry.dist_info == dist_info {
                     Some(entry.compiler.box_clone())
                 } else {
@@ -1154,7 +1154,7 @@ where
     ) {
         let force_recache = env_vars
             .iter()
-            .any(|&(ref k, ref _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
+            .any(|(k, _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
         let cache_control = if force_recache {
             CacheControl::ForceRecache
         } else {
@@ -1563,16 +1563,8 @@ impl ServerStats {
             self.dist_errors,
             "Failed distributed compilations"
         );
-        let name_width = stats_vec
-            .iter()
-            .map(|&(ref n, _, _)| n.len())
-            .max()
-            .unwrap();
-        let stat_width = stats_vec
-            .iter()
-            .map(|&(_, ref s, _)| s.len())
-            .max()
-            .unwrap();
+        let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
+        let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
             println!(
                 "{:<name_width$} {:>stat_width$}",

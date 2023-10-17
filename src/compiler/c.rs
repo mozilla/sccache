@@ -704,7 +704,7 @@ pub fn hash_key(
         m.update(hash.as_bytes());
     }
 
-    for &(ref var, ref val) in env_vars.iter() {
+    for (var, val) in env_vars.iter() {
         if CACHED_ENV_VARS.contains(var.as_os_str()) {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(&b"="[..]);

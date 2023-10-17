@@ -641,7 +641,7 @@ where
             "fetched {:?}",
             jc.outputs
                 .iter()
-                .map(|&(ref p, ref bs)| (p, bs.lens().to_string()))
+                .map(|(p, bs)| (p, bs.lens().to_string()))
                 .collect::<Vec<_>>()
         );
         let mut output_paths: Vec<PathBuf> = vec![];
@@ -869,17 +869,12 @@ pub enum CompileResult {
 }
 
 /// The state of `--color` options passed to a compiler.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorMode {
     Off,
     On,
+    #[default]
     Auto,
-}
-
-impl Default for ColorMode {
-    fn default() -> ColorMode {
-        ColorMode::Auto
-    }
 }
 
 /// Can't derive(Debug) because of `CacheWriteFuture`.
@@ -903,10 +898,9 @@ impl PartialEq<CompileResult> for CompileResult {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
             (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
-            (
-                &CompileResult::CacheMiss(ref m, ref dt, _, _),
-                &CompileResult::CacheMiss(ref n, ref dt2, _, _),
-            ) => m == n && dt == dt2,
+            (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
+                m == n && dt == dt2
+            }
             (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
             (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
             _ => false,
