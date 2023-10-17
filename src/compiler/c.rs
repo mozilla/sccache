@@ -481,13 +481,12 @@ where
         if let Some(preprocessor_key) = preprocessor_key {
             if !include_files.is_empty() {
                 let mut preprocessor_cache_entry = PreprocessorCacheEntry::new();
-                preprocessor_cache_entry.add_result(
-                    start_of_compilation,
-                    &key,
-                    include_files
-                        .into_iter()
-                        .map(|(path, digest)| (digest, path)),
-                );
+                let mut files: Vec<_> = include_files
+                    .into_iter()
+                    .map(|(path, digest)| (digest, path))
+                    .collect();
+                files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
                 storage
                     .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)?;
             }
