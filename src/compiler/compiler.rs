@@ -102,12 +102,71 @@ pub enum CompilerKind {
     Rust,
 }
 
-impl CompilerKind {
-    pub fn lang_kind(&self) -> String {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Language {
+    C,
+    Cxx,
+    GenericHeader,
+    CHeader,
+    CxxHeader,
+    ObjectiveC,
+    ObjectiveCxx,
+    Cuda,
+    Rust,
+}
+
+impl Language {
+    pub fn from_file_name(file: &Path) -> Option<Self> {
+        match file.extension().and_then(|e| e.to_str()) {
+            // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+            Some("c") => Some(Language::C),
+            // Could be C or C++
+            Some("h") => Some(Language::GenericHeader),
+            // TODO i
+            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
+            | Some("c++") => Some(Language::Cxx),
+            // TODO ii
+            Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
+            | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
+            Some("m") => Some(Language::ObjectiveC),
+            // TODO mi
+            Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mii
+            Some("cu") => Some(Language::Cuda),
+            // TODO cy
+            Some("rs") => Some(Language::Rust),
+            e => {
+                trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
+                None
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
         match self {
-            CompilerKind::C(CCompilerKind::Nvcc) => "CUDA",
-            CompilerKind::C(_) => "C/C++",
-            CompilerKind::Rust => "Rust",
+            Language::C | Language::CHeader => "c",
+            Language::Cxx | Language::CxxHeader => "c++",
+            Language::GenericHeader => "c/c++",
+            Language::ObjectiveC => "objc",
+            Language::ObjectiveCxx => "objc++",
+            Language::Cuda => "cuda",
+            Language::Rust => "rust",
+        }
+    }
+}
+
+impl CompilerKind {
+    pub fn lang_kind(&self, lang: &Language) -> String {
+        match lang {
+            Language::C
+            | Language::CHeader
+            | Language::Cxx
+            | Language::CxxHeader
+            | Language::GenericHeader
+            | Language::ObjectiveC
+            | Language::ObjectiveCxx => "C/C++",
+            Language::Cuda => "CUDA",
+            Language::Rust => "Rust",
         }
         .to_string()
     }
@@ -427,6 +486,8 @@ where
     fn output_pretty(&self) -> Cow<'_, str>;
 
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
+
+    fn language(&self) -> Language;
 }
 
 #[cfg(not(feature = "dist-client"))]

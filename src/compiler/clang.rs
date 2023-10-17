@@ -15,11 +15,11 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
-use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
+use crate::compiler::{
+    gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments, Language,
+};
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};

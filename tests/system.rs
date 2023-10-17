@@ -126,6 +126,7 @@ const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
 const INPUT_FOR_CUDA_A: &str = "test_a.cu";
 const INPUT_FOR_CUDA_B: &str = "test_b.cu";
+const INPUT_FOR_CUDA_C: &str = "test_c.cu";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -480,7 +481,7 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 }
 
-fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
+fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
     let Compiler {
         name,
         exe,
@@ -495,7 +496,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&compile_cuda_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_FOR_CUDA_A,
             OUTPUT,
             Vec::new(),
@@ -518,7 +519,7 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&compile_cuda_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_FOR_CUDA_A,
             OUTPUT,
             Vec::new(),
@@ -543,13 +544,13 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     sccache_command()
         .args(&compile_cuda_cmdline(
             name,
-            &exe,
+            exe,
             INPUT_FOR_CUDA_B,
             OUTPUT,
             Vec::new(),
         ))
         .current_dir(tempdir)
-        .envs(env_vars)
+        .envs(env_vars.clone())
         .assert()
         .success();
     assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
@@ -564,8 +565,80 @@ fn test_cuda_compiles(compiler: Compiler, tempdir: &Path) {
     });
 }
 
+fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    zero_stats();
+
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_CUDA_C, INPUT], tempdir);
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile CUDA A");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_C,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile CUDA A");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_C,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile C++ A");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile C++ A");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(4, info.stats.compile_requests);
+        assert_eq!(4, info.stats.requests_executed);
+        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+    });
+}
+
 fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
-    test_cuda_compiles(compiler, tempdir);
+    test_cuda_compiles(&compiler, tempdir);
+    test_proper_lang_stat_tracking(compiler, tempdir);
 }
 
 fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {

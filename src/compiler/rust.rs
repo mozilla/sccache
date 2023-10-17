@@ -16,7 +16,7 @@ use crate::cache::FileObjectSource;
 use crate::compiler::args::*;
 use crate::compiler::{
     c::ArtifactDescriptor, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult,
+    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -1588,6 +1588,10 @@ where
 
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
+    }
+
+    fn language(&self) -> Language {
+        Language::Rust
     }
 }
 

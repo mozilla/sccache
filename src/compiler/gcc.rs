@@ -13,10 +13,8 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
-use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
@@ -367,6 +365,7 @@ where
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
+                    "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),
                     _ => cannot_cache!("-x"),
                 };
@@ -616,6 +615,7 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveC => Some("objective-c"),
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::Cuda => Some("cu"),
+        Language::Rust => None,          // Let the compiler decide
         Language::GenericHeader => None, // Let the compiler decide
     }
 }
