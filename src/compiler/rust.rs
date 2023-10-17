@@ -1326,7 +1326,7 @@ where
         // source files for this crate.
         let filtered_arguments = os_string_arguments
             .iter()
-            .filter_map(|&(ref arg, ref val)| {
+            .filter_map(|(arg, val)| {
                 if arg == "--emit" || arg == "--out-dir" {
                     None
                 } else {
@@ -1391,15 +1391,15 @@ where
                 // These contain paths which aren't relevant to the output, and the compiler inputs
                 // in those paths (rlibs and static libs used in the compilation) are used as hash
                 // inputs below.
-                .filter(|&&(ref arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
+                .filter(|&(arg, _)| !(arg == "--extern" || arg == "-L" || arg == "--out-dir"))
                 // A few argument types were not passed in a deterministic order
                 // by older versions of cargo: --extern, -L, --cfg. We'll filter the rest of those
                 // out, sort them, and append them to the rest of the arguments.
-                .partition(|&&(ref arg, _)| arg == "--cfg");
+                .partition(|&(arg, _)| arg == "--cfg");
             sortables.sort();
             rest.into_iter()
                 .chain(sortables)
-                .flat_map(|&(ref arg, ref val)| iter::once(arg).chain(val.as_ref()))
+                .flat_map(|(arg, val)| iter::once(arg).chain(val.as_ref()))
                 .fold(OsString::new(), |mut a, b| {
                     a.push(b);
                     a
@@ -1420,7 +1420,7 @@ where
         //    output. Additionally also has all environment variables starting with `CARGO_`,
         //    since those are not listed in dep-info but affect cacheability.
         env_deps.sort();
-        for &(ref var, ref val) in env_deps.iter() {
+        for (var, val) in env_deps.iter() {
             var.hash(&mut HashToDigest { digest: &mut m });
             m.update(b"=");
             val.hash(&mut HashToDigest { digest: &mut m });
@@ -1433,7 +1433,7 @@ where
             .cloned()
             .collect();
         env_vars.sort();
-        for &(ref var, ref val) in env_vars.iter() {
+        for (var, val) in env_vars.iter() {
             // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
             if var.starts_with("CARGO_") && var != "CARGO_MAKEFLAGS" {
                 var.hash(&mut HashToDigest { digest: &mut m });
@@ -1485,8 +1485,8 @@ where
             // only the rlib is printed.
             let rlibs: HashSet<_> = outputs
                 .iter()
+                .filter(|&p| p.ends_with(".rlib"))
                 .cloned()
-                .filter(|p| p.ends_with(".rlib"))
                 .collect();
             for lib in rlibs {
                 let rmeta = lib.replacen(".rlib", ".rmeta", 1);

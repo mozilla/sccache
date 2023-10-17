@@ -951,7 +951,7 @@ where
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
         .arg("/wd4668")
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
 
     if is_clang {
@@ -985,8 +985,7 @@ where
     }
 
     let parsed_args = &parsed_args;
-    if let (Some(obj), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile)
-    {
+    if let (Some(obj), Some(depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
         let objfile = &obj.path;
         let f = File::create(cwd.join(depfile))?;
         let mut f = BufWriter::new(f);

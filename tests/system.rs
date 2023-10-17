@@ -254,7 +254,7 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     let cmd_file_name = "test_msvc.rsp";
     {
-        let mut file = File::create(&tempdir.join(cmd_file_name)).unwrap();
+        let mut file = File::create(tempdir.join(cmd_file_name)).unwrap();
         let content = format!("-c {INPUT} -Fo{OUTPUT}");
         file.write_all(content.as_bytes()).unwrap();
     }
