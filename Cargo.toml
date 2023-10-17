@@ -49,7 +49,7 @@ http = "0.2"
 hyper = { version = "0.14.25", optional = true, features = ["server"] }
 is-terminal = "0.4.7"
 jobserver = "0.1"
-jwt = { package = "jsonwebtoken", version = "8", optional = true }
+jwt = { package = "jsonwebtoken", version = "9", optional = true }
 libc = "0.2.140"
 linked-hash-map = "0.5"
 log = "0.4"
