@@ -225,8 +225,10 @@ impl DistClientContainer {
             | DistClientState::FailWithMessage(cfg, _)
             | DistClientState::RetryCreateAt(cfg, _) => {
                 warn!("State reset. Will recreate");
-                *state =
-                    DistClientState::RetryCreateAt(cfg, Instant::now() - Duration::from_secs(1));
+                *state = DistClientState::RetryCreateAt(
+                    cfg,
+                    Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                );
             }
             DistClientState::Disabled => (),
         }
@@ -277,8 +279,10 @@ impl DistClientContainer {
             };
             // The client is most likely mis-configured, make sure we
             // re-create on our next attempt.
-            *state =
-                DistClientState::RetryCreateAt(config, Instant::now() - Duration::from_secs(1));
+            *state = DistClientState::RetryCreateAt(
+                config,
+                Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            );
         }
         res
     }
@@ -587,7 +591,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
                 // We're not interested if the task panicked; immediately process
                 // another connection
-                let _ = tokio::spawn(conn);
+                let _ = tokio::spawn(conn).await;
             }
         };
 

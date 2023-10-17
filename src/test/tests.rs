@@ -290,7 +290,7 @@ fn test_server_port_in_use() {
     // Bind an arbitrary free port.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let sccache = find_sccache_binary();
-    let output = Command::new(&sccache)
+    let output = Command::new(sccache)
         .arg("--start-server")
         .env(
             "SCCACHE_SERVER_PORT",
