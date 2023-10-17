@@ -77,7 +77,7 @@ impl PreprocessorCacheEntry {
     }
 
     /// Serialize the preprocessor cache entry to `buf`
-    pub fn write(&self, buf: &mut impl Write) -> Result<(), Error> {
+    pub fn serialize_to(&self, buf: &mut impl Write) -> Result<(), Error> {
         // Add the starting byte for version check since `bincode` doesn't
         // support it.
         buf.write_all(&[FORMAT_VERSION])?;

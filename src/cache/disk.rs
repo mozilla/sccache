@@ -173,7 +173,7 @@ impl Storage for DiskCache {
     ) -> Result<()> {
         let key = normalize_key(key);
         let mut buf = vec![];
-        preprocessor_cache_entry.write(&mut buf)?;
+        preprocessor_cache_entry.serialize_to(&mut buf)?;
         Ok(self
             .preprocessor_cache
             .lock()
