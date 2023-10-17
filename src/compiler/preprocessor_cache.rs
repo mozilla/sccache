@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     cache::PreprocessorCacheModeConfig,
-    util::{encode_path, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp},
+    util::{encode_path, Digest, HashToDigest, MetadataCtimeExt, Timestamp},
 };
 
 use super::Language;
@@ -253,9 +253,9 @@ impl PreprocessorCacheEntry {
                 }
             };
 
-            let (new_digest, finder) = if config.ignore_time_macros {
+            if config.ignore_time_macros {
                 match Digest::reader_sync(file) {
-                    Ok(new_digest) => (new_digest, TimeMacroFinder::new()),
+                    Ok(new_digest) => return include.digest == new_digest,
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -278,76 +278,74 @@ impl PreprocessorCacheEntry {
                         return false;
                     }
                 };
-                (new_digest, finder)
-            };
-
-            if !finder.found_time_macros() && include.digest != new_digest {
-                return false;
-            }
-            if finder.found_time() {
-                // We don't know for sure that the program actually uses the __TIME__ macro,
-                // but we have to assume it anyway and hash the time stamp. However, that's
-                // not very useful since the chance that we get a cache hit later the same
-                // second should be quite slim... So, just signal back to the caller that
-                // __TIME__ has been found so that the preprocessor cache mode can be disabled.
-                debug!("Found __TIME__ in {}", path.display());
-                return false;
-            }
-
-            let mut new_digest = Digest::new();
-            new_digest.update(digest.as_bytes());
-
-            // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
-            // if the (potential) expansion of those macros changes by computing a new
-            // digest comprising the file digest and time information that represents the
-            // macro expansions.
-            if finder.found_date() {
-                debug!("found __DATE__ in {}", path.display());
-                new_digest.delimiter(b"date");
-                let date = chrono::Local::now().date_naive();
-                new_digest.update(&date.year().to_le_bytes());
-                new_digest.update(&date.month().to_le_bytes());
-                new_digest.update(&date.day().to_le_bytes());
-
-                // If the compiler has support for it, the expansion of __DATE__ will change
-                // according to the value of SOURCE_DATE_EPOCH. Note: We have to hash both
-                // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
-                // compiler honors SOURCE_DATE_EPOCH.
-                if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
-                    new_digest.update(source_date_epoch.as_bytes())
+                if !finder.found_time_macros() && include.digest != new_digest {
+                    return false;
                 }
-            }
+                if finder.found_time() {
+                    // We don't know for sure that the program actually uses the __TIME__ macro,
+                    // but we have to assume it anyway and hash the time stamp. However, that's
+                    // not very useful since the chance that we get a cache hit later the same
+                    // second should be quite slim... So, just signal back to the caller that
+                    // __TIME__ has been found so that the preprocessor cache mode can be disabled.
+                    debug!("Found __TIME__ in {}", path.display());
+                    return false;
+                }
 
-            if finder.found_timestamp() {
-                debug!("found __TIMESTAMP__ in {}", path.display());
-                let meta = match std::fs::symlink_metadata(path) {
-                    Ok(meta) => meta,
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
-                        return false;
+                // __DATE__ or __TIMESTAMP__ found. We now make sure that the digest changes
+                // if the (potential) expansion of those macros changes by computing a new
+                // digest comprising the file digest and time information that represents the
+                // macro expansions.
+                let mut new_digest = Digest::new();
+                new_digest.update(digest.as_bytes());
+
+                if finder.found_date() {
+                    debug!("found __DATE__ in {}", path.display());
+                    new_digest.delimiter(b"date");
+                    let date = chrono::Local::now().date_naive();
+                    new_digest.update(&date.year().to_le_bytes());
+                    new_digest.update(&date.month().to_le_bytes());
+                    new_digest.update(&date.day().to_le_bytes());
+
+                    // If the compiler has support for it, the expansion of __DATE__ will change
+                    // according to the value of SOURCE_DATE_EPOCH. Note: We have to hash both
+                    // SOURCE_DATE_EPOCH and the current date since we can't be sure that the
+                    // compiler honors SOURCE_DATE_EPOCH.
+                    if let Ok(source_date_epoch) = std::env::var("SOURCE_DATE_EPOCH") {
+                        new_digest.update(source_date_epoch.as_bytes())
                     }
-                };
-                let mtime = match meta.modified() {
-                    Ok(mtime) => mtime,
-                    Err(_) => {
-                        debug!(
-                            "Couldn't get mtime of {} which contains __TIMESTAMP__",
-                            path.display()
-                        );
-                        return false;
-                    }
-                };
-                let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
-                new_digest.delimiter(b"timestamp");
-                new_digest.update(&mtime.naive_local().timestamp().to_le_bytes());
-                include.digest = new_digest.finish();
-                // Signal that the preprocessor cache entry has been updated and needs to be
-                // written to disk.
-                *updated = true;
+                }
+
+                if finder.found_timestamp() {
+                    debug!("found __TIMESTAMP__ in {}", path.display());
+                    let meta = match std::fs::symlink_metadata(path) {
+                        Ok(meta) => meta,
+                        Err(e) => {
+                            debug!(
+                                "{} is in a preprocessor cache entry but can't be read ({})",
+                                path.display(),
+                                e
+                            );
+                            return false;
+                        }
+                    };
+                    let mtime = match meta.modified() {
+                        Ok(mtime) => mtime,
+                        Err(_) => {
+                            debug!(
+                                "Couldn't get mtime of {} which contains __TIMESTAMP__",
+                                path.display()
+                            );
+                            return false;
+                        }
+                    };
+                    let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
+                    new_digest.delimiter(b"timestamp");
+                    new_digest.update(&mtime.naive_local().timestamp().to_le_bytes());
+                    include.digest = new_digest.finish();
+                    // Signal that the preprocessor cache entry has been updated and needs to be
+                    // written to disk.
+                    *updated = true;
+                }
             }
         }
         true
@@ -420,16 +418,17 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&buf);
     let reader = std::fs::File::open(input_file).context("while hashing the input file")?;
 
-    let (digest, finder) = if config.ignore_time_macros {
-        (Digest::reader_sync(reader)?, TimeMacroFinder::new())
+    let digest = if config.ignore_time_macros {
+        Digest::reader_sync(reader)?
     } else {
-        Digest::reader_sync_time_macros(reader)?
+        let (digest, finder) = Digest::reader_sync_time_macros(reader)?;
+        if finder.found_time() {
+            // Disable preprocessor cache mode
+            debug!("Found __TIME__ in {}", input_file.display());
+            return Ok(None);
+        }
+        digest
     };
-    if finder.found_time() {
-        // Disable preprocessor cache mode
-        debug!("Found __TIME__ in {}", input_file.display());
-        return Ok(None);
-    }
     m.update(digest.as_bytes());
     Ok(Some(m.finish()))
 }
