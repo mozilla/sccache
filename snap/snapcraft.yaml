@@ -32,6 +32,7 @@ apps:
 parts:
     sccache:
         plugin: rust
+        rust-channel: 1.67.1
         source: .
         override-pull: |
           craftctl default
