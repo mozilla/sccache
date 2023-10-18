@@ -434,8 +434,8 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
             Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
         };
 
-        // Apple clang would match "Apple LLVM version"
-        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        // Regex to match "Apple LLVM clang version" or "Apple clang version"
+        let re = Regex::new(r"(?P<apple>Apple)?.*clang version (?P<major>\d+)").unwrap();
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
