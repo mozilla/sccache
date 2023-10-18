@@ -15,7 +15,7 @@
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, DistType, MissType,
+    CompilerKind, CompilerProxy, DistType, Language, MissType,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -1164,6 +1164,7 @@ where
         let color_mode = hasher.color_mode();
         let me = self.clone();
         let kind = compiler.kind();
+        let lang = hasher.language();
         let creator = self.creator.clone();
         let storage = self.storage.clone();
         let pool = self.rt.clone();
@@ -1199,12 +1200,12 @@ where
                         CompileResult::Error => {
                             debug!("compile result: cache error");
 
-                            stats.cache_errors.increment(&kind);
+                            stats.cache_errors.increment(&kind, &lang);
                         }
                         CompileResult::CacheHit(duration) => {
                             debug!("compile result: cache hit");
 
-                            stats.cache_hits.increment(&kind);
+                            stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
@@ -1229,10 +1230,10 @@ where
                                     stats.cache_timeouts += 1;
                                 }
                                 MissType::CacheReadError => {
-                                    stats.cache_errors.increment(&kind);
+                                    stats.cache_errors.increment(&kind, &lang);
                                 }
                             }
-                            stats.cache_misses.increment(&kind);
+                            stats.cache_misses.increment(&kind, &lang);
                             stats.compiler_write_duration += duration;
                             debug!("stats after compile result: {stats:?}");
                             cache_write = Some(future);
@@ -1240,7 +1241,7 @@ where
                         CompileResult::NotCacheable => {
                             debug!("compile result: not cacheable");
 
-                            stats.cache_misses.increment(&kind);
+                            stats.cache_misses.increment(&kind, &lang);
                             stats.non_cacheable_compilations += 1;
                         }
                         CompileResult::CompileFailed => {
@@ -1298,7 +1299,7 @@ where
                                     error!("[{:?}] \t{}", out_pretty, e);
                                     let _ = writeln!(error, "sccache: caused by: {}", e);
                                 }
-                                stats.cache_errors.increment(&kind);
+                                stats.cache_errors.increment(&kind, &lang);
                                 //TODO: figure out a better way to communicate this?
                                 res.retcode = Some(-2);
                                 res.stderr = error.into_bytes();
@@ -1353,9 +1354,9 @@ pub struct PerLanguageCount {
 }
 
 impl PerLanguageCount {
-    fn increment(&mut self, kind: &CompilerKind) {
-        let key = kind.lang_kind();
-        let count = self.counts.entry(key).or_insert(0);
+    fn increment(&mut self, kind: &CompilerKind, lang: &Language) {
+        let lang_key = kind.lang_kind(lang);
+        let count = self.counts.entry(lang_key).or_insert(0);
         *count += 1;
     }
 

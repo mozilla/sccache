@@ -15,7 +15,7 @@
 use crate::cache::FileObjectSource;
 use crate::compiler::{
     Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult,
+    CompilerKind, HashResult, Language,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -60,18 +60,6 @@ where
     executable: PathBuf,
     executable_digest: String,
     compiler: I,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Language {
-    C,
-    Cxx,
-    GenericHeader,
-    CHeader,
-    CxxHeader,
-    ObjectiveC,
-    ObjectiveCxx,
-    Cuda,
 }
 
 /// Artifact produced by a C/C++ compiler.
@@ -129,43 +117,6 @@ impl ParsedArguments {
     }
 }
 
-impl Language {
-    pub fn from_file_name(file: &Path) -> Option<Self> {
-        match file.extension().and_then(|e| e.to_str()) {
-            // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
-            Some("c") => Some(Language::C),
-            // Could be C or C++
-            Some("h") => Some(Language::GenericHeader),
-            // TODO i
-            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
-            | Some("c++") => Some(Language::Cxx),
-            // TODO ii
-            Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
-            | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
-            Some("m") => Some(Language::ObjectiveC),
-            // TODO mi
-            Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
-            // TODO mii
-            Some("cu") => Some(Language::Cuda),
-            e => {
-                trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
-                None
-            }
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Language::C | Language::CHeader => "c",
-            Language::Cxx | Language::CxxHeader => "c++",
-            Language::GenericHeader => "c/c++",
-            Language::ObjectiveC => "objc",
-            Language::ObjectiveCxx => "objc++",
-            Language::Cuda => "cuda",
-        }
-    }
-}
-
 /// A generic implementation of the `Compilation` trait for C/C++ compilers.
 struct CCompilation<I: CCompilerImpl> {
     parsed_args: ParsedArguments,
@@ -190,6 +141,8 @@ pub enum CCompilerKind {
     Msvc,
     /// NVIDIA cuda compiler
     Nvcc,
+    /// NVIDIA hpc c, c++ compiler
+    Nvhpc,
     /// Tasking VX
     TaskingVX,
 }
@@ -441,6 +394,10 @@ where
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }
+
+    fn language(&self) -> Language {
+        self.parsed_args.language
+    }
 }
 
 impl<I: CCompilerImpl> Compilation for CCompilation<I> {
@@ -680,6 +637,15 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "fatbinary")?;
                 add_named_prog(&mut package_builder, "nvlink")?;
                 add_named_prog(&mut package_builder, "ptxas")?;
+            }
+
+            CCompilerKind::Nvhpc => {
+                // Various programs called by the nvc nvc++ front end.
+                add_named_file(&mut package_builder, "cpp1")?;
+                add_named_file(&mut package_builder, "cpp2")?;
+                add_named_file(&mut package_builder, "opt")?;
+                add_named_prog(&mut package_builder, "llc")?;
+                add_named_prog(&mut package_builder, "acclnk")?;
             }
 
             _ => unreachable!(),
