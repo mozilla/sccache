@@ -245,6 +245,7 @@ pub struct S3CacheConfig {
     pub no_credentials: bool,
     pub endpoint: Option<String>,
     pub use_ssl: Option<bool>,
+    pub server_side_encryption: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -519,6 +520,16 @@ fn config_from_env() -> Result<EnvConfig> {
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
             .map(|value| value != "off");
+        let server_side_encryption =
+            env::var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")
+                .ok()
+                .map_or(Ok(Some(false)), |val| match val.as_str() {
+                    "true" | "1" => Ok(Some(true)),
+                    "false" | "0" => Ok(Some(false)),
+                    _ => bail!(
+                        "SCCACHE_S3_SERVER_SIDE_ENCRYPTION must be 'true', '1', 'false', or '0'."
+                    ),
+                })?;
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
@@ -535,6 +546,7 @@ fn config_from_env() -> Result<EnvConfig> {
             key_prefix,
             endpoint,
             use_ssl,
+            server_side_encryption,
         })
     } else {
         None
@@ -1244,6 +1256,7 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
+server_side_encryption = false
 
 [cache.webdav]
 endpoint = "http://127.0.0.1:8080"
@@ -1289,6 +1302,7 @@ token = "webdavtoken"
                     use_ssl: Some(true),
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
+                    server_side_encryption: Some(false)
                 }),
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),

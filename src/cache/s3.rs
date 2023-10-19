@@ -26,6 +26,7 @@ impl S3Cache {
         no_credentials: bool,
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
+        server_side_encryption: Option<bool>,
     ) -> Result<Operator> {
         let mut builder = S3::default();
         builder.bucket(bucket);
@@ -49,6 +50,10 @@ impl S3Cache {
 
         if let Some(endpoint) = endpoint {
             builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
+        }
+
+        if server_side_encryption.unwrap_or_default() {
+            builder.server_side_encryption_with_s3_key();
         }
 
         let op = Operator::new(builder)?
