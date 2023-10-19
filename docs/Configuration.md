@@ -52,6 +52,7 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+server_side_encription = false
 ```
 
 sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
