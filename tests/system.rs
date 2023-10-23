@@ -64,7 +64,7 @@ fn adv_key_kind(lang: &str, compiler: &str) -> String {
     match compiler {
         "clang" | "clang++" => language + " [clang]",
         "gcc" | "g++" => language + " [gcc]",
-        "cl" => language + " [msvc]",
+        "cl.exe" => language + " [msvc]",
         "nvc" | "nvc++" => language + " [nvhpc]",
         "nvcc" => language + " [nvcc]",
         _ => {
@@ -72,7 +72,6 @@ fn adv_key_kind(lang: &str, compiler: &str) -> String {
             language + "unknown"
         }
     }
-    .to_string()
 }
 
 //TODO: could test gcc when targeting mingw.
