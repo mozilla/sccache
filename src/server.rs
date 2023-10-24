@@ -591,7 +591,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
                 // We're not interested if the task panicked; immediately process
                 // another connection
-                let _ = tokio::spawn(conn).await;
+                #[allow(clippy::let_underscore_future)]
+                let _ = tokio::spawn(conn);
             }
         };
 
