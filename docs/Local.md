@@ -20,7 +20,7 @@ Preprocessor cache mode will be disabled if any of the following holds:
 
 - the configuration setting `use_preprocessor_cache_mode` is false
 - a modification time of one of the include files is too new (needed to avoid a race condition)
-- a compiler option not supported by the preprocessor cache mode is used. Currently, this is only `-Xpreprocessor`, but if/when sccache grows to handle options like `-Wp,X`, then more could be added to this list.
+- a compiler option not supported by the preprocessor cache mode is used. Currently, this is only `-Xpreprocessor` and `-Wp,*`, but if/when sccache grows to handle options then more could be added to this list.
 - the string `__TIME__` is present in the source code
 
 Configuration options and their default values:

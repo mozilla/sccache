@@ -182,6 +182,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-U", OsString, CanBeSeparated, PassThrough),
     take_arg!("-V", OsString, Separated, PassThrough),
     flag!("-Werror=pedantic", PedanticFlag),
+    take_arg!("-Wp", OsString, Concatenated(','), PreprocessorArgument),
     flag!("-Wpedantic", PedanticFlag),
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
@@ -422,9 +423,16 @@ where
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
-            Some(PreprocessorArgumentFlag)
-            | Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(PreprocessorArgument(_)) => {
+                too_hard_for_preprocessor_cache_mode = match arg.flag_str() {
+                    Some(s) => s == "-Xpreprocessor" || s == "-Wp",
+                    _ => false,
+                };
+                &mut preprocessor_args
+            }
+            Some(PreprocessorArgumentFlag) | Some(PreprocessorArgumentPath(_)) => {
+                &mut preprocessor_args
+            }
             Some(DepArgumentPath(_)) | Some(NeedDepTarget) => &mut dependency_args,
             Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
             | Some(DepTarget(_)) => continue,
@@ -434,11 +442,6 @@ where
                 Argument::UnknownFlag(_) => &mut common_args,
                 _ => unreachable!(),
             },
-        };
-
-        too_hard_for_preprocessor_cache_mode = match arg.flag_str() {
-            Some(s) => s == "-Xpreprocessor",
-            _ => false,
         };
 
         // Normalize attributes such as "-I foo", "-D FOO=bar", as
@@ -2049,6 +2052,13 @@ mod test {
         assert!(!parsed_args.too_hard_for_preprocessor_cache_mode);
 
         let args = stringvec!["-c", "foo.c", "-o", "foo.o", "-Xpreprocessor", "-M"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(parsed_args.too_hard_for_preprocessor_cache_mode);
+
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o", r#"-Wp,-DFOO="something""#];
         let parsed_args = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),

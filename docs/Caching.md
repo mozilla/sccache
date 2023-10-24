@@ -54,4 +54,4 @@ to the C/C++ compiler one, but with additional elements:
 * The hash of the input file
 
 Note that some compiler options can disable preprocessor cache mode. As of this
-writing, only `-Xpreprocessor` does.
+writing, only `-Xpreprocessor` and `-Wp,*` do.
