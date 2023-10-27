@@ -357,6 +357,7 @@ jobs:
 
       - name: Create release
         run: |
+          sudo apt-get update && sudo apt-get install -y hub
           tag_name=${GITHUB_REF#refs/tags/}
           for f in sccache-*.tar.gz* sccache-*.zip*; do
               if [[ -f "$f" ]]; then
