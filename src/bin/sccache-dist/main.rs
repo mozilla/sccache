@@ -225,10 +225,12 @@ fn run(command: Command) -> Result<i32> {
             builder,
             cache_dir,
             public_addr,
+            bind_addr,
             scheduler_url,
             scheduler_auth,
             toolchain_cache_size,
         }) => {
+            let bind_addr = bind_addr.unwrap_or_else(|| public_addr);
             let builder: Box<dyn dist::BuilderIncoming> = match builder {
                 #[cfg(not(target_os = "freebsd"))]
                 server_config::BuilderType::Docker => {
@@ -289,6 +291,7 @@ fn run(command: Command) -> Result<i32> {
                 .context("Failed to create sccache server instance")?;
             let http_server = dist::http::Server::new(
                 public_addr,
+                bind_addr,
                 scheduler_url.to_url(),
                 scheduler_auth,
                 server,

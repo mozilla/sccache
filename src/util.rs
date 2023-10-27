@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
@@ -937,8 +938,17 @@ pub fn daemonize() -> Result<()> {
 ///
 /// More details could be found at https://github.com/mozilla/sccache/pull/1563
 #[cfg(any(feature = "dist-server", feature = "dist-client"))]
-pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
+pub fn new_reqwest_blocking_client(real_addr: Option<SocketAddr>) -> reqwest::blocking::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(addr) = real_addr {
+        headers.insert(
+            "X-Real-IP",
+            reqwest::header::HeaderValue::from_str(&format!("{}", addr.ip())).unwrap(),
+        );
+    }
+
     reqwest::blocking::Client::builder()
+        .default_headers(headers)
         .pool_max_idle_per_host(0)
         .build()
         .expect("http client must build with success")

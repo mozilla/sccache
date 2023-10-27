@@ -100,7 +100,7 @@ impl MozillaCheck {
     pub fn new(required_groups: Vec<String>) -> Self {
         Self {
             auth_cache: Mutex::new(HashMap::new()),
-            client: new_reqwest_blocking_client(),
+            client: new_reqwest_blocking_client(None),
             required_groups,
         }
     }
@@ -269,7 +269,7 @@ impl ProxyTokenCheck {
         let maybe_auth_cache: Option<Mutex<(HashMap<String, Instant>, Duration)>> =
             cache_secs.map(|secs| Mutex::new((HashMap::new(), Duration::from_secs(secs))));
         Self {
-            client: new_reqwest_blocking_client(),
+            client: new_reqwest_blocking_client(None),
             maybe_auth_cache,
             url,
         }

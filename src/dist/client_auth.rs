@@ -246,7 +246,7 @@ mod code_grant_pkce {
             grant_type: GRANT_TYPE_PARAM_VALUE,
             redirect_uri,
         };
-        let client = new_reqwest_blocking_client();
+        let client = new_reqwest_blocking_client(None);
         let res = client.post(token_url).json(&token_request).send()?;
         if !res.status().is_success() {
             bail!(

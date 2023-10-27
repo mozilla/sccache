@@ -75,6 +75,12 @@ cache_dir = "/tmp/toolchains"
 # toolchain_cache_size = 10737418240
 # A public IP address and port that clients will use to connect to this builder.
 public_addr = "192.168.1.1:10501"
+
+# The address this builder will listen on.
+# If unspecified the default is `public_addr`.
+# If you are running builder in Docker, you need to set this to `0.0.0.0:10501`
+bind_addr = "192.168.1.1:10501"
+
 # The URL used to connect to the scheduler (should use https, given an ideal
 # setup of a HTTPS server in front of the scheduler)
 scheduler_url = "https://192.168.1.1"
