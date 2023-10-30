@@ -146,11 +146,11 @@ jobs:
           toolchain: ${{ matrix.target == 'aarch64-apple-darwin' && 'beta' || 'stable' }}
           target: ${{ matrix.target }}
 
-      - name: Install musl-tools
+      - name: Install musl-tools (x86_64)
         run: sudo apt-get install musl-tools
         if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
 
-      - name: Install musl-tools
+      - name: Install musl-tools (arm64)
         run: |
           set -x
           sed 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch-=amd64,i386] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
