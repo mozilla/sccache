@@ -61,7 +61,7 @@ once_cell = "1.18"
 opendal = { version = "0.40.0", optional = true }
 openssl = { version = "0.10.55", optional = true }
 rand = "0.8.4"
-regex = "1.7.3"
+regex = "1.8.4"
 reqsign = { version = "0.14.1", optional = true }
 reqwest = { version = "0.11", features = [
   "json",
