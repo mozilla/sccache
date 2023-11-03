@@ -15,11 +15,11 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::gcc::ArgData::*;
-use crate::compiler::{gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments};
+use crate::compiler::{
+    gcc, write_temp_file, Cacheable, CompileCommand, CompilerArguments, Language,
+};
 use crate::mock_command::{CommandCreator, CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
@@ -63,7 +63,7 @@ impl Clang {
             None => return false,
         };
 
-        let parsed_version = match Version::parse(version_str) {
+        let parsed_version = match Version::parse(version_str.trim_end_matches('"')) {
             Ok(parsed_version) => parsed_version,
             Err(e) => return false,
         };
@@ -114,11 +114,16 @@ impl CCompilerImpl for Clang {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
-        let mut ignorable_whitespace_flags = vec!["-P".to_string()];
+        let mut ignorable_whitespace_flags = if preprocessor_cache_mode {
+            vec![]
+        } else {
+            vec!["-P".to_string()]
+        };
 
         // Clang 14 and later support -fminimize-whitespace, which normalizes away non-semantic whitespace which in turn increases cache hit rate.
         if self.is_minversion(14) {
@@ -253,6 +258,38 @@ mod test {
     }
 
     #[test]
+    fn test_is_minversion() {
+        assert!(Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 14.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"Ubuntu Clang 13.0.0\"".to_string()),
+        }
+        .is_minversion(14));
+        assert!(Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+        }.is_minversion(14));
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: false,
+            version: Some("\"FreeBSD Clang 13.0.0 (git@github.com:llvm/llvm-project.git llvmorg-13.0.0-0-gd7b669b3a303)\"".to_string()),
+        }.is_minversion(14));
+
+        assert!(!Clang {
+            clangplusplus: false,
+            is_appleclang: true,
+            version: Some("\"FreeBSD Clang 14.0.5 (https://github.com/llvm/llvm-project.git llvmorg-14.0.5-0-gc12386ae247c)\"".to_string()),
+        }.is_minversion(14)); // is_appleclang wins
+    }
+
+    #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(Some("foo.c"), a.input.to_str());
@@ -302,6 +339,80 @@ mod test {
         assert_eq!(ovec!["-Iinclude", "-include", "file"], a.preprocessor_args);
         assert_eq!(ovec!["-fabc", "/winsysroot", "../some/dir"], a.common_args);
         assert_eq!(ovec!["-arch", "xyz"], a.arch_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_cuda() {
+        let a = parses!("-c", "foo.cu", "-o", "foo.o");
+        assert_eq!(Some("foo.cu"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_cuda_flags() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "cuda",
+            "--cuda-gpu-arch=sm_50",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(Language::Cuda, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["--cuda-gpu-arch=sm_50"], a.common_args);
+
+        let b = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "cu",
+            "--cuda-gpu-arch=sm_50",
+            "--no-cuda-include-ptx=sm_50",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), b.input.to_str());
+        assert_eq!(Language::Cuda, b.language);
+        assert_map_contains!(
+            b.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(b.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec!["--cuda-gpu-arch=sm_50", "--no-cuda-include-ptx=sm_50"],
+            b.common_args
+        );
     }
 
     #[test]

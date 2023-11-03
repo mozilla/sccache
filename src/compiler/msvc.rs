@@ -13,14 +13,12 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
 use crate::compiler::{
-    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments,
+    clang, gcc, write_temp_file, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
-use crate::util::{run_input_output, OsStrExt};
+use crate::util::{encode_path, run_input_output, OsStrExt};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use fs::File;
@@ -74,6 +72,7 @@ impl CCompilerImpl for Msvc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        _preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -236,70 +235,6 @@ where
     );
 
     bail!("Failed to detect showIncludes prefix")
-}
-
-#[cfg(unix)]
-fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
-    use std::os::unix::prelude::*;
-
-    let bytes = path.as_os_str().as_bytes();
-    dst.write_all(bytes)
-}
-
-#[cfg(windows)]
-fn encode_path(dst: &mut dyn Write, path: &Path) -> io::Result<()> {
-    use std::os::windows::prelude::*;
-
-    let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let bytes = wide_char_to_multi_byte(&points)?; // use_default_char_flag
-    dst.write_all(&bytes)
-}
-
-#[cfg(windows)]
-pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> io::Result<Vec<u8>> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
-    let flags = 0;
-    // Empty string
-    if wide_char_str.is_empty() {
-        return Ok(Vec::new());
-    }
-    unsafe {
-        // Get length of multibyte string
-        let len = winapi::um::stringapiset::WideCharToMultiByte(
-            codepage,
-            flags,
-            wide_char_str.as_ptr(),
-            wide_char_str.len() as i32,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-        );
-
-        if len > 0 {
-            // Convert from UTF-16 to multibyte
-            let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::WideCharToMultiByte(
-                codepage,
-                flags,
-                wide_char_str.as_ptr(),
-                wide_char_str.len() as i32,
-                astr.as_mut_ptr() as _,
-                len,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-            );
-            if len > 0 {
-                astr.set_len(len as usize);
-                if (len as usize) == astr.len() {
-                    return Ok(astr);
-                } else {
-                    return Ok(astr[0..(len as usize)].to_vec());
-                }
-            }
-        }
-        Err(io::Error::last_os_error())
-    }
 }
 
 ArgData! {
@@ -877,6 +812,7 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
+        too_hard_for_preprocessor_cache_mode: false,
     })
 }
 
@@ -953,7 +889,7 @@ where
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
         .arg("/wd4668")
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
 
     if is_clang {
@@ -987,8 +923,7 @@ where
     }
 
     let parsed_args = &parsed_args;
-    if let (Some(obj), &Some(ref depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile)
-    {
+    if let (Some(obj), Some(depfile)) = (parsed_args.outputs.get("obj"), &parsed_args.depfile) {
         let objfile = &obj.path;
         let f = File::create(cwd.join(depfile))?;
         let mut f = BufWriter::new(f);
@@ -2334,6 +2269,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2395,6 +2331,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2445,6 +2382,7 @@ mod test {
     #[test]
     #[cfg(windows)]
     fn local_oem_codepage_conversions() {
+        use crate::util::wide_char_to_multi_byte;
         use winapi::um::winnls::GetOEMCP;
 
         let current_oemcp = unsafe { GetOEMCP() };

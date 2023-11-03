@@ -19,14 +19,14 @@ jobs:
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
         with:
           components: ${{ matrix.component }}
           # Oldest supported version, keep in sync with README.md
-          toolchain: "1.65.0"
+          toolchain: "1.67.1"
 
       - name: clippy version
         run: cargo clippy --version
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Check
         run: npx --yes @taplo/cli fmt --check
@@ -55,10 +55,10 @@ jobs:
         include:
           - os: ubuntu-20.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.65.0"
+            rustc: "1.67.1"
           - os: ubuntu-22.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.65.0"
+            rustc: "1.67.1"
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-20.04
@@ -73,7 +73,7 @@ jobs:
           - os: macOS-11
           - os: windows-2019
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.65.0"
+            rustc: "1.67.1"
           - os: windows-2019
             rustc: nightly
             allow_failure: true
@@ -84,7 +84,7 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -138,7 +138,7 @@ jobs:
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -146,15 +146,14 @@ jobs:
           toolchain: ${{ matrix.target == 'aarch64-apple-darwin' && 'beta' || 'stable' }}
           target: ${{ matrix.target }}
 
-      - name: Install musl-tools
+      - name: Install musl-tools (x86_64)
         run: sudo apt-get install musl-tools
         if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
 
-      - name: Install musl-tools
+      - name: Install musl-tools (arm64)
         run: |
           set -x
-          sed 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch-=amd64,i386] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
-          sudo sed -i 's/http:\/\/\(.*\).ubuntu.com\/ubuntu\//[arch=amd64,i386] http:\/\/\1.archive.ubuntu.com\/ubuntu\//g' /etc/apt/sources.list
+          sed 's/mirror+file:\/etc\/apt\/apt-mirrors\.txt/[arch=arm64] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
           sudo dpkg --add-architecture arm64
           sudo apt-get update || true
           sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross
@@ -211,7 +210,7 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -258,7 +257,7 @@ jobs:
           fail_ci_if_error: false
 
   test_freebsd:
-    name: test freebsd-13.1 rust stable
+    name: test freebsd-13.2 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -266,9 +265,9 @@ jobs:
       matrix:
         job:
           - { os: macos-12 }
-        release: ["13.1"]
+        release: ["13.2"]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Prepare, build and test
         uses: vmactions/freebsd-vm@v0
         with:
@@ -317,7 +316,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-13.1-stable
+          name: test-freebsd-13.2-stable
 
   release:
     name: release
@@ -326,12 +325,12 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Check versions
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
-          v=$(grep -m 1 version Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
+          v=$(grep -m 1 "^version" Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
           if ! echo $tag_name|grep -q $v; then
              echo "Mistmatch of the version:"
              echo "Cargo.toml says $v while the tag is $tag_name"
@@ -356,6 +355,7 @@ jobs:
 
       - name: Create release
         run: |
+          sudo apt-get update && sudo apt-get install -y hub
           tag_name=${GITHUB_REF#refs/tags/}
           for f in sccache-*.tar.gz* sccache-*.zip*; do
               if [[ -f "$f" ]]; then

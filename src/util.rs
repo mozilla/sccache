@@ -18,21 +18,24 @@ use byteorder::{BigEndian, ByteOrder};
 use fs::File;
 use fs_err as fs;
 use object::{macho, read::archive::ArchiveFile, read::macho::FatArch};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
-use std::time;
 use std::time::Duration;
+use std::time::{self, SystemTime};
 
 use crate::errors::*;
 
 /// The url safe engine for base64.
 pub const BASE64_URL_SAFE_ENGINE: base64::engine::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+pub const HASH_BUFFER_SIZE: usize = 128 * 1024;
 
 #[derive(Clone)]
 pub struct Digest {
@@ -56,19 +59,38 @@ impl Digest {
     }
 
     /// Calculate the BLAKE3 digest of the contents read from `reader`.
-    pub fn reader_sync<R: Read>(mut reader: R) -> Result<String> {
+    pub fn reader_sync<R: Read>(reader: R) -> Result<String> {
+        Self::reader_sync_with(reader, |_| {}).map(|d| d.finish())
+    }
+
+    /// Calculate the BLAKE3 digest of the contents read from `reader`, calling
+    /// `each` before each time the digest is updated.
+    pub fn reader_sync_with<R: Read, F: FnMut(&[u8])>(mut reader: R, mut each: F) -> Result<Self> {
         let mut m = Digest::new();
         // A buffer of 128KB should give us the best performance.
         // See https://eklitzke.org/efficient-file-copying-on-linux.
-        let mut buffer = [0; 128 * 1024];
+        let mut buffer = [0; HASH_BUFFER_SIZE];
         loop {
             let count = reader.read(&mut buffer[..])?;
             if count == 0 {
                 break;
             }
+            each(&buffer[..count]);
             m.update(&buffer[..count]);
         }
-        Ok(m.finish())
+        Ok(m)
+    }
+
+    /// Calculate the BLAKE3 digest of the contents read from `reader`, while
+    /// also checking for the presence of time macros.
+    /// See [`TimeMacroFinder`] for more details.
+    pub fn reader_sync_time_macros<R: Read>(reader: R) -> Result<(String, TimeMacroFinder)> {
+        let mut finder = TimeMacroFinder::new();
+
+        Ok((
+            Self::reader_sync_with(reader, |visit| finder.find_time_macros(visit))?.finish(),
+            finder,
+        ))
     }
 
     /// Calculate the BLAKE3 digest of the contents of `path`, running
@@ -86,6 +108,12 @@ impl Digest {
         self.inner.update(bytes);
     }
 
+    pub fn delimiter(&mut self, name: &[u8]) {
+        self.update(b"\0SCCACHE\0");
+        self.update(name);
+        self.update(b"\0");
+    }
+
     pub fn finish(self) -> String {
         hex(self.inner.finalize().as_bytes())
     }
@@ -94,6 +122,184 @@ impl Digest {
 impl Default for Digest {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The longest pattern we're looking for is `__TIMESTAMP__`
+const MAX_HAYSTACK_LEN: usize = b"__TIMESTAMP__".len();
+
+#[cfg(test)]
+pub const MAX_TIME_MACRO_HAYSTACK_LEN: usize = MAX_HAYSTACK_LEN;
+
+/// Used during the chunked hashing process to check for C preprocessor time
+/// macros (namely `__TIMESTAMP__`, `__DATE__`, `__DATETIME__`) while reusing
+/// the same buffer as the hashing function, for efficiency.
+///
+/// See `[Self::find_time_macros]` for details.
+#[derive(Debug, Default)]
+pub struct TimeMacroFinder {
+    found_date: Cell<bool>,
+    found_time: Cell<bool>,
+    found_timestamp: Cell<bool>,
+    overlap_buffer: [u8; MAX_HAYSTACK_LEN * 2],
+    /// Counter of chunks of full size we've been through. Partial reads do
+    /// not count and are handled separately.
+    full_chunks_counter: usize,
+    /// Contents of the previous read if it was smaller than `MAX_HAYSTACK_LEN`,
+    /// plus MAX_HAYSTACK_LEN bytes of the previous chunk, to account for
+    /// the possibility of partial reads splitting a time macro
+    /// across two calls.
+    previous_small_read: Vec<u8>,
+}
+
+impl TimeMacroFinder {
+    /// Called for each chunk of a file during the hashing process
+    /// in preprocessor cache mode.
+    ///
+    /// When buffer reading a file, we get something like this:
+    ///
+    /// `[xxxx....aaaa][bbbb....cccc][dddd....eeee][ffff...]`
+    ///
+    /// The brackets represent each buffer chunk. We use the fact that the largest
+    /// pattern we're looking for is `__TIMESTAMP__` to avoid copying the entire
+    /// file to memory and re-searching the entire buffer for each pattern.
+    /// We can check inside each chunk for each pattern, and we use an overlap
+    /// buffer to keep the last `b"__TIMESTAMP__".len()` bytes around from the
+    /// last chunk, to also catch any pattern overlapping two chunks.
+    ///
+    /// In the above case, the overflow buffer would look like:
+    ///
+    /// ```text
+    ///    Chunk 1
+    ///    - aaaa0000
+    ///    Chunk 2
+    ///    - aaaabbbb
+    ///    - cccc0000
+    ///    Chunk 3
+    ///    - ccccdddd
+    ///    - eeee0000
+    ///    Chunk 4
+    ///    - eeeeffff
+    ///    [...]
+    /// ```
+    ///
+    /// We have to be careful to zero out the buffer right after each overlap check,
+    /// otherwise we risk the (unlikely) case of a pattern being spread between the
+    /// start of a chunk and its end.
+    /// Finally, we need to account for partial reads: it's possible that a read
+    /// smaller than the haystack hide a time macro because it spreads it across
+    /// two calls. This makes the example more complicated and isn't necessary
+    /// to get the point of the algorithm across.
+    /// See unit tests for some concrete examples.
+    pub fn find_time_macros(&mut self, visit: &[u8]) {
+        if self.full_chunks_counter == 0 {
+            if visit.len() <= MAX_HAYSTACK_LEN {
+                // The read is smaller than the largest haystack.
+                // We might get called again, if this was an incomplete read.
+                if !self.previous_small_read.is_empty() {
+                    // In a rare pathological case where all reads are small,
+                    // this will grow up to the length of the file.
+                    // It it *very* unlikely and of minor performance
+                    // importance compared to just getting many small reads.
+                    self.previous_small_read.extend(visit);
+                } else {
+                    self.previous_small_read = visit.to_owned();
+                }
+                self.find_macros(&self.previous_small_read);
+                return;
+            }
+            // Copy the right side of the visit to the left of the buffer
+            let right_half = visit.len() - MAX_HAYSTACK_LEN;
+            self.overlap_buffer[..MAX_HAYSTACK_LEN].copy_from_slice(&visit[right_half..]);
+        } else {
+            if visit.len() < MAX_HAYSTACK_LEN {
+                // The read is smaller than the largest haystack.
+                // We might get called again, if this was an incomplete read.
+                if !self.previous_small_read.is_empty() {
+                    self.previous_small_read.extend(visit);
+                } else {
+                    // Since this isn't the first non-small read (counter != 0)
+                    // we need to start from MAX_HAYSTACK_LEN bytes of the previous
+                    // read, otherwise we might miss a complete read followed
+                    // by a small read.
+                    let mut buf = self.overlap_buffer[..MAX_HAYSTACK_LEN].to_owned();
+                    buf.extend(visit);
+                    self.previous_small_read = buf;
+                }
+
+                // zero the right side of the buffer
+                self.overlap_buffer[MAX_HAYSTACK_LEN..].copy_from_slice(&[0; MAX_HAYSTACK_LEN]);
+                // Copy the visit to the right of the buffer, starting from the middle
+                self.overlap_buffer[MAX_HAYSTACK_LEN..MAX_HAYSTACK_LEN + visit.len()]
+                    .copy_from_slice(visit);
+
+                // Check both the concatenation with the previous small read
+                self.find_macros(&self.previous_small_read);
+                // ...and the overlap buffer
+                self.find_macros(&self.overlap_buffer);
+                return;
+            } else {
+                // Copy the left side of the visit to the right of the buffer
+                let left_half = MAX_HAYSTACK_LEN;
+                self.overlap_buffer[left_half..].copy_from_slice(&visit[..left_half]);
+                self.find_macros(&self.overlap_buffer);
+                // zero the buffer
+                self.overlap_buffer = Default::default();
+                // Copy the right side of the visit to the left of the buffer
+                let right_half = visit.len() - MAX_HAYSTACK_LEN;
+                self.overlap_buffer[..MAX_HAYSTACK_LEN].copy_from_slice(&visit[right_half..]);
+            }
+            self.find_macros(&self.overlap_buffer);
+        }
+        // Also check the concatenation with the previous small read
+        if !self.previous_small_read.is_empty() {
+            let mut concatenated = self.previous_small_read.to_owned();
+            concatenated.extend(visit);
+            self.find_macros(&concatenated);
+        }
+
+        self.find_macros(visit);
+        self.full_chunks_counter += 1;
+        self.previous_small_read.clear();
+    }
+
+    fn find_macros(&self, buffer: &[u8]) {
+        // TODO
+        // This could be made more efficient, either by using a regex for all
+        // three patterns, or by doing some SIMD trickery like `ccache` does.
+        //
+        // `ccache` reads the file twice, so we might actually already be
+        // winning in most cases... though they have an inode cache.
+        // In any case, let's only improve this if it ends up being slow.
+        if memchr::memmem::find(buffer, b"__TIMESTAMP__").is_some() {
+            self.found_timestamp.set(true);
+        }
+        if memchr::memmem::find(buffer, b"__TIME__").is_some() {
+            self.found_time.set(true);
+        };
+        if memchr::memmem::find(buffer, b"__DATE__").is_some() {
+            self.found_date.set(true);
+        };
+    }
+
+    pub fn found_time_macros(&self) -> bool {
+        self.found_date() || self.found_time() || self.found_timestamp()
+    }
+
+    pub fn found_time(&self) -> bool {
+        self.found_time.get()
+    }
+
+    pub fn found_date(&self) -> bool {
+        self.found_date.get()
+    }
+
+    pub fn found_timestamp(&self) -> bool {
+        self.found_timestamp.get()
+    }
+
+    pub fn new() -> Self {
+        Default::default()
     }
 }
 
@@ -405,6 +611,214 @@ impl OsStrExt for OsStr {
     }
 }
 
+#[cfg(unix)]
+pub fn encode_path(dst: &mut dyn Write, path: &Path) -> std::io::Result<()> {
+    use std::os::unix::prelude::*;
+
+    let bytes = path.as_os_str().as_bytes();
+    dst.write_all(bytes)
+}
+
+#[cfg(windows)]
+pub fn encode_path(dst: &mut dyn Write, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::prelude::*;
+
+    let points = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let bytes = wide_char_to_multi_byte(&points)?; // use_default_char_flag
+    dst.write_all(&bytes)
+}
+
+#[cfg(unix)]
+pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::os::unix::prelude::*;
+    Ok(OsStr::from_bytes(bytes).into())
+}
+
+#[cfg(windows)]
+pub fn decode_path(bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+
+    Ok(OsString::from_wide(&multi_byte_to_wide_char(codepage, flags, bytes)?).into())
+}
+
+#[cfg(windows)]
+pub fn wide_char_to_multi_byte(wide_char_str: &[u16]) -> std::io::Result<Vec<u8>> {
+    let codepage = winapi::um::winnls::CP_OEMCP;
+    let flags = 0;
+    // Empty string
+    if wide_char_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    unsafe {
+        // Get length of multibyte string
+        let len = winapi::um::stringapiset::WideCharToMultiByte(
+            codepage,
+            flags,
+            wide_char_str.as_ptr(),
+            wide_char_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        );
+
+        if len > 0 {
+            // Convert from UTF-16 to multibyte
+            let mut astr: Vec<u8> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::WideCharToMultiByte(
+                codepage,
+                flags,
+                wide_char_str.as_ptr(),
+                wide_char_str.len() as i32,
+                astr.as_mut_ptr() as _,
+                len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+            if len > 0 {
+                astr.set_len(len as usize);
+                if (len as usize) == astr.len() {
+                    return Ok(astr);
+                } else {
+                    return Ok(astr[0..(len as usize)].to_vec());
+                }
+            }
+        }
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+/// Wrapper for MultiByteToWideChar.
+///
+/// See https://msdn.microsoft.com/en-us/library/windows/desktop/dd319072(v=vs.85).aspx
+/// for more details.
+pub fn multi_byte_to_wide_char(
+    codepage: winapi::shared::minwindef::DWORD,
+    flags: winapi::shared::minwindef::DWORD,
+    multi_byte_str: &[u8],
+) -> std::io::Result<Vec<u16>> {
+    if multi_byte_str.is_empty() {
+        return Ok(vec![]);
+    }
+    unsafe {
+        // Get length of UTF-16 string
+        let len = winapi::um::stringapiset::MultiByteToWideChar(
+            codepage,
+            flags,
+            multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+            multi_byte_str.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if len > 0 {
+            // Convert to UTF-16
+            let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
+            let len = winapi::um::stringapiset::MultiByteToWideChar(
+                codepage,
+                flags,
+                multi_byte_str.as_ptr() as winapi::um::winnt::LPSTR,
+                multi_byte_str.len() as i32,
+                wstr.as_mut_ptr(),
+                len,
+            );
+            wstr.set_len(len as usize);
+            if len > 0 {
+                return Ok(wstr);
+            }
+        }
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// A Unix timestamp with nanoseconds precision
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Timestamp {
+    seconds: i64,
+    /// Always in the `0 .. 1_000_000_000` range.
+    nanoseconds: u32,
+}
+
+const NSEC_PER_SEC: u32 = 1_000_000_000;
+
+impl From<std::time::SystemTime> for Timestamp {
+    fn from(system_time: std::time::SystemTime) -> Self {
+        // On Unix, `SystemTime` is a wrapper for the `timespec` C struct:
+        // https://www.gnu.org/software/libc/manual/html_node/Time-Types.html#index-struct-timespec
+        // On Windows, `SystemTime` wraps a 100ns intervals-based struct.
+        // We want to effectively access the inner fields, but the Rust standard
+        // library does not expose them. The best we can do is:
+        let seconds;
+        let nanoseconds;
+        match system_time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => {
+                seconds = duration.as_secs() as i64;
+                nanoseconds = duration.subsec_nanos();
+            }
+            Err(error) => {
+                // `system_time` is before `UNIX_EPOCH`.
+                // We need to undo this algorithm:
+                // https://github.com/rust-lang/rust/blob/6bed1f0bc3cc50c10aab26d5f94b16a00776b8a5/library/std/src/sys/unix/time.rs#L40-L41
+                let negative = error.duration();
+                let negative_secs = negative.as_secs() as i64;
+                let negative_nanos = negative.subsec_nanos();
+                if negative_nanos == 0 {
+                    seconds = -negative_secs;
+                    nanoseconds = 0;
+                } else {
+                    // For example if `system_time` was 4.3 seconds before
+                    // the Unix epoch we get a Duration that represents
+                    // `(-4, -0.3)` but we want `(-5, +0.7)`:
+                    seconds = -1 - negative_secs;
+                    nanoseconds = NSEC_PER_SEC - negative_nanos;
+                }
+            }
+        };
+        Self {
+            seconds,
+            nanoseconds,
+        }
+    }
+}
+
+impl PartialEq<SystemTime> for Timestamp {
+    fn eq(&self, other: &SystemTime) -> bool {
+        self == &Self::from(*other)
+    }
+}
+
+impl Timestamp {
+    pub fn new(seconds: i64, nanoseconds: u32) -> Self {
+        Self {
+            seconds,
+            nanoseconds,
+        }
+    }
+}
+
+/// Adds a fallback for trying Unix's `ctime` semantics on Windows systems.
+pub trait MetadataCtimeExt {
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp>;
+}
+
+impl MetadataCtimeExt for std::fs::Metadata {
+    #[cfg(unix)]
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp> {
+        use std::os::unix::prelude::MetadataExt;
+        Ok(Timestamp {
+            seconds: self.ctime(),
+            nanoseconds: self.ctime_nsec().try_into().unwrap_or(0),
+        })
+    }
+    #[cfg(windows)]
+    fn ctime_or_creation(&self) -> std::io::Result<Timestamp> {
+        // Windows does not have the actual notion of ctime in the Unix sense.
+        // Best effort is creation time (also called ctime in windows libs...)
+        self.created().map(Into::into)
+    }
+}
+
 pub struct HashToDigest<'a> {
     pub digest: &'a mut Digest,
 }
@@ -421,7 +835,7 @@ impl<'a> Hasher for HashToDigest<'a> {
 
 /// Turns a slice of environment var tuples into the type expected by Command::envs.
 pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString, &OsString)> {
-    env.iter().map(|&(ref k, ref v)| (k, v))
+    env.iter().map(|(k, v)| (k, v))
 }
 
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
@@ -532,7 +946,7 @@ pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
 
 #[cfg(test)]
 mod tests {
-    use super::OsStrExt;
+    use super::{OsStrExt, TimeMacroFinder};
     use std::ffi::{OsStr, OsString};
 
     #[test]
@@ -560,5 +974,84 @@ mod tests {
         assert_eq!(a.split_prefix("foo"), Some(OsString::from("")));
         assert_eq!(a.split_prefix("foo2"), None);
         assert_eq!(a.split_prefix("b"), None);
+    }
+
+    #[test]
+    fn test_time_macro_short_read() {
+        // Normal "read" should succeed
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"__TIME__");
+        assert!(finder.found_time());
+
+        // So should a partial "read"
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TIME__");
+        assert!(finder.found_time());
+
+        // So should a partial "read" later down the line
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"Something or other larger than the haystack");
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TIME__");
+        assert!(finder.found_time());
+
+        // Even if the last "read" is large
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"Something or other larger than the haystack");
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TIME__ something or other larger than the haystack");
+        assert!(finder.found_time());
+
+        // Pathological case
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TI");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"ME");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"__");
+        assert!(finder.found_time());
+
+        // Odd-numbered pathological case
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"This is larger than the haystack __");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TI");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"ME");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"__");
+        assert!(finder.found_time());
+
+        // Sawtooth length pathological case
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"This is larger than the haystack __");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TI");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"ME__ This is larger than the haystack");
+        assert!(finder.found_time());
+        assert!(!finder.found_timestamp());
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_timestamp());
+        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
+        assert!(finder.found_timestamp());
+
+        // Odd-numbered sawtooth length pathological case
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_time());
+        finder.find_time_macros(b"TIME__ This is larger than the haystack");
+        assert!(finder.found_time());
+        assert!(!finder.found_timestamp());
+        finder.find_time_macros(b"__");
+        assert!(!finder.found_timestamp());
+        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
+        assert!(finder.found_timestamp());
     }
 }

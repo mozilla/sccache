@@ -22,6 +22,8 @@ use crate::compiler::gcc::Gcc;
 use crate::compiler::msvc;
 use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
+use crate::compiler::nvcc::NvccHostCompiler;
+use crate::compiler::nvhpc::Nvhpc;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
 #[cfg(feature = "dist-client")]
@@ -100,14 +102,86 @@ pub enum CompilerKind {
     Rust,
 }
 
-impl CompilerKind {
-    pub fn lang_kind(&self) -> String {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Language {
+    C,
+    Cxx,
+    GenericHeader,
+    CHeader,
+    CxxHeader,
+    ObjectiveC,
+    ObjectiveCxx,
+    Cuda,
+    Rust,
+}
+
+impl Language {
+    pub fn from_file_name(file: &Path) -> Option<Self> {
+        match file.extension().and_then(|e| e.to_str()) {
+            // gcc: https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html
+            Some("c") => Some(Language::C),
+            // Could be C or C++
+            Some("h") => Some(Language::GenericHeader),
+            // TODO i
+            Some("C") | Some("cc") | Some("cp") | Some("cpp") | Some("CPP") | Some("cxx")
+            | Some("c++") => Some(Language::Cxx),
+            // TODO ii
+            Some("H") | Some("hh") | Some("hp") | Some("hpp") | Some("HPP") | Some("hxx")
+            | Some("h++") | Some("tcc") => Some(Language::CxxHeader),
+            Some("m") => Some(Language::ObjectiveC),
+            // TODO mi
+            Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
+            // TODO mii
+            Some("cu") => Some(Language::Cuda),
+            // TODO cy
+            Some("rs") => Some(Language::Rust),
+            e => {
+                trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
+                None
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
         match self {
-            CompilerKind::C(CCompilerKind::Nvcc) => "CUDA",
-            CompilerKind::C(_) => "C/C++",
-            CompilerKind::Rust => "Rust",
+            Language::C | Language::CHeader => "c",
+            Language::Cxx | Language::CxxHeader => "c++",
+            Language::GenericHeader => "c/c++",
+            Language::ObjectiveC => "objc",
+            Language::ObjectiveCxx => "objc++",
+            Language::Cuda => "cuda",
+            Language::Rust => "rust",
+        }
+    }
+}
+
+impl CompilerKind {
+    pub fn lang_kind(&self, lang: &Language) -> String {
+        match lang {
+            Language::C
+            | Language::CHeader
+            | Language::Cxx
+            | Language::CxxHeader
+            | Language::GenericHeader
+            | Language::ObjectiveC
+            | Language::ObjectiveCxx => "C/C++",
+            Language::Cuda => "CUDA",
+            Language::Rust => "Rust",
         }
         .to_string()
+    }
+    pub fn lang_comp_kind(&self, lang: &Language) -> String {
+        let textual_lang = lang.as_str().to_owned();
+        match self {
+            CompilerKind::C(CCompilerKind::Clang) => textual_lang + " [clang]",
+            CompilerKind::C(CCompilerKind::Diab) => textual_lang + " [diab]",
+            CompilerKind::C(CCompilerKind::Gcc) => textual_lang + " [gcc]",
+            CompilerKind::C(CCompilerKind::Msvc) => textual_lang + " [msvc]",
+            CompilerKind::C(CCompilerKind::Nvhpc) => textual_lang + " [nvhpc]",
+            CompilerKind::C(CCompilerKind::Nvcc) => textual_lang + " [nvcc]",
+            CompilerKind::C(CCompilerKind::TaskingVX) => textual_lang + " [taskingvx]",
+            CompilerKind::Rust => textual_lang,
+        }
     }
 }
 
@@ -185,6 +259,7 @@ where
     /// Given information about a compiler command, generate a hash key
     /// that can be used for cache lookups, as well as any additional
     /// information that can be reused for compilation if necessary.
+    #[allow(clippy::too_many_arguments)]
     async fn generate_hash_key(
         self: Box<Self>,
         creator: &T,
@@ -193,6 +268,8 @@ where
         may_dist: bool,
         pool: &tokio::runtime::Handle,
         rewrite_includes_only: bool,
+        storage: Arc<dyn Storage>,
+        cache_control: CacheControl,
     ) -> Result<HashResult>;
 
     /// Return the state of any `--color` option passed to the compiler.
@@ -228,6 +305,8 @@ where
                 may_dist,
                 &pool,
                 rewrite_includes_only,
+                storage.clone(),
+                cache_control,
             )
             .await;
         debug!(
@@ -248,7 +327,7 @@ where
                 weak_toolchain_key,
             }) => (key, compilation, weak_toolchain_key),
         };
-        trace!("[{}]: Hash key: {}", out_pretty, key);
+        debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
         let start = Instant::now();
         let cache_status = async {
@@ -398,14 +477,15 @@ where
                 let future = async move {
                     let start = Instant::now();
                     match storage.put(&key, entry).await {
-                        Ok(_) => debug!("[{}]: Stored in cache successfully!", out_pretty2),
-                        Err(ref e) => debug!("[{}]: Cache write error: {:?}", out_pretty2, e),
+                        Ok(_) => {
+                            debug!("[{}]: Stored in cache successfully!", out_pretty2);
+                            Ok(CacheWriteInfo {
+                                object_file_pretty: out_pretty2,
+                                duration: start.elapsed(),
+                            })
+                        }
+                        Err(e) => Err(e),
                     }
-
-                    Ok(CacheWriteInfo {
-                        object_file_pretty: out_pretty2,
-                        duration: start.elapsed(),
-                    })
                 };
                 let future = Box::pin(future);
                 Ok((
@@ -424,6 +504,8 @@ where
     fn output_pretty(&self) -> Cow<'_, str>;
 
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
+
+    fn language(&self) -> Language;
 }
 
 #[cfg(not(feature = "dist-client"))]
@@ -577,7 +659,7 @@ where
             "fetched {:?}",
             jc.outputs
                 .iter()
-                .map(|&(ref p, ref bs)| (p, bs.lens().to_string()))
+                .map(|(p, bs)| (p, bs.lens().to_string()))
                 .collect::<Vec<_>>()
         );
         let mut output_paths: Vec<PathBuf> = vec![];
@@ -805,17 +887,12 @@ pub enum CompileResult {
 }
 
 /// The state of `--color` options passed to a compiler.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ColorMode {
     Off,
     On,
+    #[default]
     Auto,
-}
-
-impl Default for ColorMode {
-    fn default() -> ColorMode {
-        ColorMode::Auto
-    }
 }
 
 /// Can't derive(Debug) because of `CacheWriteFuture`.
@@ -839,10 +916,9 @@ impl PartialEq<CompileResult> for CompileResult {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
             (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
-            (
-                &CompileResult::CacheMiss(ref m, ref dt, _, _),
-                &CompileResult::CacheMiss(ref n, ref dt2, _, _),
-            ) => m == n && dt == dt2,
+            (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
+                m == n && dt == dt2
+            }
             (&CompileResult::NotCacheable, &CompileResult::NotCacheable) => true,
             (&CompileResult::CompileFailed, &CompileResult::CompileFailed) => true,
             _ => false,
@@ -858,7 +934,7 @@ pub enum Cacheable {
 }
 
 /// Control of caching behavior.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheControl {
     /// Default caching behavior.
     Default,
@@ -1081,32 +1157,45 @@ where
     // Both clang and clang-cl define _MSC_VER on Windows, so we first
     // check for MSVC, then check whether _MT is defined, which is the
     // difference between clang and clang-cl.
-    let test = b"#if defined(__NVCC__)
-nvcc
+    // NVHPC needs a custom version line since `__VERSION__` evaluates
+    // to the EDG version.
+    //
+    // We prefix the information we need with `compiler_id` and `compiler_version`
+    // so that we can support compilers that insert pre-amble code even in `-E` mode
+    let test = b"
+#if defined(__NVCC__) && defined(__NVCOMPILER)
+compiler_id=nvcc-nvhpc
+#elif defined(__NVCC__) && defined(_MSC_VER)
+compiler_id=nvcc-msvc
+#elif defined(__NVCC__)
+compiler_id=nvcc
 #elif defined(_MSC_VER) && !defined(__clang__)
-msvc
+compiler_id=msvc
 #elif defined(_MSC_VER) && defined(_MT)
-msvc-clang
+compiler_id=msvc-clang
+#elif defined(__NVCOMPILER)
+compiler_id=nvhpc
+compiler_version=__NVCOMPILER_MAJOR__.__NVCOMPILER_MINOR__.__NVCOMPILER_PATCHLEVEL__
 #elif defined(__clang__) && defined(__cplusplus) && defined(__apple_build_version__)
-apple-clang++
+compiler_id=apple-clang++
 #elif defined(__clang__) && defined(__cplusplus)
-clang++
+compiler_id=clang++
 #elif defined(__clang__) && defined(__apple_build_version__)
-apple-clang
+compiler_id=apple-clang
 #elif defined(__clang__)
-clang
+compiler_id=clang
 #elif defined(__GNUC__) && defined(__cplusplus)
-g++
+compiler_id=g++
 #elif defined(__GNUC__)
-gcc
+compiler_id=gcc
 #elif defined(__DCC__)
-diab
+compiler_id=diab
 #elif defined(__CTC__)
-tasking_vx
+compiler_id=tasking_vx
 #else
-unknown
+compiler_id=unknown
 #endif
-__VERSION__
+compiler_version=__VERSION__
 "
     .to_vec();
     let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test).await?;
@@ -1143,10 +1232,12 @@ __VERSION__
     };
     let mut lines = stdout.lines().filter_map(|line| {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            None
+        if line.starts_with("compiler_id=") {
+            Some(line.strip_prefix("compiler_id=").unwrap())
+        } else if line.starts_with("compiler_version=") {
+            Some(line.strip_prefix("compiler_version=").unwrap())
         } else {
-            Some(line)
+            None
         }
     });
     if let Some(kind) = lines.next() {
@@ -1220,10 +1311,29 @@ __VERSION__
                 .await
                 .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
             }
-            "nvcc" => {
-                debug!("Found NVCC");
+            "nvcc" | "nvcc-msvc" | "nvcc-nvhpc" => {
+                let host_compiler = match kind {
+                    "nvcc-nvhpc" => NvccHostCompiler::Nvhpc,
+                    "nvcc-msvc" => NvccHostCompiler::Msvc,
+                    "nvcc" => NvccHostCompiler::Gcc,
+                    &_ => NvccHostCompiler::Gcc,
+                };
                 return CCompiler::new(
                     Nvcc {
+                        host_compiler,
+                        version: version.clone(),
+                    },
+                    executable,
+                    &pool,
+                )
+                .await
+                .map(|c| Box::new(c) as Box<dyn Compiler<T>>);
+            }
+            "nvhpc" => {
+                debug!("Found NVHPC");
+                return CCompiler::new(
+                    Nvhpc {
+                        nvcplusplus: kind == "nvc++",
                         version: version.clone(),
                     },
                     executable,
@@ -1288,7 +1398,10 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "\n\ngcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "\n\ncompiler_id=gcc", "")),
+        );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1302,7 +1415,10 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "clang\n", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
+        );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1325,7 +1441,10 @@ mod test {
         let prefix = String::from("blah: ");
         let stdout = format!("{}{}\r\n", prefix, s);
         // Compiler detection output
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "\nmsvc\n", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "\ncompiler_id=msvc\n", "")),
+        );
         // showincludes prefix detection output
         next_command(
             &creator,
@@ -1344,12 +1463,32 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "nvcc\n", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=nvcc\n", "")),
+        );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
         assert_eq!(CompilerKind::C(CCompilerKind::Nvcc), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_kind_nvhpc() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=nvhpc\n", "")),
+        );
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+            .wait()
+            .unwrap()
+            .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Nvhpc), c.kind());
     }
 
     #[test]
@@ -1476,7 +1615,10 @@ LLVM version: 6.0",
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "\ndiab\n", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "\ncompiler_id=diab\n", "")),
+        );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1539,7 +1681,7 @@ LLVM version: 6.0",
         let results: Vec<_> = [11, 12]
             .iter()
             .map(|version| {
-                let output = format!("clang\n\"{}.0.0\"", version);
+                let output = format!("compiler_id=clang\ncompiler_version=\"{}.0.0\"", version);
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
                 let c = detect_compiler(
                     creator.clone(),
@@ -1562,7 +1704,16 @@ LLVM version: 6.0",
                     o => panic!("Bad result from parse_arguments: {:?}", o),
                 };
                 hasher
-                    .generate_hash_key(&creator, cwd.to_path_buf(), vec![], false, pool, false)
+                    .generate_hash_key(
+                        &creator,
+                        cwd.to_path_buf(),
+                        vec![],
+                        false,
+                        pool,
+                        false,
+                        Arc::new(MockStorage::new(None)),
+                        CacheControl::Default,
+                    )
                     .wait()
                     .unwrap()
             })
@@ -1578,7 +1729,10 @@ LLVM version: 6.0",
         let pool = runtime.handle();
         let f = TestFixture::new();
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
@@ -1594,10 +1748,18 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],
@@ -1705,10 +1867,18 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],
@@ -1815,7 +1985,10 @@ LLVM version: 6.0",
         let storage = MockStorage::new(None);
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],
@@ -1896,7 +2069,10 @@ LLVM version: 6.0",
         let storage = MockStorage::new(Some(storage_delay));
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],
@@ -1966,10 +2142,18 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],
@@ -2077,7 +2261,12 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
@@ -2086,7 +2275,7 @@ LLVM version: 6.0",
         next_command_calls(&creator, move |_| {
             let mut f = File::create(&o)?;
             f.write_all(b"file contents")?;
-            Ok(MockChild::new(exit_status(0), "gcc", ""))
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", ""))
         });
         let c = get_compiler_info(
             creator.clone(),
@@ -2157,10 +2346,18 @@ LLVM version: 6.0",
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
         ];
-        let storage = DiskCache::new(f.tempdir.path().join("cache"), u64::MAX, &pool);
+        let storage = DiskCache::new(
+            f.tempdir.path().join("cache"),
+            u64::MAX,
+            &pool,
+            Default::default(),
+        );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
-        next_command(&creator, Ok(MockChild::new(exit_status(0), "gcc", "")));
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
+        );
         let c = get_compiler_info(
             creator.clone(),
             &f.bins[0],

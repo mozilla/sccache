@@ -24,8 +24,8 @@
 # $HOME/.potcache
 #
 #     mkdir $HOME/.potcache
-#     fetch -o $HOME/.potcache/13.1-RELEASE_base.txz \
-#     https://ftp.freebsd.org/pub/FreeBSD/releases/amd64/13.1-RELEASE/base.txz
+#     fetch -o $HOME/.potcache/13.2-RELEASE_base.txz \
+#     https://ftp.freebsd.org/pub/FreeBSD/releases/amd64/13.2-RELEASE/base.txz
 #
 # This script can be run from a github action. When run locally, make
 # sure to install the required packages:
@@ -78,7 +78,8 @@ build_and_test_project()
 	export RUSTFLAGS="-C debuginfo=0"
 	cargo build --features "dist-client,dist-server" || FAULT=1
 	echo "#### testing sccache (cargo)"
-	cargo test --features "dist-client,dist-server" || FAULT=1
+	cargo test --features "dist-client,dist-server" -- \
+	  --test-threads 1 || FAULT=1
 	unset RUSTFLAGS
 	if [ "$FAULT" -eq 0 ]; then
 		# save build time by avoiding "cargo install"

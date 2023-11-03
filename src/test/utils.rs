@@ -155,6 +155,7 @@ pub fn mk_bin_contents<F: FnOnce(File) -> io::Result<()>>(
     let bin = dir.join(path);
     let parent = bin.parent().unwrap();
     fs::create_dir_all(parent)?;
+    #[allow(clippy::unnecessary_cast)]
     let f = fs::OpenOptions::new()
         .write(true)
         .create(true)

@@ -240,7 +240,12 @@ fn test_rust_cargo_cmd(cmd: &str, test_info: SccacheTest) -> Result<()> {
 
     test_info
         .show_stats()?
-        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":2}}"#).from_utf8())?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_hits":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
         .try_success()?;
 
     Ok(())
@@ -275,7 +280,7 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     // itoa should be cached (due to the changed environment variable).
     test_info
         .show_stats()?
-        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}}"#).from_utf8())?
+        .try_stdout(predicates::str::contains(r#""cache_hits":{"counts":{"Rust":1}"#).from_utf8())?
         .try_success()?;
 
     drop(test_info);

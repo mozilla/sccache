@@ -29,6 +29,7 @@ use fs_err as fs;
 use log::Level::Trace;
 use predicates::prelude::*;
 use regex::Regex;
+use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -37,7 +38,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
-use which::which_in;
+use which::{which, which_in};
 
 mod harness;
 
@@ -50,11 +51,28 @@ struct Compiler {
 
 // Test GCC + clang on non-OS X platforms.
 #[cfg(all(unix, not(target_os = "macos")))]
-const COMPILERS: &[&str] = &["gcc", "clang", "clang++"];
+const COMPILERS: &[&str] = &["gcc", "clang", "clang++", "nvc", "nvc++"];
 
 // OS X ships a `gcc` that's just a clang wrapper, so only test clang there.
 #[cfg(target_os = "macos")]
 const COMPILERS: &[&str] = &["clang", "clang++"];
+
+const CUDA_COMPILERS: &[&str] = &["nvcc", "clang++"];
+
+fn adv_key_kind(lang: &str, compiler: &str) -> String {
+    let language = lang.to_owned();
+    match compiler {
+        "clang" | "clang++" => language + " [clang]",
+        "gcc" | "g++" => language + " [gcc]",
+        "cl.exe" => language + " [msvc]",
+        "nvc" | "nvc++" => language + " [nvhpc]",
+        "nvcc" => language + " [nvcc]",
+        _ => {
+            trace!("Unknown compiler type: {}", compiler);
+            language + "unknown"
+        }
+    }
+}
 
 //TODO: could test gcc when targeting mingw.
 
@@ -74,8 +92,38 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     mut extra_args: Vec<OsString>,
 ) -> Vec<OsString> {
     let mut arg = match compiler {
-        "gcc" | "clang" | "clang++" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "gcc" | "clang" | "clang++" | "nvc" | "nvc++" | "nvcc" => {
+            vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output)
+        }
         "cl.exe" => vec_from!(OsString, exe, "-c", input, format!("-Fo{}", output)),
+        _ => panic!("Unsupported compiler: {}", compiler),
+    };
+    if !extra_args.is_empty() {
+        arg.append(&mut extra_args)
+    }
+    arg
+}
+// TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
+// default case on Fedora, e.g.
+fn compile_cuda_cmdline<T: AsRef<OsStr>>(
+    compiler: &str,
+    exe: T,
+    input: &str,
+    output: &str,
+    mut extra_args: Vec<OsString>,
+) -> Vec<OsString> {
+    let mut arg = match compiler {
+        "nvcc" => vec_from!(OsString, exe.as_ref(), "-c", input, "-o", output),
+        "clang++" => {
+            vec_from!(
+                OsString,
+                exe,
+                "-c",
+                input,
+                "--cuda-gpu-arch=sm_50",
+                format!("-Fo{}", output)
+            )
+        }
         _ => panic!("Unsupported compiler: {}", compiler),
     };
     if !extra_args.is_empty() {
@@ -91,6 +139,9 @@ const INPUT_WITH_WHITESPACE_ALT: &str = "test_whitespace_alt.c";
 const INPUT_ERR: &str = "test_err.c";
 const INPUT_MACRO_EXPANSION: &str = "test_macro_expansion.c";
 const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+const INPUT_FOR_CUDA_A: &str = "test_a.cu";
+const INPUT_FOR_CUDA_B: &str = "test_b.cu";
+const INPUT_FOR_CUDA_C: &str = "test_c.cu";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -129,6 +180,8 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(0, info.stats.cache_hits.all());
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        let adv_key = adv_key_kind("c", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
     });
     trace!("compile");
     fs::remove_file(&out_file).unwrap();
@@ -147,6 +200,9 @@ fn test_basic_compile(compiler: Compiler, tempdir: &Path) {
         assert_eq!(1, info.stats.cache_misses.all());
         assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
         assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        let adv_key = adv_key_kind("c", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_key).unwrap());
     });
 }
 
@@ -218,7 +274,7 @@ fn test_msvc_responsefile(compiler: Compiler, tempdir: &Path) {
     let out_file = tempdir.join(OUTPUT);
     let cmd_file_name = "test_msvc.rsp";
     {
-        let mut file = File::create(&tempdir.join(cmd_file_name)).unwrap();
+        let mut file = File::create(tempdir.join(cmd_file_name)).unwrap();
         let content = format!("-c {INPUT} -Fo{OUTPUT}");
         file.write_all(content.as_bytes()).unwrap();
     }
@@ -415,8 +471,8 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.
-    if compiler.name == "clang" {
-        let version_cmd = Command::new(compiler.name)
+    if compiler.name == "clang" || compiler.name == "clang++" {
+        let version_cmd = Command::new(compiler.exe.clone())
             .arg("--version")
             .output()
             .expect("Failure when getting compiler version");
@@ -427,12 +483,12 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
             Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
         };
 
-        // Apple clang would match "Apple LLVM version"
-        let re = Regex::new(r"(?P<apply>Apple+*)?clang version (?P<major>\d+)").unwrap();
+        // Regex to match "Apple LLVM clang version" or "Apple clang version"
+        let re = Regex::new(r"(?P<apple>Apple)?.*clang version (?P<major>\d+)").unwrap();
         let (major, is_appleclang) = match re.captures(version_output) {
             Some(c) => (
                 c.name("major").unwrap().as_str().parse::<usize>().unwrap(),
-                c.name("apple").is_none(),
+                c.name("apple").is_some(),
             ),
             None => panic!(
                 "Version info not found in --version output: {}",
@@ -443,6 +499,174 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
     } else {
         test_clang_cache_whitespace_normalization(compiler, tempdir, false);
     }
+}
+
+fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_CUDA_A, INPUT_FOR_CUDA_B], tempdir);
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile A");
+    sccache_command()
+        .args(&compile_cuda_cmdline(
+            name,
+            exe,
+            INPUT_FOR_CUDA_A,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    });
+    trace!("compile A");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_cuda_cmdline(
+            name,
+            exe,
+            INPUT_FOR_CUDA_A,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    });
+    // By compiling another input source we verify that the pre-processor
+    // phase is correctly running and outputing text
+    trace!("compile B");
+    sccache_command()
+        .args(&compile_cuda_cmdline(
+            name,
+            exe,
+            INPUT_FOR_CUDA_B,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(3, info.stats.compile_requests);
+        assert_eq!(3, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("CUDA").unwrap());
+        let adv_cuda_key = adv_key_kind("cuda", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_cuda_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
+    });
+}
+
+fn test_proper_lang_stat_tracking(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    zero_stats();
+
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_CUDA_C, INPUT], tempdir);
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile CUDA A");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_C,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile CUDA A");
+    sccache_command()
+        .args(&compile_cmdline(
+            name,
+            &exe,
+            INPUT_FOR_CUDA_C,
+            OUTPUT,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile C++ A");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+    trace!("compile C++ A");
+    sccache_command()
+        .args(&compile_cmdline(name, &exe, INPUT, OUTPUT, Vec::new()))
+        .current_dir(tempdir)
+        .envs(env_vars)
+        .assert()
+        .success();
+    fs::remove_file(&out_file).unwrap();
+
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(4, info.stats.compile_requests);
+        assert_eq!(4, info.stats.requests_executed);
+        assert_eq!(2, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("C/C++").unwrap());
+        assert_eq!(&1, info.stats.cache_hits.get("CUDA").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("CUDA").unwrap());
+    });
+}
+
+fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
+    test_cuda_compiles(&compiler, tempdir);
+    test_proper_lang_stat_tracking(compiler, tempdir);
 }
 
 fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
@@ -566,11 +790,34 @@ fn find_compilers() -> Vec<Compiler> {
     }]
 }
 
+fn find_cuda_compilers() -> Vec<Compiler> {
+    let cwd = env::current_dir().unwrap();
+    // CUDA compilers like clang don't come with all of the components for compilation.
+    // To consider a machine to have any cuda compilers we rely on the existence of `nvcc`
+    let compilers = match which("nvcc") {
+        Ok(_) => CUDA_COMPILERS
+            .iter()
+            .filter_map(|c| {
+                which_in(c, env::var_os("PATH"), &cwd)
+                    .ok()
+                    .map(|full_path| Compiler {
+                        name: c,
+                        exe: full_path.into(),
+                        env_vars: vec![],
+                    })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+    compilers
+}
+
 // TODO: This runs multiple test cases, for multiple compilers. It should be
 // split up to run them individually. In the current form, it is hard to see
 // which sub test cases are executed, and if one fails, the remaining tests
 // are not run.
 #[test]
+#[serial]
 #[cfg(any(unix, target_env = "msvc"))]
 fn test_sccache_command() {
     let _ = env_logger::try_init();
@@ -596,6 +843,39 @@ fn test_sccache_command() {
         );
         for compiler in compilers {
             run_sccache_command_tests(compiler, tempdir.path());
+            zero_stats();
+        }
+        stop_local_daemon();
+    }
+}
+
+#[test]
+#[serial]
+#[cfg(any(unix, target_env = "msvc"))]
+fn test_cuda_sccache_command() {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+    let compilers = find_cuda_compilers();
+    if compilers.is_empty() {
+        warn!("No compilers found, skipping test");
+    } else {
+        // Ensure there's no existing sccache server running.
+        stop_local_daemon();
+        // Create the configurations
+        let sccache_cfg = sccache_client_cfg(tempdir.path());
+        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
+        // Start a server.
+        trace!("start server");
+        start_local_daemon(
+            &tempdir.path().join("sccache-cfg.json"),
+            &sccache_cached_cfg_path,
+        );
+        for compiler in compilers {
+            run_sccache_cuda_command_tests(compiler, tempdir.path());
             zero_stats();
         }
         stop_local_daemon();

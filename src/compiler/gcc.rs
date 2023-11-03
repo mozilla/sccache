@@ -13,10 +13,8 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
-use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::{clang, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
 use crate::{counted_array, dist};
@@ -69,10 +67,16 @@ impl CCompilerImpl for Gcc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
     {
+        let ignorable_whitespace_flags = if preprocessor_cache_mode {
+            vec![]
+        } else {
+            vec!["-P".to_string()]
+        };
         preprocess(
             creator,
             executable,
@@ -82,7 +86,7 @@ impl CCompilerImpl for Gcc {
             may_dist,
             self.kind(),
             rewrite_includes_only,
-            vec!["-P".to_string()],
+            ignorable_whitespace_flags,
         )
         .await
     }
@@ -178,6 +182,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-U", OsString, CanBeSeparated, PassThrough),
     take_arg!("-V", OsString, Separated, PassThrough),
     flag!("-Werror=pedantic", PedanticFlag),
+    take_arg!("-Wp", OsString, Concatenated(','), PreprocessorArgument),
     flag!("-Wpedantic", PedanticFlag),
     take_arg!("-Xassembler", OsString, Separated, PassThrough),
     take_arg!("-Xlinker", OsString, Separated, PassThrough),
@@ -283,6 +288,8 @@ where
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
 
+    let mut too_hard_for_preprocessor_cache_mode = false;
+
     for arg in ArgsIter::new(it, arg_info) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
@@ -367,6 +374,8 @@ where
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
+                    "rs" => Some(Language::Rust),
+                    "cuda" => Some(Language::Cuda),
                     _ => cannot_cache!("-x"),
                 };
             }
@@ -414,9 +423,16 @@ where
                 extra_hash_files.push(cwd.join(path));
                 &mut common_args
             }
-            Some(PreprocessorArgumentFlag)
-            | Some(PreprocessorArgument(_))
-            | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+            Some(PreprocessorArgument(_)) => {
+                too_hard_for_preprocessor_cache_mode = match arg.flag_str() {
+                    Some(s) => s == "-Xpreprocessor" || s == "-Wp",
+                    _ => false,
+                };
+                &mut preprocessor_args
+            }
+            Some(PreprocessorArgumentFlag) | Some(PreprocessorArgumentPath(_)) => {
+                &mut preprocessor_args
+            }
             Some(DepArgumentPath(_)) | Some(NeedDepTarget) => &mut dependency_args,
             Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
             | Some(DepTarget(_)) => continue,
@@ -603,6 +619,7 @@ where
         profile_generate,
         color_mode,
         suppress_rewrite_includes_only,
+        too_hard_for_preprocessor_cache_mode,
     })
 }
 
@@ -615,6 +632,7 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveC => Some("objective-c"),
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::Cuda => Some("cu"),
+        Language::Rust => None,          // Let the compiler decide
         Language::GenericHeader => None, // Let the compiler decide
     }
 }
@@ -691,7 +709,7 @@ fn preprocess_cmd<T>(
         .args(&parsed_args.common_args)
         .args(arch_args_to_use)
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
     debug!("cmd after -arch rewrite: {:?}", cmd);
 }
@@ -1892,6 +1910,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2021,5 +2040,29 @@ mod test {
             vec![],
         );
         assert!(!cmd.args.contains(&"-x".into()));
+    }
+
+    #[test]
+    fn test_too_hard_for_preprocessor_cache_mode() {
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(!parsed_args.too_hard_for_preprocessor_cache_mode);
+
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o", "-Xpreprocessor", "-M"];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(parsed_args.too_hard_for_preprocessor_cache_mode);
+
+        let args = stringvec!["-c", "foo.c", "-o", "foo.o", r#"-Wp,-DFOO="something""#];
+        let parsed_args = match parse_arguments_(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(parsed_args.too_hard_for_preprocessor_cache_mode);
     }
 }

@@ -17,10 +17,8 @@ use crate::compiler::args::{
     ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
     NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
 };
-use crate::compiler::c::{
-    ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments,
-};
-use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::{Cacheable, ColorMode, CompileCommand, CompilerArguments, Language};
 use crate::errors::*;
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{run_input_output, OsStrExt};
@@ -69,6 +67,7 @@ impl CCompilerImpl for Diab {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         _rewrite_includes_only: bool,
+        _preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -301,6 +300,7 @@ where
         // FIXME: Implement me.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
+        too_hard_for_preprocessor_cache_mode: false,
     })
 }
 
@@ -322,7 +322,7 @@ where
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
 
     if log_enabled!(Trace) {
@@ -766,6 +766,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.

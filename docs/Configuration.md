@@ -24,6 +24,21 @@ token = "secrettoken"
 dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
 
+# See the local docs on more explanations about this mode
+[cache.disk.preprocessor_cache_mode]
+# Whether to use the preprocessor cache mode
+use_preprocessor_cache_mode = true
+# Whether to use file times to check for changes
+file_stat_matches = true
+# Whether to also use ctime (file status change) time to check for changes
+use_ctime_for_stat = true
+# Whether to ignore `__TIME__` when caching
+ignore_time_macros = false
+# Whether to skip (meaning not cache, only hash) system headers
+skip_system_headers = false
+# Whether hash the current working directory
+hash_working_directory = true
+
 [cache.gcs]
 # optional oauth url
 oauth_url = "..."
@@ -52,6 +67,7 @@ bucket = "name"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
+server_side_encryption = false
 ```
 
 sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
@@ -83,6 +99,7 @@ configuration variables
 
 * `SCCACHE_DIR` local on disk artifact cache directory
 * `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
+* `SCCACHE_PREPROCESSOR_MODE` enable/disable preprocessor caching (see [the local doc](Local.md))
 
 #### s3 compatible
 

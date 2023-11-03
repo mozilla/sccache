@@ -58,7 +58,7 @@ impl Default for StatsFormat {
 /// A specific command to run.
 pub enum Command {
     /// Show cache statistics and exit.
-    ShowStats(StatsFormat),
+    ShowStats(StatsFormat, bool),
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
@@ -84,6 +84,7 @@ pub enum Command {
         /// The environment variables to use for execution.
         env_vars: Vec<(OsString, OsString)>,
     },
+    DebugPreprocessorCacheEntries,
 }
 
 fn flag_infer_long_and_short(name: &'static str) -> Arg {
@@ -124,8 +125,14 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long_and_short("show-stats")
                 .help("show cache statistics")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("show-adv-stats")
+                .help("show advanced cache statistics")
+                .action(ArgAction::SetTrue),
             flag_infer_long("start-server")
                 .help("start background server")
+                .action(ArgAction::SetTrue),
+            flag_infer_long("debug-preprocessor-cache")
+                .help("show all preprocessor cache entries")
                 .action(ArgAction::SetTrue),
             flag_infer_long("stop-server")
                 .help("stop background server")
@@ -158,8 +165,10 @@ fn get_clap_command() -> clap::Command {
             ArgGroup::new("one_and_only_one")
                 .args([
                     "dist-auth",
+                    "debug-preprocessor-cache",
                     "dist-status",
                     "show-stats",
+                    "show-adv-stats",
                     "start-server",
                     "stop-server",
                     "zero-stats",
@@ -246,9 +255,17 @@ pub fn try_parse() -> Result<Command> {
                     .get_one("stats-format")
                     .cloned()
                     .expect("There is a default value");
-                Ok(Command::ShowStats(fmt))
+                Ok(Command::ShowStats(fmt, false))
+            } else if matches.get_flag("show-adv-stats") {
+                let fmt = matches
+                    .get_one("stats-format")
+                    .cloned()
+                    .expect("There is a default value");
+                Ok(Command::ShowStats(fmt, true))
             } else if matches.get_flag("start-server") {
                 Ok(Command::StartServer)
+            } else if matches.get_flag("debug-preprocessor-cache") {
+                Ok(Command::DebugPreprocessorCacheEntries)
             } else if matches.get_flag("stop-server") {
                 Ok(Command::StopServer)
             } else if matches.get_flag("zero-stats") {

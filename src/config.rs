@@ -33,7 +33,7 @@ use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use crate::errors::*;
+use crate::{cache::PreprocessorCacheModeConfig, errors::*};
 
 static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -160,6 +160,7 @@ pub struct DiskCacheConfig {
     pub dir: PathBuf,
     // TODO: use deserialize_with to allow human-readable sizes in toml
     pub size: u64,
+    pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
 }
 
 impl Default for DiskCacheConfig {
@@ -167,6 +168,7 @@ impl Default for DiskCacheConfig {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
+            preprocessor_cache_mode: Default::default(),
         }
     }
 }
@@ -245,6 +247,7 @@ pub struct S3CacheConfig {
     pub no_credentials: bool,
     pub endpoint: Option<String>,
     pub use_ssl: Option<bool>,
+    pub server_side_encryption: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -519,6 +522,16 @@ fn config_from_env() -> Result<EnvConfig> {
         let use_ssl = env::var("SCCACHE_S3_USE_SSL")
             .ok()
             .map(|value| value != "off");
+        let server_side_encryption =
+            env::var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")
+                .ok()
+                .map_or(Ok(Some(false)), |val| match val.as_str() {
+                    "true" | "1" => Ok(Some(true)),
+                    "false" | "0" => Ok(Some(false)),
+                    _ => bail!(
+                        "SCCACHE_S3_SERVER_SIDE_ENCRYPTION must be 'true', '1', 'false', or '0'."
+                    ),
+                })?;
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_S3_KEY_PREFIX")
             .ok()
@@ -535,6 +548,7 @@ fn config_from_env() -> Result<EnvConfig> {
             key_prefix,
             endpoint,
             use_ssl,
+            server_side_encryption,
         })
     } else {
         None
@@ -695,10 +709,18 @@ fn config_from_env() -> Result<EnvConfig> {
         .ok()
         .and_then(|v| parse_size(&v));
 
+    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::default();
+    match env::var("SCCACHE_DIRECT").as_deref() {
+        Ok("on") | Ok("true") => preprocessor_mode_config.use_preprocessor_cache_mode = true,
+        Ok("off") | Ok("false") => preprocessor_mode_config.use_preprocessor_cache_mode = false,
+        _ => {}
+    };
+
     let disk = if disk_dir.is_some() || disk_sz.is_some() {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
+            preprocessor_cache_mode: preprocessor_mode_config,
         })
     } else {
         None
@@ -1041,6 +1063,7 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
+                preprocessor_cache_mode: Default::default(),
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
@@ -1054,6 +1077,7 @@ fn config_overrides() {
             disk: Some(DiskCacheConfig {
                 dir: "/file-cache".into(),
                 size: 15,
+                preprocessor_cache_mode: Default::default(),
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
@@ -1077,6 +1101,7 @@ fn config_overrides() {
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
                 size: 5,
+                preprocessor_cache_mode: Default::default(),
             },
             dist: Default::default(),
             server_startup_timeout: None,
@@ -1244,6 +1269,7 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 no_credentials = true
+server_side_encryption = false
 
 [cache.webdav]
 endpoint = "http://127.0.0.1:8080"
@@ -1262,6 +1288,7 @@ token = "webdavtoken"
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
+                    preprocessor_cache_mode: Default::default(),
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),
@@ -1289,6 +1316,7 @@ token = "webdavtoken"
                     use_ssl: Some(true),
                     key_prefix: "s3prefix".into(),
                     no_credentials: true,
+                    server_side_encryption: Some(false)
                 }),
                 webdav: Some(WebdavCacheConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),

@@ -15,7 +15,7 @@
 use crate::cache::{storage_from_config, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, CompilerProxy, DistType, MissType,
+    CompilerKind, CompilerProxy, DistType, Language, MissType,
 };
 #[cfg(feature = "dist-client")]
 use crate::config;
@@ -225,8 +225,10 @@ impl DistClientContainer {
             | DistClientState::FailWithMessage(cfg, _)
             | DistClientState::RetryCreateAt(cfg, _) => {
                 warn!("State reset. Will recreate");
-                *state =
-                    DistClientState::RetryCreateAt(cfg, Instant::now() - Duration::from_secs(1));
+                *state = DistClientState::RetryCreateAt(
+                    cfg,
+                    Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                );
             }
             DistClientState::Disabled => (),
         }
@@ -277,8 +279,10 @@ impl DistClientContainer {
             };
             // The client is most likely mis-configured, make sure we
             // re-create on our next attempt.
-            *state =
-                DistClientState::RetryCreateAt(config, Instant::now() - Duration::from_secs(1));
+            *state = DistClientState::RetryCreateAt(
+                config,
+                Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            );
         }
         res
     }
@@ -587,6 +591,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
                 // We're not interested if the task panicked; immediately process
                 // another connection
+                #[allow(clippy::let_underscore_future)]
                 let _ = tokio::spawn(conn);
             }
         };
@@ -1006,7 +1011,7 @@ where
 
         let opt = match me1.compilers.read().await.get(&resolved_compiler_path) {
             // It's a hit only if the mtime and dist archive data matches.
-            Some(&Some(ref entry)) => {
+            Some(Some(entry)) => {
                 if entry.mtime == mtime && entry.dist_info == dist_info {
                     Some(entry.compiler.box_clone())
                 } else {
@@ -1154,7 +1159,7 @@ where
     ) {
         let force_recache = env_vars
             .iter()
-            .any(|&(ref k, ref _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
+            .any(|(k, _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
         let cache_control = if force_recache {
             CacheControl::ForceRecache
         } else {
@@ -1164,6 +1169,7 @@ where
         let color_mode = hasher.color_mode();
         let me = self.clone();
         let kind = compiler.kind();
+        let lang = hasher.language();
         let creator = self.creator.clone();
         let storage = self.storage.clone();
         let pool = self.rt.clone();
@@ -1199,12 +1205,12 @@ where
                         CompileResult::Error => {
                             debug!("compile result: cache error");
 
-                            stats.cache_errors.increment(&kind);
+                            stats.cache_errors.increment(&kind, &lang);
                         }
                         CompileResult::CacheHit(duration) => {
                             debug!("compile result: cache hit");
 
-                            stats.cache_hits.increment(&kind);
+                            stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += duration;
                         }
                         CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
@@ -1229,10 +1235,10 @@ where
                                     stats.cache_timeouts += 1;
                                 }
                                 MissType::CacheReadError => {
-                                    stats.cache_errors.increment(&kind);
+                                    stats.cache_errors.increment(&kind, &lang);
                                 }
                             }
-                            stats.cache_misses.increment(&kind);
+                            stats.cache_misses.increment(&kind, &lang);
                             stats.compiler_write_duration += duration;
                             debug!("stats after compile result: {stats:?}");
                             cache_write = Some(future);
@@ -1240,7 +1246,7 @@ where
                         CompileResult::NotCacheable => {
                             debug!("compile result: not cacheable");
 
-                            stats.cache_misses.increment(&kind);
+                            stats.cache_misses.increment(&kind, &lang);
                             stats.non_cacheable_compilations += 1;
                         }
                         CompileResult::CompileFailed => {
@@ -1298,7 +1304,7 @@ where
                                     error!("[{:?}] \t{}", out_pretty, e);
                                     let _ = writeln!(error, "sccache: caused by: {}", e);
                                 }
-                                stats.cache_errors.increment(&kind);
+                                stats.cache_errors.increment(&kind, &lang);
                                 //TODO: figure out a better way to communicate this?
                                 res.retcode = Some(-2);
                                 res.stderr = error.into_bytes();
@@ -1350,12 +1356,17 @@ where
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PerLanguageCount {
     counts: HashMap<String, u64>,
+    adv_counts: HashMap<String, u64>,
 }
 
 impl PerLanguageCount {
-    fn increment(&mut self, kind: &CompilerKind) {
-        let key = kind.lang_kind();
-        let count = self.counts.entry(key).or_insert(0);
+    fn increment(&mut self, kind: &CompilerKind, lang: &Language) {
+        let lang_comp_key = kind.lang_comp_kind(lang);
+        let adv_count = self.adv_counts.entry(lang_comp_key).or_insert(0);
+        *adv_count += 1;
+
+        let lang_key = kind.lang_kind(lang);
+        let count = self.counts.entry(lang_key).or_insert(0);
         *count += 1;
     }
 
@@ -1365,6 +1376,10 @@ impl PerLanguageCount {
 
     pub fn get(&self, key: &str) -> Option<&u64> {
         self.counts.get(key)
+    }
+
+    pub fn get_adv(&self, key: &str) -> Option<&u64> {
+        self.adv_counts.get(key)
     }
 
     pub fn new() -> PerLanguageCount {
@@ -1472,7 +1487,7 @@ impl ServerStats {
     /// Print stats to stdout in a human-readable format.
     ///
     /// Return the formatted width of each of the (name, value) columns.
-    fn print(&self) -> (usize, usize) {
+    fn print(&self, advanced: bool) -> (usize, usize) {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 // name, value, suffix length
@@ -1484,6 +1499,16 @@ impl ServerStats {
             ($vec:ident, $var:expr, $name:expr) => {{
                 $vec.push(($name.to_string(), $var.all().to_string(), 0));
                 let mut sorted_stats: Vec<_> = $var.counts.iter().collect();
+                sorted_stats.sort_by_key(|v| v.0);
+                for (lang, count) in sorted_stats.iter() {
+                    $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
+                }
+            }};
+        }
+        macro_rules! set_compiler_stat {
+            ($vec:ident, $var:expr, $name:expr) => {{
+                $vec.push(($name.to_string(), $var.all().to_string(), 0));
+                let mut sorted_stats: Vec<_> = $var.adv_counts.iter().collect();
                 sorted_stats.sort_by_key(|v| v.0);
                 for (lang, count) in sorted_stats.iter() {
                     $vec.push((format!("{} ({})", $name, lang), count.to_string(), 0));
@@ -1511,14 +1536,24 @@ impl ServerStats {
             self.requests_executed,
             "Compile requests executed"
         );
-        set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
-        set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+        if advanced {
+            set_compiler_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_compiler_stat!(stats_vec, self.cache_misses, "Cache misses");
+        } else {
+            set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
+            set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
+        }
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
         set_stat!(stats_vec, self.cache_write_errors, "Cache write errors");
         set_stat!(stats_vec, self.compile_fails, "Compilation failures");
-        set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
+        if advanced {
+            set_compiler_stat!(stats_vec, self.cache_errors, "Cache errors");
+        } else {
+            set_lang_stat!(stats_vec, self.cache_errors, "Cache errors");
+        }
+
         set_stat!(
             stats_vec,
             self.non_cacheable_compilations,
@@ -1562,16 +1597,8 @@ impl ServerStats {
             self.dist_errors,
             "Failed distributed compilations"
         );
-        let name_width = stats_vec
-            .iter()
-            .map(|&(ref n, _, _)| n.len())
-            .max()
-            .unwrap();
-        let stat_width = stats_vec
-            .iter()
-            .map(|&(_, ref s, _)| s.len())
-            .max()
-            .unwrap();
+        let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
+        let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
             println!(
                 "{:<name_width$} {:>stat_width$}",
@@ -1616,8 +1643,8 @@ impl ServerStats {
 
 impl ServerInfo {
     /// Print info to stdout in a human-readable format.
-    pub fn print(&self) {
-        let (name_width, stat_width) = self.stats.print();
+    pub fn print(&self, advanced: bool) {
+        let (name_width, stat_width) = self.stats.print(advanced);
         println!(
             "{:<name_width$} {}",
             "Cache location",

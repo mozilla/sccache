@@ -27,6 +27,7 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
+use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 #[cfg(any(
     feature = "azure",
@@ -40,6 +41,7 @@ use crate::config::Config;
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
 use fs_err as fs;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -361,6 +363,72 @@ pub trait Storage: Send + Sync {
 
     /// Get the maximum storage size, if applicable.
     async fn max_size(&self) -> Result<Option<u64>>;
+
+    /// Return the config for preprocessor cache mode if applicable
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        // Disabled by default, only enabled in local mode
+        PreprocessorCacheModeConfig::default()
+    }
+    /// Return the preprocessor cache entry for a given preprocessor key,
+    /// if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn get_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+        Ok(None)
+    }
+    /// Insert a preprocessor cache entry at the given preprocessor key,
+    /// overwriting the entry if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn put_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+        _preprocessor_cache_entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Configuration switches for preprocessor cache mode.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct PreprocessorCacheModeConfig {
+    /// Whether to use preprocessor cache mode entirely
+    pub use_preprocessor_cache_mode: bool,
+    /// If false (default), only compare header files by hashing their contents.
+    /// If true, will use size + ctime + mtime to check whether a file has changed.
+    /// See other flags below for more control over this behavior.
+    pub file_stat_matches: bool,
+    /// If true (default), uses the ctime (file status change on UNIX,
+    /// creation time on Windows) to check that a file has/hasn't changed.
+    /// Can be useful to disable when backdating modification times
+    /// in a controlled manner.
+    pub use_ctime_for_stat: bool,
+    /// If true, ignore `__DATE__`, `__TIME__` and `__TIMESTAMP__` being present
+    /// in the source code. Will speed up preprocessor cache mode,
+    /// but can result in false positives.
+    pub ignore_time_macros: bool,
+    /// If true, preprocessor cache mode will not cache system headers, only
+    /// add them to the hash.
+    pub skip_system_headers: bool,
+    /// If true (default), will add the current working directory in the hash to
+    /// distinguish two compilations from different directories.
+    pub hash_working_directory: bool,
+}
+
+impl Default for PreprocessorCacheModeConfig {
+    fn default() -> Self {
+        Self {
+            use_preprocessor_cache_mode: false,
+            file_stat_matches: false,
+            use_ctime_for_stat: true,
+            ignore_time_macros: false,
+            skip_system_headers: false,
+            hash_working_directory: true,
+        }
+    }
 }
 
 /// Implement storage for operator.
@@ -417,7 +485,7 @@ impl Storage for opendal::Operator {
         let can_write = match self.write(path, "Hello, World!").await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
-            // Toralte all other write errors because we can do read as least.
+            // Tolerate all other write errors because we can do read at least.
             Err(err) => {
                 eprintln!("storage write check failed: {err:?}");
                 false
@@ -455,8 +523,7 @@ impl Storage for opendal::Operator {
 }
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
-#[allow(dead_code)]
-fn normalize_key(key: &str) -> String {
+pub(in crate::cache) fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], &key)
 }
 
@@ -547,6 +614,7 @@ pub fn storage_from_config(
                     c.no_credentials,
                     c.endpoint.as_deref(),
                     c.use_ssl,
+                    c.server_side_encryption,
                 )
                 .map_err(|err| anyhow!("create s3 cache failed: {err:?}"))?;
 
@@ -573,8 +641,14 @@ pub fn storage_from_config(
     }
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
+    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
-    Ok(Arc::new(DiskCache::new(dir, size, pool)))
+    Ok(Arc::new(DiskCache::new(
+        dir,
+        size,
+        pool,
+        preprocessor_cache_mode_config,
+    )))
 }
 
 #[cfg(test)]

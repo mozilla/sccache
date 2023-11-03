@@ -12,7 +12,7 @@ sccache - Shared Compilation Cache
 
 sccache is a [ccache](https://ccache.dev/)-like compiler caching tool. It is used as a compiler wrapper and avoids compilation when possible, storing cached results either on [local disk](docs/Local.md) or in one of [several cloud storage backends](#storage-options).
 
-sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html).
+sccache includes support for caching the compilation of C/C++ code, [Rust](docs/Rust.md), as well as NVIDIA's CUDA using [nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and [clang](https://llvm.org/docs/CompileCudaWithLLVM.html).
 
 sccache also provides [icecream](https://github.com/icecc/icecream)-style distributed compilation (automatic packaging of local toolchains) for all supported compilers (including Rust). The distributed compilation system includes several security features that icecream lacks such as authentication, transport layer encryption, and sandboxed compiler execution on build servers. See [the distributed quickstart](docs/DistributedQuickstart.md) guide for more information.
 
@@ -55,6 +55,12 @@ On macOS sccache can be installed via [Homebrew](https://brew.sh/):
 
 ```bash
 brew install sccache
+```
+
+or via [MacPorts](https://www.macports.org/):
+
+```bash
+sudo port install sccache
 ```
 
 ### Windows
@@ -103,7 +109,7 @@ export RUSTC_WRAPPER=/path/to/sccache
 cargo build
 ```
 
-sccache supports gcc, clang, MSVC, rustc, NVCC, and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
+sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
@@ -124,7 +130,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 
 To generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 
-```
+```cmake
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
   string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
@@ -139,12 +145,29 @@ endif()
 
 By default, sccache will fail your build if it fails to successfully communicate with its associated server. To have sccache instead gracefully failover to the local compiler without stopping, set the environment variable `SCCACHE_IGNORE_SERVER_IO_ERROR=1`.
 
+Update: On CMake 3.25, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag:
+```cmake
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+```
+
+Example configuration where we automatically look for `sccache` in the `PATH`:
+```cmake
+find_program(SCCACHE sccache REQUIRED)
+
+set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE})
+set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+```
+
+And you can build code as usual without any additional flags in the command line, useful for IDEs.
+
+
 ---
 
 Build Requirements
 ------------------
 
-sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus `rustc`). sccache currently requires **Rust 1.65.0**. We recommend you install Rust via [Rustup](https://rustup.rs/).
+sccache is a [Rust](https://www.rust-lang.org/) program. Building it requires `cargo` (and thus`rustc`). sccache currently requires **Rust 1.67.1**. We recommend you install Rust via [Rustup](https://rustup.rs/).
 
 Build
 -----

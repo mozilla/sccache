@@ -15,7 +15,7 @@
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
-use crate::config::Config;
+use crate::config::{default_disk_cache_dir, Config};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -37,6 +37,7 @@ use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::Runtime;
+use walkdir::WalkDir;
 use which::which_in;
 
 use crate::errors::*;
@@ -604,13 +605,31 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     let startup_timeout = config.server_startup_timeout;
 
     match cmd {
-        Command::ShowStats(fmt) => {
+        Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
             let srv = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_stats(srv).context("failed to get stats from server")?;
             match fmt {
-                StatsFormat::Text => stats.print(),
+                StatsFormat::Text => stats.print(advanced),
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+            }
+        }
+        Command::DebugPreprocessorCacheEntries => {
+            trace!("Command::DebugPreprocessorCacheEntries");
+            let entries_dir = default_disk_cache_dir().join("preprocessor");
+            for entry in WalkDir::new(entries_dir).sort_by_file_name().into_iter() {
+                let preprocessor_cache_entry_file = entry?;
+                let path = preprocessor_cache_entry_file.path();
+                if !path.is_file() {
+                    continue;
+                }
+                println!("=========================");
+                println!("Showing preprocessor entry file {}", &path.display());
+                let contents = std::fs::read(path)?;
+                let preprocessor_cache_entry =
+                    crate::compiler::PreprocessorCacheEntry::read(&contents)?;
+                println!("{:#?}", preprocessor_cache_entry);
+                println!("=========================");
             }
         }
         Command::InternalStartServer => {
@@ -647,13 +666,13 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             println!("Stopping sccache server...");
             let server = connect_to_server(get_port()).context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
-            stats.print();
+            stats.print(false);
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             let conn = connect_or_start_server(get_port(), startup_timeout)?;
             let stats = request_zero_stats(conn).context("couldn't zero stats on server")?;
-            stats.print();
+            stats.print(false);
         }
         #[cfg(feature = "dist-client")]
         Command::DistAuth => {

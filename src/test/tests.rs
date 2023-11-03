@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::cache::disk::DiskCache;
+use crate::cache::PreprocessorCacheModeConfig;
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
 use crate::jobserver::Client;
@@ -79,7 +80,12 @@ where
     let handle = thread::spawn(move || {
         let runtime = Runtime::new().unwrap();
         let dist_client = DistClientContainer::new_disabled();
-        let storage = Arc::new(DiskCache::new(&cache_dir, cache_size, runtime.handle()));
+        let storage = Arc::new(DiskCache::new(
+            &cache_dir,
+            cache_size,
+            runtime.handle(),
+            PreprocessorCacheModeConfig::default(),
+        ));
 
         let client = unsafe { Client::new() };
         let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
@@ -226,7 +232,7 @@ fn test_server_compile() {
     {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler. Pretend it's GCC.
-        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "gcc", "")));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
         // Preprocessor invocation.
         c.next_command_spawns(Ok(MockChild::new(
             exit_status(0),
@@ -290,7 +296,7 @@ fn test_server_port_in_use() {
     // Bind an arbitrary free port.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let sccache = find_sccache_binary();
-    let output = Command::new(&sccache)
+    let output = Command::new(sccache)
         .arg("--start-server")
         .env(
             "SCCACHE_SERVER_PORT",

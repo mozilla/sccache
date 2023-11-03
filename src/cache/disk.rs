@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
-use crate::lru_disk_cache::Error as LruError;
+use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::LruDiskCache;
+use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::errors::*;
+
+use super::{normalize_key, PreprocessorCacheModeConfig};
 
 enum LazyDiskCache {
     Uninit { root: OsString, max_size: u64 },
@@ -60,6 +63,8 @@ pub struct DiskCache {
     lru: Arc<Mutex<LazyDiskCache>>,
     /// Thread pool to execute disk I/O
     pool: tokio::runtime::Handle,
+    preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
+    preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
 }
 
 impl DiskCache {
@@ -68,6 +73,7 @@ impl DiskCache {
         root: T,
         max_size: u64,
         pool: &tokio::runtime::Handle,
+        preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     ) -> DiskCache {
         DiskCache {
             lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
@@ -75,6 +81,13 @@ impl DiskCache {
                 max_size,
             })),
             pool: pool.clone(),
+            preprocessor_cache_mode_config,
+            preprocessor_cache: Arc::new(Mutex::new(LazyDiskCache::Uninit {
+                root: Path::new(root.as_ref())
+                    .join("preprocessor")
+                    .into_os_string(),
+                max_size,
+            })),
         }
     }
 }
@@ -139,5 +152,33 @@ impl Storage for DiskCache {
     }
     async fn max_size(&self) -> Result<Option<u64>> {
         Ok(self.lru.lock().unwrap().get().map(|l| l.capacity()))
+    }
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.preprocessor_cache_mode_config
+    }
+    fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
+        let key = normalize_key(key);
+        Ok(self
+            .preprocessor_cache
+            .lock()
+            .unwrap()
+            .get_or_init()?
+            .get(key)
+            .ok())
+    }
+    fn put_preprocessor_cache_entry(
+        &self,
+        key: &str,
+        preprocessor_cache_entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
+        let key = normalize_key(key);
+        let mut buf = vec![];
+        preprocessor_cache_entry.serialize_to(&mut buf)?;
+        Ok(self
+            .preprocessor_cache
+            .lock()
+            .unwrap()
+            .get_or_init()?
+            .insert_bytes(key, &buf)?)
     }
 }

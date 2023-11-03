@@ -19,8 +19,8 @@ use crate::{
             ArgDisposition, ArgInfo, ArgToStringResult, ArgsIter, Argument, FromArg, IntoArg,
             NormalizedDisposition, PathTransformerFn, SearchableArgInfo,
         },
-        c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Language, ParsedArguments},
-        Cacheable, ColorMode, CompileCommand, CompilerArguments,
+        c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments},
+        Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     },
     counted_array, dist,
     errors::*,
@@ -71,6 +71,7 @@ impl CCompilerImpl for TaskingVX {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
+        _preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -279,6 +280,7 @@ where
         profile_generate: false,
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
+        too_hard_for_preprocessor_cache_mode: false,
     })
 }
 
@@ -301,7 +303,7 @@ where
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
 
     if log_enabled!(Trace) {
@@ -331,7 +333,7 @@ where
             .args(&parsed_args.preprocessor_args)
             .args(&parsed_args.common_args)
             .env_clear()
-            .envs(env_vars.iter().map(|&(ref k, ref v)| (k, v)))
+            .envs(env_vars.iter().map(|(k, v)| (k, v)))
             .current_dir(cwd);
 
         if log_enabled!(Trace) {
@@ -703,6 +705,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -750,6 +753,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
+            too_hard_for_preprocessor_cache_mode: false,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
