@@ -90,7 +90,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-serde = "0.8"
 tokio-util = { version = "0.7", features = ["codec", "io"] }
-toml = "0.7"
+toml = "0.8"
 tower = "0.4"
 trust-dns-resolver = { version = "0.22.0", features = [
   "dnssec-ring",
