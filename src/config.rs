@@ -710,13 +710,20 @@ fn config_from_env() -> Result<EnvConfig> {
         .and_then(|v| parse_size(&v));
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::default();
-    match env::var("SCCACHE_DIRECT").as_deref() {
-        Ok("on") | Ok("true") => preprocessor_mode_config.use_preprocessor_cache_mode = true,
-        Ok("off") | Ok("false") => preprocessor_mode_config.use_preprocessor_cache_mode = false,
-        _ => {}
+    let preprocessor_mode_overridden = match env::var("SCCACHE_DIRECT").as_deref() {
+        Ok("on") | Ok("true") => {
+            preprocessor_mode_config.use_preprocessor_cache_mode = true;
+            true
+        }
+        Ok("off") | Ok("false") => {
+            preprocessor_mode_config.use_preprocessor_cache_mode = false;
+            true
+        }
+        _ => false,
     };
 
-    let disk = if disk_dir.is_some() || disk_sz.is_some() {
+    let any_overridden = disk_dir.is_some() || disk_sz.is_some() || preprocessor_mode_overridden;
+    let disk = if any_overridden {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
