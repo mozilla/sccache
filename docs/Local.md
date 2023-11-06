@@ -10,6 +10,11 @@ The local storage only supports a single sccache server at a time. Multiple conc
 
 This is inspired by [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode) and works roughly the same.
 
+It can be set with by setting the variable:
+```
+SCCACHE_DIRECT=true
+```
+
 In preprocessor cache mode, sccache caches the preprocessor step for C/C++ whenever possible. This can make the compilation a lot faster, since the preprocessor accounts for a non-negligible amount of time in the entire compile chain.
 
 In order to cache the preprocessor step sccache needs to remember, among other things, all files included by the given input file. To quote ccache's documentation:
