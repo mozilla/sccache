@@ -154,6 +154,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
         server_startup_timeout_ms: None,
     }
 }
+
 #[cfg(feature = "dist-server")]
 fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
     sccache::config::scheduler::Config {
@@ -164,6 +165,7 @@ fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
         },
     }
 }
+
 #[cfg(feature = "dist-server")]
 fn sccache_server_cfg(
     tmpdir: &Path,
