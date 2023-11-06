@@ -896,6 +896,10 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.lock().await.clone();
         let cache_location = self.storage.location();
+        let use_preprocessor_cache_mode = self
+            .storage
+            .preprocessor_cache_mode_config()
+            .use_preprocessor_cache_mode;
         let version = env!("CARGO_PKG_VERSION").to_string();
         futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
             move |(cache_size, max_cache_size)| ServerInfo {
@@ -903,6 +907,7 @@ where
                 cache_location,
                 cache_size,
                 max_cache_size,
+                use_preprocessor_cache_mode,
                 version,
             },
         )
@@ -1442,6 +1447,7 @@ pub struct ServerInfo {
     pub cache_location: String,
     pub cache_size: Option<u64>,
     pub max_cache_size: Option<u64>,
+    pub use_preprocessor_cache_mode: bool,
     pub version: String,
 }
 
@@ -1651,6 +1657,18 @@ impl ServerInfo {
             self.cache_location,
             name_width = name_width
         );
+        if self.cache_location.starts_with("Local disk") {
+            println!(
+                "{:<name_width$} {}",
+                "Use direct/preprocessor mode?",
+                if self.use_preprocessor_cache_mode {
+                    "yes"
+                } else {
+                    "no"
+                },
+                name_width = name_width
+            );
+        }
         println!(
             "{:<name_width$} {}",
             "Version (client)",
