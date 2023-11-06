@@ -716,6 +716,12 @@ fn config_from_env() -> Result<EnvConfig> {
         _ => {}
     };
 
+    if preprocessor_mode_config.use_preprocessor_cache_mode
+        && (disk_dir.is_none() && disk_sz.is_none())
+    {
+        bail!("Direct access/mode has been set but no configuration about disk configuration");
+    }
+
     let disk = if disk_dir.is_some() || disk_sz.is_some() {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
