@@ -38,6 +38,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
+use std::time::{Duration, SystemTime};
 use test_case::test_case;
 use which::{which, which_in};
 
@@ -152,6 +153,13 @@ fn copy_to_tempdir(inputs: &[&str], tempdir: &Path) {
         let source_file = tempdir.join(f);
         trace!("fs::copy({:?}, {:?})", original_source_file, source_file);
         fs::copy(&original_source_file, &source_file).unwrap();
+        // Preprocessor cache will not cache files that are too recent.
+        // Certain OS/FS combinations have a slow resolution (up to 2s for NFS),
+        // leading to flaky tests.
+        // We set the times for the new file to 10 seconds ago, to be safe.
+        let new_time =
+            filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(10));
+        filetime::set_file_times(source_file, new_time, new_time).unwrap();
     }
 }
 
