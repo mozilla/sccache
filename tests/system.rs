@@ -38,6 +38,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str;
+use test_case::test_case;
 use which::{which, which_in};
 
 mod harness;
@@ -450,7 +451,7 @@ fn test_compile_with_define(compiler: Compiler, tempdir: &Path) {
         .stderr(predicates::str::contains("warning:").from_utf8().not());
 }
 
-fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
+fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
     }
@@ -495,9 +496,19 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path) {
                 version_output
             ),
         };
-        test_clang_cache_whitespace_normalization(compiler, tempdir, !is_appleclang && major >= 14);
+        test_clang_cache_whitespace_normalization(
+            compiler,
+            tempdir,
+            !is_appleclang && major >= 14,
+            preprocessor_cache_mode,
+        );
     } else {
-        test_clang_cache_whitespace_normalization(compiler, tempdir, false);
+        test_clang_cache_whitespace_normalization(
+            compiler,
+            tempdir,
+            false,
+            preprocessor_cache_mode,
+        );
     }
 }
 
@@ -694,7 +705,12 @@ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
         .success();
 }
 
-fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path, hit: bool) {
+fn test_clang_cache_whitespace_normalization(
+    compiler: Compiler,
+    tempdir: &Path,
+    hit: bool,
+    preprocessor_cache_mode: bool,
+) {
     let Compiler {
         name,
         exe,
@@ -742,11 +758,18 @@ fn test_clang_cache_whitespace_normalization(compiler: Compiler, tempdir: &Path,
         .success();
     println!("request stats (expecting cache hit)");
     if hit {
-        get_stats(|info| {
+        get_stats(move |info| {
             assert_eq!(2, info.stats.compile_requests);
             assert_eq!(2, info.stats.requests_executed);
-            assert_eq!(1, info.stats.cache_hits.all());
-            assert_eq!(1, info.stats.cache_misses.all());
+            if preprocessor_cache_mode {
+                // Preprocessor cache mode hashes the input file, so whitespace
+                // normalization does not work.
+                assert_eq!(0, info.stats.cache_hits.all());
+                assert_eq!(2, info.stats.cache_misses.all());
+            } else {
+                assert_eq!(1, info.stats.cache_hits.all());
+                assert_eq!(1, info.stats.cache_misses.all());
+            }
         });
     } else {
         get_stats(|info| {
@@ -816,10 +839,11 @@ fn find_cuda_compilers() -> Vec<Compiler> {
 // split up to run them individually. In the current form, it is hard to see
 // which sub test cases are executed, and if one fails, the remaining tests
 // are not run.
-#[test]
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
 #[serial]
 #[cfg(any(unix, target_env = "msvc"))]
-fn test_sccache_command() {
+fn test_sccache_command(preprocessor_cache_mode: bool) {
     let _ = env_logger::try_init();
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_system_test")
@@ -832,7 +856,7 @@ fn test_sccache_command() {
         // Ensure there's no existing sccache server running.
         stop_local_daemon();
         // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path());
+        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
         write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
         let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
         // Start a server.
@@ -842,17 +866,18 @@ fn test_sccache_command() {
             &sccache_cached_cfg_path,
         );
         for compiler in compilers {
-            run_sccache_command_tests(compiler, tempdir.path());
+            run_sccache_command_tests(compiler, tempdir.path(), preprocessor_cache_mode);
             zero_stats();
         }
         stop_local_daemon();
     }
 }
 
-#[test]
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
 #[serial]
 #[cfg(any(unix, target_env = "msvc"))]
-fn test_cuda_sccache_command() {
+fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
     let _ = env_logger::try_init();
     let tempdir = tempfile::Builder::new()
         .prefix("sccache_system_test")
@@ -865,7 +890,7 @@ fn test_cuda_sccache_command() {
         // Ensure there's no existing sccache server running.
         stop_local_daemon();
         // Create the configurations
-        let sccache_cfg = sccache_client_cfg(tempdir.path());
+        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
         write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
         let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
         // Start a server.

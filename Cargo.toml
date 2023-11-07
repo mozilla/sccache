@@ -123,6 +123,7 @@ itertools = "0.10"
 predicates = "=3.0.3"
 serial_test = "2.0"
 temp-env = "0.3.4"
+test-case = "3.2.1"
 thirtyfour_sync = "0.27"
 
 [target.'cfg(unix)'.dependencies]
@@ -137,16 +138,7 @@ features = ["fileapi", "handleapi", "stringapiset", "winnls"]
 version = "0.3"
 
 [features]
-all = [
-  "dist-client",
-  "redis",
-  "s3",
-  "memcached",
-  "gcs",
-  "azure",
-  "gha",
-  "webdav",
-]
+all = ["dist-client", "redis", "s3", "memcached", "gcs", "azure", "gha", "webdav"]
 azure = ["opendal", "reqsign"]
 default = ["all"]
 gcs = ["opendal", "reqsign", "url", "reqwest/blocking", "trust-dns-resolver"]
@@ -163,27 +155,9 @@ vendored-openssl = ["openssl?/vendored", "opendal?/native-tls-vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = [
-  "flate2",
-  "hyper",
-  "reqwest",
-  "url",
-  "sha2",
-  "trust-dns-resolver",
-]
+dist-client = ["flate2", "hyper", "reqwest", "url", "sha2", "trust-dns-resolver"]
 # Enables the sccache-dist binary
-dist-server = [
-  "jwt",
-  "flate2",
-  "libmount",
-  "nix",
-  "openssl",
-  "reqwest",
-  "rouille",
-  "syslog",
-  "trust-dns-resolver",
-  "version-compare",
-]
+dist-server = ["jwt", "flate2", "libmount", "nix", "openssl", "reqwest", "rouille", "syslog", "trust-dns-resolver", "version-compare"]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
 

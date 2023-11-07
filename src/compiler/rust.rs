@@ -2435,6 +2435,7 @@ mod test {
     use std::ffi::OsStr;
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
+    use test_case::test_case;
 
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
@@ -3076,8 +3077,9 @@ proc_macro false
         );
     }
 
-    #[test]
-    fn test_generate_hash_key() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_generate_hash_key(preprocessor_cache_mode: bool) {
         use ar::{Builder, Header};
         drop(env_logger::try_init());
         let f = TestFixture::new();
@@ -3160,7 +3162,7 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None)),
+                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
                 CacheControl::Default,
             )
             .wait()
@@ -3205,6 +3207,7 @@ proc_macro false
         args: &[&'static str],
         env_vars: &[(OsString, OsString)],
         pre_func: F,
+        preprocessor_cache_mode: bool,
     ) -> String
     where
         F: Fn(&Path) -> Result<()>,
@@ -3251,7 +3254,7 @@ proc_macro false
                 false,
                 &pool,
                 false,
-                Arc::new(MockStorage::new(None)),
+                Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
                 CacheControl::Default,
             )
             .wait()
@@ -3264,8 +3267,9 @@ proc_macro false
         Ok(())
     }
 
-    #[test]
-    fn test_equal_hashes_externs() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_externs(preprocessor_cache_mode: bool) {
         // Put some content in the extern rlibs so we can verify that the content hashes are
         // used in the right order.
         fn mk_files(tempdir: &Path) -> Result<()> {
@@ -3293,7 +3297,8 @@ proc_macro false
                     "b=b.rlib"
                 ],
                 &[],
-                mk_files
+                mk_files,
+                preprocessor_cache_mode,
             ),
             hash_key(
                 &f,
@@ -3313,13 +3318,15 @@ proc_macro false
                     "lib"
                 ],
                 &[],
-                mk_files
+                mk_files,
+                preprocessor_cache_mode,
             )
         );
     }
 
-    #[test]
-    fn test_equal_hashes_link_paths() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_link_paths(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         assert_eq!(
             hash_key(
@@ -3340,7 +3347,8 @@ proc_macro false
                     "y=y"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             ),
             hash_key(
                 &f,
@@ -3360,13 +3368,15 @@ proc_macro false
                     "lib"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             )
         );
     }
 
-    #[test]
-    fn test_equal_hashes_ignored_args() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_ignored_args(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         assert_eq!(
             hash_key(
@@ -3389,7 +3399,8 @@ proc_macro false
                     "y=y"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             ),
             hash_key(
                 &f,
@@ -3411,13 +3422,15 @@ proc_macro false
                     "lib"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             )
         );
     }
 
-    #[test]
-    fn test_equal_hashes_cfg_features() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_equal_hashes_cfg_features(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         assert_eq!(
             hash_key(
@@ -3438,7 +3451,8 @@ proc_macro false
                     "feature=b"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             ),
             hash_key(
                 &f,
@@ -3458,7 +3472,8 @@ proc_macro false
                     "lib"
                 ],
                 &[],
-                nothing
+                nothing,
+                preprocessor_cache_mode,
             )
         );
     }
