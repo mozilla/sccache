@@ -128,7 +128,10 @@ pub fn sccache_dist_path() -> PathBuf {
     assert_cmd::cargo::cargo_bin("sccache-dist")
 }
 
-pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
+pub fn sccache_client_cfg(
+    tmpdir: &Path,
+    preprocessor_cache_mode: bool,
+) -> sccache::config::FileConfig {
     let cache_relpath = "client-cache";
     let dist_cache_relpath = "client-dist-cache";
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
@@ -136,6 +139,10 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
 
     let disk_cache = sccache::config::DiskCacheConfig {
         dir: tmpdir.join(cache_relpath),
+        preprocessor_cache_mode: sccache::config::PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: preprocessor_cache_mode,
+            ..Default::default()
+        },
         ..Default::default()
     };
     sccache::config::FileConfig {

@@ -1381,7 +1381,7 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::CacheRead;
+    use crate::cache::{CacheRead, PreprocessorCacheModeConfig};
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
@@ -1390,6 +1390,7 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
     use std::u64;
+    use test_case::test_case;
     use tokio::runtime::Runtime;
 
     #[test]
@@ -1669,8 +1670,9 @@ LLVM version: 6.0",
         .is_err());
     }
 
-    #[test]
-    fn test_compiler_version_affects_hash() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_compiler_version_affects_hash(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
         let creator = new_creator();
         let runtime = single_threaded_runtime();
@@ -1713,7 +1715,7 @@ LLVM version: 6.0",
                         false,
                         pool,
                         false,
-                        Arc::new(MockStorage::new(None)),
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
                         CacheControl::Default,
                     )
                     .wait()
@@ -1743,8 +1745,9 @@ LLVM version: 6.0",
         assert_eq!(CompilerKind::C(CCompilerKind::Gcc), c.kind());
     }
 
-    #[test]
-    fn test_compiler_get_cached_or_compile() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_compiler_get_cached_or_compile(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -1754,7 +1757,10 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            Default::default(),
+            PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: preprocessor_cache_mode,
+                ..Default::default()
+            },
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -1863,9 +1869,10 @@ LLVM version: 6.0",
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 
-    #[test]
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     #[cfg(feature = "dist-client")]
-    fn test_compiler_get_cached_or_compile_dist() {
+    fn test_compiler_get_cached_or_compile_dist(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -1875,7 +1882,10 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            Default::default(),
+            PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: preprocessor_cache_mode,
+                ..Default::default()
+            },
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -1979,16 +1989,17 @@ LLVM version: 6.0",
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 
-    #[test]
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     /// Test that a cache read that results in an error is treated as a cache
     /// miss.
-    fn test_compiler_get_cached_or_compile_cache_error() {
+    fn test_compiler_get_cached_or_compile_cache_error(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = MockStorage::new(None);
+        let storage = MockStorage::new(None, preprocessor_cache_mode);
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2064,9 +2075,10 @@ LLVM version: 6.0",
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 
-    #[test]
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     /// Test that cache read timing is recorded.
-    fn test_compiler_get_cached_or_compile_cache_get_timing() {
+    fn test_compiler_get_cached_or_compile_cache_get_timing(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -2076,7 +2088,7 @@ LLVM version: 6.0",
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Make our storage wait 2ms for each get/put operation.
         let storage_delay = Duration::from_millis(2);
-        let storage = MockStorage::new(Some(storage_delay));
+        let storage = MockStorage::new(Some(storage_delay), preprocessor_cache_mode);
         let storage: Arc<MockStorage> = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -2145,8 +2157,9 @@ LLVM version: 6.0",
         }
     }
 
-    #[test]
-    fn test_compiler_get_cached_or_compile_force_recache() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_compiler_get_cached_or_compile_force_recache(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -2156,7 +2169,10 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            Default::default(),
+            PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: preprocessor_cache_mode,
+                ..Default::default()
+            },
         );
         let storage = Arc::new(storage);
         // Write a dummy input file so the preprocessor cache mode can work
@@ -2266,8 +2282,9 @@ LLVM version: 6.0",
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
     }
 
-    #[test]
-    fn test_compiler_get_cached_or_compile_preprocessor_error() {
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_compiler_get_cached_or_compile_preprocessor_error(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -2277,7 +2294,10 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            Default::default(),
+            PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: preprocessor_cache_mode,
+                ..Default::default()
+            },
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
@@ -2346,9 +2366,10 @@ LLVM version: 6.0",
         assert!(fs::metadata(&obj).is_err());
     }
 
-    #[test]
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
     #[cfg(feature = "dist-client")]
-    fn test_compiler_get_cached_or_compile_dist_error() {
+    fn test_compiler_get_cached_or_compile_dist_error(preprocessor_cache_mode: bool) {
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
@@ -2366,7 +2387,10 @@ LLVM version: 6.0",
             f.tempdir.path().join("cache"),
             u64::MAX,
             &pool,
-            Default::default(),
+            PreprocessorCacheModeConfig {
+                use_preprocessor_cache_mode: preprocessor_cache_mode,
+                ..Default::default()
+            },
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.
