@@ -81,9 +81,9 @@ pub fn connect_with_retry(port: u16) -> io::Result<ServerConnection> {
     //   us once it starts the server instead of us polling.
     match retry(Fixed::from_millis(500).take(10), || connect_to_server(port)) {
         Ok(conn) => Ok(conn),
-        _ => Err(io::Error::new(
+        Err(e) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "Connection to server timed out",
+            format!("Connection to server timed out: {:?}", e),
         )),
     }
 }
