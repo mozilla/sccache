@@ -229,6 +229,8 @@ fn test_server_compile() {
     const STDOUT: &[u8] = b"some stdout";
     const STDERR: &[u8] = b"some stderr";
     let conn = connect_to_server(port).unwrap();
+    // Write a dummy input file so the preprocessor cache mode can work
+    std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
     {
         let mut c = server_creator.lock().unwrap();
         // The server will check the compiler. Pretend it's GCC.

@@ -1677,6 +1677,8 @@ LLVM version: 6.0",
         let pool = runtime.handle();
         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
         let cwd = f.tempdir.path();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
 
         let results: Vec<_> = [11, 12]
             .iter()
@@ -1754,6 +1756,8 @@ LLVM version: 6.0",
             &pool,
             Default::default(),
         );
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -1873,6 +1877,8 @@ LLVM version: 6.0",
             &pool,
             Default::default(),
         );
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = Arc::new(storage);
         // Pretend to be GCC.
         next_command(
@@ -1984,6 +1990,8 @@ LLVM version: 6.0",
         let pool = runtime.handle().clone();
         let storage = MockStorage::new(None);
         let storage: Arc<MockStorage> = Arc::new(storage);
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Pretend to be GCC.
         next_command(
             &creator,
@@ -2064,6 +2072,8 @@ LLVM version: 6.0",
         let f = TestFixture::new();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Make our storage wait 2ms for each get/put operation.
         let storage_delay = Duration::from_millis(2);
         let storage = MockStorage::new(Some(storage_delay));
@@ -2149,6 +2159,8 @@ LLVM version: 6.0",
             Default::default(),
         );
         let storage = Arc::new(storage);
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         // Pretend to be GCC.
         next_command(
             &creator,
@@ -2271,6 +2283,8 @@ LLVM version: 6.0",
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
         // preprocessor failure should remove.
         let obj = f.tempdir.path().join("foo.o");
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let o = obj.clone();
         next_command_calls(&creator, move |_| {
             let mut f = File::create(&o)?;
@@ -2346,6 +2360,8 @@ LLVM version: 6.0",
             test_dist::ErrorSubmitToolchainClient::new(),
             test_dist::ErrorRunJobClient::new(),
         ];
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
         let storage = DiskCache::new(
             f.tempdir.path().join("cache"),
             u64::MAX,
