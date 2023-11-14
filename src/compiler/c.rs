@@ -684,7 +684,7 @@ fn process_preprocessor_line(
             // Replace the line number with the usual one.
             digest.update(&bytes[hash_start..start]);
             start += 1;
-            bytes[start..start + 2].copy_from_slice(b"# 1");
+            bytes[start..=start + 2].copy_from_slice(b"# 1");
             hash_start = start;
             slice = &bytes[start..];
         }
