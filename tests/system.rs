@@ -583,7 +583,7 @@ fn test_cuda_compiles(compiler: &Compiler, tempdir: &Path) {
         assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_cuda_key).unwrap());
     });
     // By compiling another input source we verify that the pre-processor
-    // phase is correctly running and outputing text
+    // phase is correctly running and outputting text
     trace!("compile B");
     sccache_command()
         .args(&compile_cuda_cmdline(

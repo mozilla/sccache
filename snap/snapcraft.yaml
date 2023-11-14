@@ -18,7 +18,7 @@ description: |
     sandboxed compiler execution on build servers. See the distributed quickstart
     guide for more information.
 
-    sccache is also available as a GitHub Actions to faciliate the deployment
+    sccache is also available as a GitHub Actions to facilitate the deployment
     using GitHub Actions cache.
 website: https://github.com/mozilla/sccache
 contact: https://github.com/mozilla/sccache/issues

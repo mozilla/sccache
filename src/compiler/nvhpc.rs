@@ -132,7 +132,7 @@ impl CCompilerImpl for Nvhpc {
         trace!("preprocess");
         let mut cmd = initialize_cmd_and_args();
 
-        //NVHPC doesn't support disabling line info when outputing to console
+        //NVHPC doesn't support disabling line info when outputting to console
         cmd.arg("-E")
             .env_clear()
             .envs(env_vars.iter().map(|(k, v)| (k, v)))

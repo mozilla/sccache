@@ -1131,7 +1131,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
         loop {
             // Visit all arguments found in the most recently read response file.
             // Since response files are not recursive, we do not need to worry
-            // about these containing addditional @ directives.
+            // about these containing additional @ directives.
             if let Some(response_file_arg) = self.stack.pop() {
                 return Some(response_file_arg);
             }
@@ -1151,7 +1151,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 Ok(content) => content,
                 Err(err) => {
                     debug!("failed to read @-file `{}`: {}", file_path.display(), err);
-                    // If we failed to read the file content, return the orginal arg (including the `@` directive).
+                    // If we failed to read the file content, return the original arg (including the `@` directive).
                     return Some(arg);
                 }
             };
