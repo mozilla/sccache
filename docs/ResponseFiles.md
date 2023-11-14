@@ -27,10 +27,10 @@ Per the [MSVC docs](https://learn.microsoft.com/en-us/cpp/build/reference/cl-com
 4. The `/link` directive has special treatment:
     1. Entering an @file: if the `/link` option is provided prior to an `@file` in the command line, the `/link` directive does not affect any options within the `@file`.
     2. Newlines: A `/link` directive provided in an `@file` on one line does not affect the next line.
-    3. Exitting an @file: A `/link` directive on the final line of a response file does not affect options following the `@file` option in the command line.
+    3. Exiting an @file: A `/link` directive on the final line of a response file does not affect options following the `@file` option in the command line.
 5. A response file cannot contain additional `@file` options, they are not recursive. (found in a [separate doc](https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-compiler-response-file?view=msvc-170))
 6. (implied) options can be wrapped in double-quotes (`"`), which allows whitespace to be preserved within the option
 
-The msvc implementaion in sccache supports all of these **except** #4, because sccache doesn't accept the `/link` directive. 
+The msvc implementation in sccache supports all of these **except** #4, because sccache doesn't accept the `/link` directive. 
 
 Additionally, because `msbuild` generates response files using an encoding other than `utf-8`, all text files under the [WHATWG encoding standard](https://encoding.spec.whatwg.org/) are supported. This includes both `utf-8` and `utf-16`.

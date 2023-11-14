@@ -603,7 +603,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
         if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
             eprintln!("SCCACHE_GCS_OAUTH_URL has been deprecated");
-            eprintln!("if you intend to use vm metadata for auth, please set correct service account intead");
+            eprintln!("if you intend to use vm metadata for auth, please set correct service account instead");
         }
 
         let credential_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
