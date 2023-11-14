@@ -43,7 +43,7 @@ const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    let _ = sccache_command()
+    if !sccache_command()
         .arg("--start-server")
         // Uncomment following lines to debug locally.
         .env("SCCACHE_LOG", "debug")
@@ -52,7 +52,10 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
         .status()
         .unwrap()
-        .success();
+        .success()
+    {
+        panic!("Failed to start local daemon");
+    }
 }
 
 pub fn stop_local_daemon() {
