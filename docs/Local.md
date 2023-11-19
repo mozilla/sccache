@@ -30,7 +30,7 @@ Preprocessor cache mode will be disabled if any of the following holds:
 
 Configuration options and their default values:
 
-- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode entirely.
+- `use_preprocessor_cache_mode`: `false`. Whether to use preprocessor cache mode entirely.
 - `file_stat_matches`: `false`. If false, only compare header files by hashing their contents. If true, will use size + ctime + mtime to check whether a file has changed. See other flags below for more control over this behavior.
 - `use_ctime_for_stat`: `true`. If true, uses the ctime (file status change on UNIX, creation time on Windows) to check that a file has/hasn't changed. Can be useful to disable when backdating modification times in a controlled manner.
 
