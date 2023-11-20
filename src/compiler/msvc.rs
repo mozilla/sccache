@@ -503,11 +503,79 @@ pub fn parse_arguments(
     let mut pdb = None;
     let mut depfile = None;
     let mut show_includes = false;
+    let mut has_pending_clang_arguments = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
     let mut profile_generate = false;
     let mut multiple_input = false;
     let mut multiple_input_files = Vec::new();
+
+    macro_rules! parse_clang_arguments {
+        ($xclangs:expr, $clangs:expr) => {
+            for (args, append_fn) in Iterator::zip(
+                [$xclangs, $clangs].iter(),
+                &[xclang_append, dash_clang_append],
+            ) {
+                let it = gcc::ExpandIncludeFile::new(cwd, args);
+                for arg in ArgsIter::new(it, (&gcc::ARGS[..], &clang::ARGS[..])) {
+                    let arg = try_or_cannot_cache!(arg, "argument parse");
+                    // Eagerly bail if it looks like we need to do more complicated work.
+                    use crate::compiler::gcc::ArgData::*;
+                    let args = match arg.get_data() {
+                        Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage)
+                        | Some(DoCompilation) | Some(Language(_)) | Some(Output(_))
+                        | Some(TooHardFlag) | Some(XClang(_)) | Some(TooHard(_)) => {
+                            cannot_cache!(arg
+                                .flag_str()
+                                .unwrap_or("Can't handle complex arguments through clang",))
+                        }
+                        None => match arg {
+                            Argument::Raw(_) | Argument::UnknownFlag(_) => &mut common_args,
+                            _ => unreachable!(),
+                        },
+                        Some(DiagnosticsColor(_))
+                        | Some(DiagnosticsColorFlag)
+                        | Some(NoDiagnosticsColorFlag)
+                        | Some(Arch(_))
+                        | Some(PassThroughFlag)
+                        | Some(PassThrough(_))
+                        | Some(PassThroughPath(_))
+                        | Some(PedanticFlag)
+                        | Some(Standard(_)) => &mut common_args,
+                        Some(Unhashed(_)) => &mut unhashed_args,
+                        Some(ProfileGenerate) => {
+                            profile_generate = true;
+                            &mut common_args
+                        }
+                        Some(ClangProfileUse(path)) => {
+                            extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
+                            &mut common_args
+                        }
+                        Some(ExtraHashFile(path)) => {
+                            extra_hash_files.push(cwd.join(path));
+                            &mut common_args
+                        }
+                        Some(PreprocessorArgumentFlag)
+                        | Some(PreprocessorArgument(_))
+                        | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
+                        Some(DepArgumentPath(_)) | Some(DepTarget(_)) | Some(NeedDepTarget) => {
+                            &mut dependency_args
+                        }
+                    };
+                    // Normalize attributes such as "-I foo", "-D FOO=bar", as
+                    // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
+                    // "-include foo", "-idirafter bar", etc.
+                    let norm = match arg.flag_str() {
+                        Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
+                        _ => NormalizedDisposition::Separated,
+                    };
+                    for arg in arg.normalize(norm).iter_os_strings() {
+                        append_fn(arg, args);
+                    }
+                }
+            }
+        };
+    }
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -515,6 +583,14 @@ pub fn parse_arguments(
     let it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..]));
     for arg in it {
         let arg = try_or_cannot_cache!(arg, "argument parse");
+        if has_pending_clang_arguments
+            && !matches!(arg.get_data(), Some(XClang(_)) | Some(Clang(_)))
+        {
+            parse_clang_arguments!(xclangs.clone(), clangs.clone());
+            xclangs.clear();
+            clangs.clear();
+            has_pending_clang_arguments = false;
+        }
         match arg.get_data() {
             Some(PassThrough) | Some(PassThroughWithPath(_)) | Some(PassThroughWithSuffix(_)) => {}
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
@@ -549,8 +625,14 @@ pub fn parse_arguments(
             Some(SuppressCompilation) => {
                 return CompilerArguments::NotCompilation;
             }
-            Some(XClang(s)) => xclangs.push(s.clone()),
-            Some(Clang(s)) => clangs.push(s.clone()),
+            Some(XClang(s)) => {
+                has_pending_clang_arguments = true;
+                xclangs.push(s.clone());
+            }
+            Some(Clang(s)) => {
+                has_pending_clang_arguments = true;
+                clangs.push(s.clone());
+            }
             None => {
                 match arg {
                     Argument::Raw(ref val) => {
@@ -615,7 +697,6 @@ pub fn parse_arguments(
         }
     }
 
-    // TODO: doing this here reorders the arguments, hopefully that doesn't affect the meaning
     fn xclang_append(arg: OsString, args: &mut Vec<OsString>) {
         args.push("-Xclang".into());
         args.push(arg);
@@ -627,68 +708,8 @@ pub fn parse_arguments(
         args.push(a);
     }
 
-    for (args, append_fn) in Iterator::zip(
-        [xclangs, clangs].iter(),
-        &[xclang_append, dash_clang_append],
-    ) {
-        let it = gcc::ExpandIncludeFile::new(cwd, args);
-        for arg in ArgsIter::new(it, (&gcc::ARGS[..], &clang::ARGS[..])) {
-            let arg = try_or_cannot_cache!(arg, "argument parse");
-            // Eagerly bail if it looks like we need to do more complicated work
-            use crate::compiler::gcc::ArgData::*;
-            let args = match arg.get_data() {
-                Some(SplitDwarf) | Some(TestCoverage) | Some(Coverage) | Some(DoCompilation)
-                | Some(Language(_)) | Some(Output(_)) | Some(TooHardFlag) | Some(XClang(_))
-                | Some(TooHard(_)) => cannot_cache!(arg
-                    .flag_str()
-                    .unwrap_or("Can't handle complex arguments through clang",)),
-                None => match arg {
-                    Argument::Raw(_) | Argument::UnknownFlag(_) => &mut common_args,
-                    _ => unreachable!(),
-                },
-                Some(DiagnosticsColor(_))
-                | Some(DiagnosticsColorFlag)
-                | Some(NoDiagnosticsColorFlag)
-                | Some(Arch(_))
-                | Some(PassThroughFlag)
-                | Some(PassThrough(_))
-                | Some(PassThroughPath(_))
-                | Some(PedanticFlag)
-                | Some(Standard(_)) => &mut common_args,
-                Some(Unhashed(_)) => &mut unhashed_args,
-
-                Some(ProfileGenerate) => {
-                    profile_generate = true;
-                    &mut common_args
-                }
-
-                Some(ClangProfileUse(path)) => {
-                    extra_hash_files.push(clang::resolve_profile_use_path(path, cwd));
-                    &mut common_args
-                }
-
-                Some(ExtraHashFile(path)) => {
-                    extra_hash_files.push(cwd.join(path));
-                    &mut common_args
-                }
-                Some(PreprocessorArgumentFlag)
-                | Some(PreprocessorArgument(_))
-                | Some(PreprocessorArgumentPath(_)) => &mut preprocessor_args,
-                Some(DepArgumentPath(_)) | Some(DepTarget(_)) | Some(NeedDepTarget) => {
-                    &mut dependency_args
-                }
-            };
-            // Normalize attributes such as "-I foo", "-D FOO=bar", as
-            // "-Ifoo", "-DFOO=bar", etc. and "-includefoo", "idirafterbar" as
-            // "-include foo", "-idirafter bar", etc.
-            let norm = match arg.flag_str() {
-                Some(s) if s.len() == 2 => NormalizedDisposition::Concatenated,
-                _ => NormalizedDisposition::Separated,
-            };
-            for arg in arg.normalize(norm).iter_os_strings() {
-                append_fn(arg, args);
-            }
-        }
+    if has_pending_clang_arguments {
+        parse_clang_arguments!(xclangs, clangs);
     }
 
     // We only support compilation.
@@ -1651,6 +1672,50 @@ mod test {
         assert_eq!(
             extra_hash_files,
             ovec!(std::env::current_dir().unwrap().join("xyz.profdata"))
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_passthrough_end() {
+        let args = ovec!["-c", "foo.c", "-clang:-fprofile-generate"];
+        let ParsedArguments {
+            input, common_args, ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(input.to_str(), Some("foo.c"));
+        assert_eq!(common_args, ovec!["-clang:-fprofile-generate"]);
+    }
+
+    #[test]
+    fn test_parse_arguments_clang_passthrough_order() {
+        let args = ovec![
+            "/nologo",
+            "-Xclang",
+            "-fno-rtti",
+            "-flto",
+            "/we4668",
+            "-c",
+            "--",
+            "/dev/Something.cpp"
+        ];
+        let ParsedArguments {
+            input,
+            preprocessor_args,
+            dependency_args,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(input.to_str(), Some("/dev/Something.cpp"));
+        assert!(preprocessor_args.is_empty());
+        assert!(dependency_args.is_empty());
+        assert_eq!(
+            common_args,
+            ovec!["/nologo", "-Xclang", "-fno-rtti", "-flto", "/we4668", "--"]
         );
     }
 
