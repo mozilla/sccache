@@ -1087,6 +1087,7 @@ mod client {
         self, AllocJobResult, CompileCommand, JobAlloc, PathTransformer, RunJobResult,
         SchedulerStatusResult, SubmitToolchainResult, Toolchain,
     };
+    use crate::util::HickoryResolver;
 
     use async_trait::async_trait;
     use byteorder::{BigEndian, WriteBytesExt};
@@ -1139,6 +1140,7 @@ mod client {
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
+                .dns_resolver(Arc::new(HickoryResolver::default()))
                 .build()
                 .context("failed to create an async HTTP client")?;
             let client_toolchains =
