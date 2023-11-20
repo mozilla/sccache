@@ -169,7 +169,7 @@ impl Default for DiskCacheConfig {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
-            preprocessor_cache_mode: Default::default(),
+            preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
         }
     }
 }
@@ -1296,7 +1296,7 @@ token = "webdavtoken"
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
-                    preprocessor_cache_mode: Default::default(),
+                    preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),

@@ -366,7 +366,7 @@ pub trait Storage: Send + Sync {
 
     /// Return the config for preprocessor cache mode if applicable
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
-        // Disabled by default, only enabled in local mode
+        // Enable by default, only in local mode
         PreprocessorCacheModeConfig::default()
     }
     /// Return the preprocessor cache entry for a given preprocessor key,
@@ -427,6 +427,16 @@ impl Default for PreprocessorCacheModeConfig {
             ignore_time_macros: false,
             skip_system_headers: false,
             hash_working_directory: true,
+        }
+    }
+}
+
+impl PreprocessorCacheModeConfig {
+    /// Return a default [`Self`], but with the cache active.
+    pub fn activated() -> Self {
+        Self {
+            use_preprocessor_cache_mode: true,
+            ..Default::default()
         }
     }
 }
