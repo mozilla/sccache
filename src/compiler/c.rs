@@ -551,7 +551,7 @@ fn process_preprocessed_file(
     let mut normalized_include_paths: HashMap<Vec<u8>, Option<Vec<u8>>> = HashMap::new();
     // There must be at least 7 characters (# 1 "x") left to potentially find an
     // include file path.
-    while start < total_len - 7 {
+    while start < total_len.saturating_sub(7) {
         let mut slice = &bytes[start..];
         // Check if we look at a line containing the file name of an included file.
         // At least the following formats exist (where N is a positive integer):
@@ -609,9 +609,12 @@ fn process_preprocessed_file(
                     continue;
                 }
             };
-        } else if &bytes[start..start + INCBIN_DIRECTIVE.len()] == INCBIN_DIRECTIVE
-            && ((slice[7] == b' ' && (slice[8] == b'"' || (slice[8] == b'\\' && slice[9] == b'"')))
-                || slice[7] == b'"')
+        } else if slice
+            .strip_prefix(INCBIN_DIRECTIVE)
+            .filter(|slice| {
+                slice.starts_with(b"\"") || slice.starts_with(b" \"") || slice.starts_with(b" \\\"")
+            })
+            .is_some()
         {
             // An assembler .inc bin (without the space) statement, which could be
             // part of inline assembly, refers to an external file. If the file
@@ -668,7 +671,7 @@ fn process_preprocessor_line(
 ) -> Result<PreprocessedLineAction> {
     let mut slice = &bytes[start..];
     // Workarounds for preprocessor linemarker bugs in GCC version 6.
-    if slice[2] == b'3' {
+    if slice.get(2) == Some(&b'3') {
         if slice.starts_with(HASH_31_COMMAND_LINE_NEWLINE) {
             // Bogus extra line with #31, after the regular #1:
             // Ignore the whole line, and continue parsing.
