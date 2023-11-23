@@ -285,6 +285,7 @@ where
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
+        double_dash_input: false,
         language,
         compilation_flag,
         depfile: None,
@@ -744,6 +745,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
+            double_dash_input: false,
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,
