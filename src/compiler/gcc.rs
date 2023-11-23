@@ -931,7 +931,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
 
-    use temp_env::with_var;
+    use temp_env::{with_var, with_var_unset};
 
     fn parse_arguments_(
         arguments: Vec<String>,
@@ -1768,18 +1768,20 @@ mod test {
 
     #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
-        assert_eq!(
-            CompilerArguments::CannotCache(
-                "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
-                None
-            ),
-            parse_arguments_(
-                stringvec![
-                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                ],
-                false
+        with_var_unset("SCCACHE_CACHE_MULTIARCH", || {
+            assert_eq!(
+                CompilerArguments::CannotCache(
+                    "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
+                    None
+                ),
+                parse_arguments_(
+                    stringvec![
+                        "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                    ],
+                    false
+                )
             )
-        )
+        });
     }
 
     #[test]
