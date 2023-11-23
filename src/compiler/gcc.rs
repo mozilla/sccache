@@ -797,10 +797,10 @@ pub fn generate_compile_commands(
         "-o".into(),
         out_file.into(),
     ]);
-    arguments.extend(parsed_args.preprocessor_args.clone());
-    arguments.extend(parsed_args.unhashed_args.clone());
-    arguments.extend(parsed_args.common_args.clone());
-    arguments.extend(parsed_args.arch_args.clone());
+    arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.unhashed_args);
+    arguments.extend_from_slice(&parsed_args.common_args);
+    arguments.extend_from_slice(&parsed_args.arch_args);
     if parsed_args.double_dash_input {
         arguments.push("--".into());
     }
