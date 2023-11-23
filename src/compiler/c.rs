@@ -85,6 +85,8 @@ pub struct ArtifactDescriptor {
 pub struct ParsedArguments {
     /// The input source file.
     pub input: PathBuf,
+    /// Whether to prepend the input with `--`
+    pub double_dash_input: bool,
     /// The type of language used in the input source file.
     pub language: Language,
     /// The flag required to compile for the given language
