@@ -1050,10 +1050,10 @@ fn generate_compile_commands(
     fo.push(out_file);
 
     let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone(), fo];
-    arguments.extend(parsed_args.preprocessor_args.clone());
-    arguments.extend(parsed_args.dependency_args.clone());
-    arguments.extend(parsed_args.unhashed_args.clone());
-    arguments.extend(parsed_args.common_args.clone());
+    arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.dependency_args);
+    arguments.extend_from_slice(&parsed_args.unhashed_args);
+    arguments.extend_from_slice(&parsed_args.common_args);
     if parsed_args.double_dash_input {
         arguments.push("--".into());
     }
