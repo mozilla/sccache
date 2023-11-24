@@ -710,7 +710,7 @@ fn config_from_env() -> Result<EnvConfig> {
         .ok()
         .and_then(|v| parse_size(&v));
 
-    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::default();
+    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
     let preprocessor_mode_overridden = match env::var("SCCACHE_DIRECT").as_deref() {
         Ok("on") | Ok("true") => {
             preprocessor_mode_config.use_preprocessor_cache_mode = true;
