@@ -48,6 +48,11 @@ gzp = { version = "0.11.3", default-features = false, features = [
 ] }
 http = "0.2"
 # hyper used here must be kept in sync of the one used in reqwest
+hickory-resolver = { version = "0.24", features = [
+  "dnssec-ring",
+  "dns-over-rustls",
+  "dns-over-https-rustls",
+], optional = true }
 hyper = { version = "0.14.27", optional = true, features = ["server"] }
 is-terminal = "0.4.7"
 jobserver = "0.1"
@@ -56,6 +61,7 @@ libc = "0.2.149"
 linked-hash-map = "0.5"
 log = "0.4"
 memchr = "2"
+mime = "0.3"
 num_cpus = "1.16"
 number_prefix = "0.4"
 once_cell = "1.18"
@@ -69,7 +75,6 @@ reqwest = { version = "0.11", features = [
   "stream",
   "rustls-tls",
 ], optional = true, default-features = false }
-hickory-resolver = { version = "0.24", features = ["dnssec-ring", "dns-over-rustls", "dns-over-https-rustls"], optional = true }
 retry = "2"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -78,7 +83,6 @@ sha2 = { version = "0.10.6", optional = true }
 strip-ansi-escapes = "0.1"
 tar = "0.4.36"
 tempfile = "3"
-mime = "0.3"
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "io-util",
@@ -151,7 +155,14 @@ all = [
 ]
 azure = ["opendal", "reqsign"]
 default = ["all"]
-gcs = ["opendal", "reqsign", "url", "reqwest/blocking", "hickory-resolver", "hyper"]
+gcs = [
+  "opendal",
+  "reqsign",
+  "url",
+  "reqwest/blocking",
+  "hickory-resolver",
+  "hyper",
+]
 gha = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
@@ -163,14 +174,7 @@ vendored-openssl = []
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = [
-  "flate2",
-  "hyper",
-  "reqwest",
-  "url",
-  "sha2",
-  "hickory-resolver",
-]
+dist-client = ["flate2", "hyper", "reqwest", "url", "sha2", "hickory-resolver"]
 # Enables the sccache-dist binary
 dist-server = [
   "jwt",
