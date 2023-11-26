@@ -245,16 +245,20 @@ pub mod urls {
 mod server {
     use crate::util::new_reqwest_blocking_client;
     use byteorder::{BigEndian, ReadBytesExt};
-    use chrono::Datelike;
-    use chrono::Timelike;
+    use chrono::{Datelike, Timelike};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use once_cell::sync::Lazy;
-    use picky::key::{PrivateKey, PublicKey};
-    use picky::x509::certificate::CertificateBuilder;
-    use picky::x509::date::UTCDate;
-    use picky::x509::extension::ExtendedKeyUsage;
-    use picky::x509::name::{DirectoryName, GeneralNames};
-    use picky::{hash::HashAlgorithm, signature::SignatureAlgorithm};
+    use picky::{
+        hash::HashAlgorithm,
+        key::{PrivateKey, PublicKey},
+        signature::SignatureAlgorithm,
+        x509::{
+            certificate::CertificateBuilder,
+            date::UTCDate,
+            extension::ExtendedKeyUsage,
+            name::{DirectoryName, GeneralNames},
+        },
+    };
     use rand::{rngs::OsRng, RngCore};
     use rouille::accept;
     use serde::Serialize;
@@ -309,10 +313,9 @@ mod server {
 
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let mut rng = OsRng;
-        let bits = 2048;
-        let rsa_key = rsa::RsaPrivateKey::new(&mut rng, bits)?;
+        let rsa_key = rsa::RsaPrivateKey::new(&mut rng, 2048)?;
 
-        let line_ending = rsa::pkcs8::LineEnding::CRLF;
+        let line_ending = rsa::pkcs8::LineEnding::Default();
         let sk_pkcs8 = rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(&rsa_key, line_ending)?;
         let pk_pkcs8 =
             rsa::pkcs8::EncodePublicKey::to_public_key_pem(rsa_key.as_ref(), line_ending)?;
