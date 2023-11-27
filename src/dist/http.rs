@@ -315,7 +315,7 @@ mod server {
         let mut rng = OsRng;
         let rsa_key = rsa::RsaPrivateKey::new(&mut rng, 2048)?;
 
-        let line_ending = rsa::pkcs8::LineEnding::Default();
+        let line_ending = rsa::pkcs8::LineEnding::default();
         let sk_pkcs8 = rsa::pkcs8::EncodePrivateKey::to_pkcs8_pem(&rsa_key, line_ending)?;
         let pk_pkcs8 =
             rsa::pkcs8::EncodePublicKey::to_public_key_pem(rsa_key.as_ref(), line_ending)?;
