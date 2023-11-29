@@ -36,6 +36,7 @@ use std::process;
 use std::time::Duration;
 use strip_ansi_escapes::Writer;
 use tokio::io::AsyncReadExt;
+use tokio::runtime;
 use tokio::runtime::Runtime;
 use walkdir::WalkDir;
 use which::which_in;
@@ -771,7 +772,17 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             trace!("Command::Compile {{ {:?}, {:?}, {:?} }}", exe, cmdline, cwd);
             let jobserver = unsafe { Client::new() };
             let conn = connect_or_start_server(get_port(), startup_timeout)?;
-            let mut runtime = Runtime::new()?;
+
+            let worker_threads = env::var("SCCACHE_CLIENT_WORKER_THREADS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2);
+
+            let mut runtime = runtime::Builder::new_multi_thread()
+                .worker_threads(worker_threads)
+                .build()
+                .context("building tokio runtime")?;
+
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
                 &mut runtime,

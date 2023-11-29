@@ -417,10 +417,17 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         panic_hook(info)
     }));
     let client = unsafe { Client::new() };
+
+    let worker_threads = env::var("SCCACHE_SERVER_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(std::cmp::max(20, num_cpus::get() * 2));
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(std::cmp::max(20, 2 * num_cpus::get()))
+        .worker_threads(worker_threads)
         .build()?;
+
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
 
