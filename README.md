@@ -161,6 +161,7 @@ set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
 
 And you can build code as usual without any additional flags in the command line, useful for IDEs.
 
+To limit the number of threads sccache process spawns, use `SCCACHE_SERVER_WORKER_THREADS` and `SCCACHE_CLIENT_WORKER_THREADS` environment variables for server and client processes respectively.
 
 ---
 
