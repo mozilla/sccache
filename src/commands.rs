@@ -779,6 +779,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 .unwrap_or(2);
 
             let mut runtime = runtime::Builder::new_multi_thread()
+                .enable_all()
                 .worker_threads(worker_threads)
                 .build()
                 .context("building tokio runtime")?;
