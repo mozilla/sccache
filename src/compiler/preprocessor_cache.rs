@@ -416,7 +416,8 @@ pub fn preprocessor_cache_entry_hash_key(
     let mut buf = vec![];
     encode_path(&mut buf, input_file)?;
     m.update(&buf);
-    let reader = std::fs::File::open(input_file).context("while hashing the input file")?;
+    let reader = std::fs::File::open(input_file)
+        .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
 
     let digest = if config.ignore_time_macros {
         Digest::reader_sync(reader)?

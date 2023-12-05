@@ -254,6 +254,7 @@ where
 {
     let mut output_arg = None;
     let mut input_arg = None;
+    let mut double_dash_input = false;
     let mut dep_target = None;
     let mut dep_flag = OsString::from("-MT");
     let mut common_args = vec![];
@@ -290,7 +291,11 @@ where
 
     let mut too_hard_for_preprocessor_cache_mode = false;
 
-    for arg in ArgsIter::new(it, arg_info) {
+    let mut args_iter = ArgsIter::new(it, arg_info);
+    if kind == CCompilerKind::Clang {
+        args_iter = args_iter.with_double_dashes();
+    }
+    for arg in args_iter {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         // Check if the value part of this argument begins with '@'. If so, we either
         // failed to expand it, or it was a concatenated argument - either way, bail.
@@ -392,6 +397,11 @@ where
             }
             Some(XClang(s)) => xclangs.push(s.clone()),
             None => match arg {
+                Argument::Raw(ref val) if val == "--" => {
+                    if input_arg.is_none() {
+                        double_dash_input = true;
+                    }
+                }
                 Argument::Raw(ref val) => {
                     if input_arg.is_some() {
                         multiple_input = true;
@@ -605,6 +615,7 @@ where
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
+        double_dash_input,
         language,
         compilation_flag,
         depfile: None,
@@ -703,11 +714,14 @@ fn preprocess_cmd<T>(
         arch_args_to_use = &parsed_args.arch_args;
     }
 
-    cmd.arg(&parsed_args.input)
-        .args(&parsed_args.preprocessor_args)
+    cmd.args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
-        .args(arch_args_to_use)
+        .args(arch_args_to_use);
+    if parsed_args.double_dash_input {
+        cmd.arg("--");
+    }
+    cmd.arg(&parsed_args.input)
         .env_clear()
         .envs(env_vars.iter().map(|(k, v)| (k, v)))
         .current_dir(cwd);
@@ -780,14 +794,17 @@ pub fn generate_compile_commands(
     }
     arguments.extend(vec![
         parsed_args.compilation_flag.clone(),
-        parsed_args.input.clone().into(),
         "-o".into(),
         out_file.into(),
     ]);
-    arguments.extend(parsed_args.preprocessor_args.clone());
-    arguments.extend(parsed_args.unhashed_args.clone());
-    arguments.extend(parsed_args.common_args.clone());
-    arguments.extend(parsed_args.arch_args.clone());
+    arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.unhashed_args);
+    arguments.extend_from_slice(&parsed_args.common_args);
+    arguments.extend_from_slice(&parsed_args.arch_args);
+    if parsed_args.double_dash_input {
+        arguments.push("--".into());
+    }
+    arguments.push(parsed_args.input.clone().into());
     let command = CompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -931,7 +948,7 @@ mod test {
     use crate::mock_command::*;
     use crate::test::utils::*;
 
-    use temp_env::with_var;
+    use temp_env::{with_var, with_var_unset};
 
     fn parse_arguments_(
         arguments: Vec<String>,
@@ -939,6 +956,20 @@ mod test {
     ) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         parse_arguments(&args, ".".as_ref(), &ARGS[..], plusplus, CCompilerKind::Gcc)
+    }
+
+    fn parse_arguments_clang(
+        arguments: Vec<String>,
+        plusplus: bool,
+    ) -> CompilerArguments<ParsedArguments> {
+        let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        parse_arguments(
+            &args,
+            ".".as_ref(),
+            &ARGS[..],
+            plusplus,
+            CCompilerKind::Clang,
+        )
     }
 
     #[test]
@@ -1337,6 +1368,65 @@ mod test {
     }
 
     #[test]
+    fn test_parse_arguments_double_dash() {
+        let args = stringvec!["-c", "-o", "foo.o", "--", "foo.c"];
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments_(args.clone(), false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        // GCC doesn't support double dashes. If we got one, we'll pass them
+        // through to GCC for it to error out.
+        assert!(!double_dash_input);
+        assert_eq!(ovec!["--"], common_args);
+
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments_clang(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert!(double_dash_input);
+        assert!(common_args.is_empty());
+
+        let args = stringvec!["-c", "-o", "foo.o", "foo.c", "--"];
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments_clang(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        // Double dash after input file is ignored.
+        assert!(!double_dash_input);
+        assert!(common_args.is_empty());
+
+        let args = stringvec!["-c", "-o", "foo.o", "foo.c", "--", "bar.c"];
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
+            parse_arguments_clang(args, false)
+        );
+
+        let args = stringvec!["-c", "-o", "foo.o", "foo.c", "--", "-fPIC"];
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"-fPIC\"]".to_string())),
+            parse_arguments_clang(args, false)
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_explicit_dep_target() {
         let args =
             stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"];
@@ -1503,9 +1593,9 @@ mod test {
                 "c++",
                 "-E",
                 "-fdirectives-only",
-                "foo.cc",
                 "-D__arm64__=1",
-                "-D__i386__=1"
+                "-D__i386__=1",
+                "foo.cc"
             ];
             assert_eq!(cmd.args, expected_args);
         });
@@ -1538,10 +1628,35 @@ mod test {
             "c++",
             "-E",
             "-fdirectives-only",
-            "foo.cc",
             "-arch",
-            "arm64"
+            "arm64",
+            "foo.cc"
         ];
+        assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
+    fn test_preprocess_double_dash_input() {
+        let args = stringvec!["-c", "-o", "foo.o", "--", "foo.c"];
+        let parsed_args = match parse_arguments_clang(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            CCompilerKind::Clang,
+            true,
+            vec![],
+        );
+        let expected_args = ovec!["-x", "c", "-E", "-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
     }
 
@@ -1768,18 +1883,20 @@ mod test {
 
     #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
-        assert_eq!(
-            CompilerArguments::CannotCache(
-                "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
-                None
-            ),
-            parse_arguments_(
-                stringvec![
-                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                ],
-                false
+        with_var_unset("SCCACHE_CACHE_MULTIARCH", || {
+            assert_eq!(
+                CompilerArguments::CannotCache(
+                    "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
+                    None
+                ),
+                parse_arguments_(
+                    stringvec![
+                        "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                    ],
+                    false
+                )
             )
-        )
+        });
     }
 
     #[test]
@@ -1888,6 +2005,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
+            double_dash_input: false,
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,
@@ -1934,6 +2052,30 @@ mod test {
         assert_eq!(Cacheable::Yes, cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
+    }
+
+    #[test]
+    fn test_compile_double_dash_input() {
+        let args = stringvec!["-c", "-o", "foo.o", "--", "foo.c"];
+        let parsed_args = match parse_arguments_clang(args, false) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::default();
+        let (command, _, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            CCompilerKind::Clang,
+            false,
+        )
+        .unwrap();
+        let expected_args = ovec!["-x", "c", "-c", "-o", "foo.o", "--", "foo.c"];
+        assert_eq!(command.arguments, expected_args);
     }
 
     #[test]

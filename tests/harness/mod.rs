@@ -43,16 +43,22 @@ const TC_CACHE_SIZE: u64 = 1024 * 1024 * 1024; // 1 gig
 pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     // Don't run this with run() because on Windows `wait_with_output`
     // will hang because the internal server process is not detached.
-    let _ = sccache_command()
+    if !sccache_command()
         .arg("--start-server")
         // Uncomment following lines to debug locally.
-        .env("SCCACHE_LOG", "debug")
-        .env("SCCACHE_ERROR_LOG", "/tmp/sccache_local_daemon.txt")
+        // .env("SCCACHE_LOG", "debug")
+        // .env(
+        //     "SCCACHE_ERROR_LOG",
+        //     env::temp_dir().join("sccache_local_daemon.txt"),
+        // )
         .env("SCCACHE_CONF", cfg_path)
         .env("SCCACHE_CACHED_CONF", cached_cfg_path)
         .status()
         .unwrap()
-        .success();
+        .success()
+    {
+        panic!("Failed to start local daemon");
+    }
 }
 
 pub fn stop_local_daemon() {
@@ -122,7 +128,10 @@ pub fn sccache_dist_path() -> PathBuf {
     assert_cmd::cargo::cargo_bin("sccache-dist")
 }
 
-pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
+pub fn sccache_client_cfg(
+    tmpdir: &Path,
+    preprocessor_cache_mode: bool,
+) -> sccache::config::FileConfig {
     let cache_relpath = "client-cache";
     let dist_cache_relpath = "client-dist-cache";
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
@@ -130,6 +139,10 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
 
     let disk_cache = sccache::config::DiskCacheConfig {
         dir: tmpdir.join(cache_relpath),
+        preprocessor_cache_mode: sccache::config::PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: preprocessor_cache_mode,
+            ..Default::default()
+        },
         ..Default::default()
     };
     sccache::config::FileConfig {
@@ -154,6 +167,7 @@ pub fn sccache_client_cfg(tmpdir: &Path) -> sccache::config::FileConfig {
         server_startup_timeout_ms: None,
     }
 }
+
 #[cfg(feature = "dist-server")]
 fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
     sccache::config::scheduler::Config {
@@ -164,6 +178,7 @@ fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
         },
     }
 }
+
 #[cfg(feature = "dist-server")]
 fn sccache_server_cfg(
     tmpdir: &Path,

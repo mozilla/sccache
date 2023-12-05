@@ -33,10 +33,11 @@ use std::result::Result as StdResult;
 use std::str::FromStr;
 use std::sync::Mutex;
 
-use crate::{cache::PreprocessorCacheModeConfig, errors::*};
+pub use crate::cache::PreprocessorCacheModeConfig;
+use crate::errors::*;
 
 static CACHED_CONFIG_PATH: Lazy<PathBuf> = Lazy::new(CachedConfig::file_config_path);
-static CACHED_CONFIG: Lazy<Mutex<Option<CachedFileConfig>>> = Lazy::new(|| Mutex::new(None));
+static CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 
 const ORGANIZATION: &str = "Mozilla";
 const APP_NAME: &str = "sccache";
@@ -168,7 +169,7 @@ impl Default for DiskCacheConfig {
         DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
-            preprocessor_cache_mode: Default::default(),
+            preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
         }
     }
 }
@@ -602,7 +603,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
         if env::var("SCCACHE_GCS_OAUTH_URL").is_ok() {
             eprintln!("SCCACHE_GCS_OAUTH_URL has been deprecated");
-            eprintln!("if you intend to use vm metadata for auth, please set correct service account intead");
+            eprintln!("if you intend to use vm metadata for auth, please set correct service account instead");
         }
 
         let credential_url = env::var("SCCACHE_GCS_CREDENTIALS_URL").ok();
@@ -709,14 +710,21 @@ fn config_from_env() -> Result<EnvConfig> {
         .ok()
         .and_then(|v| parse_size(&v));
 
-    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::default();
-    match env::var("SCCACHE_DIRECT").as_deref() {
-        Ok("on") | Ok("true") => preprocessor_mode_config.use_preprocessor_cache_mode = true,
-        Ok("off") | Ok("false") => preprocessor_mode_config.use_preprocessor_cache_mode = false,
-        _ => {}
+    let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
+    let preprocessor_mode_overridden = match env::var("SCCACHE_DIRECT").as_deref() {
+        Ok("on") | Ok("true") => {
+            preprocessor_mode_config.use_preprocessor_cache_mode = true;
+            true
+        }
+        Ok("off") | Ok("false") => {
+            preprocessor_mode_config.use_preprocessor_cache_mode = false;
+            true
+        }
+        _ => false,
     };
 
-    let disk = if disk_dir.is_some() || disk_sz.is_some() {
+    let any_overridden = disk_dir.is_some() || disk_sz.is_some() || preprocessor_mode_overridden;
+    let disk = if any_overridden {
         Some(DiskCacheConfig {
             dir: disk_dir.unwrap_or_else(default_disk_cache_dir),
             size: disk_sz.unwrap_or_else(default_disk_cache_size),
@@ -1288,7 +1296,7 @@ token = "webdavtoken"
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
-                    preprocessor_cache_mode: Default::default(),
+                    preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),

@@ -36,6 +36,7 @@ use futures::future::FutureExt;
 use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -392,12 +393,29 @@ impl DistClientContainer {
     }
 }
 
+thread_local! {
+    /// catch_unwind doesn't provide panic location, so we store that
+    /// information via a panic hook to be used when catch_unwind
+    /// catches a panic.
+    static PANIC_LOCATION: Cell<Option<(String, u32, u32)>> = Cell::new(None);
+}
+
 /// Start an sccache server, listening on `port`.
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(config: &Config, port: u16) -> Result<()> {
     info!("start_server: port: {}", port);
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANIC_LOCATION.with(|l| {
+            l.set(
+                info.location()
+                    .map(|loc| (loc.file().to_string(), loc.line(), loc.column())),
+            )
+        });
+        panic_hook(info)
+    }));
     let client = unsafe { Client::new() };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -896,6 +914,10 @@ where
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.lock().await.clone();
         let cache_location = self.storage.location();
+        let use_preprocessor_cache_mode = self
+            .storage
+            .preprocessor_cache_mode_config()
+            .use_preprocessor_cache_mode;
         let version = env!("CARGO_PKG_VERSION").to_string();
         futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
             move |(cache_size, max_cache_size)| ServerInfo {
@@ -903,6 +925,7 @@ where
                 cache_location,
                 cache_size,
                 max_cache_size,
+                use_preprocessor_cache_mode,
                 version,
             },
         )
@@ -1177,20 +1200,35 @@ where
         let task = async move {
             let dist_client = me.dist_client.get_client().await;
             let result = match dist_client {
-                Ok(client) => {
-                    hasher
-                        .get_cached_or_compile(
-                            client,
-                            creator,
-                            storage,
-                            arguments,
-                            cwd,
-                            env_vars,
-                            cache_control,
-                            pool,
+                Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
+                    client,
+                    creator,
+                    storage,
+                    arguments,
+                    cwd,
+                    env_vars,
+                    cache_control,
+                    pool,
+                ))
+                .catch_unwind()
+                .await
+                .map_err(|e| {
+                    let panic = e
+                        .downcast_ref::<&str>()
+                        .map(|s| &**s)
+                        .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
+                        .unwrap_or("An unknown panic was caught.");
+                    let thread = std::thread::current();
+                    let thread_name = thread.name().unwrap_or("unnamed");
+                    if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
+                        anyhow!(
+                            "thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}"
                         )
-                        .await
-                }
+                    } else {
+                        anyhow!("thread '{thread_name}' panicked: {panic}")
+                    }
+                })
+                .and_then(std::convert::identity),
                 Err(e) => Err(e),
             };
             let mut cache_write = None;
@@ -1442,6 +1480,7 @@ pub struct ServerInfo {
     pub cache_location: String,
     pub cache_size: Option<u64>,
     pub max_cache_size: Option<u64>,
+    pub use_preprocessor_cache_mode: bool,
     pub version: String,
 }
 
@@ -1651,6 +1690,18 @@ impl ServerInfo {
             self.cache_location,
             name_width = name_width
         );
+        if self.cache_location.starts_with("Local disk") {
+            println!(
+                "{:<name_width$} {}",
+                "Use direct/preprocessor mode?",
+                if self.use_preprocessor_cache_mode {
+                    "yes"
+                } else {
+                    "no"
+                },
+                name_width = name_width
+            );
+        }
         println!(
             "{:<name_width$} {}",
             "Version (client)",

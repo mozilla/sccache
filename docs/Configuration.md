@@ -99,7 +99,7 @@ configuration variables
 
 * `SCCACHE_DIR` local on disk artifact cache directory
 * `SCCACHE_CACHE_SIZE` maximum size of the local on disk cache i.e. `2G` - default is 10G
-* `SCCACHE_PREPROCESSOR_MODE` enable/disable preprocessor caching (see [the local doc](Local.md))
+* `SCCACHE_DIRECT` enable/disable preprocessor caching (see [the local doc](Local.md))
 
 #### s3 compatible
 

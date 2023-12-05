@@ -285,6 +285,7 @@ where
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
+        double_dash_input: false,
         language,
         compilation_flag,
         depfile: None,
@@ -351,9 +352,9 @@ pub fn generate_compile_commands(
         "-o".into(),
         out_file.into(),
     ];
-    arguments.extend(parsed_args.preprocessor_args.clone());
-    arguments.extend(parsed_args.unhashed_args.clone());
-    arguments.extend(parsed_args.common_args.clone());
+    arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.unhashed_args);
+    arguments.extend_from_slice(&parsed_args.common_args);
     let command = CompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -744,6 +745,7 @@ mod test {
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
+            double_dash_input: false,
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,

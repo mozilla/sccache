@@ -575,6 +575,7 @@ where
 {
     arguments: I,
     arg_info: S,
+    seen_double_dashes: Option<bool>,
     phantom: PhantomData<T>,
 }
 
@@ -592,8 +593,14 @@ where
         ArgsIter {
             arguments,
             arg_info,
+            seen_double_dashes: None,
             phantom: PhantomData,
         }
+    }
+
+    pub fn with_double_dashes(mut self) -> Self {
+        self.seen_double_dashes = Some(false);
+        self
     }
 }
 
@@ -607,6 +614,14 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(arg) = self.arguments.next() {
+            if let Some(seen_double_dashes) = &mut self.seen_double_dashes {
+                if !*seen_double_dashes && arg == "--" {
+                    *seen_double_dashes = true;
+                }
+                if *seen_double_dashes {
+                    return Some(Ok(Argument::Raw(arg)));
+                }
+            }
             let s = arg.to_string_lossy();
             let arguments = &mut self.arguments;
             Some(match self.arg_info.search(&s[..]) {
@@ -957,8 +972,11 @@ mod tests {
             "-plop",
             "-quxbar", // -quxbar is not -qux with a value of bar
             "-qux=value",
+            "--",
+            "non_flag",
+            "-flag-after-double-dashes",
         ];
-        let iter = ArgsIter::new(args.iter().map(OsString::from), &ARGS[..]);
+        let iter = ArgsIter::new(args.iter().map(OsString::from), &ARGS[..]).with_double_dashes();
         let expected = vec![
             arg!(UnknownFlag("-nomatch")),
             arg!(WithValue("-foo", ArgData::Foo("value"), Separated)),
@@ -979,6 +997,9 @@ mod tests {
                 ArgData::Qux("value"),
                 CanBeSeparated('=')
             )),
+            arg!(Raw("--")),
+            arg!(Raw("non_flag")),
+            arg!(Raw("-flag-after-double-dashes")),
         ];
         match diff_with(iter, expected, |a, b| {
             assert_eq!(a.as_ref().unwrap(), b);

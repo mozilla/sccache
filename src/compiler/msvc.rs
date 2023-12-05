@@ -492,6 +492,7 @@ pub fn parse_arguments(
 ) -> CompilerArguments<ParsedArguments> {
     let mut output_arg = None;
     let mut input_arg = None;
+    let mut double_dash_input = false;
     let mut common_args = vec![];
     let mut unhashed_args = vec![];
     let mut preprocessor_args = vec![];
@@ -512,7 +513,10 @@ pub fn parse_arguments(
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
-    let it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..]));
+    let mut it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..]));
+    if is_clang {
+        it = it.with_double_dashes();
+    }
     for arg in it {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
@@ -553,6 +557,11 @@ pub fn parse_arguments(
             Some(Clang(s)) => clangs.push(s.clone()),
             None => {
                 match arg {
+                    Argument::Raw(ref val) if val == "--" => {
+                        if input_arg.is_none() {
+                            double_dash_input = true;
+                        }
+                    }
                     Argument::Raw(ref val) => {
                         if input_arg.is_some() {
                             // Can't cache compilations with multiple inputs.
@@ -797,6 +806,7 @@ pub fn parse_arguments(
 
     CompilerArguments::Ok(ParsedArguments {
         input: input.into(),
+        double_dash_input,
         language,
         compilation_flag,
         depfile,
@@ -852,6 +862,63 @@ fn normpath(path: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn preprocess_cmd<T>(
+    cmd: &mut T,
+    parsed_args: &ParsedArguments,
+    cwd: &Path,
+    env_vars: &[(OsString, OsString)],
+    may_dist: bool,
+    rewrite_includes_only: bool,
+    is_clang: bool,
+) where
+    T: RunCommand,
+{
+    // When performing distributed compilation, line number info is important for error
+    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
+    // fails due to exceptions transitively included in the stdlib).
+    // With -fprofile-generate line number information is important, so use -E.
+    // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
+    // emitted) and improve performance.
+    if may_dist || parsed_args.profile_generate {
+        cmd.arg("-E");
+    } else {
+        cmd.arg("-EP");
+    }
+
+    cmd.arg("-nologo")
+        .args(&parsed_args.preprocessor_args)
+        .args(&parsed_args.dependency_args)
+        .args(&parsed_args.common_args)
+        .env_clear()
+        .envs(env_vars.iter().map(|(k, v)| (k, v)))
+        .current_dir(cwd);
+
+    if is_clang {
+        if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
+            cmd.arg("-showIncludes");
+        }
+    } else {
+        // cl.exe can product the dep list itself, in a JSON format that some tools will be expecting.
+        if let Some(ref depfile) = parsed_args.depfile {
+            cmd.arg("/sourceDependencies");
+            cmd.arg(depfile);
+        }
+        // Windows SDK generates C4668 during preprocessing, but compiles fine.
+        // Read for more info: https://github.com/mozilla/sccache/issues/1725
+        cmd.arg("/wd4668");
+    }
+
+    if rewrite_includes_only && is_clang {
+        cmd.arg("-clang:-frewrite-includes");
+    }
+
+    if parsed_args.double_dash_input {
+        cmd.arg("--");
+    }
+    cmd.arg(&parsed_args.input);
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn preprocess<T>(
     creator: &T,
     executable: &Path,
@@ -867,46 +934,15 @@ where
     T: CommandCreatorSync,
 {
     let mut cmd = creator.clone().new_command_sync(executable);
-
-    // When performing distributed compilation, line number info is important for error
-    // reporting and to not cause spurious compilation failure (e.g. no exceptions build
-    // fails due to exceptions transitively included in the stdlib).
-    // With -fprofile-generate line number information is important, so use -E.
-    // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
-    // emitted) and improve performance.
-    if may_dist || parsed_args.profile_generate {
-        cmd.arg("-E");
-    } else {
-        cmd.arg("-EP");
-    }
-
-    cmd.arg(&parsed_args.input)
-        .arg("-nologo")
-        .args(&parsed_args.preprocessor_args)
-        .args(&parsed_args.dependency_args)
-        .args(&parsed_args.common_args)
-        // Windows SDK generates C4668 during preprocessing, but compiles fine.
-        // Read for more info: https://github.com/mozilla/sccache/issues/1725
-        .arg("/wd4668")
-        .env_clear()
-        .envs(env_vars.iter().map(|(k, v)| (k, v)))
-        .current_dir(cwd);
-
-    if is_clang {
-        if parsed_args.depfile.is_some() && !parsed_args.msvc_show_includes {
-            cmd.arg("-showIncludes");
-        }
-    } else {
-        // cl.exe can product the dep list itself, in a JSON format that some tools will be expecting.
-        if let Some(ref depfile) = parsed_args.depfile {
-            cmd.arg("/sourceDependencies");
-            cmd.arg(depfile);
-        }
-    }
-
-    if rewrite_includes_only && is_clang {
-        cmd.arg("-clang:-frewrite-includes");
-    }
+    preprocess_cmd(
+        &mut cmd,
+        parsed_args,
+        cwd,
+        env_vars,
+        may_dist,
+        rewrite_includes_only,
+        is_clang,
+    );
 
     if log_enabled!(Debug) {
         debug!("preprocess: {:?}", cmd);
@@ -1013,16 +1049,15 @@ fn generate_compile_commands(
     let mut fo = OsString::from("-Fo");
     fo.push(out_file);
 
-    let mut arguments: Vec<OsString> = vec![
-        parsed_args.compilation_flag.clone(),
-        parsed_args.input.clone().into(),
-        fo,
-    ];
-    arguments.extend(parsed_args.preprocessor_args.clone());
-    arguments.extend(parsed_args.dependency_args.clone());
-    arguments.extend(parsed_args.unhashed_args.clone());
-    arguments.extend(parsed_args.common_args.clone());
-
+    let mut arguments: Vec<OsString> = vec![parsed_args.compilation_flag.clone(), fo];
+    arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.dependency_args);
+    arguments.extend_from_slice(&parsed_args.unhashed_args);
+    arguments.extend_from_slice(&parsed_args.common_args);
+    if parsed_args.double_dash_input {
+        arguments.push("--".into());
+    }
+    arguments.push(parsed_args.input.clone().into());
     let command = CompileCommand {
         executable: executable.to_owned(),
         arguments,
@@ -1039,16 +1074,18 @@ fn generate_compile_commands(
         let mut fo = String::from("-Fo");
         fo.push_str(&path_transformer.as_dist(out_file)?);
 
-        let mut arguments: Vec<String> = vec![
-            parsed_args.compilation_flag.clone().into_string().ok()?,
-            path_transformer.as_dist(&parsed_args.input)?,
-            fo,
-        ];
+        let mut arguments: Vec<String> =
+            vec![parsed_args.compilation_flag.clone().into_string().ok()?, fo];
         // It's important to avoid preprocessor_args because of things like /FI which
         // forcibly includes another file. This does mean we're potentially vulnerable
         // to misidentification of flags like -DYNAMICBASE (though in that specific
         // case we're safe as it only applies to link time, which sccache avoids).
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
+
+        if parsed_args.double_dash_input {
+            arguments.push("--".into());
+        }
+        arguments.push(path_transformer.as_dist(&parsed_args.input)?);
 
         Some(dist::CompileCommand {
             executable: path_transformer.as_dist(executable)?,
@@ -1131,7 +1168,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
         loop {
             // Visit all arguments found in the most recently read response file.
             // Since response files are not recursive, we do not need to worry
-            // about these containing addditional @ directives.
+            // about these containing additional @ directives.
             if let Some(response_file_arg) = self.stack.pop() {
                 return Some(response_file_arg);
             }
@@ -1151,7 +1188,7 @@ impl<'a> Iterator for ExpandIncludeFile<'a> {
                 Ok(content) => content,
                 Err(err) => {
                     debug!("failed to read @-file `{}`: {}", file_path.display(), err);
-                    // If we failed to read the file content, return the orginal arg (including the `@` directive).
+                    // If we failed to read the file content, return the original arg (including the `@` directive).
                     return Some(arg);
                 }
             };
@@ -1319,6 +1356,10 @@ mod test {
 
     fn parse_arguments(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
         super::parse_arguments(&arguments, &std::env::current_dir().unwrap(), false)
+    }
+
+    fn parse_arguments_clang(arguments: Vec<OsString>) -> CompilerArguments<ParsedArguments> {
+        super::parse_arguments(&arguments, &std::env::current_dir().unwrap(), true)
     }
 
     #[test]
@@ -1508,6 +1549,65 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn test_parse_arguments_double_dash() {
+        let args = ovec!["-c", "-Fofoo.obj", "--", "foo.c"];
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments(args.clone()) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        // MSVC doesn't support double dashes. If we got one, we'll pass them
+        // through to MSVC for it to error out.
+        assert!(!double_dash_input);
+        assert_eq!(ovec!["--"], common_args);
+
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments_clang(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert!(double_dash_input);
+        assert!(common_args.is_empty());
+
+        let args = ovec!["-c", "-Fofoo.obj", "foo.c", "--"];
+        let ParsedArguments {
+            input,
+            double_dash_input,
+            common_args,
+            ..
+        } = match parse_arguments_clang(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        // Double dash after input file is ignored.
+        assert!(!double_dash_input);
+        assert!(common_args.is_empty());
+
+        let args = ovec!["-c", "-Fofoo.obj", "foo.c", "--", "bar.c"];
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"bar.c\"]".to_string())),
+            parse_arguments_clang(args)
+        );
+
+        let args = ovec!["-c", "-Fofoo.obj", "foo.c", "--", "-fPIC"];
+        assert_eq!(
+            CompilerArguments::CannotCache("multiple input files", Some("[\"-fPIC\"]".to_string())),
+            parse_arguments_clang(args)
+        );
     }
 
     #[test]
@@ -2242,11 +2342,28 @@ mod test {
     }
 
     #[test]
+    fn test_preprocess_double_dash_input() {
+        let args = ovec!["-c", "-Fofoo.o.bj", "--", "foo.c"];
+        let parsed_args = match parse_arguments_clang(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let mut cmd = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(&mut cmd, &parsed_args, Path::new(""), &[], true, true, true);
+        let expected_args = ovec!["-E", "-nologo", "-clang:-frewrite-includes", "--", "foo.c"];
+        assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
     fn test_compile_simple() {
         let creator = new_creator();
         let f = TestFixture::new();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
+            double_dash_input: false,
             language: Language::C,
             compilation_flag: "-c".into(),
             depfile: None,
@@ -2294,12 +2411,35 @@ mod test {
     }
 
     #[test]
+    fn test_compile_double_dash_input() {
+        let args = ovec!["-c", "-Fofoo.obj", "--", "foo.c"];
+        let parsed_args = match parse_arguments_clang(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::default();
+        let (command, _, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+        )
+        .unwrap();
+        let expected_args = ovec!["-c", "-Fofoo.obj", "--", "foo.c"];
+        assert_eq!(command.arguments, expected_args);
+    }
+
+    #[test]
     fn test_compile_not_cacheable_pdb() {
         let creator = new_creator();
         let f = TestFixture::new();
         let pdb = f.touch("foo.pdb").unwrap();
         let parsed_args = ParsedArguments {
             input: "foo.c".into(),
+            double_dash_input: false,
             language: Language::C,
             compilation_flag: "/c".into(),
             depfile: None,
