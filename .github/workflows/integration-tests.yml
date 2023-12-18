@@ -50,7 +50,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -110,7 +110,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -166,7 +166,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -215,7 +215,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -270,7 +270,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -322,7 +322,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -445,7 +445,7 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh "${LLVM_VERSION}"
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -489,7 +489,7 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -534,7 +534,7 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -590,7 +590,7 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
@@ -642,7 +642,7 @@ jobs:
       RUSTDOCFLAGS: "-Cpanic=abort"
 
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: integration-tests
           path: /home/runner/.cargo/bin/
