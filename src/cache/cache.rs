@@ -442,7 +442,15 @@ impl PreprocessorCacheModeConfig {
 }
 
 /// Implement storage for operator.
-#[cfg(any(feature = "s3", feature = "azure", feature = "gcs", feature = "redis"))]
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+))]
 #[async_trait]
 impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
