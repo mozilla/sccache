@@ -21,7 +21,7 @@ pub use self::server::{
 };
 
 mod common {
-    use http::header;
+    use reqwest::header;
     use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
     use std::collections::HashMap;
@@ -288,7 +288,7 @@ mod server {
     ) -> Result<T> {
         // Work around tiny_http issue #151 by disabling HTTP pipeline with
         // `Connection: close`.
-        let mut res = req.header(http::header::CONNECTION, "close").send()?;
+        let mut res = req.header(reqwest::header::CONNECTION, "close").send()?;
         let status = res.status();
         let mut body = vec![];
         res.copy_to(&mut body)

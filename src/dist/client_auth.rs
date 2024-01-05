@@ -1,13 +1,14 @@
+use bytes::Bytes;
 use futures::channel::oneshot;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::StatusCode;
-use hyper::server::conn::AddrIncoming;
-use hyper::{Body, Response, Server};
+use http_body_util::Full;
+use hyper::Response;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -34,7 +35,7 @@ fn query_pairs(url: &str) -> Result<HashMap<String, String>> {
         .collect())
 }
 
-fn html_response(body: &'static str) -> Response<Body> {
+fn html_response(body: &'static str) -> Response<Full<Bytes>> {
     Response::builder()
         .header(CONTENT_TYPE, mime::TEXT_HTML.to_string())
         .header(CONTENT_LENGTH, body.len())
@@ -42,7 +43,7 @@ fn html_response(body: &'static str) -> Response<Body> {
         .unwrap()
 }
 
-fn json_response<T: Serialize>(data: &T) -> Result<Response<Body>> {
+fn json_response<T: Serialize>(data: &T) -> Result<Response<Full<Bytes>>> {
     let body = serde_json::to_vec(data).context("Failed to serialize to JSON")?;
     let len = body.len();
     Ok(Response::builder()
@@ -87,8 +88,10 @@ mod code_grant_pkce {
     use crate::util::new_reqwest_blocking_client;
     use crate::util::BASE64_URL_SAFE_ENGINE;
     use base64::Engine;
+    use bytes::Bytes;
     use futures::channel::oneshot;
-    use hyper::{Body, Method, Request, Response, StatusCode};
+    use http_body_util::Full;
+    use hyper::{Method, Request, Response, StatusCode};
     use rand::{rngs::OsRng, RngCore};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -199,7 +202,7 @@ mod code_grant_pkce {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
+    pub fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -276,8 +279,10 @@ mod implicit {
         html_response, json_response, query_pairs, MIN_TOKEN_VALIDITY, MIN_TOKEN_VALIDITY_WARNING,
         REDIRECT_WITH_AUTH_JSON,
     };
+    use bytes::Bytes;
     use futures::channel::oneshot;
-    use hyper::{Body, Method, Request, Response, StatusCode};
+    use http_body_util::Full;
+    use hyper::{Method, Request, Response, StatusCode};
     use std::collections::HashMap;
     use std::sync::mpsc;
     use std::sync::Mutex;
@@ -374,7 +379,7 @@ mod implicit {
     </html>
     "##;
 
-    pub fn serve(req: Request<Body>) -> Result<Response<Body>> {
+    pub fn serve(req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>> {
         let mut state = STATE.lock().unwrap();
         let state = state.as_mut().unwrap();
         debug!("Handling {} {}", req.method(), req.uri());
@@ -417,27 +422,57 @@ mod implicit {
     }
 }
 
-// Typing out a hyper service is a major pain, so let's focus on our simple
-// `fn(Request<Body>) -> Response<Body>` handler functions; to reduce repetition
-// we create a relevant service using hyper's own helper factory functions.
-macro_rules! make_service {
-    ($serve_fn: expr) => {{
-        use core::convert::Infallible;
-        use hyper::server::conn::AddrStream;
-        use hyper::service::{make_service_fn, service_fn};
-        use hyper::{Body, Request};
+use tokio::net::TcpListener;
 
-        make_service_fn(|_socket: &AddrStream| async {
-            Ok::<_, Infallible>(service_fn(|req: Request<Body>| async move {
-                let uri = req.uri().clone();
-                $serve_fn(req).or_else(|e| error_code_response(uri, e))
-            }))
-        })
-    }};
+struct HyperBuilderWrap {
+    listener: TcpListener,
+}
+
+impl HyperBuilderWrap {
+    pub async fn try_bind(addr: SocketAddr) -> io::Result<HyperBuilderWrap> {
+        let listener = TcpListener::bind(addr).await?;
+
+        Ok(HyperBuilderWrap { listener })
+    }
+
+    // Typing out a hyper service is a major pain, so let's focus on our simple
+    // `fn(Request<Body>) -> Response<Body>` handler functions; to reduce repetition
+    // we create a relevant service using hyper's own helper factory functions.
+    async fn serve<F>(&mut self, sfn: F) -> io::Result<()>
+    where
+        F: Fn(hyper::Request<hyper::body::Incoming>) -> anyhow::Result<Response<Full<Bytes>>>
+            + Send
+            + 'static
+            + Copy
+            + Sync,
+    {
+        use hyper::server::conn::http1;
+        use hyper_util::rt::tokio::TokioIo;
+
+        loop {
+            let (tcp, _) = self.listener.accept().await?;
+            let io = TokioIo::new(tcp);
+            tokio::task::spawn(async move {
+                let conn = http1::Builder::new().serve_connection(
+                    io,
+                    hyper::service::service_fn(|req| async move {
+                        let uri = req.uri().clone();
+                        sfn(req).or_else(|e| error_code_response(uri, e))
+                    }),
+                );
+                tokio::pin!(conn);
+                conn.await.unwrap();
+            });
+        }
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.listener.local_addr().unwrap()
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn error_code_response<E>(uri: hyper::Uri, e: E) -> hyper::Result<Response<Body>>
+fn error_code_response<E>(uri: hyper::Uri, e: E) -> hyper::Result<Response<Full<Bytes>>>
 where
     E: std::fmt::Debug,
 {
@@ -453,11 +488,11 @@ where
         .header(CONTENT_LENGTH, len)
         .body(body.into())
         .unwrap();
-    Ok::<Response<Body>, hyper::Error>(res)
+    Ok::<Response<Full<Bytes>>, hyper::Error>(res)
 }
 
 /// Try to bind a TCP stream to any of the available port out of [`VALID_PORTS`].
-fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
+async fn try_bind() -> Result<HyperBuilderWrap> {
     // Try all the valid ports
     for &port in VALID_PORTS {
         let mut addrs = ("localhost", port)
@@ -479,7 +514,7 @@ fn try_bind() -> Result<hyper::server::Builder<AddrIncoming>> {
             }
         }
 
-        match Server::try_bind(&addr) {
+        match HyperBuilderWrap::try_bind(addr).await {
             Ok(s) => return Ok(s),
             Err(ref err)
                 if err
@@ -503,14 +538,13 @@ pub fn get_token_oauth2_code_grant_pkce(
     token_url: &str,
 ) -> Result<String> {
     let runtime = Runtime::new()?;
-    let builder = {
-        let _guard = runtime.enter();
-        try_bind()?
-    };
-    let server = builder.serve(make_service!(code_grant_pkce::serve));
-
+    let mut server = runtime.block_on(async move { try_bind().await })?;
     let port = server.local_addr().port();
 
+    let _guard = runtime.enter();
+    let handle = runtime.spawn(async move {
+        server.serve(code_grant_pkce::serve).await.unwrap();
+    });
     let redirect_uri = format!("http://localhost:{}/redirect", port);
     let auth_state_value = Uuid::new_v4().as_simple().to_string();
     let (verifier, challenge) = code_grant_pkce::generate_verifier_and_challenge()?;
@@ -537,14 +571,15 @@ pub fn get_token_oauth2_code_grant_pkce(
     };
     *code_grant_pkce::STATE.lock().unwrap() = Some(state);
 
-    runtime.block_on(server.with_graceful_shutdown(async move {
+    runtime.block_on(async move {
         if let Err(e) = shutdown_rx.await {
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
             )
         }
-    }))?;
+    });
+    handle.abort();
 
     info!("Server finished, using code to request token");
     let code = code_rx
@@ -557,13 +592,12 @@ pub fn get_token_oauth2_code_grant_pkce(
 // https://auth0.com/docs/api-auth/tutorials/implicit-grant
 pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<String> {
     let runtime = Runtime::new()?;
-    let builder = {
-        let _guard = runtime.enter();
-        try_bind()?
-    };
-    let server = builder.serve(make_service!(implicit::serve));
-
+    let mut server = runtime.block_on(async move { try_bind().await })?;
     let port = server.local_addr().port();
+    let _guard = runtime.enter();
+    let handle = runtime.spawn(async move {
+        server.serve(implicit::serve).await.unwrap();
+    });
 
     let redirect_uri = format!("http://localhost:{}/redirect", port);
     let auth_state_value = Uuid::new_v4().as_simple().to_string();
@@ -584,14 +618,15 @@ pub fn get_token_oauth2_implicit(client_id: &str, mut auth_url: Url) -> Result<S
     };
     *implicit::STATE.lock().unwrap() = Some(state);
 
-    runtime.block_on(server.with_graceful_shutdown(async move {
+    runtime.block_on(async move {
         if let Err(e) = shutdown_rx.await {
             warn!(
                 "Something went wrong while waiting for auth server shutdown: {}",
                 e
             )
         }
-    }))?;
+    });
+    handle.abort();
 
     info!("Server finished, returning token");
     Ok(token_rx
