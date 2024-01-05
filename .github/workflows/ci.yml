@@ -110,6 +110,7 @@ jobs:
   build:
     name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    container: ${{ fromJson(matrix.container || '{"image":null}') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -123,6 +124,9 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-musl
+          - os: ubuntu-20.04
+            target: arm32v7-unknown-linux-musleabi
+            container: '{"image": "messense/rust-musl-cross:i686-musl"}'
           - os: macOS-11
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
@@ -145,6 +149,7 @@ jobs:
         with:
           toolchain: ${{ matrix.target == 'aarch64-apple-darwin' && 'beta' || 'stable' }}
           target: ${{ matrix.target }}
+        if: ${{ !matrix.container }}
 
       - name: Install musl-tools (x86_64)
         run: sudo apt-get install musl-tools
