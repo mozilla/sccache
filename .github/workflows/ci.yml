@@ -126,6 +126,9 @@ jobs:
             target: aarch64-unknown-linux-musl
           - os: ubuntu-20.04
             target: armv7-unknown-linux-musleabi
+            container: '{"image": "messense/rust-musl-cross:armv7-musleabi"}'
+          - os: ubuntu-20.04
+            target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
           - os: macOS-11
             target: x86_64-apple-darwin
