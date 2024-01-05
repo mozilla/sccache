@@ -42,7 +42,7 @@ jobs:
         feature: [azure, gcs, gha, memcached, redis, s3, webdav]
     steps:
       - name: Check feature ${{ matrix.feature }}
-        run: cargo check --no-default-features --feature ${{ matrix.feature }}
+        run: cargo check --no-default-features --features ${{ matrix.feature }}
 
   toml_format:
     runs-on: ubuntu-latest
