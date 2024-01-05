@@ -46,8 +46,13 @@ futures = "0.3"
 gzp = { version = "0.11.3", default-features = false, features = [
   "deflate_rust",
 ] }
-http = "0.2"
-hyper = { version = "0.14.27", optional = true, features = ["server"] }
+http = "1.0"
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1.1", optional = true, features = ["server", "http1"] }
+hyper-util = { version = "0.1.2", optional = true, features = [
+  "tokio",
+  "server",
+] }
 is-terminal = "0.4.10"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
@@ -167,7 +172,15 @@ vendored-openssl = ["openssl?/vendored", "opendal?/native-tls-vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
-dist-client = ["flate2", "hyper", "reqwest", "url", "sha2"]
+dist-client = [
+  "flate2",
+  "hyper",
+  "http-body-util",
+  "hyper-util",
+  "reqwest",
+  "url",
+  "sha2",
+]
 # Enables the sccache-dist binary
 dist-server = [
   "jwt",
