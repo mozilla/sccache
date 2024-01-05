@@ -41,6 +41,9 @@ jobs:
       matrix:
         feature: [azure, gcs, gha, memcached, redis, s3, webdav]
     steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
 
