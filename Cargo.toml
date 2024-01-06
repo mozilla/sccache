@@ -74,7 +74,7 @@ retry = "2"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = { version = "0.10.6", optional = true }
+sha2 = { version = "0.10.8", optional = true }
 strip-ansi-escapes = "0.1"
 tar = "0.4.40"
 tempfile = "3"
