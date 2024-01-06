@@ -29,6 +29,8 @@ confinement: classic
 apps:
     sccache:
         command: bin/sccache
+    sccache-dist:
+        command: bin/sccache-dist
 
 parts:
     sccache:
@@ -44,8 +46,7 @@ parts:
         - make
         - pkg-config
         rust-features:
-        - gcs
-        - redis
-        - s3
+        - all
+        - dist-server
         build-attributes:
         - enable-patchelf
