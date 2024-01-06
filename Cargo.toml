@@ -33,7 +33,7 @@ blake3 = "1"
 byteorder = "1.5"
 bytes = "1"
 chrono = "0.4"
-clap = { version = "4.1.11", features = ["derive", "env", "wrap_help"] }
+clap = { version = "4.3.24", features = ["derive", "env", "wrap_help"] }
 directories = "5.0.1"
 encoding = "0.2"
 env_logger = "0.10"
