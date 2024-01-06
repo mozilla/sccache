@@ -48,7 +48,7 @@ gzp = { version = "0.11.3", default-features = false, features = [
 ] }
 http = "0.2"
 hyper = { version = "0.14.27", optional = true, features = ["server"] }
-is-terminal = "0.4.7"
+is-terminal = "0.4.10"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "8", optional = true }
 libc = "0.2.149"
