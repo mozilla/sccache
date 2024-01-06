@@ -92,7 +92,7 @@ tokio-serde = "0.8"
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 toml = "0.8"
 tower = "0.4"
-trust-dns-resolver = { version = "0.22.0", features = [
+trust-dns-resolver = { version = "0.23.2", features = [
   "dnssec-ring",
   "dns-over-rustls",
   "dns-over-https-rustls",
