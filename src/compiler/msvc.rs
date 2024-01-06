@@ -1213,13 +1213,16 @@ where
     let mut buf = Vec::new();
     reader.read_to_end(&mut buf)?;
 
-    let (result, _) = encoding::decode(
-        &buf,
-        encoding::DecoderTrap::Strict,
-        encoding::all::ISO_8859_1,
-    );
+    let (result, _, has_error) = encoding_rs::WINDOWS_1252.decode(&buf);
 
-    result.map_err(|err| io::Error::new(io::ErrorKind::Other, err.into_owned()))
+    if has_error {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to decode text",
+        ))
+    } else {
+        Ok(result.to_string())
+    }
 }
 
 /// An iterator over the arguments in a Windows command line.
@@ -2289,9 +2292,12 @@ mod test {
             .unwrap();
         let cmd_file_path = td.path().join("foo");
         {
-            use encoding::{all::UTF_16LE, EncoderTrap::Strict, Encoding};
+            use encoding_rs::UTF_16LE;
             let mut file = File::create(&cmd_file_path).unwrap();
-            let content = UTF_16LE.encode("-c foo€.c -o foo.o", Strict).unwrap();
+            let (content, _, has_error) = UTF_16LE.encode("-c foo€.c -o foo.o");
+            if has_error {
+                panic!("Failed to encode as UTF-16LE");
+            }
             file.write_all(&[0xFF, 0xFE]).unwrap(); // little endian BOM
             file.write_all(&content).unwrap();
         }
