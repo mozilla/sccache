@@ -2334,6 +2334,54 @@ mod test {
     }
 
     #[test]
+    fn test_responsefile_encoding_win1252() {
+        let td = tempfile::Builder::new()
+            .prefix("sccache")
+            .tempdir()
+            .unwrap();
+        let cmd_file_path = td.path().join("foo");
+        {
+            let mut file = File::create(&cmd_file_path).unwrap();
+            // pre-encoded with Windows 1252
+            let content: [u8; 0x12] = [
+                // `-c foo€.c -o foo.o`
+                // the euro symbol is 0x80 in Windows 1252 (and undefined in ISO-8859-1)
+                0x2D, 0x63, 0x20, 0x66, 0x6F, 0x6F, 0x80, 0x2E, 0x63, 0x20, 0x2D, 0x6F, 0x20, 0x66,
+                0x6F, 0x6F, 0x2E, 0x6F,
+            ];
+            file.write_all(&content).unwrap();
+        }
+        let arg = format!("@{}", cmd_file_path.display());
+        let ParsedArguments {
+            input,
+            language,
+            outputs,
+            preprocessor_args,
+            msvc_show_includes,
+            common_args,
+            ..
+        } = match parse_arguments(ovec![arg]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Failed to parse @-file, err: {:?}", o),
+        };
+        assert_eq!(Some("foo€.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert_map_contains!(
+            outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: "foo.o".into(),
+                    optional: false
+                }
+            )
+        );
+        assert!(preprocessor_args.is_empty());
+        assert!(common_args.is_empty());
+        assert!(!msvc_show_includes);
+    }
+
+    #[test]
     fn test_parse_arguments_missing_pdb() {
         assert_eq!(
             CompilerArguments::CannotCache("shared pdb", None),
