@@ -108,7 +108,7 @@ zstd = "0.13"
 # dist-server only
 memmap2 = "0.9.3"
 nix = { version = "0.26.4", optional = true }
-object = "0.30"
+object = "0.32"
 rouille = { version = "3.6", optional = true, default-features = false, features = [
   "ssl",
 ] }
