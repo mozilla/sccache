@@ -2292,13 +2292,15 @@ mod test {
             .unwrap();
         let cmd_file_path = td.path().join("foo");
         {
-            use encoding_rs::UTF_16LE;
             let mut file = File::create(&cmd_file_path).unwrap();
-            let (content, _, has_error) = UTF_16LE.encode("-c foo€.c -o foo.o");
-            if has_error {
-                panic!("Failed to encode as UTF-16LE");
-            }
-            file.write_all(&[0xFF, 0xFE]).unwrap(); // little endian BOM
+            // pre-encoded with utf16le
+            let content: [u8; 0x26] = [
+                0xFF, 0xFE, // little endian BOM
+                // `-c foo€.c -o foo.o`
+                0x2D, 0x00, 0x63, 0x00, 0x20, 0x00, 0x66, 0x00, 0x6F, 0x00, 0x6F, 0x00, 0xAC, 0x20,
+                0x2E, 0x00, 0x63, 0x00, 0x20, 0x00, 0x2D, 0x00, 0x6F, 0x00, 0x20, 0x00, 0x66, 0x00,
+                0x6F, 0x00, 0x6F, 0x00, 0x2E, 0x00, 0x6F, 0x00,
+            ];
             file.write_all(&content).unwrap();
         }
         let arg = format!("@{}", cmd_file_path.display());
