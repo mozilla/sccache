@@ -118,7 +118,7 @@ version-compare = { version = "0.1.1", optional = true }
 [dev-dependencies]
 assert_cmd = "2.0.12"
 cc = "1.0"
-chrono = "0.4.26"
+chrono = "0.4.31"
 filetime = "0.2"
 itertools = "0.10"
 predicates = "=3.0.3"
