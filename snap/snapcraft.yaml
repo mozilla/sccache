@@ -22,6 +22,7 @@ description: |
     using GitHub Actions cache.
 website: https://github.com/mozilla/sccache
 contact: https://github.com/mozilla/sccache/issues
+license: "Apache-2.0"
 grade: stable
 confinement: classic
 
@@ -33,12 +34,12 @@ parts:
     sccache:
         plugin: rust
         rust-channel: 1.67.1
+        rust-use-global-lto: true
         source: .
         override-pull: |
           craftctl default
-          craftctl set version=$( git -C ${CRAFT_PART_SRC} describe --tags )
+          craftctl set version="$( git -C "${CRAFT_PART_SRC}" describe --tags )"
         build-packages:
-        - cargo
         - libssl-dev
         - make
         - pkg-config
