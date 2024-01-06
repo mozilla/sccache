@@ -132,7 +132,7 @@ daemonize = "0.5"
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]
 optional = true
-version = "0.1.10"
+version = "0.1.15"
 
 [target.'cfg(windows)'.dependencies.winapi]
 features = ["fileapi", "handleapi", "stringapiset", "winnls"]
