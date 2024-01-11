@@ -223,7 +223,6 @@ pub struct MemcachedCacheConfig {
     pub expiration: u32,
 }
 
-
 /// redis has no default TTL - all keys live forever
 ///
 /// We keep the TTL as 0 here as redis does
@@ -580,9 +579,9 @@ fn config_from_env() -> Result<EnvConfig> {
             .map_err(|err| anyhow!("SCCACHE_REDIS_TTL value is invalid: {err:?}"))?,
         Err(_) => DEFAULT_REDIS_CACHE_TTL,
     };
-    let redis = env::var("SCCACHE_REDIS").ok().map(|url| {
-        RedisCacheConfig { url, ttl }
-    });
+    let redis = env::var("SCCACHE_REDIS")
+        .ok()
+        .map(|url| RedisCacheConfig { url, ttl });
 
     // ======= memcached =======
     let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
