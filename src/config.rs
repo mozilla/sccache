@@ -223,7 +223,7 @@ pub struct MemcachedCacheConfig {
     pub expiration: u32,
 }
 
-/// redis has no default TTL - all keys live forever
+/// redis has no default TTL - all caches live forever
 ///
 /// We keep the TTL as 0 here as redis does
 ///
