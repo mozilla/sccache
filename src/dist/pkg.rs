@@ -53,7 +53,7 @@ mod toolchain_imp {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod toolchain_imp {
-    use super::tarify_path;
+    use super::SimplifyPath;
     use fs_err as fs;
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
@@ -68,6 +68,10 @@ mod toolchain_imp {
         // Put dirs and file in a deterministic order (map from tar_path -> real_path)
         dir_set: BTreeMap<PathBuf, PathBuf>,
         file_set: BTreeMap<PathBuf, PathBuf>,
+        // Symlinks to add to the tar
+        // These are _not_ tar safe, and must be made so before being added to the tar (see
+        // `tar_safe_path`).
+        symlinks: BTreeMap<PathBuf, PathBuf>,
     }
 
     impl ToolchainPackageBuilder {
@@ -75,6 +79,7 @@ mod toolchain_imp {
             ToolchainPackageBuilder {
                 dir_set: BTreeMap::new(),
                 file_set: BTreeMap::new(),
+                symlinks: BTreeMap::new(),
             }
         }
 
@@ -86,7 +91,11 @@ mod toolchain_imp {
             let mut remaining = vec![executable];
             while let Some(obj_path) = remaining.pop() {
                 assert!(obj_path.is_absolute());
-                let tar_path = tarify_path(&obj_path)?;
+                // If any parent directories are a symlink, resolve it first and record the link.
+                // This is important because ld-linux may not be configured to look in the resolved
+                // or non-resolved directory (i.e., both directories must work at runtime).
+                //
+                let tar_path = self.tarify_path(&obj_path)?;
                 // If file already in the set, assume we've analysed all deps
                 if self.file_set.contains_key(&tar_path) {
                     continue;
@@ -116,7 +125,7 @@ mod toolchain_imp {
             {
                 return Ok(());
             }
-            let tar_path = tarify_path(&dir_path)?;
+            let tar_path = self.tarify_path(&dir_path)?;
             self.dir_set.insert(tar_path, dir_path);
             Ok(())
         }
@@ -129,7 +138,7 @@ mod toolchain_imp {
                     file_path.to_string_lossy()
                 ))
             }
-            let tar_path = tarify_path(&file_path)?;
+            let tar_path = self.tarify_path(&file_path)?;
             self.file_set.insert(tar_path, file_path);
             Ok(())
         }
@@ -165,21 +174,51 @@ mod toolchain_imp {
                 par::compress::{Compression, ParCompress, ParCompressBuilder},
             };
 
-            let ToolchainPackageBuilder { dir_set, file_set } = self;
+            let ToolchainPackageBuilder {
+                dir_set,
+                file_set,
+                symlinks,
+            } = self;
             let par: ParCompress<Gzip> = ParCompressBuilder::new()
                 .compression_level(Compression::default())
                 .from_writer(writer);
             let mut builder = tar::Builder::new(par);
 
-            for (tar_path, dir_path) in dir_set.into_iter() {
+            for (tar_path, dir_path) in dir_set {
                 builder.append_dir(tar_path, dir_path)?
             }
-            for (tar_path, file_path) in file_set.into_iter() {
+            for (tar_path, file_path) in file_set {
                 let file = &mut fs::File::open(file_path)?;
                 builder.append_file(tar_path, file.file_mut())?
             }
+            for (from_path, to_path) in symlinks {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                // Leave `to_path` as absolute, assuming the tar will be used in a chroot-like
+                // environment.
+                builder.append_link(&mut header, tar_safe_path(from_path), to_path)?
+            }
             builder.finish().map_err(Into::into)
         }
+
+        /// Simplify the path and strip the leading slash.
+        ///
+        /// Symlinks in the path are recorded for inclusion in the tarball.
+        fn tarify_path(&mut self, path: &Path) -> Result<PathBuf> {
+            SimplifyPath {
+                resolved_symlinks: Some(&mut self.symlinks),
+            }
+            .simplify(path)
+            .map(tar_safe_path)
+        }
+    }
+
+    /// Strip a leading slash, if any.
+    fn tar_safe_path(path: PathBuf) -> PathBuf {
+        path.strip_prefix(Component::RootDir)
+            .map(ToOwned::to_owned)
+            .unwrap_or(path)
     }
 
     // The dynamic linker is the only thing that truly knows how dynamic libraries will be
@@ -400,15 +439,6 @@ pub fn make_tar_header(src: &Path, dest: &str) -> io::Result<tar::Header> {
     Ok(file_header)
 }
 
-/// Simplify the path and strip the leading slash
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn tarify_path(path: &Path) -> Result<PathBuf> {
-    let final_path = simplify_path(path)?;
-    let mut components = final_path.components();
-    assert_eq!(components.next(), Some(Component::RootDir));
-    Ok(components.as_path().to_owned())
-}
-
 /// Simplify a path to one without any relative components, erroring if it looks
 /// like there could be any symlink complexity that means a simplified path is not
 /// equivalent to the original (see the documentation of `fs::canonicalize` for an
@@ -419,25 +449,47 @@ fn tarify_path(path: &Path) -> Result<PathBuf> {
 /// resolving symlinks (be they for the actual file or directory components) can
 /// make the accessed path 'disappear' in favour of the canonical path.
 pub fn simplify_path(path: &Path) -> Result<PathBuf> {
-    let mut final_path = PathBuf::new();
-    for component in path.components() {
-        match component {
-            c @ Component::RootDir | c @ Component::Prefix(_) | c @ Component::Normal(_) => {
-                final_path.push(c)
-            }
-            Component::ParentDir => {
-                // If the path is doing funny symlink traversals, just give up
-                let is_symlink = fs::symlink_metadata(&final_path)
-                    .context("Missing directory while simplifying path")?
-                    .file_type()
-                    .is_symlink();
-                if is_symlink {
-                    bail!("Cannot handle symlinks in parent paths")
-                }
-                final_path.pop();
-            }
-            Component::CurDir => continue,
-        }
+    SimplifyPath {
+        resolved_symlinks: None,
     }
-    Ok(final_path)
+    .simplify(path)
+}
+
+struct SimplifyPath<'a> {
+    pub resolved_symlinks: Option<&'a mut std::collections::BTreeMap<PathBuf, PathBuf>>,
+}
+
+impl SimplifyPath<'_> {
+    pub fn simplify(&mut self, path: &Path) -> Result<PathBuf> {
+        let mut final_path = PathBuf::new();
+        for component in path.components() {
+            match component {
+                c @ Component::RootDir | c @ Component::Prefix(_) | c @ Component::Normal(_) => {
+                    final_path.push(c);
+                    if self.resolved_symlinks.is_some() && final_path.is_symlink() {
+                        let parent = final_path.parent().expect("symlinks have parents");
+                        let link_target = final_path.read_link()?;
+                        let new_final_path = self.simplify(&parent.join(&link_target))?;
+                        let old_final_path =
+                            std::mem::replace(&mut final_path, new_final_path.clone());
+                        self.resolved_symlinks
+                            .as_mut()
+                            .unwrap()
+                            .insert(old_final_path, new_final_path);
+                    }
+                }
+                Component::ParentDir => {
+                    // If the path is doing funny symlink traversals, just give up.
+                    //
+                    // This case should only occur if `resolved_symlinks` is `None`.
+                    if final_path.is_symlink() {
+                        bail!("Cannot handle symlinks in parent paths")
+                    }
+                    final_path.pop();
+                }
+                Component::CurDir => continue,
+            }
+        }
+        Ok(final_path)
+    }
 }
