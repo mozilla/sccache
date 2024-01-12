@@ -223,10 +223,20 @@ pub struct MemcachedCacheConfig {
     pub expiration: u32,
 }
 
+/// redis has no default TTL - all caches live forever
+///
+/// We keep the TTL as 0 here as redis does
+///
+/// Please change this value freely if we have a better choice.
+const DEFAULT_REDIS_CACHE_TTL: u64 = 0;
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     pub url: String,
+    /// the ttl time in seconds.
+    ///
+    /// Default to infinity (0)
+    pub ttl: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,9 +573,15 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= redis =======
+    let ttl = match env::var("SCCACHE_REDIS_TTL") {
+        Ok(v) => v
+            .parse()
+            .map_err(|err| anyhow!("SCCACHE_REDIS_TTL value is invalid: {err:?}"))?,
+        Err(_) => DEFAULT_REDIS_CACHE_TTL,
+    };
     let redis = env::var("SCCACHE_REDIS")
         .ok()
-        .map(|url| RedisCacheConfig { url });
+        .map(|url| RedisCacheConfig { url, ttl });
 
     // ======= memcached =======
     let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
@@ -1075,6 +1091,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
+                ttl: 24 * 3600,
             }),
             ..Default::default()
         },
@@ -1093,6 +1110,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
+                ttl: 24 * 3600,
             }),
             ..Default::default()
         },
@@ -1104,7 +1122,8 @@ fn config_overrides() {
         Config::from_env_and_file_configs(env_conf, file_conf),
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
-                url: "myotherredisurl".to_owned()
+                url: "myotherredisurl".to_owned(),
+                ttl: 24 * 3600,
             }),),
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -1269,6 +1288,7 @@ expiration = 86400
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/1"
+ttl = 86400
 
 [cache.s3]
 bucket = "name"
@@ -1312,6 +1332,7 @@ token = "webdavtoken"
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                    ttl: 24 * 3600,
                 }),
                 memcached: Some(MemcachedCacheConfig {
                     url: "...".to_owned(),
