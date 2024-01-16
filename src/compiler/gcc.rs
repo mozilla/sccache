@@ -381,6 +381,7 @@ where
                     "cu" => Some(Language::Cuda),
                     "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),
+                    "hip" => Some(Language::Hip),
                     _ => cannot_cache!("-x"),
                 };
             }
@@ -643,7 +644,8 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveC => Some("objective-c"),
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::Cuda => Some("cu"),
-        Language::Rust => None,          // Let the compiler decide
+        Language::Rust => None, // Let the compiler decide
+        Language::Hip => Some("hip"),
         Language::GenericHeader => None, // Let the compiler decide
     }
 }

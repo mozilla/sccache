@@ -1490,6 +1490,7 @@ mod test {
         t("mm", Language::ObjectiveCxx);
 
         t("cu", Language::Cuda);
+        t("hip", Language::Hip);
     }
 
     #[test]

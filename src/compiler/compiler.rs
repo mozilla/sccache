@@ -113,6 +113,7 @@ pub enum Language {
     ObjectiveCxx,
     Cuda,
     Rust,
+    Hip,
 }
 
 impl Language {
@@ -135,6 +136,7 @@ impl Language {
             Some("cu") => Some(Language::Cuda),
             // TODO cy
             Some("rs") => Some(Language::Rust),
+            Some("hip") => Some(Language::Hip),
             e => {
                 trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
                 None
@@ -151,6 +153,7 @@ impl Language {
             Language::ObjectiveCxx => "objc++",
             Language::Cuda => "cuda",
             Language::Rust => "rust",
+            Language::Hip => "hip",
         }
     }
 }
@@ -167,6 +170,7 @@ impl CompilerKind {
             | Language::ObjectiveCxx => "C/C++",
             Language::Cuda => "CUDA",
             Language::Rust => "Rust",
+            Language::Hip => "HIP",
         }
         .to_string()
     }
