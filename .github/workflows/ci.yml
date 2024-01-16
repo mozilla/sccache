@@ -144,6 +144,9 @@ jobs:
           - os: ubuntu-20.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
+          - os: ubuntu-20.04
+            target: s390x-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
           - os: macOS-11
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
