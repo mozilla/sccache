@@ -1726,6 +1726,69 @@ LLVM version: 6.0",
         assert_ne!(results[0].key, results[1].key);
     }
 
+    #[test_case(true ; "with preprocessor cache")]
+    #[test_case(false ; "without preprocessor cache")]
+    fn test_common_args_affects_hash(preprocessor_cache_mode: bool) {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let output = "compiler_id=clang\ncompiler_version=\"16.0.0\"";
+        let arguments = vec![
+            ovec!["-c", "foo.c", "-o", "foo.o", "-DHELLO"],
+            ovec!["-c", "foo.c", "-o", "foo.o", "-DHI"],
+            ovec!["-c", "foo.c", "-o", "foo.o"],
+        ];
+        let cwd = f.tempdir.path();
+        // Write a dummy input file so the preprocessor cache mode can work
+        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
+
+        let results: Vec<_> = arguments
+            .iter()
+            .map(|argument| {
+                next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
+                let c = detect_compiler(
+                    creator.clone(),
+                    &f.bins[0],
+                    f.tempdir.path(),
+                    &[],
+                    &[],
+                    pool,
+                    None,
+                )
+                .wait()
+                .unwrap()
+                .0;
+                next_command(
+                    &creator,
+                    Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+                );
+                let hasher = match c.parse_arguments(argument, ".".as_ref(), &[]) {
+                    CompilerArguments::Ok(h) => h,
+                    o => panic!("Bad result from parse_arguments: {:?}", o),
+                };
+                hasher
+                    .generate_hash_key(
+                        &creator,
+                        cwd.to_path_buf(),
+                        vec![],
+                        false,
+                        pool,
+                        false,
+                        Arc::new(MockStorage::new(None, preprocessor_cache_mode)),
+                        CacheControl::Default,
+                    )
+                    .wait()
+                    .unwrap()
+            })
+            .collect();
+
+        assert_eq!(results.len(), 3);
+        assert_ne!(results[0].key, results[1].key);
+        assert_ne!(results[1].key, results[2].key);
+        assert_ne!(results[0].key, results[2].key);
+    }
+
     #[test]
     fn test_get_compiler_info() {
         let creator = new_creator();
