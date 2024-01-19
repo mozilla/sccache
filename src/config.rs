@@ -739,7 +739,7 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= OSS =======
     let oss = if let Ok(bucket) = env::var("SCCACHE_OSS_BUCKET") {
-        let endpoint= env::var("SCCACHE_OSS_ENDPOINT").ok();
+        let endpoint = env::var("SCCACHE_OSS_ENDPOINT").ok();
         let key_prefix = env::var("SCCACHE_OSS_KEY_PREFIX")
             .ok()
             .as_ref()

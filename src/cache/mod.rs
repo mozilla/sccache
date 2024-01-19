@@ -23,13 +23,13 @@ pub mod gcs;
 pub mod gha;
 #[cfg(feature = "memcached")]
 pub mod memcached;
+#[cfg(feature = "oss")]
+pub mod oss;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "s3")]
 pub mod s3;
 #[cfg(feature = "webdav")]
 pub mod webdav;
-#[cfg(feature = "oss")]
-pub mod oss;
 
 pub use crate::cache::cache::*;

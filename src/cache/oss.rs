@@ -19,11 +19,7 @@ use crate::errors::*;
 pub struct OSSCache;
 
 impl OSSCache {
-    pub fn build(
-        bucket: &str,
-        key_prefix: &str,
-        endpoint: Option<&str>,
-    ) -> Result<Operator> {
+    pub fn build(bucket: &str, key_prefix: &str, endpoint: Option<&str>) -> Result<Operator> {
         let mut builder = Oss::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
@@ -31,7 +27,6 @@ impl OSSCache {
         if let Some(endpoint) = endpoint {
             builder.endpoint(endpoint);
         }
-
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())

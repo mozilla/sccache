@@ -21,14 +21,14 @@ use crate::cache::gcs::{GCSCache, RWMode};
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
+#[cfg(feature = "oss")]
+use crate::cache::oss::OSSCache;
 #[cfg(feature = "redis")]
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
 use crate::cache::s3::S3Cache;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
-#[cfg(feature = "oss")]
-use crate::cache::oss::OSSCache;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 #[cfg(any(
@@ -663,12 +663,8 @@ pub fn storage_from_config(
                     c.bucket, c.endpoint
                 );
 
-                let storage = OSSCache::build(
-                    &c.bucket,
-                    &c.key_prefix,
-                    c.endpoint.as_deref(),
-                )
-                .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
+                let storage = OSSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
+                    .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
                 return Ok(Arc::new(storage));
             }
