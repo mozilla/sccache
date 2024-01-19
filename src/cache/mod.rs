@@ -29,5 +29,7 @@ pub mod redis;
 pub mod s3;
 #[cfg(feature = "webdav")]
 pub mod webdav;
+#[cfg(feature = "oss")]
+pub mod oss;
 
 pub use crate::cache::cache::*;

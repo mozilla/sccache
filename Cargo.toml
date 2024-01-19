@@ -148,6 +148,7 @@ all = [
   "azure",
   "gha",
   "webdav",
+  "oss",
 ]
 azure = ["opendal", "reqsign"]
 default = ["all"]
@@ -158,6 +159,7 @@ native-zlib = []
 redis = ["url", "opendal/services-redis"]
 s3 = ["opendal", "reqsign"]
 webdav = ["opendal"]
+oss = ["opendal", "reqsign"]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.

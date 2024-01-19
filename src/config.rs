@@ -261,6 +261,14 @@ pub struct S3CacheConfig {
     pub server_side_encryption: Option<bool>,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OSSCacheConfig {
+    pub bucket: String,
+    pub key_prefix: String,
+    pub endpoint: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
@@ -270,6 +278,7 @@ pub enum CacheType {
     Redis(RedisCacheConfig),
     S3(S3CacheConfig),
     Webdav(WebdavCacheConfig),
+    OSS(OSSCacheConfig),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +292,7 @@ pub struct CacheConfigs {
     pub redis: Option<RedisCacheConfig>,
     pub s3: Option<S3CacheConfig>,
     pub webdav: Option<WebdavCacheConfig>,
+    pub oss: Option<OSSCacheConfig>,
 }
 
 impl CacheConfigs {
@@ -298,6 +308,7 @@ impl CacheConfigs {
             redis,
             s3,
             webdav,
+            oss,
         } = self;
 
         let cache_type = s3
@@ -307,7 +318,8 @@ impl CacheConfigs {
             .or_else(|| gcs.map(CacheType::GCS))
             .or_else(|| gha.map(CacheType::GHA))
             .or_else(|| azure.map(CacheType::Azure))
-            .or_else(|| webdav.map(CacheType::Webdav));
+            .or_else(|| webdav.map(CacheType::Webdav))
+            .or_else(|| oss.map(CacheType::OSS));
 
         let fallback = disk.unwrap_or_default();
 
@@ -325,6 +337,7 @@ impl CacheConfigs {
             redis,
             s3,
             webdav,
+            oss,
         } = other;
 
         if azure.is_some() {
@@ -350,6 +363,10 @@ impl CacheConfigs {
         }
         if webdav.is_some() {
             self.webdav = webdav
+        }
+
+        if oss.is_some() {
+            self.oss = oss
         }
     }
 }
@@ -720,6 +737,26 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // ======= OSS =======
+    let oss = if let Ok(bucket) = env::var("SCCACHE_OSS_BUCKET") {
+        let endpoint= env::var("SCCACHE_OSS_ENDPOINT").ok();
+        let key_prefix = env::var("SCCACHE_OSS_KEY_PREFIX")
+            .ok()
+            .as_ref()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+            .to_owned();
+
+        Some(OSSCacheConfig {
+            bucket,
+            endpoint,
+            key_prefix,
+        })
+    } else {
+        None
+    };
+
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
     let disk_sz = env::var("SCCACHE_CACHE_SIZE")
@@ -759,6 +796,7 @@ fn config_from_env() -> Result<EnvConfig> {
         redis,
         s3,
         webdav,
+        oss,
     };
 
     Ok(EnvConfig { cache })
@@ -1305,6 +1343,11 @@ key_prefix = "webdavprefix"
 username = "webdavusername"
 password = "webdavpassword"
 token = "webdavtoken"
+
+[cache.oss]
+bucket = "name"
+endpoint = "oss-us-east-1.oss.com"
+key_prefix = "ossprefix"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1353,7 +1396,12 @@ token = "webdavtoken"
                     username: Some("webdavusername".to_string()),
                     password: Some("webdavpassword".to_string()),
                     token: Some("webdavtoken".to_string()),
-                })
+                }),
+                oss: Some(OSSCacheConfig {
+                    bucket: "name".to_owned(),
+                    endpoint: Some("oss-us-east-1.oss.com".to_owned()),
+                    key_prefix: "ossprefix".into(),
+                }),
             },
             dist: DistConfig {
                 auth: DistAuth::Token {
