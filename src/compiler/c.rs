@@ -303,6 +303,8 @@ where
         // use in creating a hash key
         let mut preprocessor_and_arch_args = parsed_args.preprocessor_args.clone();
         preprocessor_and_arch_args.extend(parsed_args.arch_args.to_vec());
+        // common_args is used in preprocessing too
+        preprocessor_and_arch_args.extend(parsed_args.common_args.to_vec());
 
         let absolute_input_path: Cow<'_, _> = if parsed_args.input.is_absolute() {
             Cow::Borrowed(&parsed_args.input)

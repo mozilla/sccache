@@ -128,7 +128,7 @@ To use sccache with cmake, provide the following command line arguments to cmake
 -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 ```
 
-To generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
+The process for using sccache with MSVC and cmake, depends on which version of cmake you're using. **For versions of cmake 3.24 and earlier**, to generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 
 ```cmake
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -145,9 +145,10 @@ endif()
 
 By default, sccache will fail your build if it fails to successfully communicate with its associated server. To have sccache instead gracefully failover to the local compiler without stopping, set the environment variable `SCCACHE_IGNORE_SERVER_IO_ERROR=1`.
 
-Update: On CMake 3.25, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag:
+**For versions of cmake 3.25 and later**, to compile with MSVC, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag.  Additionally, you must set the cmake policy number 0141 to the NEW setting:
 ```cmake
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+cmake_policy(SET CMP0141 NEW)
 ```
 
 Example configuration where we automatically look for `sccache` in the `PATH`:
@@ -157,9 +158,16 @@ find_program(SCCACHE sccache REQUIRED)
 set(CMAKE_C_COMPILER_LAUNCHER ${SCCACHE})
 set(CMAKE_CXX_COMPILER_LAUNCHER ${SCCACHE})
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+cmake_policy(SET CMP0141 NEW)
 ```
 
-And you can build code as usual without any additional flags in the command line, useful for IDEs.
+Alternatively, if configuring cmake with MSVC on the command line, assuming that sccache is on the default search path:
+
+```
+cmake -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_CMP0141=NEW [...]
+```
+
+And you can build code as usual without any additional flags in the command line, which is useful for IDEs.
 
 
 ---
