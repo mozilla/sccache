@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::config;
 use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
@@ -33,15 +32,6 @@ impl RWMode {
         match self {
             RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
             RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
-        }
-    }
-}
-
-impl From<config::CacheRWMode> for RWMode {
-    fn from(value: config::CacheRWMode) -> Self {
-        match value {
-            config::CacheRWMode::ReadOnly => RWMode::ReadOnly,
-            config::CacheRWMode::ReadWrite => RWMode::ReadWrite,
         }
     }
 }

@@ -121,15 +121,6 @@ pub enum CacheMode {
     ReadWrite,
 }
 
-impl From<config::CacheRWMode> for CacheMode {
-    fn from(value: config::CacheRWMode) -> Self {
-        match value {
-            config::CacheRWMode::ReadOnly => CacheMode::ReadOnly,
-            config::CacheRWMode::ReadWrite => CacheMode::ReadWrite,
-        }
-    }
-}
-
 /// Trait objects can't be bounded by more than one non-builtin trait.
 pub trait ReadSeek: Read + Seek + Send {}
 
