@@ -136,7 +136,7 @@ impl Storage for DiskCache {
         trace!("DiskCache::finish_put({})", key);
 
         if self.rw_mode == CacheRWMode::ReadOnly {
-            return Err(anyhow!("Cannot write to a read-only cache1"));
+            return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
         let lru = self.lru.clone();
@@ -185,7 +185,7 @@ impl Storage for DiskCache {
         preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
         if self.rw_mode == CacheRWMode::ReadOnly {
-            return Err(anyhow!("Cannot write to a read-only cache2"));
+            return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
         let key = normalize_key(key);
