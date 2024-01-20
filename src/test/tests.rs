@@ -16,6 +16,7 @@ use crate::cache::disk::DiskCache;
 use crate::cache::PreprocessorCacheModeConfig;
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
+use crate::config::CacheRWMode;
 use crate::jobserver::Client;
 use crate::mock_command::*;
 use crate::server::{DistClientContainer, SccacheServer, ServerMessage};
@@ -85,6 +86,7 @@ where
             cache_size,
             runtime.handle(),
             PreprocessorCacheModeConfig::default(),
+            CacheRWMode::ReadWrite,
         ));
 
         let client = unsafe { Client::new() };

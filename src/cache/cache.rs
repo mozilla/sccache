@@ -16,7 +16,7 @@
 use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use crate::cache::gcs::{GCSCache, RWMode};
+use crate::cache::gcs::GCSCache;
 #[cfg(feature = "gha")]
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
@@ -112,13 +112,22 @@ impl fmt::Debug for Cache {
     }
 }
 
-/// CacheMode is used to repreent which mode we are using.
+/// CacheMode is used to represent which mode we are using.
 #[derive(Debug)]
 pub enum CacheMode {
     /// Only read cache from storage.
     ReadOnly,
     /// Full support of cache storage: read and write.
     ReadWrite,
+}
+
+impl From<config::CacheRWMode> for CacheMode {
+    fn from(value: config::CacheRWMode) -> Self {
+        match value {
+            config::CacheRWMode::ReadOnly => CacheMode::ReadOnly,
+            config::CacheRWMode::ReadWrite => CacheMode::ReadWrite,
+        }
+    }
 }
 
 /// Trait objects can't be bounded by more than one non-builtin trait.
@@ -575,17 +584,12 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
 
-                let gcs_read_write_mode = match rw_mode {
-                    config::GCSCacheRWMode::ReadOnly => RWMode::ReadOnly,
-                    config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
-                };
-
                 let storage = GCSCache::build(
                     bucket,
                     key_prefix,
                     cred_path.as_deref(),
                     service_account.as_deref(),
-                    gcs_read_write_mode,
+                    (*rw_mode).into(),
                     credential_url.as_deref(),
                 )
                 .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
@@ -660,12 +664,14 @@ pub fn storage_from_config(
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
+    let rw_mode = config.fallback_cache.rw_mode;
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
+        rw_mode,
     )))
 }
 

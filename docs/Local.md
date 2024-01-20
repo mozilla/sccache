@@ -43,3 +43,7 @@ Configuration options and their default values:
 See where to write the config in [the configuration doc](Configuration.md).
 
 *Note that preprocessor caching is currently only implemented for GCC and Clang and when using local storage.*
+
+## Read-only cache mode
+
+By default, the local cache operates in read/write mode. The `SCCACHE_LOCAL_RW_MODE` environment variable can be set to `READ_ONLY` (or `READ_WRITE`) to modify this behavior.
