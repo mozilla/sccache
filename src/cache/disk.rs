@@ -14,7 +14,6 @@
 
 use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
-use crate::config::CacheRWMode;
 use crate::lru_disk_cache::LruDiskCache;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
@@ -66,7 +65,7 @@ pub struct DiskCache {
     pool: tokio::runtime::Handle,
     preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
-    rw_mode: CacheRWMode,
+    rw_mode: CacheMode,
 }
 
 impl DiskCache {
@@ -76,7 +75,7 @@ impl DiskCache {
         max_size: u64,
         pool: &tokio::runtime::Handle,
         preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
-        rw_mode: CacheRWMode,
+        rw_mode: CacheMode,
     ) -> DiskCache {
         DiskCache {
             lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
@@ -135,7 +134,7 @@ impl Storage for DiskCache {
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
 
-        if self.rw_mode == CacheRWMode::ReadOnly {
+        if self.rw_mode == CacheMode::ReadOnly {
             return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
@@ -153,7 +152,7 @@ impl Storage for DiskCache {
     }
 
     async fn check(&self) -> Result<CacheMode> {
-        Ok(self.rw_mode.into())
+        Ok(self.rw_mode)
     }
 
     fn location(&self) -> String {
@@ -184,7 +183,7 @@ impl Storage for DiskCache {
         key: &str,
         preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
-        if self.rw_mode == CacheRWMode::ReadOnly {
+        if self.rw_mode == CacheMode::ReadOnly {
             return Err(anyhow!("Cannot write to a read-only cache"));
         }
 

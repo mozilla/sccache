@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::gcs::RWMode;
 use crate::cache::CacheMode;
 use directories::ProjectDirs;
 use fs::File;
@@ -192,15 +191,6 @@ impl From<CacheRWMode> for CacheMode {
         match value {
             CacheRWMode::ReadOnly => CacheMode::ReadOnly,
             CacheRWMode::ReadWrite => CacheMode::ReadWrite,
-        }
-    }
-}
-
-impl From<CacheRWMode> for RWMode {
-    fn from(value: CacheRWMode) -> Self {
-        match value {
-            CacheRWMode::ReadOnly => RWMode::ReadOnly,
-            CacheRWMode::ReadWrite => RWMode::ReadWrite,
         }
     }
 }

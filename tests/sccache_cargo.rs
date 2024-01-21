@@ -338,16 +338,13 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
     test_info
         .show_stats()?
         .try_stdout(
-            predicates::str::contains(
-                r#""cache_hits":{"counts":{},"adv_counts":{}}"#,
-            )
-                .from_utf8(),
+            predicates::str::contains(r#""cache_hits":{"counts":{},"adv_counts":{}}"#).from_utf8(),
         )?
         .try_stdout(
             predicates::str::contains(
                 r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
             )
-                .from_utf8(),
+            .from_utf8(),
         )?
         .try_success()?;
 
@@ -367,16 +364,13 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
     test_info
         .show_stats()?
         .try_stdout(
-            predicates::str::contains(
-                r#""cache_hits":{"counts":{},"adv_counts":{}}"#,
-            )
-                .from_utf8(),
+            predicates::str::contains(r#""cache_hits":{"counts":{},"adv_counts":{}}"#).from_utf8(),
         )?
         .try_stdout(
             predicates::str::contains(
                 r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
             )
-                .from_utf8(),
+            .from_utf8(),
         )?
         .try_success()?;
 
@@ -402,9 +396,7 @@ fn test_rust_cargo_cmd_readonly(cmd: &str, test_info: SccacheTest) -> Result<()>
             .from_utf8(),
         )?
         .try_stdout(
-            predicates::str::contains(
-                r#""cache_misses":{"counts":{},"adv_counts":{}}"#,
-            )
+            predicates::str::contains(r#""cache_misses":{"counts":{},"adv_counts":{}}"#)
                 .from_utf8(),
         )?
         .try_success()?;

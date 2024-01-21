@@ -113,7 +113,7 @@ impl fmt::Debug for Cache {
 }
 
 /// CacheMode is used to represent which mode we are using.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheMode {
     /// Only read cache from storage.
     ReadOnly,
@@ -655,7 +655,7 @@ pub fn storage_from_config(
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
-    let rw_mode = config.fallback_cache.rw_mode;
+    let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
     Ok(Arc::new(DiskCache::new(
         dir,
