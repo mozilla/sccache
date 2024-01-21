@@ -163,7 +163,7 @@ pub struct DiskCacheConfig {
     // TODO: use deserialize_with to allow human-readable sizes in toml
     pub size: u64,
     pub preprocessor_cache_mode: PreprocessorCacheModeConfig,
-    pub rw_mode: CacheRWMode,
+    pub rw_mode: CacheModeConfig,
 }
 
 impl Default for DiskCacheConfig {
@@ -172,25 +172,25 @@ impl Default for DiskCacheConfig {
             dir: default_disk_cache_dir(),
             size: default_disk_cache_size(),
             preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
-            rw_mode: CacheRWMode::ReadWrite,
+            rw_mode: CacheModeConfig::ReadWrite,
         }
     }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub enum CacheRWMode {
+pub enum CacheModeConfig {
     #[serde(rename = "READ_ONLY")]
     ReadOnly,
     #[serde(rename = "READ_WRITE")]
     ReadWrite,
 }
 
-impl From<CacheRWMode> for CacheMode {
-    fn from(value: CacheRWMode) -> Self {
+impl From<CacheModeConfig> for CacheMode {
+    fn from(value: CacheModeConfig) -> Self {
         match value {
-            CacheRWMode::ReadOnly => CacheMode::ReadOnly,
-            CacheRWMode::ReadWrite => CacheMode::ReadWrite,
+            CacheModeConfig::ReadOnly => CacheMode::ReadOnly,
+            CacheModeConfig::ReadWrite => CacheMode::ReadWrite,
         }
     }
 }
@@ -202,7 +202,7 @@ pub struct GCSCacheConfig {
     pub key_prefix: String,
     pub cred_path: Option<String>,
     pub service_account: Option<String>,
-    pub rw_mode: CacheRWMode,
+    pub rw_mode: CacheModeConfig,
     pub credential_url: Option<String>,
 }
 
@@ -640,17 +640,17 @@ fn config_from_env() -> Result<EnvConfig> {
         let service_account = env::var("SCCACHE_GCS_SERVICE_ACCOUNT").ok();
 
         let rw_mode = match env::var("SCCACHE_GCS_RW_MODE").as_ref().map(String::as_str) {
-            Ok("READ_ONLY") => CacheRWMode::ReadOnly,
-            Ok("READ_WRITE") => CacheRWMode::ReadWrite,
+            Ok("READ_ONLY") => CacheModeConfig::ReadOnly,
+            Ok("READ_WRITE") => CacheModeConfig::ReadWrite,
             // TODO: unsure if these should warn during the configuration loading
             // or at the time when they're actually used to connect to GCS
             Ok(_) => {
                 warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
-                CacheRWMode::ReadOnly
+                CacheModeConfig::ReadOnly
             }
             _ => {
                 warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
-                CacheRWMode::ReadOnly
+                CacheModeConfig::ReadOnly
             }
         };
 
@@ -755,13 +755,13 @@ fn config_from_env() -> Result<EnvConfig> {
         .as_ref()
         .map(String::as_str)
     {
-        Ok("READ_ONLY") => (CacheRWMode::ReadOnly, true),
-        Ok("READ_WRITE") => (CacheRWMode::ReadWrite, true),
+        Ok("READ_ONLY") => (CacheModeConfig::ReadOnly, true),
+        Ok("READ_WRITE") => (CacheModeConfig::ReadWrite, true),
         Ok(_) => {
             warn!("Invalid SCCACHE_LOCAL_RW_MODE-- defaulting to READ_WRITE.");
-            (CacheRWMode::ReadWrite, false)
+            (CacheModeConfig::ReadWrite, false)
         }
-        _ => (CacheRWMode::ReadWrite, false),
+        _ => (CacheModeConfig::ReadWrite, false),
     };
 
     let any_overridden = disk_dir.is_some()
@@ -1117,7 +1117,7 @@ fn config_overrides() {
                 dir: "/env-cache".into(),
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
-                rw_mode: CacheRWMode::ReadWrite,
+                rw_mode: CacheModeConfig::ReadWrite,
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
@@ -1133,7 +1133,7 @@ fn config_overrides() {
                 dir: "/file-cache".into(),
                 size: 15,
                 preprocessor_cache_mode: Default::default(),
-                rw_mode: CacheRWMode::ReadWrite,
+                rw_mode: CacheModeConfig::ReadWrite,
             }),
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
@@ -1160,7 +1160,7 @@ fn config_overrides() {
                 dir: "/env-cache".into(),
                 size: 5,
                 preprocessor_cache_mode: Default::default(),
-                rw_mode: CacheRWMode::ReadWrite,
+                rw_mode: CacheModeConfig::ReadWrite,
             },
             dist: Default::default(),
             server_startup_timeout: None,
@@ -1266,7 +1266,7 @@ fn test_gcs_service_account() {
         }) => {
             assert_eq!(bucket, "my-bucket");
             assert_eq!(service_account, Some("my@example.com".to_string()));
-            assert_eq!(rw_mode, CacheRWMode::ReadWrite);
+            assert_eq!(rw_mode, CacheModeConfig::ReadWrite);
         }
         None => unreachable!(),
     };
@@ -1349,13 +1349,13 @@ token = "webdavtoken"
                     dir: PathBuf::from("/tmp/.cache/sccache"),
                     size: 7 * 1024 * 1024 * 1024,
                     preprocessor_cache_mode: PreprocessorCacheModeConfig::activated(),
-                    rw_mode: CacheRWMode::ReadWrite,
+                    rw_mode: CacheModeConfig::ReadWrite,
                 }),
                 gcs: Some(GCSCacheConfig {
                     bucket: "bucket".to_owned(),
                     cred_path: Some("/psst/secret/cred".to_string()),
                     service_account: Some("example_service_account".to_string()),
-                    rw_mode: CacheRWMode::ReadOnly,
+                    rw_mode: CacheModeConfig::ReadOnly,
                     key_prefix: "prefix".into(),
                     credential_url: None,
                 }),
