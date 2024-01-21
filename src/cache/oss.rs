@@ -19,13 +19,24 @@ use crate::errors::*;
 pub struct OSSCache;
 
 impl OSSCache {
-    pub fn build(bucket: &str, key_prefix: &str, endpoint: Option<&str>) -> Result<Operator> {
+    pub fn build(
+        bucket: &str,
+        key_prefix: &str,
+        endpoint: Option<&str>,
+        no_credentials: bool,
+    ) -> Result<Operator> {
         let mut builder = Oss::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
 
         if let Some(endpoint) = endpoint {
             builder.endpoint(endpoint);
+        }
+
+        if no_credentials {
+            // Allow anonymous access to OSS so that OpenDAL will not
+            // throw error when no credentials are provided.
+            builder.allow_anonymous();
         }
 
         let op = Operator::new(builder)?

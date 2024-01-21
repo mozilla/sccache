@@ -267,6 +267,7 @@ pub struct OSSCacheConfig {
     pub bucket: String,
     pub key_prefix: String,
     pub endpoint: Option<String>,
+    pub no_credentials: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -748,14 +749,32 @@ fn config_from_env() -> Result<EnvConfig> {
             .unwrap_or_default()
             .to_owned();
 
+        let no_credentials =
+            env::var("SCCACHE_OSS_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => bail!("SCCACHE_OSS_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
+            })?;
+
         Some(OSSCacheConfig {
             bucket,
             endpoint,
             key_prefix,
+            no_credentials,
         })
     } else {
         None
     };
+
+    if oss
+        .as_ref()
+        .map(|oss| oss.no_credentials)
+        .unwrap_or_default()
+        && (env::var_os("ALIBABA_CLOUD_ACCESS_KEY_ID").is_some()
+            || env::var_os("ALIBABA_CLOUD_ACCESS_KEY_SECRET").is_some())
+    {
+        bail!("If setting OSS credentials, SCCACHE_OSS_NO_CREDENTIALS must not be set.");
+    }
 
     // ======= Local =======
     let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
@@ -1346,8 +1365,9 @@ token = "webdavtoken"
 
 [cache.oss]
 bucket = "name"
-endpoint = "oss-us-east-1.oss.com"
+endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
+no_credentials = true
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
@@ -1399,8 +1419,9 @@ key_prefix = "ossprefix"
                 }),
                 oss: Some(OSSCacheConfig {
                     bucket: "name".to_owned(),
-                    endpoint: Some("oss-us-east-1.oss.com".to_owned()),
+                    endpoint: Some("oss-us-east-1.aliyuncs.com".to_owned()),
                     key_prefix: "ossprefix".into(),
+                    no_credentials: true,
                 }),
             },
             dist: DistConfig {

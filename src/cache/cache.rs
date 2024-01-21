@@ -663,8 +663,13 @@ pub fn storage_from_config(
                     c.bucket, c.endpoint
                 );
 
-                let storage = OSSCache::build(&c.bucket, &c.key_prefix, c.endpoint.as_deref())
-                    .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
+                let storage = OSSCache::build(
+                    &c.bucket,
+                    &c.key_prefix,
+                    c.endpoint.as_deref(),
+                    c.no_credentials,
+                )
+                .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
                 return Ok(Arc::new(storage));
             }
