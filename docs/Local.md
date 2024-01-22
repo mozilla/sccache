@@ -50,4 +50,4 @@ By default, the local cache operates in read/write mode. The `SCCACHE_LOCAL_RW_M
 
 You can use read-only mode to prevent sccache from writing new cache items to the disk. This can be useful, for example, if you want to use items that have already been cached, but not add new ones to the cache. 
 
-Note that this feature is only effective if you already have items in your cache. Using this option on an empty cache will cause sccache to simply do nothing.
+Note that this feature is only effective if you already have items in your cache. Using this option on an empty cache will cause sccache to simply do nothing, just add overhead.
