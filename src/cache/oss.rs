@@ -18,6 +18,7 @@ use crate::errors::*;
 
 pub struct OSSCache;
 
+// Implement the Object Storage Service for Alibaba cloud
 impl OSSCache {
     pub fn build(
         bucket: &str,
