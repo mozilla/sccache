@@ -42,6 +42,7 @@ Table of Contents (ToC)
   * [Azure](docs/Azure.md)
   * [GitHub Actions](docs/GHA.md)
   * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
+  * [Alibaba OSS](docs/OSS.md)
 
 ---
 
@@ -295,3 +296,4 @@ Storage Options
 * [Azure](docs/Azure.md)
 * [GitHub Actions](docs/GHA.md)
 * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
+* [Alibaba OSS](docs/OSS.md)

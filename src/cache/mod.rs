@@ -23,6 +23,8 @@ pub mod gcs;
 pub mod gha;
 #[cfg(feature = "memcached")]
 pub mod memcached;
+#[cfg(feature = "oss")]
+pub mod oss;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "s3")]

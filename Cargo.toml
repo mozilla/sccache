@@ -148,6 +148,7 @@ all = [
   "azure",
   "gha",
   "webdav",
+  "oss",
 ]
 azure = ["opendal", "reqsign"]
 default = ["all"]
@@ -155,6 +156,7 @@ gcs = ["opendal", "reqsign", "url", "reqwest/blocking"]
 gha = ["opendal"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
+oss = ["opendal", "reqsign"]
 redis = ["url", "opendal/services-redis"]
 s3 = ["opendal", "reqsign"]
 webdav = ["opendal"]

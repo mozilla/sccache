@@ -21,6 +21,8 @@ use crate::cache::gcs::{GCSCache, RWMode};
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
 use crate::cache::memcached::MemcachedCache;
+#[cfg(feature = "oss")]
+use crate::cache::oss::OSSCache;
 #[cfg(feature = "redis")]
 use crate::cache::redis::RedisCache;
 #[cfg(feature = "s3")]
@@ -36,7 +38,8 @@ use crate::config::Config;
     feature = "memcached",
     feature = "redis",
     feature = "s3",
-    feature = "webdav"
+    feature = "webdav",
+    feature = "oss"
 ))]
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
@@ -650,6 +653,23 @@ pub fn storage_from_config(
                     c.token.as_deref(),
                 )
                 .map_err(|err| anyhow!("create webdav cache failed: {err:?}"))?;
+
+                return Ok(Arc::new(storage));
+            }
+            #[cfg(feature = "oss")]
+            CacheType::OSS(ref c) => {
+                debug!(
+                    "Init oss cache with bucket {}, endpoint {:?}",
+                    c.bucket, c.endpoint
+                );
+
+                let storage = OSSCache::build(
+                    &c.bucket,
+                    &c.key_prefix,
+                    c.endpoint.as_deref(),
+                    c.no_credentials,
+                )
+                .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
                 return Ok(Arc::new(storage));
             }
