@@ -49,6 +49,13 @@ impl LazyDiskCache {
         }
     }
 
+    fn capacity(&self) -> u64 {
+        match self {
+            LazyDiskCache::Uninit { max_size, .. } => *max_size,
+            LazyDiskCache::Init(d) => d.capacity(),
+        }
+    }
+
     fn path(&self) -> &Path {
         match self {
             LazyDiskCache::Uninit { root, .. } => root.as_ref(),
@@ -151,7 +158,7 @@ impl Storage for DiskCache {
         Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
     }
     async fn max_size(&self) -> Result<Option<u64>> {
-        Ok(self.lru.lock().unwrap().get().map(|l| l.capacity()))
+        Ok(Some(self.lru.lock().unwrap().capacity()))
     }
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.preprocessor_cache_mode_config
