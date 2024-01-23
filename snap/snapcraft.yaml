@@ -35,7 +35,7 @@ apps:
 parts:
     sccache:
         plugin: rust
-        rust-channel: 1.67.1
+        rust-channel: 1.70.0
         rust-use-global-lto: true
         source: .
         override-pull: |

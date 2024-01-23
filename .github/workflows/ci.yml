@@ -26,7 +26,7 @@ jobs:
         with:
           components: ${{ matrix.component }}
           # Oldest supported version, keep in sync with README.md
-          toolchain: "1.67.1"
+          toolchain: "1.70.0"
 
       - name: clippy version
         run: cargo clippy --version
@@ -67,10 +67,10 @@ jobs:
         include:
           - os: ubuntu-20.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.67.1"
+            rustc: "1.70.0"
           - os: ubuntu-22.04
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.67.1"
+            rustc: "1.70.0"
             extra_desc: dist-server
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
           - os: ubuntu-20.04
@@ -85,7 +85,7 @@ jobs:
           - os: macOS-11
           - os: windows-2019
             # Oldest supported version, keep in sync with README.md
-            rustc: "1.67.1"
+            rustc: "1.70.0"
           - os: windows-2019
             rustc: nightly
             allow_failure: true
