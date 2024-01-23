@@ -23,6 +23,8 @@ pub enum Request {
 pub enum Response {
     /// Response for `Request::Compile`.
     Compile(CompileResponse),
+    /// Response for `Request::ZeroStats`.
+    ZeroStats,
     /// Response for `Request::GetStats`, containing server statistics.
     Stats(Box<ServerInfo>),
     /// Response for `Request::DistStatus`, containing client info.

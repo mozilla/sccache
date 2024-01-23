@@ -805,10 +805,7 @@ where
                 Request::ZeroStats => {
                     debug!("handle_client: zero_stats");
                     me.zero_stats().await;
-                    me.get_info()
-                        .await
-                        .map(|i| Response::Stats(Box::new(i)))
-                        .map(Message::WithoutBody)
+                    Ok(Message::WithoutBody(Response::ZeroStats))
                 }
                 Request::Shutdown => {
                     debug!("handle_client: shutdown");
