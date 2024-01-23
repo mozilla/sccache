@@ -325,13 +325,13 @@ fn connect_or_start_server(
 }
 
 /// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_zero_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
+pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
     debug!("request_stats");
     let response = conn.request(Request::ZeroStats).context(
         "failed to send zero statistics command to server or failed to receive response",
     )?;
-    if let Response::Stats(stats) = response {
-        Ok(*stats)
+    if let Response::ZeroStats = response {
+        Ok(())
     } else {
         bail!("Unexpected server response!")
     }
@@ -671,8 +671,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             let conn = connect_or_start_server(get_port(), startup_timeout)?;
-            let stats = request_zero_stats(conn).context("couldn't zero stats on server")?;
-            stats.print(false);
+            request_zero_stats(conn).context("couldn't zero stats on server")?;
+            eprintln!("Statistics zeroed.");
         }
         #[cfg(feature = "dist-client")]
         Command::DistAuth => {
