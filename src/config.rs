@@ -236,6 +236,7 @@ pub struct RedisCacheConfig {
     /// the ttl time in seconds.
     ///
     /// Default to infinity (0)
+    #[serde(default)]
     pub ttl: u64,
 }
 
