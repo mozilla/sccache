@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::storage_from_config;
 use crate::client::{connect_to_server, connect_with_retry, ServerConnection};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -19,7 +20,7 @@ use crate::config::{default_disk_cache_dir, Config};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
-use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
+use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
 use crate::util::daemonize;
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
@@ -607,8 +608,16 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let srv = connect_or_start_server(get_port(), startup_timeout)?;
-            let stats = request_stats(srv).context("failed to get stats from server")?;
+            let stats = match connect_to_server(get_port()) {
+                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
+                // If there is no server, spawning a new server would start with zero stats
+                // anyways, so we can just return (mostly) empty stats directly.
+                Err(_) => {
+                    let runtime = Runtime::new()?;
+                    let storage = storage_from_config(config, runtime.handle()).ok();
+                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
+                }
+            };
             match fmt {
                 StatsFormat::Text => stats.print(advanced),
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,

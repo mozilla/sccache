@@ -166,11 +166,12 @@ fn test_run_log() -> Result<()> {
         .context("Failed to create tempdir")?;
     let tmppath = tempdir.path().join("perm.log");
     let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
-    cmd.arg("--show-stats")
+    cmd.arg("--start-server")
         .env("SCCACHE_ERROR_LOG", &tmppath) // Should not work
         .env("SCCACHE_LOG", "debug");
 
     cmd.assert().success();
+    stop_sccache()?;
     assert!(Path::new(&tmppath).is_file());
     Ok(())
 }

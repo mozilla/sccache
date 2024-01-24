@@ -910,22 +910,7 @@ where
     /// Get info and stats about the cache.
     async fn get_info(&self) -> Result<ServerInfo> {
         let stats = self.stats.lock().await.clone();
-        let cache_location = self.storage.location();
-        let use_preprocessor_cache_mode = self
-            .storage
-            .preprocessor_cache_mode_config()
-            .use_preprocessor_cache_mode;
-        let version = env!("CARGO_PKG_VERSION").to_string();
-        futures::try_join!(self.storage.current_size(), self.storage.max_size()).map(
-            move |(cache_size, max_cache_size)| ServerInfo {
-                stats,
-                cache_location,
-                cache_size,
-                max_cache_size,
-                use_preprocessor_cache_mode,
-                version,
-            },
-        )
+        ServerInfo::new(stats, Some(&*self.storage)).await
     }
 
     /// Zero stats about the cache.
@@ -1678,6 +1663,35 @@ impl ServerStats {
 }
 
 impl ServerInfo {
+    pub async fn new(stats: ServerStats, storage: Option<&dyn Storage>) -> Result<Self> {
+        let cache_location;
+        let use_preprocessor_cache_mode;
+        let cache_size;
+        let max_cache_size;
+        if let Some(storage) = storage {
+            cache_location = storage.location();
+            use_preprocessor_cache_mode = storage
+                .preprocessor_cache_mode_config()
+                .use_preprocessor_cache_mode;
+            (cache_size, max_cache_size) =
+                futures::try_join!(storage.current_size(), storage.max_size())?;
+        } else {
+            cache_location = String::new();
+            use_preprocessor_cache_mode = false;
+            cache_size = None;
+            max_cache_size = None;
+        }
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        Ok(ServerInfo {
+            stats,
+            cache_location,
+            cache_size,
+            max_cache_size,
+            use_preprocessor_cache_mode,
+            version,
+        })
+    }
+
     /// Print info to stdout in a human-readable format.
     pub fn print(&self, advanced: bool) {
         let (name_width, stat_width) = self.stats.print(advanced);

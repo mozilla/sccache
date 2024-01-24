@@ -881,6 +881,18 @@ fn test_sccache_command(preprocessor_cache_mode: bool) {
     }
 }
 
+#[test]
+#[serial]
+fn test_stats_no_server() {
+    // Ensure there's no existing sccache server running.
+    stop_local_daemon();
+    get_stats(|_| {});
+    assert!(
+        !stop_local_daemon(),
+        "Server shouldn't be running after --show-stats"
+    );
+}
+
 #[test_case(true ; "with preprocessor cache")]
 #[test_case(false ; "without preprocessor cache")]
 #[serial]

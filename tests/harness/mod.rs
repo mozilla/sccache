@@ -61,15 +61,14 @@ pub fn start_local_daemon(cfg_path: &Path, cached_cfg_path: &Path) {
     }
 }
 
-pub fn stop_local_daemon() {
+pub fn stop_local_daemon() -> bool {
     trace!("sccache --stop-server");
-    drop(
-        sccache_command()
-            .arg("--stop-server")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status(),
-    );
+    sccache_command()
+        .arg("--stop-server")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_or(false, |status| status.success())
 }
 
 pub fn get_stats<F: 'static + Fn(ServerInfo)>(f: F) {
