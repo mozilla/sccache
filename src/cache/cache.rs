@@ -669,6 +669,7 @@ pub fn storage_from_config(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::config::CacheModeConfig;
 
     #[test]
     fn test_normalize_key() {
@@ -676,5 +677,62 @@ mod test {
             normalize_key("0123456789abcdef0123456789abcdef"),
             "0/1/2/0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn test_read_write_mode_local() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let mut config = Config::default();
+        // Use disk cache.
+        config.cache = None;
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test_rust_cargo")
+            .tempdir()
+            .context("Failed to create tempdir")
+            .unwrap();
+        let cache_dir = tempdir.path().join("cache");
+        fs::create_dir(&cache_dir).unwrap();
+
+        config.fallback_cache.dir = cache_dir;
+
+        // Test Read Write
+        config.fallback_cache.rw_mode = CacheModeConfig::ReadWrite;
+
+        {
+            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+
+            runtime.block_on(async move {
+                cache
+                    .put("test1".into(), CacheWrite::default())
+                    .await
+                    .unwrap();
+                cache
+                    .put_preprocessor_cache_entry("test1".into(), PreprocessorCacheEntry::default())
+                    .unwrap();
+            });
+        }
+
+        // Test Read-only
+        config.fallback_cache.rw_mode = CacheModeConfig::ReadOnly;
+
+        {
+            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+
+            runtime.block_on(async move {
+                cache
+                    .put("test1".into(), CacheWrite::default())
+                    .await
+                    .unwrap_err();
+                cache
+                    .put_preprocessor_cache_entry("test1".into(), PreprocessorCacheEntry::default())
+                    .unwrap_err();
+            });
+        }
     }
 }
