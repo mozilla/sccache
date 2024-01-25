@@ -989,11 +989,18 @@ fn is_like_c_compiler<P: AsRef<Path>>(p: P) -> bool {
             .file_stem()
             .map(|s| s.to_string_lossy().to_lowercase())
             .as_deref(),
-        Some("cc" | "c++")
-            | Some("gcc" | "g++")
-            | Some("clang" | "clang++")
-            | Some("clang-cl" | "cl")
-            | Some("nvc" | "nvc++" | "nvcc")
+        Some(
+            "cc" | "c++"
+                | "gcc"
+                | "g++"
+                | "clang"
+                | "clang++"
+                | "clang-cl"
+                | "cl"
+                | "nvc"
+                | "nvc++"
+                | "nvcc"
+        )
     )
 }
 
