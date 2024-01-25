@@ -980,6 +980,30 @@ fn is_rustc_like<P: AsRef<Path>>(p: P) -> bool {
     )
 }
 
+/// Returns true if the given path looks like a c compiler program
+///
+/// This does not check c compilers, it only report programs that are definitely not rustc
+fn is_like_c_compiler<P: AsRef<Path>>(p: P) -> bool {
+    matches!(
+        p.as_ref()
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .as_deref(),
+        Some(
+            "cc" | "c++"
+                | "gcc"
+                | "g++"
+                | "clang"
+                | "clang++"
+                | "clang-cl"
+                | "cl"
+                | "nvc"
+                | "nvc++"
+                | "nvcc"
+        )
+    )
+}
+
 /// If `executable` is a known compiler, return `Some(Box<Compiler>)`.
 async fn detect_compiler<T>(
     creator: T,
@@ -994,11 +1018,12 @@ where
     T: CommandCreatorSync,
 {
     trace!("detect_compiler: {}", executable.display());
-
     // First, see if this looks like rustc.
 
-    let rustc_executable = if is_rustc_like(executable) {
-        Some(executable.to_path_buf())
+    let mut must_be_rust = false;
+    let mut rustc_executable = executable.to_path_buf();
+    if is_rustc_like(executable) {
+        must_be_rust = true;
     } else if env.iter().any(|(k, _)| k == OsStr::new("CARGO")) {
         // If not, detect the scenario where cargo is configured to wrap rustc with something other than sccache.
         // This happens when sccache is used as a `RUSTC_WRAPPER` and another tool is used as a
@@ -1006,117 +1031,153 @@ where
         //
         // The check for the `CARGO` env acts as a guardrail against false positives.
         // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
-        args.iter().next().and_then(|arg1| {
+        if let Some(arg1) = args.iter().next() {
             if is_rustc_like(arg1) {
-                Some(PathBuf::from(arg1))
-            } else {
-                None
+                must_be_rust = true;
+                rustc_executable = PathBuf::from(arg1)
             }
-        })
-    } else {
-        None
+        }
     };
 
-    let creator1 = creator.clone();
     let pool = pool.clone();
-    let cwd = cwd.to_owned();
-    if let Some(rustc_executable) = rustc_executable {
-        // Sanity check that it's really rustc.
-        let mut child = creator.clone().new_command_sync(executable);
-        // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
-        // expects rustc as the first argument.
-        if rustc_executable != executable {
-            child.arg(&rustc_executable);
-        }
-
-        child.env_clear().envs(ref_env(env)).args(&["-vV"]);
-
-        let rustc_vv = run_input_output(child, None).await.map(|output| {
-            if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
-                if stdout.starts_with("rustc ") {
-                    return Ok(stdout);
-                }
-            }
-            Err(ProcessError(output))
-        })?;
-
-        match rustc_vv {
-            Ok(rustc_verbose_version) => {
-                let rustc_executable2 = rustc_executable.clone();
-
-                let proxy = RustupProxy::find_proxy_executable::<T>(
-                    &rustc_executable2,
-                    "rustup",
-                    creator.clone(),
-                    env,
-                );
-                use futures::TryFutureExt;
-                let res = proxy.and_then(move |proxy| async move {
-                    match proxy {
-                        Ok(Some(proxy)) => {
-                            trace!("Found rustup proxy executable");
-                            // take the pathbuf for rustc as resolved by the proxy
-                            match proxy.resolve_proxied_executable(creator1, cwd, env).await {
-                                Ok((resolved_path, _time)) => {
-                                    trace!("Resolved path with rustup proxy {:?}", &resolved_path);
-                                    Ok((Some(proxy), resolved_path))
-                                }
-                                Err(e) => {
-                                    trace!("Could not resolve compiler with rustup proxy: {}", e);
-                                    Ok((None, rustc_executable))
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            trace!("Did not find rustup");
-                            Ok((None, rustc_executable))
-                        }
-                        Err(e) => {
-                            trace!("Did not find rustup due to {}, compiling without proxy", e);
-                            Ok((None, rustc_executable))
-                        }
-                    }
-                });
-
-                let (proxy, resolved_rustc) = res
-                    .await
-                    .map(|(proxy, resolved_compiler_executable)| {
-                        (
-                            proxy
-                                .map(Box::new)
-                                .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
-                            resolved_compiler_executable,
-                        )
-                    })
-                    .unwrap_or_else(|_e| {
-                        trace!("Compiling rust without proxy");
-                        (None, rustc_executable2)
-                    });
-
-                debug!("Using rustc at path: {resolved_rustc:?}");
-
-                Rust::new(
-                    creator,
-                    resolved_rustc,
-                    env,
-                    &rustc_verbose_version,
-                    dist_archive,
-                    pool,
-                )
-                .await
-                .map(|c| {
-                    (
-                        Box::new(c) as Box<dyn Compiler<T>>,
-                        proxy as Option<Box<dyn CompilerProxy<T>>>,
-                    )
-                })
-            }
-            Err(e) => Err(e).context("Failed to launch subprocess for compiler determination"),
-        }
-    } else {
+    if !must_be_rust && is_like_c_compiler(&rustc_executable) {
         let executable = executable.to_owned();
         let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
-        cc.map(|c| (c, None))
+        return cc.map(|c| (c, None));
+    }
+
+    // Even if it does not look like rustc like it might still be rustc driver
+    // so we do full check
+    match resolve_rust_compiler(
+        creator.clone(),
+        executable,
+        rustc_executable,
+        env,
+        cwd.to_owned(),
+        dist_archive,
+        pool.clone(),
+    )
+    .await
+    {
+        Ok(res) => Ok(res),
+        Err(e) => {
+            if !must_be_rust {
+                let executable = executable.to_owned();
+                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
+                cc.map(|c| (c, None))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Tries to verify that provided executable is really rust compiler
+/// or rust driver
+async fn resolve_rust_compiler<T>(
+    creator: T,
+    executable: &Path,
+    rustc_executable: PathBuf,
+    env: &[(OsString, OsString)],
+    cwd: PathBuf,
+    dist_archive: Option<PathBuf>,
+    pool: tokio::runtime::Handle,
+) -> Result<(Box<dyn Compiler<T>>, Option<Box<dyn CompilerProxy<T>>>)>
+where
+    T: CommandCreatorSync,
+{
+    let mut child = creator.clone().new_command_sync(executable);
+    // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
+    // expects rustc as the first argument.
+    if rustc_executable != executable {
+        child.arg(&rustc_executable);
+    }
+
+    child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+
+    let rustc_vv = run_input_output(child, None).await.map(|output| {
+        if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {
+            if stdout.starts_with("rustc ") {
+                return Ok(stdout);
+            }
+        }
+        Err(ProcessError(output))
+    })?;
+
+    // rustc -vV verification status
+    match rustc_vv {
+        Ok(rustc_verbose_version) => {
+            let rustc_executable2 = rustc_executable.clone();
+
+            let proxy = RustupProxy::find_proxy_executable::<T>(
+                &rustc_executable2,
+                "rustup",
+                creator.clone(),
+                env,
+            );
+            use futures::TryFutureExt;
+            let creator1 = creator.clone();
+            let res = proxy.and_then(move |proxy| async move {
+                match proxy {
+                    Ok(Some(proxy)) => {
+                        trace!("Found rustup proxy executable");
+                        // take the pathbuf for rustc as resolved by the proxy
+                        match proxy.resolve_proxied_executable(creator1, cwd, env).await {
+                            Ok((resolved_path, _time)) => {
+                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+                                Ok((Some(proxy), resolved_path))
+                            }
+                            Err(e) => {
+                                trace!("Could not resolve compiler with rustup proxy: {}", e);
+                                Ok((None, rustc_executable))
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        trace!("Did not find rustup");
+                        Ok((None, rustc_executable))
+                    }
+                    Err(e) => {
+                        trace!("Did not find rustup due to {}, compiling without proxy", e);
+                        Ok((None, rustc_executable))
+                    }
+                }
+            });
+
+            let (proxy, resolved_rustc) = res
+                .await
+                .map(|(proxy, resolved_compiler_executable)| {
+                    (
+                        proxy
+                            .map(Box::new)
+                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+                        resolved_compiler_executable,
+                    )
+                })
+                .unwrap_or_else(|_e| {
+                    trace!("Compiling rust without proxy");
+                    (None, rustc_executable2)
+                });
+
+            debug!("Using rustc at path: {resolved_rustc:?}");
+
+            Rust::new(
+                creator,
+                resolved_rustc,
+                env,
+                &rustc_verbose_version,
+                dist_archive,
+                pool,
+            )
+            .await
+            .map(|c| {
+                (
+                    Box::new(c) as Box<dyn Compiler<T>>,
+                    proxy as Option<Box<dyn CompilerProxy<T>>>,
+                )
+            })
+        }
+        Err(e) => Err(e).context("Failed to launch subprocess for compiler determination"),
     }
 }
 
@@ -1401,6 +1462,14 @@ mod test {
         let pool = runtime.handle();
         next_command(
             &creator,
+            Ok(MockChild::new(
+                exit_status(1),
+                "",
+                "gcc: error: unrecognized command-line option '-vV'; did you mean '-v'?",
+            )),
+        );
+        next_command(
+            &creator,
             Ok(MockChild::new(exit_status(0), "\n\ncompiler_id=gcc", "")),
         );
         let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
@@ -1416,6 +1485,53 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(
+            &creator,
+            Ok(MockChild::new(
+                exit_status(1),
+                "",
+                "clang: error: unknown argument: '-vV'",
+            )),
+        );
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
+        );
+        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+            .wait()
+            .unwrap()
+            .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_must_be_clang() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        let clang = f.mk_bin("clang").unwrap();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
+        );
+        let c = detect_compiler(creator, &clang, f.tempdir.path(), &[], &[], pool, None)
+            .wait()
+            .unwrap()
+            .0;
+        assert_eq!(CompilerKind::C(CCompilerKind::Clang), c.kind());
+    }
+
+    #[test]
+    fn test_detect_compiler_vv_clang() {
+        let f = TestFixture::new();
+        let creator = new_creator();
+        let runtime = single_threaded_runtime();
+        let pool = runtime.handle();
+        next_command(
+            &creator,
+            Ok(MockChild::new(exit_status(0), "clang: 13\n", "")),
+        );
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=clang\n", "")),
@@ -1444,6 +1560,14 @@ mod test {
         // Compiler detection output
         next_command(
             &creator,
+            Ok(MockChild::new(
+                exit_status(1),
+                "",
+                "msvc-error: unknown argument: '-vV'",
+            )),
+        );
+        next_command(
+            &creator,
             Ok(MockChild::new(exit_status(0), "\ncompiler_id=msvc\n", "")),
         );
         // showincludes prefix detection output
@@ -1464,6 +1588,7 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=nvcc\n", "")),
@@ -1481,6 +1606,7 @@ mod test {
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=nvhpc\n", "")),
@@ -1581,6 +1707,7 @@ LLVM version: 6.0",
 
         // Test we don't detect rustc if the first arg is not rustc
         let creator = new_creator();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         populate_rustc_command_mock(&creator, &f);
         assert!(detect_compiler(
             creator,
@@ -1594,7 +1721,7 @@ LLVM version: 6.0",
         .wait()
         .is_err());
 
-        // Test we don't detect rustc if the CARGO env is not defined
+        // Test we detect rustc if the CARGO env is not defined
         let creator = new_creator();
         populate_rustc_command_mock(&creator, &f);
         assert!(detect_compiler(
@@ -1607,7 +1734,7 @@ LLVM version: 6.0",
             None,
         )
         .wait()
-        .is_err());
+        .is_ok());
     }
 
     #[test]
@@ -1616,6 +1743,7 @@ LLVM version: 6.0",
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "\ncompiler_id=diab\n", "")),
@@ -1633,6 +1761,7 @@ LLVM version: 6.0",
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "something", "")),
@@ -1656,6 +1785,7 @@ LLVM version: 6.0",
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
+        next_command(&creator, Ok(MockChild::new(exit_status(1), "", "no -vV")));
         next_command(&creator, Ok(MockChild::new(exit_status(1), "", "")));
         assert!(detect_compiler(
             creator,
@@ -1674,6 +1804,7 @@ LLVM version: 6.0",
     #[test_case(false ; "without preprocessor cache")]
     fn test_compiler_version_affects_hash(preprocessor_cache_mode: bool) {
         let f = TestFixture::new();
+        let clang = f.mk_bin("clang").unwrap();
         let creator = new_creator();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
@@ -1689,7 +1820,7 @@ LLVM version: 6.0",
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
                 let c = detect_compiler(
                     creator.clone(),
-                    &f.bins[0],
+                    &clang,
                     f.tempdir.path(),
                     &[],
                     &[],
@@ -1746,6 +1877,14 @@ LLVM version: 6.0",
         let results: Vec<_> = arguments
             .iter()
             .map(|argument| {
+                next_command(
+                    &creator,
+                    Ok(MockChild::new(
+                        exit_status(1),
+                        "",
+                        "clang: error: unknown argument: '-vV'",
+                    )),
+                );
                 next_command(&creator, Ok(MockChild::new(exit_status(0), output, "")));
                 let c = detect_compiler(
                     creator.clone(),
@@ -1796,11 +1935,12 @@ LLVM version: 6.0",
         let pool = runtime.handle();
         let f = TestFixture::new();
         // Pretend to be GCC.
+        let gcc = f.mk_bin("gcc").unwrap();
         next_command(
             &creator,
             Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
         );
-        let c = get_compiler_info(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+        let c = get_compiler_info(creator, &gcc, f.tempdir.path(), &[], &[], pool, None)
             .wait()
             .unwrap()
             .0;
@@ -1814,6 +1954,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(
@@ -1836,7 +1977,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -1940,6 +2081,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(
@@ -1962,7 +2104,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -2062,6 +2204,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let storage = MockStorage::new(None, preprocessor_cache_mode);
@@ -2075,7 +2218,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -2147,6 +2290,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         // Write a dummy input file so the preprocessor cache mode can work
@@ -2162,7 +2306,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -2228,6 +2372,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(
@@ -2250,7 +2395,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -2354,6 +2499,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = single_threaded_runtime();
         let pool = runtime.handle().clone();
         let storage = DiskCache::new(
@@ -2380,7 +2526,7 @@ LLVM version: 6.0",
         });
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],
@@ -2440,6 +2586,7 @@ LLVM version: 6.0",
         drop(env_logger::try_init());
         let creator = new_creator();
         let f = TestFixture::new();
+        let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
         let dist_clients = vec![
@@ -2468,7 +2615,7 @@ LLVM version: 6.0",
         );
         let c = get_compiler_info(
             creator.clone(),
-            &f.bins[0],
+            &gcc,
             f.tempdir.path(),
             &[],
             &[],

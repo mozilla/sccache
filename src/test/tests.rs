@@ -179,6 +179,8 @@ fn test_server_unsupported_compiler() {
     let conn = connect_to_server(port).unwrap();
     {
         let mut c = server_creator.lock().unwrap();
+        // fail rust driver check
+        c.next_command_spawns(Ok(MockChild::new(exit_status(1), "hello", "error")));
         // The server will check the compiler, so pretend to be an unsupported
         // compiler.
         c.next_command_spawns(Ok(MockChild::new(exit_status(0), "hello", "error")));
@@ -223,6 +225,7 @@ fn test_server_unsupported_compiler() {
 fn test_server_compile() {
     let _ = env_logger::try_init();
     let f = TestFixture::new();
+    let gcc = f.mk_bin("gcc").unwrap();
     let (port, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
     // Connect to the server.
     const PREPROCESSOR_STDOUT: &[u8] = b"preprocessor stdout";
@@ -254,7 +257,7 @@ fn test_server_compile() {
     }
     // Ask the server to compile something.
     //TODO: MockCommand should validate these!
-    let exe = &f.bins[0];
+    let exe = &gcc;
     let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
     let cwd = f.tempdir.path();
     // This creator shouldn't create any processes. It will assert if
