@@ -59,7 +59,7 @@ mime = "0.3"
 num_cpus = "1.16"
 number_prefix = "0.4"
 once_cell = "1.19"
-opendal = { version = "0.44.1", optional = true }
+opendal = { version = "0.44.2", optional = true }
 openssl = { version = "0.10.62", optional = true }
 rand = "0.8.4"
 regex = "1.10.2"
