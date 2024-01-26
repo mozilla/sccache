@@ -688,7 +688,10 @@ mod test {
             .unwrap();
 
         // Use disk cache.
-        let mut config = Config { cache: None, ..Default::default() };
+        let mut config = Config {
+            cache: None,
+            ..Default::default()
+        };
 
         let tempdir = tempfile::Builder::new()
             .prefix("sccache_test_rust_cargo")
@@ -707,10 +710,7 @@ mod test {
             let cache = storage_from_config(&config, runtime.handle()).unwrap();
 
             runtime.block_on(async move {
-                cache
-                    .put("test1", CacheWrite::default())
-                    .await
-                    .unwrap();
+                cache.put("test1", CacheWrite::default()).await.unwrap();
                 cache
                     .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
                     .unwrap();
@@ -724,13 +724,21 @@ mod test {
             let cache = storage_from_config(&config, runtime.handle()).unwrap();
 
             runtime.block_on(async move {
-                cache
-                    .put("test1", CacheWrite::default())
-                    .await
-                    .unwrap_err();
-                cache
-                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
-                    .unwrap_err();
+                assert_eq!(
+                    cache
+                        .put("test1", CacheWrite::default())
+                        .await
+                        .unwrap_err()
+                        .to_string(),
+                    "Cannot write to a read-only cache"
+                );
+                assert_eq!(
+                    cache
+                        .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                        .unwrap_err()
+                        .to_string(),
+                    "Cannot write to a read-only cache"
+                );
             });
         }
     }
