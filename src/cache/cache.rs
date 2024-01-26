@@ -687,9 +687,8 @@ mod test {
             .build()
             .unwrap();
 
-        let mut config = Config::default();
         // Use disk cache.
-        config.cache = None;
+        let mut config = Config { cache: None, ..Default::default() };
 
         let tempdir = tempfile::Builder::new()
             .prefix("sccache_test_rust_cargo")
@@ -709,11 +708,11 @@ mod test {
 
             runtime.block_on(async move {
                 cache
-                    .put("test1".into(), CacheWrite::default())
+                    .put("test1", CacheWrite::default())
                     .await
                     .unwrap();
                 cache
-                    .put_preprocessor_cache_entry("test1".into(), PreprocessorCacheEntry::default())
+                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
                     .unwrap();
             });
         }
@@ -726,11 +725,11 @@ mod test {
 
             runtime.block_on(async move {
                 cache
-                    .put("test1".into(), CacheWrite::default())
+                    .put("test1", CacheWrite::default())
                     .await
                     .unwrap_err();
                 cache
-                    .put_preprocessor_cache_entry("test1".into(), PreprocessorCacheEntry::default())
+                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
                     .unwrap_err();
             });
         }
