@@ -1381,7 +1381,7 @@ where
 mod test {
     use super::*;
     use crate::cache::disk::DiskCache;
-    use crate::cache::{CacheRead, PreprocessorCacheModeConfig};
+    use crate::cache::{CacheMode, CacheRead, PreprocessorCacheModeConfig};
     use crate::mock_command::*;
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
@@ -1824,6 +1824,7 @@ LLVM version: 6.0",
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
                 ..Default::default()
             },
+            CacheMode::ReadWrite,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -1949,6 +1950,7 @@ LLVM version: 6.0",
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
                 ..Default::default()
             },
+            CacheMode::ReadWrite,
         );
         // Write a dummy input file so the preprocessor cache mode can work
         std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
@@ -2236,6 +2238,7 @@ LLVM version: 6.0",
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
                 ..Default::default()
             },
+            CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
         // Write a dummy input file so the preprocessor cache mode can work
@@ -2361,6 +2364,7 @@ LLVM version: 6.0",
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
                 ..Default::default()
             },
+            CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.  Also inject a fake object file that the subsequent
@@ -2454,6 +2458,7 @@ LLVM version: 6.0",
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
                 ..Default::default()
             },
+            CacheMode::ReadWrite,
         );
         let storage = Arc::new(storage);
         // Pretend to be GCC.

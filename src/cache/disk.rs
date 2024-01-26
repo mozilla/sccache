@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{Cache, CacheRead, CacheWrite, Storage};
+use crate::cache::{Cache, CacheMode, CacheRead, CacheWrite, Storage};
 use crate::compiler::PreprocessorCacheEntry;
 use crate::lru_disk_cache::LruDiskCache;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
@@ -72,6 +72,7 @@ pub struct DiskCache {
     pool: tokio::runtime::Handle,
     preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     preprocessor_cache: Arc<Mutex<LazyDiskCache>>,
+    rw_mode: CacheMode,
 }
 
 impl DiskCache {
@@ -81,6 +82,7 @@ impl DiskCache {
         max_size: u64,
         pool: &tokio::runtime::Handle,
         preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
+        rw_mode: CacheMode,
     ) -> DiskCache {
         DiskCache {
             lru: Arc::new(Mutex::new(LazyDiskCache::Uninit {
@@ -95,6 +97,7 @@ impl DiskCache {
                     .into_os_string(),
                 max_size,
             })),
+            rw_mode,
         }
     }
 }
@@ -137,6 +140,11 @@ impl Storage for DiskCache {
         // We should probably do this on a background thread if we're going to buffer
         // everything in memory...
         trace!("DiskCache::finish_put({})", key);
+
+        if self.rw_mode == CacheMode::ReadOnly {
+            return Err(anyhow!("Cannot write to a read-only cache"));
+        }
+
         let lru = self.lru.clone();
         let key = make_key_path(key);
 
@@ -148,6 +156,10 @@ impl Storage for DiskCache {
                 Ok(start.elapsed())
             })
             .await?
+    }
+
+    async fn check(&self) -> Result<CacheMode> {
+        Ok(self.rw_mode)
     }
 
     fn location(&self) -> String {
@@ -178,6 +190,10 @@ impl Storage for DiskCache {
         key: &str,
         preprocessor_cache_entry: PreprocessorCacheEntry,
     ) -> Result<()> {
+        if self.rw_mode == CacheMode::ReadOnly {
+            return Err(anyhow!("Cannot write to a read-only cache"));
+        }
+
         let key = normalize_key(key);
         let mut buf = vec![];
         preprocessor_cache_entry.serialize_to(&mut buf)?;

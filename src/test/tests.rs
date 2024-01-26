@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::cache::disk::DiskCache;
-use crate::cache::PreprocessorCacheModeConfig;
+use crate::cache::{CacheMode, PreprocessorCacheModeConfig};
 use crate::client::connect_to_server;
 use crate::commands::{do_compile, request_shutdown, request_stats};
 use crate::jobserver::Client;
@@ -85,6 +85,7 @@ where
             cache_size,
             runtime.handle(),
             PreprocessorCacheModeConfig::default(),
+            CacheMode::ReadWrite,
         ));
 
         let client = unsafe { Client::new() };

@@ -340,42 +340,51 @@ where
                     let mut updated = false;
                     let hit = preprocessor_cache_entry
                         .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+
+                    let mut update_failed = false;
                     if updated {
                         // Time macros have been found, we need to update
                         // the preprocessor cache entry. See [`PreprocessorCacheEntry::result_matches`].
                         debug!(
                             "Preprocessor cache updated because of time macros: {preprocessor_key}"
                         );
-                        storage.put_preprocessor_cache_entry(
+
+                        if let Err(e) = storage.put_preprocessor_cache_entry(
                             preprocessor_key,
                             preprocessor_cache_entry,
-                        )?;
+                        ) {
+                            debug!("Failed to update preprocessor cache: {}", e);
+                            update_failed = true;
+                        }
                     }
-                    if let Some(key) = hit {
-                        debug!("Preprocessor cache hit: {preprocessor_key}");
-                        // A compiler binary may be a symlink to another and
-                        // so has the same digest, but that means
-                        // the toolchain will not contain the correct path
-                        // to invoke the compiler! Add the compiler
-                        // executable path to try and prevent this
-                        let weak_toolchain_key =
-                            format!("{}-{}", executable.to_string_lossy(), executable_digest);
-                        return Ok(HashResult {
-                            key,
-                            compilation: Box::new(CCompilation {
-                                parsed_args: parsed_args.to_owned(),
-                                #[cfg(feature = "dist-client")]
-                                // TODO or is it never relevant since dist?
-                                preprocessed_input: vec![],
-                                executable: executable.to_owned(),
-                                compiler: compiler.to_owned(),
-                                cwd: cwd.to_owned(),
-                                env_vars: env_vars.to_owned(),
-                            }),
-                            weak_toolchain_key,
-                        });
-                    } else {
-                        debug!("Preprocessor cache miss: {preprocessor_key}");
+
+                    if !update_failed {
+                        if let Some(key) = hit {
+                            debug!("Preprocessor cache hit: {preprocessor_key}");
+                            // A compiler binary may be a symlink to another and
+                            // so has the same digest, but that means
+                            // the toolchain will not contain the correct path
+                            // to invoke the compiler! Add the compiler
+                            // executable path to try and prevent this
+                            let weak_toolchain_key =
+                                format!("{}-{}", executable.to_string_lossy(), executable_digest);
+                            return Ok(HashResult {
+                                key,
+                                compilation: Box::new(CCompilation {
+                                    parsed_args: parsed_args.to_owned(),
+                                    #[cfg(feature = "dist-client")]
+                                    // TODO or is it never relevant since dist?
+                                    preprocessed_input: vec![],
+                                    executable: executable.to_owned(),
+                                    compiler: compiler.to_owned(),
+                                    cwd: cwd.to_owned(),
+                                    env_vars: env_vars.to_owned(),
+                                }),
+                                weak_toolchain_key,
+                            });
+                        } else {
+                            debug!("Preprocessor cache miss: {preprocessor_key}");
+                        }
                     }
                 }
             }
@@ -491,8 +500,12 @@ where
                     .collect();
                 files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
                 preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
-                storage
-                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)?;
+
+                if let Err(e) = storage
+                    .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
+                {
+                    debug!("Failed to update preprocessor cache: {}", e);
+                }
             }
         }
 

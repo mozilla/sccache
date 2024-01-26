@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
 use opendal::{layers::LoggingLayer, services::Gcs};
@@ -21,18 +22,10 @@ use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
-#[derive(Copy, Clone)]
-pub enum RWMode {
-    ReadOnly,
-    ReadWrite,
-}
-
-impl RWMode {
-    fn to_scope(self) -> &'static str {
-        match self {
-            RWMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
-            RWMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
-        }
+fn rw_to_scope(mode: CacheMode) -> &'static str {
+    match mode {
+        CacheMode::ReadOnly => "https://www.googleapis.com/auth/devstorage.read_only",
+        CacheMode::ReadWrite => "https://www.googleapis.com/auth/devstorage.read_write",
     }
 }
 
@@ -46,13 +39,13 @@ impl GCSCache {
         key_prefix: &str,
         cred_path: Option<&str>,
         service_account: Option<&str>,
-        rw_mode: RWMode,
+        rw_mode: CacheMode,
         credential_url: Option<&str>,
     ) -> Result<Operator> {
         let mut builder = Gcs::default();
         builder.bucket(bucket);
         builder.root(key_prefix);
-        builder.scope(rw_mode.to_scope());
+        builder.scope(rw_to_scope(rw_mode));
 
         if let Some(service_account) = service_account {
             builder.service_account(service_account);
@@ -67,7 +60,7 @@ impl GCSCache {
                 .map_err(|err| anyhow!("gcs credential url is invalid: {err:?}"))?;
 
             builder.customed_token_loader(Box::new(TaskClusterTokenLoader {
-                scope: rw_mode.to_scope().to_string(),
+                scope: rw_to_scope(rw_mode).to_string(),
                 url: cred_url.to_string(),
             }));
         }

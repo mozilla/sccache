@@ -16,7 +16,7 @@
 use crate::cache::azure::AzureBlobCache;
 use crate::cache::disk::DiskCache;
 #[cfg(feature = "gcs")]
-use crate::cache::gcs::{GCSCache, RWMode};
+use crate::cache::gcs::GCSCache;
 #[cfg(feature = "gha")]
 use crate::cache::gha::GHACache;
 #[cfg(feature = "memcached")]
@@ -115,8 +115,8 @@ impl fmt::Debug for Cache {
     }
 }
 
-/// CacheMode is used to repreent which mode we are using.
-#[derive(Debug)]
+/// CacheMode is used to represent which mode we are using.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheMode {
     /// Only read cache from storage.
     ReadOnly,
@@ -578,17 +578,12 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init gcs cache with bucket {bucket}, key_prefix {key_prefix}");
 
-                let gcs_read_write_mode = match rw_mode {
-                    config::GCSCacheRWMode::ReadOnly => RWMode::ReadOnly,
-                    config::GCSCacheRWMode::ReadWrite => RWMode::ReadWrite,
-                };
-
                 let storage = GCSCache::build(
                     bucket,
                     key_prefix,
                     cred_path.as_deref(),
                     service_account.as_deref(),
-                    gcs_read_write_mode,
+                    (*rw_mode).into(),
                     credential_url.as_deref(),
                 )
                 .map_err(|err| anyhow!("create gcs cache failed: {err:?}"))?;
@@ -680,18 +675,21 @@ pub fn storage_from_config(
 
     let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
+    let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
     Ok(Arc::new(DiskCache::new(
         dir,
         size,
         pool,
         preprocessor_cache_mode_config,
+        rw_mode,
     )))
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::config::CacheModeConfig;
 
     #[test]
     fn test_normalize_key() {
@@ -699,5 +697,69 @@ mod test {
             normalize_key("0123456789abcdef0123456789abcdef"),
             "0/1/2/0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn test_read_write_mode_local() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        // Use disk cache.
+        let mut config = Config {
+            cache: None,
+            ..Default::default()
+        };
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_test_rust_cargo")
+            .tempdir()
+            .context("Failed to create tempdir")
+            .unwrap();
+        let cache_dir = tempdir.path().join("cache");
+        fs::create_dir(&cache_dir).unwrap();
+
+        config.fallback_cache.dir = cache_dir;
+
+        // Test Read Write
+        config.fallback_cache.rw_mode = CacheModeConfig::ReadWrite;
+
+        {
+            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+
+            runtime.block_on(async move {
+                cache.put("test1", CacheWrite::default()).await.unwrap();
+                cache
+                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                    .unwrap();
+            });
+        }
+
+        // Test Read-only
+        config.fallback_cache.rw_mode = CacheModeConfig::ReadOnly;
+
+        {
+            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+
+            runtime.block_on(async move {
+                assert_eq!(
+                    cache
+                        .put("test1", CacheWrite::default())
+                        .await
+                        .unwrap_err()
+                        .to_string(),
+                    "Cannot write to a read-only cache"
+                );
+                assert_eq!(
+                    cache
+                        .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                        .unwrap_err()
+                        .to_string(),
+                    "Cannot write to a read-only cache"
+                );
+            });
+        }
     }
 }

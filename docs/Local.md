@@ -43,3 +43,11 @@ Configuration options and their default values:
 See where to write the config in [the configuration doc](Configuration.md).
 
 *Note that preprocessor caching is currently only implemented for GCC and Clang and when using local storage.*
+
+## Read-only cache mode
+
+By default, the local cache operates in read/write mode. The `SCCACHE_LOCAL_RW_MODE` environment variable can be set to `READ_ONLY` (or `READ_WRITE`) to modify this behavior.
+
+You can use read-only mode to prevent sccache from writing new cache items to the disk. This can be useful, for example, if you want to use items that have already been cached, but not add new ones to the cache. 
+
+Note that this feature is only effective if you already have items in your cache. Using this option on an empty cache will cause sccache to simply do nothing, just add overhead.
