@@ -152,8 +152,6 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
-            developer_dir: /Applications/Xcode_13.2.1.app
-            sdkroot: /Applications/Xcode_13.2.1.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX12.1.sdk
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
