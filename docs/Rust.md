@@ -1,7 +1,7 @@
 sccache includes support for caching Rust compilation. This includes many caveats, and is primarily focused on caching rustc invocations as produced by cargo. A (possibly-incomplete) list follows:
 * `--emit` is required.
 * `--crate-name` is required.
-* Only `link` and `dep-info` are supported as `--emit` values, and `link` must be present.
+* Only `link`, `metadata` and `dep-info` are supported as `--emit` values, and `link` must be present.
 * `--out-dir` is required.
 * `-o file` is not supported.
 * Compilation from stdin is not supported, a source file must be provided.
