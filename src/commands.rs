@@ -89,6 +89,13 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let runtime = Runtime::new()?;
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
+
+    // Spawn a blocking task to bind the Unix socket
+    let sp = socket_path.clone();
+    let listener = runtime.block_on(async move {
+        tokio::net::UnixListener::bind(sp).expect("Failed to bind Unix socket")
+    });
+
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
@@ -97,7 +104,6 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         .spawn()?;
 
     let startup = async move {
-        let listener = tokio::net::UnixListener::bind(&socket_path)?;
         let (socket, _) = listener.accept().await?;
 
         read_server_startup_status(socket).await
