@@ -90,7 +90,9 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let exe_path = env::current_exe()?;
     let workdir = exe_path.parent().expect("executable path has no parent?!");
 
-    // Spawn a blocking task to bind the Unix socket
+    // Spawn a blocking task to bind the Unix socket. Note that the socket
+    // must be bound before spawning `_child` below to avoid a race between
+    // the parent binding the socket and the child connecting to it.
     let sp = socket_path.clone();
     let listener = runtime.block_on(async move { tokio::net::UnixListener::bind(sp) })?;
 
