@@ -93,8 +93,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // Spawn a blocking task to bind the Unix socket
     let sp = socket_path.clone();
     let listener = runtime.block_on(async move {
-        tokio::net::UnixListener::bind(sp).expect("Failed to bind Unix socket")
-    });
+        tokio::net::UnixListener::bind(sp)
+    })?;
 
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
