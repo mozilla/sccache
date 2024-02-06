@@ -93,8 +93,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // Spawn a blocking task to bind the Unix socket. Note that the socket
     // must be bound before spawning `_child` below to avoid a race between
     // the parent binding the socket and the child connecting to it.
-    let sp = socket_path.clone();
-    let listener = runtime.block_on(async move { tokio::net::UnixListener::bind(sp) })?;
+    let listener = {
+        let _guard = runtime.enter();
+        tokio::net::UnixListener::bind(&socket_path.clone())?
+    };
 
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
