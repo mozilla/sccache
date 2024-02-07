@@ -60,7 +60,7 @@ cache_from = "sccache-"
 url = "..."
 
 [cache.redis]
-url = "redis://user:passwd@1.2.3.4:6379/1"
+url = "redis://user:passwd@1.2.3.4:6379/?db=1"
 
 [cache.s3]
 bucket = "name"
@@ -124,7 +124,7 @@ will default to `us-east-1`.
 * `SCCACHE_REDIS` full redis url, including auth and access token/passwd
 * `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 
-The full url appears then as `redis://user:passwd@1.2.3.4:6379/1`.
+The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### memcached
 
