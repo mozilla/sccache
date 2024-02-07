@@ -95,7 +95,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // the parent binding the socket and the child connecting to it.
     let listener = {
         let _guard = runtime.enter();
-        tokio::net::UnixListener::bind(&socket_path.clone())?
+        tokio::net::UnixListener::bind(&socket_path)?
     };
 
     let _child = process::Command::new(&exe_path)
