@@ -100,7 +100,7 @@ url = { version = "2", optional = true }
 uuid = { version = "1.6", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
-which = { version = "5", default-features = false }
+which = { version = "6", default-features = false }
 zip = { version = "0.6", default-features = false }
 zstd = "0.13"
 
