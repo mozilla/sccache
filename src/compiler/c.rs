@@ -292,20 +292,18 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                         }
                     }
 
-                    let hip_device_lib_path: Option<String> = hip_device_lib_path_arg
+                    let hip_device_lib_path: String = hip_device_lib_path_arg
                         .or(hip_device_lib_path_env)
                         .or(rocm_path_arg)
-                        .or(rocm_path_env);
+                        .or(rocm_path_env)
+                        // This is the default location in official AMD packages and containers.
+                        .unwrap_or("/opt/rocm/amdgcn/bitcode".to_string());
 
-                    if let Some(hip_device_lib_path) = hip_device_lib_path {
-                        if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
-                            for file in files {
-                                if let Ok(file) = file {
-                                    if let Some(ext) = file.path().extension() {
-                                        if ext == "bc" {
-                                            args.extra_hash_files.push(file.path());
-                                        }
-                                    }
+                    if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
+                        for file in files.flatten() {
+                            if let Some(ext) = file.path().extension() {
+                                if ext == "bc" {
+                                    args.extra_hash_files.push(file.path());
                                 }
                             }
                         }
