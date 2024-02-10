@@ -249,11 +249,69 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
         match self.compiler.parse_arguments(arguments, cwd) {
             CompilerArguments::Ok(mut args) => {
+                // Handle SCCACHE_EXTRAFILES
                 for (k, v) in env_vars.iter() {
                     if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
                         args.extra_hash_files.extend(std::env::split_paths(&v))
                     }
                 }
+
+                // Handle cache invalidation for the ROCm device bitcode libraries. See
+                // https://clang.llvm.org/docs/HIPSupport.html for details regarding the order that
+                // the environment variables and command-line arguments take affect.
+                if args.language == Language::Hip {
+                    let mut rocm_path_arg = None;
+                    let mut hip_device_lib_path_arg = None;
+
+                    for arg in &args.common_args {
+                        if let Some(sarg) = arg.to_str() {
+                            if rocm_path_arg.is_none() && sarg.starts_with("--rocm-path=") {
+                                let mut p = sarg[12..].to_string();
+                                p.push_str("/amdgcn/bitcode");
+                                rocm_path_arg = Some(p);
+                            }
+                            if hip_device_lib_path_arg.is_none()
+                                && sarg.starts_with("--hip-device-lib-path=")
+                            {
+                                hip_device_lib_path_arg = Some(sarg[22..].to_string());
+                            }
+                        }
+                    }
+
+                    let mut rocm_path_env: Option<String> = None;
+                    let mut hip_device_lib_path_env: Option<String> = None;
+                    for (k, v) in env_vars.iter() {
+                        if k == "ROCM_PATH" {
+                            if let Some(p) = k.to_str() {
+                                let mut finp = p.to_string();
+                                finp.push_str("/amdgcn/bitcode");
+                                rocm_path_env = Some(finp);
+                            }
+                        } else if k == "HIP_DEVICE_LIB_PATH" {
+                            hip_device_lib_path_env = v.to_str().map(|s| s.to_string());
+                        }
+                    }
+
+                    let hip_device_lib_path: Option<String> = hip_device_lib_path_arg
+                        .or(hip_device_lib_path_env)
+                        .or(rocm_path_arg)
+                        .or(rocm_path_env);
+
+                    if let Some(hip_device_lib_path) = hip_device_lib_path {
+                        if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
+                            for file in files {
+                                if let Ok(file) = file {
+                                    if let Some(ext) = file.path().extension() {
+                                        if ext == "bc" {
+                                            args.extra_hash_files.push(file.path());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
                     parsed_args: args,
                     executable: self.executable.clone(),
