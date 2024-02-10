@@ -256,50 +256,67 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                     }
                 }
 
-                // Handle cache invalidation for the ROCm device bitcode libraries. See
-                // https://clang.llvm.org/docs/HIPSupport.html for details regarding the order that
-                // the environment variables and command-line arguments take affect.
+                // Handle cache invalidation for the ROCm device bitcode libraries. Every HIP
+                // object links in some LLVM bitcode libraries (.bc files), so in some sense
+                // every HIP object compilation has an direct dependency on those bitcode
+                // libraries.
+                //
+                // The bitcode libraries are unlikely to change **except** when a ROCm version
+                // changes, so for correctness we should take these bitcode libraries into
+                // account by adding them to `extra_hash_files`.
+                //
+                // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
+                // order in which the environment variables and command-line arguments control the
+                // directory to search for bitcode libraries.
+                //
+                // In reality, not every bitcode library in that directory is needed, but that is
+                // too much to handle on our side so we just hash every bitcode library in that
+                // directory.
                 if args.language == Language::Hip {
-                    let mut rocm_path_arg = None;
-                    let mut hip_device_lib_path_arg = None;
+                    let mut rocm_path_arg: Option<PathBuf> = None;
+                    let mut hip_device_lib_path_arg: Option<PathBuf> = None;
 
                     for arg in &args.common_args {
                         if let Some(sarg) = arg.to_str() {
                             if rocm_path_arg.is_none() && sarg.starts_with("--rocm-path=") {
-                                let mut p = sarg[12..].to_string();
-                                p.push_str("/amdgcn/bitcode");
-                                rocm_path_arg = Some(p);
+                                rocm_path_arg = Some(
+                                    PathBuf::from(sarg["--rocm-path=".len()..].to_string())
+                                        .join("amdgcn")
+                                        .join("bitcode"),
+                                );
                             }
                             if hip_device_lib_path_arg.is_none()
                                 && sarg.starts_with("--hip-device-lib-path=")
                             {
-                                hip_device_lib_path_arg = Some(sarg[22..].to_string());
+                                hip_device_lib_path_arg = Some(PathBuf::from(
+                                    sarg["--hip-device-lib-path=".len()..].to_string(),
+                                ));
                             }
                         }
                     }
 
-                    let mut rocm_path_env: Option<String> = None;
-                    let mut hip_device_lib_path_env: Option<String> = None;
+                    let mut rocm_path_env: Option<PathBuf> = None;
+                    let mut hip_device_lib_path_env: Option<PathBuf> = None;
                     for (k, v) in env_vars.iter() {
                         if k == "ROCM_PATH" {
                             if let Some(p) = k.to_str() {
-                                let mut finp = p.to_string();
-                                finp.push_str("/amdgcn/bitcode");
-                                rocm_path_env = Some(finp);
+                                rocm_path_env = Some(
+                                    PathBuf::from(p.to_string()).join("amdgcn").join("bitcode"),
+                                );
                             }
                         } else if k == "HIP_DEVICE_LIB_PATH" {
-                            hip_device_lib_path_env = v.to_str().map(|s| s.to_string());
+                            hip_device_lib_path_env = v.to_str().map(|s| PathBuf::from(s));
                         }
                     }
 
-                    let hip_device_lib_path: String = hip_device_lib_path_arg
+                    let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
                         .or(hip_device_lib_path_env)
                         .or(rocm_path_arg)
                         .or(rocm_path_env)
                         // This is the default location in official AMD packages and containers.
-                        .unwrap_or("/opt/rocm/amdgcn/bitcode".to_string());
+                        .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
 
-                    if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
+                    if let Ok(files) = hip_device_lib_path.read_dir() {
                         for file in files.flatten() {
                             if let Some(ext) = file.path().extension() {
                                 if ext == "bc" {
