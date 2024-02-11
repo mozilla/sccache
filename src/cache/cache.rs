@@ -606,12 +606,16 @@ pub fn storage_from_config(
             }) => {
                 debug!("Init memcached cache with url {url}");
 
-                let storage = MemcachedCache::build(url, key_prefix,*expiration)
+                let storage = MemcachedCache::build(url, key_prefix, *expiration)
                     .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "redis")]
-            CacheType::Redis(config::RedisCacheConfig { ref url, expiration: ref ttl, ref key_prefix }) => {
+            CacheType::Redis(config::RedisCacheConfig {
+                ref url,
+                expiration: ref ttl,
+                ref key_prefix,
+            }) => {
                 debug!("Init redis cache with url {url}");
                 let storage = RedisCache::build(url, key_prefix, *ttl)
                     .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
