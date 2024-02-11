@@ -65,7 +65,7 @@ key_prefix = "/custom/prefix/if/need"
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/?db=1"
 # Entry expiration time in seconds. Default is 0 (never expire)
-ttl = 3600
+expiration = 3600
 key_prefix = "/custom/prefix/if/need"
 
 [cache.s3]

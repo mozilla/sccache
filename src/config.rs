@@ -255,11 +255,11 @@ const DEFAULT_REDIS_CACHE_TTL: u64 = 0;
 pub struct RedisCacheConfig {
     pub url: String,
 
-    /// the ttl time in seconds.
+    /// the ttl (expiration) time in seconds.
     ///
     /// Default to infinity (0)
     #[serde(default)]
-    pub ttl: u64,
+    pub expiration: u64,
 
     #[serde(default)]
     pub key_prefix: String,
@@ -628,7 +628,7 @@ fn config_from_env() -> Result<EnvConfig> {
     };
     let redis = env::var("SCCACHE_REDIS").ok().map(|url| RedisCacheConfig {
         url,
-        ttl,
+        expiration: ttl,
         key_prefix: String::new(),
     });
 
@@ -1201,7 +1201,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
-                ttl: 24 * 3600,
+                expiration: 24 * 3600,
                 key_prefix: String::new(),
             }),
             ..Default::default()
@@ -1223,7 +1223,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
-                ttl: 24 * 3600,
+                expiration: 24 * 3600,
                 key_prefix: String::new(),
             }),
             ..Default::default()
@@ -1237,7 +1237,7 @@ fn config_overrides() {
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
-                ttl: 24 * 3600,
+                expiration: 24 * 3600,
                 key_prefix: String::new(),
             }),),
             fallback_cache: DiskCacheConfig {
@@ -1399,12 +1399,13 @@ enabled = true
 version = "sccache"
 
 [cache.memcached]
-url = "..."
+url = "127.0.0.1:11211"
+expiration = 90000
 key_prefix = "/custom/prefix/if/need"
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/1"
-ttl = 86400
+expiration = 86400
 key_prefix = "/my/redis/cache"
 
 [cache.s3]
@@ -1456,12 +1457,12 @@ no_credentials = true
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
-                    ttl: 24 * 3600,
+                    expiration: 24 * 3600,
                     key_prefix: "/my/redis/cache".into(),
                 }),
                 memcached: Some(MemcachedCacheConfig {
-                    url: "...".to_owned(),
-                    expiration: 24 * 3600,
+                    url: "127.0.0.1:11211".to_owned(),
+                    expiration: 25 * 3600,
                     key_prefix: "/custom/prefix/if/need".into(),
                 }),
                 s3: Some(S3CacheConfig {

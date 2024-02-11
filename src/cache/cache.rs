@@ -611,7 +611,7 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "redis")]
-            CacheType::Redis(config::RedisCacheConfig { ref url, ref ttl, ref key_prefix }) => {
+            CacheType::Redis(config::RedisCacheConfig { ref url, expiration: ref ttl, ref key_prefix }) => {
                 debug!("Init redis cache with url {url}");
                 let storage = RedisCache::build(url, key_prefix, *ttl)
                     .map_err(|err| anyhow!("create redis cache failed: {err:?}"))?;
