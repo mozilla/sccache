@@ -68,6 +68,21 @@ endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 key_prefix = "s3prefix"
 server_side_encryption = false
+
+[cache.webdav]
+endpoint = "http://192.168.10.42:80/some/webdav.php"
+key_prefix = "/custom/webdav/subfolder/if/need"
+# Basic HTTP authentication credentials.
+username = "alice"
+password = "secret12"
+# Mutually exclusive with username & password. Bearer token value
+token = "token123"
+
+[cache.oss]
+bucket = "name"
+endpoint = "oss-us-east-1.aliyuncs.com"
+key_prefix = "ossprefix"
+no_credentials = true
 ```
 
 sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
@@ -76,6 +91,8 @@ If no such env variable is set, sccache looks at default locations as below:
 - Linux: `~/.config/sccache/config`
 - macOS: `~/Library/Application Support/Mozilla.sccache/config`
 - Windows: `%APPDATA%\Mozilla\sccache\config\config`
+
+The latest `cache.XXX` entries may be found here: https://github.com/mozilla/sccache/blob/ffe3070f77ef3301c8ff718316e4ab017ec83042/src/config.rs#L300.
 
 ## env
 
