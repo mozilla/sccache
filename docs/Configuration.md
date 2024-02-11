@@ -57,10 +57,16 @@ cache_to = "sccache-latest"
 cache_from = "sccache-"
 
 [cache.memcached]
-url = "..."
+url = "127.0.0.1:11211"
+# Entry expiration time in seconds. Default is 86400 (24 hours)
+expiration = 3600
+key_prefix = "/custom/prefix/if/need"
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/?db=1"
+# Entry expiration time in seconds. Default is 0 (never expire)
+ttl = 3600
+key_prefix = "/custom/prefix/if/need"
 
 [cache.s3]
 bucket = "name"

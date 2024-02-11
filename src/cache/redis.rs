@@ -26,13 +26,14 @@ pub struct RedisCache;
 
 impl RedisCache {
     /// Create a new `RedisCache`.
-    pub fn build(url: &str, ttl: u64) -> Result<Operator> {
+    pub fn build(url: &str, key_prefix: &str, ttl: u64) -> Result<Operator> {
         let parsed = Url::parse(url)?;
 
         let mut builder = Redis::default();
         builder.endpoint(parsed.as_str());
         builder.username(parsed.username());
         builder.password(parsed.password().unwrap_or_default());
+        builder.root(key_prefix);
         if ttl != 0 {
             builder.default_ttl(Duration::from_secs(ttl));
         }

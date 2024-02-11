@@ -25,10 +25,11 @@ use crate::errors::*;
 pub struct MemcachedCache;
 
 impl MemcachedCache {
-    pub fn build(url: &str, expiration: u32) -> Result<Operator> {
+    pub fn build(url: &str, key_prefix: &str, expiration: u32) -> Result<Operator> {
         let mut builder = Memcached::default();
         builder.endpoint(url);
-        builder.default_ttl(Duration::from_secs(expiration as u64));
+        builder.root(key_prefix);
+        builder.default_ttl(Duration::from_secs(expiration.into()));
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
