@@ -56,7 +56,7 @@ hyper-util = { version = "0.1.2", optional = true, features = [
 is-terminal = "0.4.10"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
-libc = "0.2.152"
+libc = "0.2.153"
 linked-hash-map = "0.5"
 log = "0.4"
 memchr = "2"
