@@ -4,7 +4,12 @@ Set `SCCACHE_REDIS` to a [Redis](https://redis.io/) url in format `redis://[[<us
 
 Redis over TLS is supported. Use the [`rediss://`](https://www.iana.org/assignments/uri-schemes/prov/rediss) url scheme (note `rediss` vs `redis`). Append `#insecure` the the url to disable hostname verification and accept self-signed certificates (dangerous!). Note that this also disables [SNI](https://en.wikipedia.org/wiki/Server_Name_Indication).
 
-Set `SCCACHE_REDIS_TTL` in seconds if you don't want your cache to live forever. This will override the default behavior of redis.
+Set `SCCACHE_REDIS_EXPIRATION` in seconds if you don't want your cache to live forever. This will override the default behavior of redis.
+
+`SCCACHE_REDIS_TTL` is a deprecated synonym for `SCCACHE_REDIS_EXPIRATION`.
+
+Set `SCCACHE_REDIS_KEY_PREFIX` if you want to prefix all cache keys. This can be
+useful when sharing a Redis instance with another application or cache.
 
 ## Examples
 
