@@ -983,7 +983,7 @@ fn is_rustc_like<P: AsRef<Path>>(p: P) -> bool {
 /// Returns true if the given path looks like a c compiler program
 ///
 /// This does not check c compilers, it only report programs that are definitely not rustc
-fn is_like_c_compiler<P: AsRef<Path>>(p: P) -> bool {
+fn is_known_c_compiler<P: AsRef<Path>>(p: P) -> bool {
     matches!(
         p.as_ref()
             .file_stem()
@@ -1020,10 +1020,8 @@ where
     trace!("detect_compiler: {}", executable.display());
     // First, see if this looks like rustc.
 
-    let mut must_be_rust = false;
-    let mut rustc_executable = executable.to_path_buf();
-    if is_rustc_like(executable) {
-        must_be_rust = true;
+    let maybe_rustc_executable = if is_rustc_like(executable) {
+        Some(executable.to_path_buf())
     } else if env.iter().any(|(k, _)| k == OsStr::new("CARGO")) {
         // If not, detect the scenario where cargo is configured to wrap rustc with something other than sccache.
         // This happens when sccache is used as a `RUSTC_WRAPPER` and another tool is used as a
@@ -1031,29 +1029,33 @@ where
         //
         // The check for the `CARGO` env acts as a guardrail against false positives.
         // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads
-        if let Some(arg1) = args.iter().next() {
-            if is_rustc_like(arg1) {
-                must_be_rust = true;
-                rustc_executable = PathBuf::from(arg1)
-            }
-        }
+        args.iter()
+            .next()
+            .filter(|arg1| is_rustc_like(arg1))
+            .map(PathBuf::from)
+    } else {
+        None
     };
 
     let pool = pool.clone();
-    if !must_be_rust && is_like_c_compiler(&rustc_executable) {
-        let executable = executable.to_owned();
+
+    let rustc_executable = if let Some(ref rustc_executable) = maybe_rustc_executable {
+        rustc_executable
+    } else if is_known_c_compiler(executable) {
         let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
         return cc.map(|c| (c, None));
-    }
+    } else {
+        // Even if it does not look like rustc like it might still be rustc driver
+        // so we do full check
+        executable
+    };
 
-    // Even if it does not look like rustc like it might still be rustc driver
-    // so we do full check
     match resolve_rust_compiler(
         creator.clone(),
         executable,
-        rustc_executable,
+        rustc_executable.to_path_buf(),
         env,
-        cwd.to_owned(),
+        cwd.to_path_buf(),
         dist_archive,
         pool.clone(),
     )
@@ -1061,8 +1063,9 @@ where
     {
         Ok(res) => Ok(res),
         Err(e) => {
-            if !must_be_rust {
-                let executable = executable.to_owned();
+            // in case we attempted to test for rustc while it didn't look like it, fallback to c compiler detection one lat time
+            if maybe_rustc_executable.is_none() {
+                let executable = executable.to_path_buf();
                 let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
                 cc.map(|c| (c, None))
             } else {
@@ -1201,15 +1204,16 @@ counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-ccbin", OsString, CanBeSeparated('='), Detect_PassThrough),
 ]);
 
-async fn detect_c_compiler<T>(
+async fn detect_c_compiler<T, P>(
     creator: T,
-    executable: PathBuf,
+    executable: P,
     arguments: &[OsString],
     env: Vec<(OsString, OsString)>,
     pool: tokio::runtime::Handle,
 ) -> Result<Box<dyn Compiler<T>>>
 where
     T: CommandCreatorSync,
+    P: AsRef<Path>,
 {
     trace!("detect_c_compiler");
 
@@ -1261,7 +1265,8 @@ compiler_version=__VERSION__
     .to_vec();
     let (tempdir, src) = write_temp_file(&pool, "testfile.c".as_ref(), test).await?;
 
-    let mut cmd = creator.clone().new_command_sync(&executable);
+    let executable = executable.as_ref();
+    let mut cmd = creator.clone().new_command_sync(executable);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .envs(env.iter().map(|s| (&s.0, &s.1)));
@@ -1302,6 +1307,7 @@ compiler_version=__VERSION__
         }
     });
     if let Some(kind) = lines.next() {
+        let executable = executable.to_owned();
         let version = lines
             .next()
             // In case the compiler didn't expand the macro.
