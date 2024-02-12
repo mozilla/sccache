@@ -639,11 +639,8 @@ fn config_from_env() -> Result<EnvConfig> {
     let redis = if let Ok(url) = env::var("SCCACHE_REDIS") {
         let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
             .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"));
-        let ttl = match ttl {
-            None => DEFAULT_REDIS_CACHE_TTL,
-            Some(Ok(ttl)) => ttl,
-            Some(Err(err)) => return Err(err),
-        };
+        let ttl = ttl.transpose()?.unwrap_or(DEFAULT_REDIS_CACHE_TTL);
+
         let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
         Some(RedisCacheConfig {
