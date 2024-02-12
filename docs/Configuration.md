@@ -131,6 +131,7 @@ configuration variables
 * `SCCACHE_ENDPOINT` s3 endpoint
 * `SCCACHE_REGION` s3 region, required if using AWS S3
 * `SCCACHE_S3_USE_SSL` s3 endpoint requires TLS, set this to `true`
+* `SCCACHE_S3_KEY_PREFIX` s3 key prefix (optional)
 
 The endpoint used then becomes `${SCCACHE_BUCKET}.s3-{SCCACHE_REGION}.amazonaws.com`.
 If you are not using the default endpoint and `SCCACHE_REGION` is undefined, it
@@ -141,17 +142,21 @@ will default to `us-east-1`.
 * `SCCACHE_BUCKET` is the name of your R2 bucket.
 * `SCCACHE_ENDPOINT` must follow the format of `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. Note that the `https://` must be included. Your account ID can be found [here](https://developers.cloudflare.com/fundamentals/get-started/basic-tasks/find-account-and-zone-ids/).
 * `SCCACHE_REGION` should be set to `auto`.
+* `SCCACHE_S3_KEY_PREFIX` s3 key prefix (optional).
 
 #### redis
 
-* `SCCACHE_REDIS` full redis url, including auth and access token/passwd
-* `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
+* `SCCACHE_REDIS` full redis url, including auth and access token/passwd.
+* `SCCACHE_REDIS_EXPIRATION`/`SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
+* `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### memcached
 
 * `SCCACHE_MEMCACHED` memcached url
+* `SCCACHE_MEMCACHED_EXPIRATION` ttl for memcached cache, don't set for default behavior.
+* `SCCACHE_MEMCACHED_KEY_PREFIX` key prefix (optional).
 
 #### gcs
 
