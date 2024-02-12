@@ -577,6 +577,18 @@ fn key_prefix_from_env_var(env_var_name: &str) -> String {
         .to_owned()
 }
 
+fn number_from_env_var<A: std::str::FromStr>(env_var_name: &str) -> Option<Result<A>>
+where
+    <A as FromStr>::Err: std::fmt::Debug,
+{
+    let value = env::var(env_var_name).ok()?;
+
+    value
+        .parse::<A>()
+        .map_err(|err| anyhow!("{env_var_name} value is invalid: {err:?}"))
+        .into()
+}
+
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
     let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
@@ -625,11 +637,12 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= redis =======
     let redis = if let Ok(url) = env::var("SCCACHE_REDIS") {
-        let ttl = match env::var("SCCACHE_REDIS_TTL") {
-            Ok(v) => v
-                .parse()
-                .map_err(|err| anyhow!("SCCACHE_REDIS_TTL value is invalid: {err:?}"))?,
-            Err(_) => DEFAULT_REDIS_CACHE_TTL,
+        let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
+            .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"));
+        let ttl = match ttl {
+            None => DEFAULT_REDIS_CACHE_TTL,
+            Some(Ok(ttl)) => ttl,
+            Some(Err(err)) => return Err(err),
         };
         let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 

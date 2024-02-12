@@ -147,14 +147,14 @@ will default to `us-east-1`.
 #### redis
 
 * `SCCACHE_REDIS` full redis url, including auth and access token/passwd.
-* `SCCACHE_REDIS_EXPIRATION`/`SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
+* `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
 
 The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### memcached
 
-* `SCCACHE_MEMCACHED` memcached url
+* `SCCACHE_MEMCACHED` memcached url.
 * `SCCACHE_MEMCACHED_EXPIRATION` ttl for memcached cache, don't set for default behavior.
 * `SCCACHE_MEMCACHED_KEY_PREFIX` key prefix (optional).
 
