@@ -638,8 +638,9 @@ fn config_from_env() -> Result<EnvConfig> {
     // ======= redis =======
     let redis = if let Ok(url) = env::var("SCCACHE_REDIS") {
         let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
-            .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"));
-        let ttl = ttl.transpose()?.unwrap_or(DEFAULT_REDIS_CACHE_TTL);
+            .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
+            .transpose()?
+            .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
         let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
@@ -652,21 +653,28 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
-    // ======= memcached =======
-    let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
-        None => DEFAULT_MEMCACHED_CACHE_EXPIRATION,
-        Some(v) => v
-            .parse()
-            .map_err(|err| anyhow!("SCCACHE_MEMCACHED_EXPIRATION value is invalid: {err:?}"))?,
-    };
+    if env::var_os("SCCACHE_REDIS_EXPIRATION").is_some()
+        && env::var_os("SCCACHE_REDIS_TTL").is_some()
+    {
+        bail!("You mustn't set both SCCACHE_REDIS_EXPIRATION and SCCACHE_REDIS_TTL. Use only one.");
+    }
 
-    let memcached = env::var("SCCACHE_MEMCACHED")
-        .ok()
-        .map(|url| MemcachedCacheConfig {
+    // ======= memcached =======
+    let memcached = if let Ok(url) = env::var("SCCACHE_MEMCACHED") {
+        let expiration = number_from_env_var("SCCACHE_MEMCACHED_EXPIRATION")
+            .transpose()?
+            .unwrap_or(DEFAULT_MEMCACHED_CACHE_EXPIRATION);
+
+        let key_prefix = key_prefix_from_env_var("SCCACHE_MEMCACHED_KEY_PREFIX");
+
+        Some(MemcachedCacheConfig {
             url,
             expiration,
-            key_prefix: String::new(),
-        });
+            key_prefix,
+        })
+    } else {
+        None
+    };
 
     // ======= GCP/GCS =======
     if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
