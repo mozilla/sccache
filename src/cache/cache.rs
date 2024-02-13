@@ -613,7 +613,7 @@ pub fn storage_from_config(
             #[cfg(feature = "redis")]
             CacheType::Redis(config::RedisCacheConfig {
                 ref url,
-                expiration: ref ttl,
+                ref ttl,
                 ref key_prefix,
             }) => {
                 debug!("Init redis cache with url {url}");

@@ -258,8 +258,8 @@ pub struct RedisCacheConfig {
     /// the ttl (expiration) time in seconds.
     ///
     /// Default to infinity (0)
-    #[serde(default)]
-    pub expiration: u64,
+    #[serde(default, alias = "expiration")]
+    pub ttl: u64,
 
     #[serde(default)]
     pub key_prefix: String,
@@ -628,7 +628,7 @@ fn config_from_env() -> Result<EnvConfig> {
     };
     let redis = env::var("SCCACHE_REDIS").ok().map(|url| RedisCacheConfig {
         url,
-        expiration: ttl,
+        ttl,
         key_prefix: String::new(),
     });
 
@@ -1201,7 +1201,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
-                expiration: 24 * 3600,
+                ttl: 24 * 3600,
                 key_prefix: String::new(),
             }),
             ..Default::default()
@@ -1223,7 +1223,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
-                expiration: 24 * 3600,
+                ttl: 24 * 3600,
                 key_prefix: String::new(),
             }),
             ..Default::default()
@@ -1237,7 +1237,7 @@ fn config_overrides() {
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
-                expiration: 24 * 3600,
+                ttl: 24 * 3600,
                 key_prefix: String::new(),
             }),),
             fallback_cache: DiskCacheConfig {
@@ -1457,7 +1457,7 @@ no_credentials = true
                 }),
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
-                    expiration: 24 * 3600,
+                    ttl: 24 * 3600,
                     key_prefix: "/my/redis/cache".into(),
                 }),
                 memcached: Some(MemcachedCacheConfig {
