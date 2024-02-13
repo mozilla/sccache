@@ -31,5 +31,6 @@ pub mod redis;
 pub mod s3;
 #[cfg(feature = "webdav")]
 pub mod webdav;
+pub mod readonly;
 
 pub use crate::cache::cache::*;
