@@ -18,7 +18,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
+use crate::compiler::PreprocessorCacheEntry;
 use crate::errors::*;
+
+use super::PreprocessorCacheModeConfig;
 
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
@@ -62,5 +65,82 @@ impl Storage for ReadOnlyStorage
     async fn max_size(&self) -> Result<Option<u64>>
     {
         self.0.max_size().await
+    }
+
+    /// Return the config for preprocessor cache mode if applicable
+    fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
+        self.0.preprocessor_cache_mode_config()
+    }
+
+    /// Return the preprocessor cache entry for a given preprocessor key,
+    /// if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn get_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+        self.0.get_preprocessor_cache_entry(_key)
+    }
+
+    /// Insert a preprocessor cache entry at the given preprocessor key,
+    /// overwriting the entry if it exists.
+    /// Only applicable when using preprocessor cache mode.
+    fn put_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+        _preprocessor_cache_entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
+        Err(anyhow!("Cannot write to read-only storage"))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use futures::FutureExt;
+
+    use super::*;
+    use crate::test::mock_storage::MockStorage;
+
+    #[test]
+    fn readonly_storage_is_readonly() {
+        let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
+        assert_eq!(storage.check().now_or_never().unwrap().unwrap(), CacheMode::ReadOnly);
+    }
+
+    #[test]
+    fn readonly_storage_forwards_preprocessor_cache_mode_config() {
+        let storage_no_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
+        assert_eq!(storage_no_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode, false);
+
+        let storage_with_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
+        assert_eq!(storage_with_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode, true);
+    }
+
+    #[test]
+    fn readonly_storage_put_err() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
+        runtime.block_on(async move {
+            assert_eq!(
+                storage
+                    .put("test1", CacheWrite::default())
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "Cannot write to read-only storage"
+            );
+            assert_eq!(
+                storage
+                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                    .unwrap_err()
+                    .to_string(),
+                "Cannot write to read-only storage"
+            );
+        });
     }
 }
