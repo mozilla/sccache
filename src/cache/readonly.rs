@@ -20,17 +20,6 @@ use async_trait::async_trait;
 use crate::cache::{Cache, CacheMode, CacheWrite, Storage};
 use crate::errors::*;
 
-#[derive(Debug)]
-pub struct ReadOnlyError;
-
-impl std::error::Error for ReadOnlyError {}
-
-impl std::fmt::Display for ReadOnlyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Cannot write to read-only storage")
-    }
-}
-
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
 #[async_trait]
@@ -47,7 +36,7 @@ impl Storage for ReadOnlyStorage
     /// finished.
     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration>
     {
-        Err(ReadOnlyError{}.into())
+        Err(anyhow!("Cannot write to read-only storage"))
     }
 
     /// Check the cache capability.
