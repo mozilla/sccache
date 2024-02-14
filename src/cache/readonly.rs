@@ -52,16 +52,7 @@ impl Storage for ReadOnlyStorage
 
     /// Check the cache capability.
     ///
-    /// - `Ok(CacheMode::ReadOnly)` means cache can only be used to `get`
-    ///   cache.
-    /// - `Ok(CacheMode::ReadWrite)` means cache can do both `get` and `put`.
-    /// - `Err(err)` means cache is not setup correctly or not match with
-    ///   users input (for example, user try to use `ReadWrite` but cache
-    ///   is `ReadOnly`).
-    ///
-    /// We will provide a default implementation which returns
-    /// `Ok(CacheMode::ReadWrite)` for service that doesn't
-    /// support check yet.
+    /// The ReadOnlyStorage cache is always read-only.
     async fn check(&self) -> Result<CacheMode> {
         Ok(CacheMode::ReadOnly)
     }
