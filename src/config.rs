@@ -224,15 +224,24 @@ pub struct GHACacheConfig {
 /// Please change this value freely if we have a better choice.
 const DEFAULT_MEMCACHED_CACHE_EXPIRATION: u32 = 86400;
 
+fn default_memcached_cache_expiration() -> u32 {
+    DEFAULT_MEMCACHED_CACHE_EXPIRATION
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
     pub url: String,
+
     /// the expiration time in seconds.
     ///
     /// Default to 24 hours (86400)
     /// Up to 30 days (2592000)
+    #[serde(default = "default_memcached_cache_expiration")]
     pub expiration: u32,
+
+    #[serde(default)]
+    pub key_prefix: String,
 }
 
 /// redis has no default TTL - all caches live forever
@@ -245,17 +254,22 @@ const DEFAULT_REDIS_CACHE_TTL: u64 = 0;
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
     pub url: String,
-    /// the ttl time in seconds.
+
+    /// the ttl (expiration) time in seconds.
     ///
     /// Default to infinity (0)
-    #[serde(default)]
+    #[serde(default, alias = "expiration")]
     pub ttl: u64,
+
+    #[serde(default)]
+    pub key_prefix: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebdavCacheConfig {
     pub endpoint: String,
+    #[serde(default)]
     pub key_prefix: String,
     pub username: Option<String>,
     pub password: Option<String>,
@@ -267,6 +281,7 @@ pub struct WebdavCacheConfig {
 pub struct S3CacheConfig {
     pub bucket: String,
     pub region: Option<String>,
+    #[serde(default)]
     pub key_prefix: String,
     pub no_credentials: bool,
     pub endpoint: Option<String>,
@@ -278,6 +293,7 @@ pub struct S3CacheConfig {
 #[serde(deny_unknown_fields)]
 pub struct OSSCacheConfig {
     pub bucket: String,
+    #[serde(default)]
     pub key_prefix: String,
     pub endpoint: Option<String>,
     pub no_credentials: bool,
@@ -610,9 +626,11 @@ fn config_from_env() -> Result<EnvConfig> {
             .map_err(|err| anyhow!("SCCACHE_REDIS_TTL value is invalid: {err:?}"))?,
         Err(_) => DEFAULT_REDIS_CACHE_TTL,
     };
-    let redis = env::var("SCCACHE_REDIS")
-        .ok()
-        .map(|url| RedisCacheConfig { url, ttl });
+    let redis = env::var("SCCACHE_REDIS").ok().map(|url| RedisCacheConfig {
+        url,
+        ttl,
+        key_prefix: String::new(),
+    });
 
     // ======= memcached =======
     let expiration = match env::var("SCCACHE_MEMCACHED_EXPIRATION").ok() {
@@ -624,7 +642,11 @@ fn config_from_env() -> Result<EnvConfig> {
 
     let memcached = env::var("SCCACHE_MEMCACHED")
         .ok()
-        .map(|url| MemcachedCacheConfig { url, expiration });
+        .map(|url| MemcachedCacheConfig {
+            url,
+            expiration,
+            key_prefix: String::new(),
+        });
 
     // ======= GCP/GCS =======
     if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
@@ -1180,6 +1202,7 @@ fn config_overrides() {
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
                 ttl: 24 * 3600,
+                key_prefix: String::new(),
             }),
             ..Default::default()
         },
@@ -1196,10 +1219,12 @@ fn config_overrides() {
             memcached: Some(MemcachedCacheConfig {
                 url: "memurl".to_owned(),
                 expiration: 24 * 3600,
+                key_prefix: String::new(),
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
                 ttl: 24 * 3600,
+                key_prefix: String::new(),
             }),
             ..Default::default()
         },
@@ -1213,6 +1238,7 @@ fn config_overrides() {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
                 ttl: 24 * 3600,
+                key_prefix: String::new(),
             }),),
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -1373,12 +1399,14 @@ enabled = true
 version = "sccache"
 
 [cache.memcached]
-url = "..."
-expiration = 86400
+url = "127.0.0.1:11211"
+expiration = 90000
+key_prefix = "/custom/prefix/if/need"
 
 [cache.redis]
 url = "redis://user:passwd@1.2.3.4:6379/1"
-ttl = 86400
+expiration = 86400
+key_prefix = "/my/redis/cache"
 
 [cache.s3]
 bucket = "name"
@@ -1430,10 +1458,12 @@ no_credentials = true
                 redis: Some(RedisCacheConfig {
                     url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
                     ttl: 24 * 3600,
+                    key_prefix: "/my/redis/cache".into(),
                 }),
                 memcached: Some(MemcachedCacheConfig {
-                    url: "...".to_owned(),
-                    expiration: 24 * 3600
+                    url: "127.0.0.1:11211".to_owned(),
+                    expiration: 25 * 3600,
+                    key_prefix: "/custom/prefix/if/need".into(),
                 }),
                 s3: Some(S3CacheConfig {
                     bucket: "name".to_owned(),
