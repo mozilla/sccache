@@ -1204,7 +1204,7 @@ fn config_overrides() {
             redis: Some(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
                 ttl: 24 * 3600,
-                key_prefix: String::new(),
+                key_prefix: "/redis/prefix".into(),
             }),
             ..Default::default()
         },
@@ -1225,7 +1225,7 @@ fn config_overrides() {
             }),
             redis: Some(RedisCacheConfig {
                 url: "myredisurl".to_owned(),
-                ttl: 24 * 3600,
+                ttl: 25 * 3600,
                 key_prefix: String::new(),
             }),
             ..Default::default()
@@ -1240,7 +1240,7 @@ fn config_overrides() {
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 url: "myotherredisurl".to_owned(),
                 ttl: 24 * 3600,
-                key_prefix: String::new(),
+                key_prefix: "/redis/prefix".into(),
             }),),
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
