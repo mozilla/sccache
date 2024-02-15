@@ -110,10 +110,10 @@ mod test {
     #[test]
     fn readonly_storage_forwards_preprocessor_cache_mode_config() {
         let storage_no_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
-        assert_eq!(storage_no_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode, false);
+        assert!(!storage_no_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode);
 
         let storage_with_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
-        assert_eq!(storage_with_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode, true);
+        assert!(storage_with_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode);
     }
 
     #[test]
