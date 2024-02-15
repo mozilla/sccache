@@ -13,7 +13,7 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
-use crate::cache::{storage_from_config, Storage, CacheMode};
+use crate::cache::{storage_from_config, CacheMode, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, Language, MissType,
@@ -464,7 +464,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
 
     let storage = match cache_mode {
         CacheMode::ReadOnly => Arc::new(ReadOnlyStorage(raw_storage)),
-        _ => raw_storage
+        _ => raw_storage,
     };
 
     let res =

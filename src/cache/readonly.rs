@@ -1,5 +1,3 @@
-// Copyright 2016 Mozilla Foundation
-//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,10 +24,8 @@ use super::PreprocessorCacheModeConfig;
 pub struct ReadOnlyStorage(pub Arc<dyn Storage>);
 
 #[async_trait]
-impl Storage for ReadOnlyStorage
-{
-    async fn get(&self, key: &str) -> Result<Cache>
-    {
+impl Storage for ReadOnlyStorage {
+    async fn get(&self, key: &str) -> Result<Cache> {
         self.0.get(key).await
     }
 
@@ -37,8 +33,7 @@ impl Storage for ReadOnlyStorage
     ///
     /// Returns a `Future` that will provide the result or error when the put is
     /// finished.
-    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration>
-    {
+    async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
         Err(anyhow!("Cannot write to read-only storage"))
     }
 
@@ -50,20 +45,17 @@ impl Storage for ReadOnlyStorage
     }
 
     /// Get the storage location.
-    fn location(&self) -> String
-    {
+    fn location(&self) -> String {
         self.0.location()
     }
 
     /// Get the current storage usage, if applicable.
-    async fn current_size(&self) -> Result<Option<u64>>
-    {
+    async fn current_size(&self) -> Result<Option<u64>> {
         self.0.current_size().await
     }
 
     /// Get the maximum storage size, if applicable.
-    async fn max_size(&self) -> Result<Option<u64>>
-    {
+    async fn max_size(&self) -> Result<Option<u64>> {
         self.0.max_size().await
     }
 
@@ -104,16 +96,29 @@ mod test {
     #[test]
     fn readonly_storage_is_readonly() {
         let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
-        assert_eq!(storage.check().now_or_never().unwrap().unwrap(), CacheMode::ReadOnly);
+        assert_eq!(
+            storage.check().now_or_never().unwrap().unwrap(),
+            CacheMode::ReadOnly
+        );
     }
 
     #[test]
     fn readonly_storage_forwards_preprocessor_cache_mode_config() {
-        let storage_no_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
-        assert!(!storage_no_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode);
+        let storage_no_preprocessor_cache =
+            ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
+        assert!(
+            !storage_no_preprocessor_cache
+                .preprocessor_cache_mode_config()
+                .use_preprocessor_cache_mode
+        );
 
-        let storage_with_preprocessor_cache = ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
-        assert!(storage_with_preprocessor_cache.preprocessor_cache_mode_config().use_preprocessor_cache_mode);
+        let storage_with_preprocessor_cache =
+            ReadOnlyStorage(Arc::new(MockStorage::new(None, true)));
+        assert!(
+            storage_with_preprocessor_cache
+                .preprocessor_cache_mode_config()
+                .use_preprocessor_cache_mode
+        );
     }
 
     #[test]

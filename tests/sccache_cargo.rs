@@ -440,3 +440,64 @@ fn test_rust_cargo_env_dep(test_info: SccacheTest) -> Result<()> {
     drop(test_info);
     Ok(())
 }
+
+/// Test that building a simple Rust crate with cargo using sccache in read-only mode with an empty cache results in
+/// a cache miss that is produced by the readonly storage wrapper (and does not attempt to write to the underlying cache).
+#[test]
+#[serial]
+fn test_rust_cargo_cmd_readonly_preemtive_block() -> Result<()> {
+    let test_info = SccacheTest::new(None)?;
+    // `cargo clean` first, just to be sure there's no leftover build objects.
+    cargo_clean(&test_info)?;
+
+    let sccache_log = test_info.tempdir.path().join("sccache.log");
+
+    stop_sccache()?;
+
+    restart_sccache(
+        &test_info,
+        Some(vec![
+            ("SCCACHE_LOCAL_RW_MODE".into(), "READ_ONLY".into()),
+            ("SCCACHE_LOG".into(), "trace".into()),
+            (
+                "SCCACHE_ERROR_LOG".into(),
+                sccache_log.to_str().unwrap().into(),
+            ),
+        ]),
+    )?;
+
+    // Now build the crate with cargo.
+    // Assert that our cache miss is due to the readonly storage wrapper, not due to the underlying disk cache.
+    Command::new(CARGO.as_os_str())
+        .args(["build", "--color=never"])
+        .envs(test_info.env.iter().cloned())
+        .current_dir(CRATE_DIR.as_os_str())
+        .assert()
+        .try_stderr(predicates::str::contains("\x1b[").from_utf8().not())?
+        .try_success()?;
+
+    let log_contents = fs::read_to_string(sccache_log)?;
+    assert!(predicates::str::contains("server has setup with ReadOnly").eval(log_contents.as_str()));
+    assert!(predicates::str::contains(
+        "Error executing cache write: Cannot write to read-only storage"
+    )
+    .eval(log_contents.as_str()));
+    assert!(predicates::str::contains("DiskCache::finish_put")
+        .not()
+        .eval(log_contents.as_str()));
+
+    // Stats reset on server restart, so this needs to be run for each build.
+    test_info
+        .show_stats()?
+        .try_stdout(
+            predicates::str::contains(r#""cache_hits":{"counts":{},"adv_counts":{}}"#).from_utf8(),
+        )?
+        .try_stdout(
+            predicates::str::contains(
+                r#""cache_misses":{"counts":{"Rust":2},"adv_counts":{"rust":2}}"#,
+            )
+            .from_utf8(),
+        )?
+        .try_success()?;
+    Ok(())
+}
