@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
-use crate::cache::{storage_from_config, Storage};
+use crate::cache::readonly::ReadOnlyStorage;
+use crate::cache::{storage_from_config, CacheMode, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
     CompilerKind, CompilerProxy, DistType, Language, MissType,
@@ -426,7 +427,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
 
     let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
 
-    let storage = match storage_from_config(config, &pool) {
+    let raw_storage = match storage_from_config(config, &pool) {
         Ok(storage) => storage,
         Err(err) => {
             error!("storage init failed for: {err:?}");
@@ -443,7 +444,7 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
     };
 
     let cache_mode = runtime.block_on(async {
-        match storage.check().await {
+        match raw_storage.check().await {
             Ok(mode) => Ok(mode),
             Err(err) => {
                 error!("storage check failed for: {err:?}");
@@ -460,6 +461,11 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         }
     })?;
     info!("server has setup with {cache_mode:?}");
+
+    let storage = match cache_mode {
+        CacheMode::ReadOnly => Arc::new(ReadOnlyStorage(raw_storage)),
+        _ => raw_storage,
+    };
 
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);

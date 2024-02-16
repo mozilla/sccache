@@ -25,6 +25,7 @@ pub mod gha;
 pub mod memcached;
 #[cfg(feature = "oss")]
 pub mod oss;
+pub mod readonly;
 #[cfg(feature = "redis")]
 pub mod redis;
 #[cfg(feature = "s3")]
