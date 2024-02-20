@@ -30,6 +30,7 @@ fn stop_sccache() -> Result<()> {
 
 #[test]
 #[serial]
+#[cfg(feature = "gcs")]
 fn test_gcp_arg_check() -> Result<()> {
     trace!("sccache with log");
     stop_sccache()?;
@@ -72,6 +73,7 @@ fn test_gcp_arg_check() -> Result<()> {
 
 #[test]
 #[serial]
+#[cfg(feature = "s3")]
 fn test_s3_invalid_args() -> Result<()> {
     stop_sccache()?;
 
