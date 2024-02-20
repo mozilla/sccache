@@ -53,7 +53,7 @@ hyper-util = { version = "0.1.2", optional = true, features = [
   "tokio",
   "server",
 ] }
-is-terminal = "0.4.10"
+is-terminal = "0.4.12"
 jobserver = "0.1"
 jwt = { package = "jsonwebtoken", version = "9", optional = true }
 libc = "0.2.153"
