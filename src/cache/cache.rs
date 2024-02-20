@@ -674,7 +674,9 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]
-            _ => bail!("cache type is not enabled"),
+            // if we build only with `cargo build --no-default-features`
+            // we only want to use sccache with a local cache (no remote storage)
+            _ => {}
         }
     }
 
