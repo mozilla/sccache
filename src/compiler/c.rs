@@ -228,6 +228,55 @@ where
             compiler,
         })
     }
+
+    fn extract_rocm_arg(args: &ParsedArguments, flag: &str) -> Option<PathBuf> {
+        args.common_args.iter().find_map(|arg| match arg.to_str() {
+            Some(sarg) if sarg.starts_with(flag) => {
+                Some(PathBuf::from(sarg[arg.len()..].to_string()))
+            }
+            _ => None,
+        })
+    }
+
+    fn extract_rocm_env(env_vars: &[(OsString, OsString)], name: &str) -> Option<PathBuf> {
+        env_vars.iter().find_map(|(k, v)| match v.to_str() {
+            Some(path) if k == name => Some(PathBuf::from(path.to_string())),
+            _ => None,
+        })
+    }
+
+    // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
+    // order in which the environment variables and command-line arguments control the
+    // directory to search for bitcode libraries.
+    fn search_hip_device_libs(
+        args: &ParsedArguments,
+        env_vars: &[(OsString, OsString)],
+    ) -> Vec<PathBuf> {
+        let rocm_path_arg: Option<PathBuf> = Self::extract_rocm_arg(args, "--rocm-path=");
+        let hip_device_lib_path_arg: Option<PathBuf> =
+            Self::extract_rocm_arg(args, "--hip-device-lib-path=");
+        let rocm_path_env: Option<PathBuf> = Self::extract_rocm_env(env_vars, "ROCM_PATH");
+        let hip_device_lib_path_env: Option<PathBuf> =
+            Self::extract_rocm_env(env_vars, "HIP_DEVICE_LIB_PATH");
+
+        let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
+            .or(hip_device_lib_path_env)
+            .or(rocm_path_arg.map(|path| path.join("amdgcn").join("bitcode")))
+            .or(rocm_path_env.map(|path| path.join("amdgcn").join("bitcode")))
+            // This is the default location in official AMD packages and containers.
+            .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
+
+        hip_device_lib_path
+            .read_dir()
+            .ok()
+            .map(|f| {
+                f.flatten()
+                    .filter(|f| f.path().extension().map_or(false, |ext| ext == "bc"))
+                    .map(|f| f.path())
+                    .collect()
+            })
+            .unwrap_or(Vec::default())
+    }
 }
 
 impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
@@ -265,53 +314,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
                 // changes, so for correctness we should take these bitcode libraries into
                 // account by adding them to `extra_hash_files`.
                 //
-                // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
-                // order in which the environment variables and command-line arguments control the
-                // directory to search for bitcode libraries.
-                //
-                // In reality, not every bitcode library in that directory is needed, but that is
-                // too much to handle on our side so we just hash every bitcode library in that
-                // directory.
+                // In reality, not every available bitcode library is needed, but that is
+                // too much to handle on our side so we just hash every bitcode library we find.
                 if args.language == Language::Hip {
-                    let extract_rocm_arg = |flag: &str| {
-                        args.common_args.iter().find_map(|arg| match arg.to_str() {
-                            Some(sarg) if sarg.starts_with(flag) => {
-                                Some(PathBuf::from(sarg[arg.len()..].to_string()))
-                            }
-                            _ => None,
-                        })
-                    };
-
-                    let extract_rocm_env = |name: &str| {
-                        env_vars.iter().find_map(|(k, v)| match v.to_str() {
-                            Some(path) if k == name => Some(PathBuf::from(path.to_string())),
-                            _ => None,
-                        })
-                    };
-
-                    let rocm_path_arg: Option<PathBuf> = extract_rocm_arg("--rocm-path=");
-                    let hip_device_lib_path_arg: Option<PathBuf> =
-                        extract_rocm_arg("--hip-device-lib-path=");
-                    let rocm_path_env: Option<PathBuf> = extract_rocm_env("ROCM_PATH");
-                    let hip_device_lib_path_env: Option<PathBuf> =
-                        extract_rocm_env("HIP_DEVICE_LIB_PATH");
-
-                    let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
-                        .or(hip_device_lib_path_env)
-                        .or(rocm_path_arg.map(|path| path.join("amdgcn").join("bitcode")))
-                        .or(rocm_path_env.map(|path| path.join("amdgcn").join("bitcode")))
-                        // This is the default location in official AMD packages and containers.
-                        .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
-
-                    if let Ok(files) = hip_device_lib_path.read_dir() {
-                        for file in files.flatten() {
-                            if let Some(ext) = file.path().extension() {
-                                if ext == "bc" {
-                                    args.extra_hash_files.push(file.path());
-                                }
-                            }
-                        }
-                    }
+                    args.extra_hash_files
+                        .extend(Self::search_hip_device_libs(&args, env_vars))
                 }
 
                 CompilerArguments::Ok(Box::new(CCompilerHasher {
