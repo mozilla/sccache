@@ -589,29 +589,27 @@ where
         .into()
 }
 
+fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
+    env::var(env_var_name)
+        .ok()
+        .map(|value| match value.to_lowercase().as_str() {
+            "true" | "on" | "1" => Ok(true),
+            "false" | "off" | "0" => Ok(false),
+            _ => bail!(
+                "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
+                env_var_name
+            ),
+        })
+        .transpose()
+}
+
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
     let s3 = if let Ok(bucket) = env::var("SCCACHE_BUCKET") {
         let region = env::var("SCCACHE_REGION").ok();
-        let no_credentials =
-            env::var("SCCACHE_S3_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
-                "true" | "1" => Ok(true),
-                "false" | "0" => Ok(false),
-                _ => bail!("SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
-            })?;
-        let use_ssl = env::var("SCCACHE_S3_USE_SSL")
-            .ok()
-            .map(|value| value != "off");
-        let server_side_encryption =
-            env::var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")
-                .ok()
-                .map_or(Ok(Some(false)), |val| match val.as_str() {
-                    "true" | "1" => Ok(Some(true)),
-                    "false" | "0" => Ok(Some(false)),
-                    _ => bail!(
-                        "SCCACHE_S3_SERVER_SIDE_ENCRYPTION must be 'true', '1', 'false', or '0'."
-                    ),
-                })?;
+        let no_credentials = bool_from_env_var("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
+        let use_ssl = bool_from_env_var("SCCACHE_S3_USE_SSL")?;
+        let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
         let endpoint = env::var("SCCACHE_ENDPOINT").ok();
         let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
 
@@ -706,11 +704,11 @@ fn config_from_env() -> Result<EnvConfig> {
             // TODO: unsure if these should warn during the configuration loading
             // or at the time when they're actually used to connect to GCS
             Ok(_) => {
-                warn!("Invalid SCCACHE_GCS_RW_MODE-- defaulting to READ_ONLY.");
+                warn!("Invalid SCCACHE_GCS_RW_MODE -- defaulting to READ_ONLY.");
                 CacheModeConfig::ReadOnly
             }
             _ => {
-                warn!("No SCCACHE_GCS_RW_MODE specified-- defaulting to READ_ONLY.");
+                warn!("No SCCACHE_GCS_RW_MODE specified -- defaulting to READ_ONLY.");
                 CacheModeConfig::ReadOnly
             }
         };
@@ -733,17 +731,13 @@ fn config_from_env() -> Result<EnvConfig> {
             enabled: true,
             version,
         })
-    } else if let Ok(enabled) = env::var("SCCACHE_GHA_ENABLED") {
-        // If only SCCACHE_GHA_ENABLED has been set, enable with
+    } else if bool_from_env_var("SCCACHE_GHA_ENABLED")?.unwrap_or(false) {
+        // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
         // default version.
-        if enabled == "on" || enabled == "true" {
-            Some(GHACacheConfig {
-                enabled: true,
-                version: "".to_string(),
-            })
-        } else {
-            None
-        }
+        Some(GHACacheConfig {
+            enabled: true,
+            version: "".to_string(),
+        })
     } else {
         None
     };
@@ -786,12 +780,7 @@ fn config_from_env() -> Result<EnvConfig> {
         let endpoint = env::var("SCCACHE_OSS_ENDPOINT").ok();
         let key_prefix = key_prefix_from_env_var("SCCACHE_OSS_KEY_PREFIX");
 
-        let no_credentials =
-            env::var("SCCACHE_OSS_NO_CREDENTIALS").map_or(Ok(false), |val| match val.as_str() {
-                "true" | "1" => Ok(true),
-                "false" | "0" => Ok(false),
-                _ => bail!("SCCACHE_OSS_NO_CREDENTIALS must be 'true', '1', 'false', or '0'."),
-            })?;
+        let no_credentials = bool_from_env_var("SCCACHE_OSS_NO_CREDENTIALS")?.unwrap_or(false);
 
         Some(OSSCacheConfig {
             bucket,
@@ -820,16 +809,11 @@ fn config_from_env() -> Result<EnvConfig> {
         .and_then(|v| parse_size(&v));
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
-    let preprocessor_mode_overridden = match env::var("SCCACHE_DIRECT").as_deref() {
-        Ok("on") | Ok("true") => {
-            preprocessor_mode_config.use_preprocessor_cache_mode = true;
-            true
-        }
-        Ok("off") | Ok("false") => {
-            preprocessor_mode_config.use_preprocessor_cache_mode = false;
-            true
-        }
-        _ => false,
+    let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
+        preprocessor_mode_config.use_preprocessor_cache_mode = value;
+        true
+    } else {
+        false
     };
 
     let (disk_rw_mode, disk_rw_mode_overridden) = match env::var("SCCACHE_LOCAL_RW_MODE")
@@ -839,7 +823,7 @@ fn config_from_env() -> Result<EnvConfig> {
         Ok("READ_ONLY") => (CacheModeConfig::ReadOnly, true),
         Ok("READ_WRITE") => (CacheModeConfig::ReadWrite, true),
         Ok(_) => {
-            warn!("Invalid SCCACHE_LOCAL_RW_MODE-- defaulting to READ_WRITE.");
+            warn!("Invalid SCCACHE_LOCAL_RW_MODE -- defaulting to READ_WRITE.");
             (CacheModeConfig::ReadWrite, false)
         }
         _ => (CacheModeConfig::ReadWrite, false),
@@ -1282,7 +1266,7 @@ fn test_s3_no_credentials_invalid() {
 
     let error = config_from_env().unwrap_err();
     assert_eq!(
-        "SCCACHE_S3_NO_CREDENTIALS must be 'true', '1', 'false', or '0'.",
+        "SCCACHE_S3_NO_CREDENTIALS must be 'true', 'on', '1', 'false', 'off' or '0'.",
         error.to_string()
     );
 
