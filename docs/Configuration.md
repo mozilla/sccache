@@ -63,7 +63,17 @@ expiration = 3600
 key_prefix = "/custom/prefix/if/need"
 
 [cache.redis]
+# Deprecated, use `endpoint` instead
 url = "redis://user:passwd@1.2.3.4:6379/?db=1"
+## Refer to the `opendal` documentation for more information about Redis endpoint
+# Single-node endpoint. Mutually exclusive with `cluster_endpoints`
+endpoint = "redis://127.0.0.1:6379"
+# Multiple-node list of endpoints (cluster mode). Mutually exclusive with `endpoint`
+cluster_endpoints = "redis://10.0.0.1:6379,redis://10.0.0.2:6379"
+username = "user"
+password = "passwd"
+# Database number to use. Default is 0
+db = 1
 # Entry expiration time in seconds. Default is 0 (never expire)
 expiration = 3600
 key_prefix = "/custom/prefix/if/need"
