@@ -154,7 +154,7 @@ use self::ArgData::*;
 
 const ARCH_FLAG: &str = "-arch";
 
-// Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.c#L32-L84
+// Mostly taken from https://github.com/ccache/ccache/blob/master/src/compopt.cpp#L52-L172
 counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
     flag!("--coverage", Coverage),

@@ -250,10 +250,33 @@ pub struct MemcachedCacheConfig {
 ///
 /// Please change this value freely if we have a better choice.
 const DEFAULT_REDIS_CACHE_TTL: u64 = 0;
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub const DEFAULT_REDIS_DB: u32 = 0;
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RedisCacheConfig {
-    pub url: String,
+    /// The single-node redis endpoint.
+    /// Mutually exclusive with `cluster_endpoints`.
+    pub endpoint: Option<String>,
+
+    /// The redis cluster endpoints.
+    /// Mutually exclusive with `endpoint`.
+    pub cluster_endpoints: Option<String>,
+
+    /// Username to authenticate with.
+    pub username: Option<String>,
+
+    /// Password to authenticate with.
+    pub password: Option<String>,
+
+    /// The redis URL.
+    /// Deprecated in favor of `endpoint`.
+    pub url: Option<String>,
+
+    /// the db number to use
+    ///
+    /// Default to 0
+    #[serde(default)]
+    pub db: u32,
 
     /// the ttl (expiration) time in seconds.
     ///
@@ -642,10 +665,12 @@ fn config_from_env() -> Result<EnvConfig> {
 
         let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
 
+        // TODO: add possibility to load new values from env
         Some(RedisCacheConfig {
-            url,
+            url: Some(url),
             ttl,
             key_prefix,
+            ..Default::default()
         })
     } else {
         None
@@ -1186,9 +1211,13 @@ fn config_overrides() {
                 rw_mode: CacheModeConfig::ReadWrite,
             }),
             redis: Some(RedisCacheConfig {
-                url: "myotherredisurl".to_owned(),
+                endpoint: Some("myotherredisurl".to_owned()),
                 ttl: 24 * 3600,
                 key_prefix: "/redis/prefix".into(),
+                db: 10,
+                username: Some("user".to_owned()),
+                password: Some("secret".to_owned()),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -1208,9 +1237,10 @@ fn config_overrides() {
                 key_prefix: String::new(),
             }),
             redis: Some(RedisCacheConfig {
-                url: "myredisurl".to_owned(),
+                url: Some("myredisurl".to_owned()),
                 ttl: 25 * 3600,
                 key_prefix: String::new(),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -1222,9 +1252,13 @@ fn config_overrides() {
         Config::from_env_and_file_configs(env_conf, file_conf),
         Config {
             cache: Some(CacheType::Redis(RedisCacheConfig {
-                url: "myotherredisurl".to_owned(),
+                endpoint: Some("myotherredisurl".to_owned()),
                 ttl: 24 * 3600,
                 key_prefix: "/redis/prefix".into(),
+                db: 10,
+                username: Some("user".to_owned()),
+                password: Some("secret".to_owned()),
+                ..Default::default()
             }),),
             fallback_cache: DiskCacheConfig {
                 dir: "/env-cache".into(),
@@ -1390,7 +1424,12 @@ expiration = 90000
 key_prefix = "/custom/prefix/if/need"
 
 [cache.redis]
-url = "redis://user:passwd@1.2.3.4:6379/1"
+url = "redis://user:passwd@1.2.3.4:6379/?db=1"
+endpoint = "redis://127.0.0.1:6379"
+cluster_endpoints = "tcp://10.0.0.1:6379,redis://10.0.0.2:6379"
+username = "another_user"
+password = "new_passwd"
+db = 12
 expiration = 86400
 key_prefix = "/my/redis/cache"
 
@@ -1442,7 +1481,12 @@ no_credentials = true
                     version: "sccache".to_string()
                 }),
                 redis: Some(RedisCacheConfig {
-                    url: "redis://user:passwd@1.2.3.4:6379/1".to_owned(),
+                    url: Some("redis://user:passwd@1.2.3.4:6379/?db=1".to_owned()),
+                    endpoint: Some("redis://127.0.0.1:6379".to_owned()),
+                    cluster_endpoints: Some("tcp://10.0.0.1:6379,redis://10.0.0.2:6379".to_owned()),
+                    username: Some("another_user".to_owned()),
+                    password: Some("new_passwd".to_owned()),
+                    db: 12,
                     ttl: 24 * 3600,
                     key_prefix: "/my/redis/cache".into(),
                 }),
