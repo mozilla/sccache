@@ -657,23 +657,38 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= redis =======
-    let redis = if let Ok(url) = env::var("SCCACHE_REDIS") {
-        let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
-            .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
-            .transpose()?
-            .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
+    let redis = match (
+        env::var("SCCACHE_REDIS").ok(),
+        env::var("SCCACHE_REDIS_ENDPOINT").ok(),
+        env::var("SCCACHE_REDIS_CLUSTER_ENDPOINTS").ok(),
+    ) {
+        (None, None, None) => None,
+        (url, endpoint, cluster_endpoints) => {
+            let db = number_from_env_var("SCCACHE_REDIS_DB")
+                .transpose()?
+                .unwrap_or(DEFAULT_REDIS_DB);
 
-        let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
+            let username = env::var("SCCACHE_REDIS_USERNAME").ok();
+            let password = env::var("SCCACHE_REDIS_PASSWORD").ok();
 
-        // TODO: add possibility to load new values from env
-        Some(RedisCacheConfig {
-            url: Some(url),
-            ttl,
-            key_prefix,
-            ..Default::default()
-        })
-    } else {
-        None
+            let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
+                .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
+                .transpose()?
+                .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
+
+            let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
+
+            Some(RedisCacheConfig {
+                url,
+                endpoint,
+                cluster_endpoints,
+                username,
+                password,
+                db,
+                ttl,
+                key_prefix,
+            })
+        }
     };
 
     if env::var_os("SCCACHE_REDIS_EXPIRATION").is_some()
