@@ -136,12 +136,15 @@ jobs:
         include:
           - os: ubuntu-20.04
             target: x86_64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
           - os: ubuntu-20.04
             binary: sccache-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-musl
+            container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
           - os: ubuntu-20.04
             target: armv7-unknown-linux-musleabi
             container: '{"image": "messense/rust-musl-cross:armv7-musleabi"}'
@@ -170,27 +173,9 @@ jobs:
           target: ${{ matrix.target }}
         if: ${{ !matrix.container }}
 
-      - name: Install musl-tools (x86_64)
-        run: sudo apt-get install musl-tools
-        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
-
-      - name: Install musl-tools (arm64)
-        run: |
-          set -x
-          sed 's/mirror+file:\/etc\/apt\/apt-mirrors\.txt/[arch=arm64] http:\/\/ports.ubuntu.com\/ubuntu-ports\//g' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update || true
-          sudo apt-get install musl-dev:arm64 binutils-multiarch gcc-10-aarch64-linux-gnu libc6-dev-arm64-cross
-          apt-get download musl-tools:arm64
-          sudo dpkg-deb -x musl-tools_*_arm64.deb /
-          sed 2iREALGCC=aarch64-linux-gnu-gcc-10 /usr/bin/musl-gcc | sudo tee /usr/bin/aarch64-linux-musl-gcc > /dev/null
-          sudo chmod +x /usr/bin/aarch64-linux-musl-gcc
-        if: ${{ matrix.target == 'aarch64-unknown-linux-musl' }}
-
       - name: Build
         run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
