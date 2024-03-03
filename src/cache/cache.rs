@@ -601,13 +601,21 @@ pub fn storage_from_config(
             #[cfg(feature = "memcached")]
             CacheType::Memcached(config::MemcachedCacheConfig {
                 ref url,
+                ref username,
+                ref password,
                 ref expiration,
                 ref key_prefix,
             }) => {
                 debug!("Init memcached cache with url {url}");
 
-                let storage = MemcachedCache::build(url, key_prefix, *expiration)
-                    .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
+                let storage = MemcachedCache::build(
+                    url,
+                    username.as_deref(),
+                    password.as_deref(),
+                    key_prefix,
+                    *expiration,
+                )
+                .map_err(|err| anyhow!("create memcached cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "redis")]

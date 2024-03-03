@@ -57,7 +57,12 @@ cache_to = "sccache-latest"
 cache_from = "sccache-"
 
 [cache.memcached]
-url = "127.0.0.1:11211"
+# Deprecated alias for `endpoint`
+# url = "127.0.0.1:11211"
+endpoint = "tcp://127.0.0.1:11211"
+# Username and password for authentication
+username = "user"
+password = "passwd"
 # Entry expiration time in seconds. Default is 86400 (24 hours)
 expiration = 3600
 key_prefix = "/custom/prefix/if/need"
@@ -169,7 +174,10 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### memcached
 
-* `SCCACHE_MEMCACHED` memcached url.
+* `SCCACHE_MEMCACHED` is a deprecated alias for `SCCACHE_MEMCACHED_ENDPOINT`.
+* `SCCACHE_MEMCACHED_ENDPOINT` memcached url.
+* `SCCACHE_MEMCACHED_USERNAME` memcached username (optional).
+* `SCCACHE_MEMCACHED_PASSWORD` memcached password (optional).
 * `SCCACHE_MEMCACHED_EXPIRATION` ttl for memcached cache, don't set for default behavior.
 * `SCCACHE_MEMCACHED_KEY_PREFIX` key prefix (optional).
 
