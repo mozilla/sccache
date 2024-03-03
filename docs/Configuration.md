@@ -156,7 +156,12 @@ will default to `us-east-1`.
 
 #### redis
 
-* `SCCACHE_REDIS` full redis url, including auth and access token/passwd.
+* `SCCACHE_REDIS` full redis url, including auth and access token/passwd (deprecated).
+* `SCCACHE_REDIS_ENDPOINT` redis url without auth and access token/passwd - single node configuration.
+* `SCCACHE_REDIS_CLUSTER_ENDPOINTS` redis cluster urls, separated by comma - shared cluster configuration.
+* `SCCACHE_REDIS_USERNAME` redis username (optional).
+* `SCCACHE_REDIS_PASSWORD` redis password (optional).
+* `SCCACHE_REDIS_DB` redis database (optional, default is 0).
 * `SCCACHE_REDIS_EXPIRATION` / `SCCACHE_REDIS_TTL` ttl for redis cache, don't set for default behavior.
 * `SCCACHE_REDIS_KEY_PREFIX` key prefix (optional).
 
@@ -188,11 +193,11 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 #### webdav
 
-* `SCCACHE_WEBDAV_ENDPOINT`
-* `SCCACHE_WEBDAV_KEY_PREFIX`
-* `SCCACHE_WEBDAV_USERNAME`
-* `SCCACHE_WEBDAV_PASSWORD`
-* `SCCACHE_WEBDAV_TOKEN`
+* `SCCACHE_WEBDAV_ENDPOINT` a webdav service endpoint to store cache, such as `http://127.0.0.1:8080/my/webdav.php`.
+* `SCCACHE_WEBDAV_KEY_PREFIX` specify the key prefix (subfolder) of cache (optional).
+* `SCCACHE_WEBDAV_USERNAME` a username to authenticate with webdav service (optional).
+* `SCCACHE_WEBDAV_PASSWORD` a password to authenticate with webdav service (optional).
+* `SCCACHE_WEBDAV_TOKEN` a token to authenticate with webdav service (optional) - may be used instead of login & password.
 
 #### OSS
 
