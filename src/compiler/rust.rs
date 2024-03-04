@@ -1845,6 +1845,64 @@ fn test_can_trim_this() {
 }
 
 #[cfg(feature = "dist-client")]
+fn maybe_add_cargo_toml(input_path: &Path, verify: bool) -> Option<PathBuf> {
+    let lib_rs = PathBuf::new().join("src").join("lib.rs");
+    if input_path.ends_with(lib_rs) {
+        let cargo_toml_path = input_path
+            .parent()
+            .expect("No parent")
+            .parent()
+            .expect("No parent")
+            .join("Cargo.toml");
+        // We want to:
+        //  - either make sure the file exists (verify=true)
+        //  - just return the path (verify=false)
+        if cargo_toml_path.is_file() || !verify {
+            Some(cargo_toml_path)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+#[test]
+#[cfg(feature = "dist-client")]
+fn test_maybe_add_cargo_toml() {
+    let (root, result_cargo_toml_path) = if cfg!(windows) {
+        (
+            r"C:\mozilla-source\mozilla-unified\third_party\rust",
+            r"C:\mozilla-source\mozilla-unified\third_party\rust\wgpu-core\Cargo.toml",
+        )
+    } else {
+        (
+            "/home/user/mozilla-source/mozilla-unified/third_party/rust",
+            "/home/user/mozilla-source/mozilla-unified/third_party/rust/wgpu-core/Cargo.toml",
+        )
+    };
+
+    let wgpu_core = PathBuf::from(&root)
+        .join("wgpu-core")
+        .join("src")
+        .join("core.rs");
+    let wgpu_lib = PathBuf::from(&root)
+        .join("wgpu-core")
+        .join("src")
+        .join("lib.rs");
+    assert!(maybe_add_cargo_toml(&wgpu_core, false).is_none());
+    assert!(maybe_add_cargo_toml(&wgpu_core, true).is_none());
+    assert!(
+        maybe_add_cargo_toml(&wgpu_lib, false)
+            == Some(PathBuf::from(&root).join("wgpu-core").join("Cargo.toml"))
+    );
+    assert!(
+        maybe_add_cargo_toml(&wgpu_lib, false).unwrap().to_str() == Some(result_cargo_toml_path)
+    );
+    assert!(maybe_add_cargo_toml(&wgpu_lib, true).is_none());
+}
+
+#[cfg(feature = "dist-client")]
 impl pkg::InputsPackager for RustInputsPackager {
     #[allow(clippy::cognitive_complexity)] // TODO simplify this method.
     fn write_inputs(self: Box<Self>, wtr: &mut dyn io::Write) -> Result<dist::PathTransformer> {
@@ -1893,9 +1951,23 @@ impl pkg::InputsPackager for RustInputsPackager {
                     }
                 }
             }
+
+            if let Some(cargo_toml_path) = maybe_add_cargo_toml(&input_path, true) {
+                let dist_cargo_toml_path = path_transformer
+                    .as_dist(&cargo_toml_path)
+                    .with_context(|| {
+                        format!(
+                            "unable to transform input path {}",
+                            cargo_toml_path.display()
+                        )
+                    })?;
+                tar_inputs.push((cargo_toml_path, dist_cargo_toml_path));
+            }
+
             let dist_input_path = path_transformer.as_dist(&input_path).with_context(|| {
                 format!("unable to transform input path {}", input_path.display())
             })?;
+
             tar_inputs.push((input_path, dist_input_path))
         }
 
