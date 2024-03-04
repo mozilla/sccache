@@ -8,7 +8,7 @@ Background:
      with the same key and comparing the result. As a result, if you
      want two parties to verify each others messages, the key must be
      shared beforehand.
- - 'secure token's referenced below should be generated with a CSPRNG
+ - Secure token's referenced below should be generated with a CSPRNG
    (your OS random number generator should suffice).
    For example, on Linux this is accessible with: `openssl rand -hex 64`.
  - When relying on random number generators (for generating keys or
