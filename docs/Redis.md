@@ -23,7 +23,7 @@ Set `SCCACHE_REDIS_EXPIRATION` in seconds if you don't want your cache to live f
 Set `SCCACHE_REDIS_KEY_PREFIX` if you want to prefix all cache keys. This can be
 useful when sharing a Redis instance with another application or cache.
 
-`SCCACHE_REDIS` is deprecated, use `SCCACHE_REDIS_ENDPOINT` instead.
+`SCCACHE_REDIS` is deprecated for security reasons, use `SCCACHE_REDIS_ENDPOINT` instead. See mozilla/sccache#2083 for details.
 If you really want to use `SCCACHE_REDIS`, you should URL in format `redis://[[<username>]:<passwd>@]<hostname>[:port][/?db=<db>]`.
 
 ## Deprecated API Examples

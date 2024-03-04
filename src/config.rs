@@ -228,10 +228,17 @@ fn default_memcached_cache_expiration() -> u32 {
     DEFAULT_MEMCACHED_CACHE_EXPIRATION
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MemcachedCacheConfig {
+    #[serde(alias = "endpoint")]
     pub url: String,
+
+    /// Username to authenticate with.
+    pub username: Option<String>,
+
+    /// Password to authenticate with.
+    pub password: Option<String>,
 
     /// the expiration time in seconds.
     ///
@@ -698,7 +705,12 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= memcached =======
-    let memcached = if let Ok(url) = env::var("SCCACHE_MEMCACHED") {
+    let memcached = if let Ok(url) =
+        env::var("SCCACHE_MEMCACHED").or_else(|_| env::var("SCCACHE_MEMCACHED_ENDPOINT"))
+    {
+        let username = env::var("SCCACHE_MEMCACHED_USERNAME").ok();
+        let password = env::var("SCCACHE_MEMCACHED_PASSWORD").ok();
+
         let expiration = number_from_env_var("SCCACHE_MEMCACHED_EXPIRATION")
             .transpose()?
             .unwrap_or(DEFAULT_MEMCACHED_CACHE_EXPIRATION);
@@ -707,12 +719,20 @@ fn config_from_env() -> Result<EnvConfig> {
 
         Some(MemcachedCacheConfig {
             url,
+            username,
+            password,
             expiration,
             key_prefix,
         })
     } else {
         None
     };
+
+    if env::var_os("SCCACHE_MEMCACHED").is_some()
+        && env::var_os("SCCACHE_MEMCACHED_ENDPOINT").is_some()
+    {
+        bail!("You mustn't set both SCCACHE_MEMCACHED and SCCACHE_MEMCACHED_ENDPOINT. Please, use only SCCACHE_MEMCACHED_ENDPOINT.");
+    }
 
     // ======= GCP/GCS =======
     if (env::var("SCCACHE_GCS_CREDENTIALS_URL").is_ok()
@@ -1250,6 +1270,7 @@ fn config_overrides() {
                 url: "memurl".to_owned(),
                 expiration: 24 * 3600,
                 key_prefix: String::new(),
+                ..Default::default()
             }),
             redis: Some(RedisCacheConfig {
                 url: Some("myredisurl".to_owned()),
@@ -1434,7 +1455,12 @@ enabled = true
 version = "sccache"
 
 [cache.memcached]
-url = "127.0.0.1:11211"
+# Deprecated alias for `endpoint`
+# url = "127.0.0.1:11211"
+endpoint = "tcp://127.0.0.1:11211"
+# Username and password for authentication
+username = "user"
+password = "passwd"
 expiration = 90000
 key_prefix = "/custom/prefix/if/need"
 
@@ -1506,7 +1532,9 @@ no_credentials = true
                     key_prefix: "/my/redis/cache".into(),
                 }),
                 memcached: Some(MemcachedCacheConfig {
-                    url: "127.0.0.1:11211".to_owned(),
+                    url: "tcp://127.0.0.1:11211".to_owned(),
+                    username: Some("user".to_owned()),
+                    password: Some("passwd".to_owned()),
                     expiration: 25 * 3600,
                     key_prefix: "/custom/prefix/if/need".into(),
                 }),
