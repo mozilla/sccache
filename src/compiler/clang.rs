@@ -167,6 +167,9 @@ impl CCompilerImpl for Clang {
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
+    take_arg!("--hip-device-lib-path", PathBuf, Concatenated('='), PassThroughPath),
+    take_arg!("--hip-path", PathBuf, Concatenated('='), PassThroughPath),
+    take_arg!("--rocm-path", PathBuf, Concatenated('='), PassThroughPath),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
@@ -181,6 +184,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
+    take_arg!("-fembed-offload-object", PathBuf, Concatenated('='), ExtraHashFile),
     flag!("-fmodules", TooHardFlag),
     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
     flag!("-fno-pch-timestamp", PassThroughFlag),
@@ -411,6 +415,138 @@ mod test {
         assert!(b.preprocessor_args.is_empty());
         assert_eq!(
             ovec!["--cuda-gpu-arch=sm_50", "--no-cuda-include-ptx=sm_50"],
+            b.common_args
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_hip() {
+        let a = parses!("-c", "foo.hip", "-o", "foo.o");
+        assert_eq!(Some("foo.hip"), a.input.to_str());
+        assert_eq!(Language::Hip, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert!(a.common_args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_arguments_hip_flags() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(Language::Hip, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(ovec!["--offload-arch=gfx900"], a.common_args);
+
+        let b = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-o",
+            "foo.o"
+        );
+        assert_eq!(Some("foo.cpp"), b.input.to_str());
+        assert_eq!(Language::Hip, b.language);
+        assert_map_contains!(
+            b.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(b.preprocessor_args.is_empty());
+        assert_eq!(ovec!["--offload-arch=gfx900"], b.common_args);
+    }
+
+    #[test]
+    fn test_parse_arguments_hip_paths() {
+        let a = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-o",
+            "foo.o",
+            "--hip-path=/usr"
+        );
+        assert_eq!(Some("foo.cpp"), a.input.to_str());
+        assert_eq!(Language::Hip, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(a.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec!["--offload-arch=gfx900", "--hip-path=/usr"],
+            a.common_args
+        );
+
+        let b = parses!(
+            "-c",
+            "foo.cpp",
+            "-x",
+            "hip",
+            "--offload-arch=gfx900",
+            "-o",
+            "foo.o",
+            "--hip-device-lib-path=/usr/lib64/amdgcn/bitcode"
+        );
+        assert_eq!(Some("foo.cpp"), b.input.to_str());
+        assert_eq!(Language::Hip, b.language);
+        assert_map_contains!(
+            b.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("foo.o"),
+                    optional: false
+                }
+            )
+        );
+        assert!(b.preprocessor_args.is_empty());
+        assert_eq!(
+            ovec![
+                "--offload-arch=gfx900",
+                "--hip-device-lib-path=/usr/lib64/amdgcn/bitcode"
+            ],
             b.common_args
         );
     }

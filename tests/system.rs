@@ -33,7 +33,7 @@ use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fmt;
+use std::fmt::{self, format};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -105,6 +105,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
     }
     arg
 }
+
 // TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
 // default case on Fedora, e.g.
 fn compile_cuda_cmdline<T: AsRef<OsStr>>(
@@ -134,6 +135,33 @@ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
     arg
 }
 
+// TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
+// default case on Fedora, e.g.
+//
+// archs is a list of GPU architectures to compile for.
+fn compile_hip_cmdline<T: AsRef<OsStr>>(
+    compiler: &str,
+    exe: T,
+    input: &str,
+    output: &str,
+    archs: &Vec<String>,
+    mut extra_args: Vec<OsString>,
+) -> Vec<OsString> {
+    let mut arg = match compiler {
+        "clang" => {
+            vec_from!(OsString, exe, "-x", "hip", "-c", input, "-o", output)
+        }
+        _ => panic!("Unsupported compiler: \"{}\"", compiler),
+    };
+    for arch in archs {
+        arg.push(format!("--offload-arch={}", arch).into());
+    }
+    if !extra_args.is_empty() {
+        arg.append(&mut extra_args)
+    }
+    arg
+}
+
 const INPUT: &str = "test.c";
 const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
 const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
@@ -144,6 +172,9 @@ const INPUT_WITH_DEFINE: &str = "test_with_define.c";
 const INPUT_FOR_CUDA_A: &str = "test_a.cu";
 const INPUT_FOR_CUDA_B: &str = "test_b.cu";
 const INPUT_FOR_CUDA_C: &str = "test_c.cu";
+const INPUT_FOR_HIP_A: &str = "test_a.hip";
+const INPUT_FOR_HIP_B: &str = "test_b.hip";
+const INPUT_FOR_HIP_C: &str = "test_c.hip";
 const OUTPUT: &str = "test.o";
 
 // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
@@ -688,6 +719,210 @@ fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
     test_proper_lang_stat_tracking(compiler, tempdir);
 }
 
+fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
+
+    let target_arch = vec!["gfx900".to_string()];
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile A");
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_A,
+            OUTPUT,
+            &target_arch,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+    trace!("compile A");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_A,
+            OUTPUT,
+            &target_arch,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+    // By compiling another input source we verify that the pre-processor
+    // phase is correctly running and outputting text
+    trace!("compile B");
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_B,
+            OUTPUT,
+            &target_arch,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(3, info.stats.compile_requests);
+        assert_eq!(3, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+}
+
+fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    trace!("run_sccache_command_test: {}", name);
+    // Compile multiple source files.
+    copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
+
+    let target_arches: Vec<String> = vec!["gfx900".to_string(), "gfx1030".to_string()];
+
+    let out_file = tempdir.join(OUTPUT);
+    trace!("compile A with gfx900 and gfx1030");
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_A,
+            OUTPUT,
+            &target_arches,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(1, info.stats.compile_requests);
+        assert_eq!(1, info.stats.requests_executed);
+        assert_eq!(0, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+
+    trace!("compile A with with gfx900 and gfx1030 again");
+    fs::remove_file(&out_file).unwrap();
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_A,
+            OUTPUT,
+            &target_arches,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(2, info.stats.compile_requests);
+        assert_eq!(2, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(1, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+
+    // By compiling another input source we verify that the pre-processor
+    // phase is correctly running and outputting text
+    trace!("compile B with gfx900 and gfx1030");
+    sccache_command()
+        .args(&compile_hip_cmdline(
+            name,
+            exe,
+            INPUT_FOR_HIP_B,
+            OUTPUT,
+            &target_arches,
+            Vec::new(),
+        ))
+        .current_dir(tempdir)
+        .envs(env_vars.clone())
+        .assert()
+        .success();
+    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
+    trace!("request stats");
+    get_stats(|info| {
+        assert_eq!(3, info.stats.compile_requests);
+        assert_eq!(3, info.stats.requests_executed);
+        assert_eq!(1, info.stats.cache_hits.all());
+        assert_eq!(2, info.stats.cache_misses.all());
+        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
+        let adv_hip_key = adv_key_kind("hip", compiler.name);
+        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
+        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
+    });
+}
+
+fn run_sccache_hip_command_tests(compiler: Compiler, tempdir: &Path) {
+    zero_stats();
+    test_hip_compiles(&compiler, tempdir);
+    zero_stats();
+    test_hip_compiles_multi_targets(&compiler, tempdir);
+    // test_proper_lang_stat_tracking(compiler, tempdir);
+}
+
 fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
     let Compiler {
         name,
@@ -843,6 +1078,40 @@ fn find_cuda_compilers() -> Vec<Compiler> {
     compilers
 }
 
+// We detect the HIP Clang compiler through 2 methods:
+// 1. If the env var HIP_CLANG_PATH is set, try $HIP_CLANG_PATH/clang. This is the same behavior as
+//    hipcc, but is rarely know, so we have another option.
+// 2. If the env var ROCM_PATH is set, try $ROCM_PATH/llvm/bin/clang. This is the location in
+//    AMD's official debian packages.
+// 3. Otherwise, just bail.
+fn find_hip_compiler() -> Option<Compiler> {
+    let env_vars: Vec<(OsString, OsString)> = env::vars_os().collect();
+
+    if let Ok(hip_clang_path) = env::var("HIP_CLANG_PATH") {
+        let clang_path = Path::new(&hip_clang_path).join("clang");
+
+        if let Ok(true) = clang_path.try_exists() {
+            return Some(Compiler {
+                name: "clang",
+                exe: clang_path.into_os_string(),
+                env_vars,
+            });
+        }
+    }
+    if let Ok(rocm_path) = env::var("ROCM_PATH") {
+        let clang_path = Path::new(&rocm_path).join("llvm").join("bin").join("clang");
+
+        if let Ok(true) = clang_path.try_exists() {
+            return Some(Compiler {
+                name: "hip",
+                exe: clang_path.into_os_string(),
+                env_vars,
+            });
+        }
+    }
+    None
+}
+
 // TODO: This runs multiple test cases, for multiple compilers. It should be
 // split up to run them individually. In the current form, it is hard to see
 // which sub test cases are executed, and if one fails, the remaining tests
@@ -923,6 +1192,35 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
             run_sccache_cuda_command_tests(compiler, tempdir.path());
             zero_stats();
         }
+        stop_local_daemon();
+    }
+}
+
+#[test_case(true ; "with preprocessor cache")]
+#[test_case(false ; "without preprocessor cache")]
+#[serial]
+#[cfg(any(unix, target_env = "msvc"))]
+fn test_hip_sccache_command(preprocessor_cache_mode: bool) {
+    let _ = env_logger::try_init();
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_system_test")
+        .tempdir()
+        .unwrap();
+
+    if let Some(compiler) = find_hip_compiler() {
+        stop_local_daemon();
+        // Create the configurations
+        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
+        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
+        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
+        // Start a server.
+        trace!("start server");
+        start_local_daemon(
+            &tempdir.path().join("sccache-cfg.json"),
+            &sccache_cached_cfg_path,
+        );
+        run_sccache_hip_command_tests(compiler, tempdir.path());
+        zero_stats();
         stop_local_daemon();
     }
 }
