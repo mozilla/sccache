@@ -167,9 +167,9 @@ impl CCompilerImpl for Clang {
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
-    take_arg!("--hip-device-lib-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--hip-path", PathBuf, Concatenated('='), PassThroughPath),
-    take_arg!("--rocm-path", PathBuf, Concatenated('='), PassThroughPath),
+    take_arg!("--hip-device-lib-path", PathBuf, CanBeConcatenated('='), PassThroughPath),
+    take_arg!("--hip-path", PathBuf, CanBeConcatenated('='), PassThroughPath),
+    take_arg!("--rocm-path", PathBuf, CanBeConcatenated('='), PassThroughPath),
     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
     take_arg!("--target", OsString, Separated, PassThrough),
     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
@@ -204,6 +204,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-load", PathBuf, Separated, ExtraHashFile),
     take_arg!("-mllvm", OsString, Separated, PassThrough),
     flag!("-no-opaque-pointers", PreprocessorArgumentFlag),
+    take_arg!("-parallel-jobs", OsString, CanBeConcatenated('='), PassThrough),
     take_arg!("-plugin-arg", OsString, Concatenated('-'), PassThrough),
     take_arg!("-target", OsString, Separated, PassThrough),
     flag!("-verify", PreprocessorArgumentFlag),
