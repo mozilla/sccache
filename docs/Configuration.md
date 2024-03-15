@@ -3,6 +3,9 @@
 ## file
 
 ```toml
+# If specified, wait this long for the server to start up.
+server_startup_timeout_ms = 10000
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
