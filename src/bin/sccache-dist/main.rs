@@ -25,6 +25,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "freebsd"
+))]
+use libc::{geteuid, uid_t};
+
 #[cfg_attr(target_os = "freebsd", path = "build_freebsd.rs")]
 mod build;
 
@@ -35,12 +41,27 @@ use cmdline::{AuthSubcommand, Command};
 
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "freebsd"
+))]
+fn exit_if_root() {
+    let euid: uid_t = unsafe { geteuid() };
+
+    if euid == 0 {
+        println!("This program should not be executed as root.");
+        std::process::exit(1);
+    }
+}
+
 // Only supported on x86_64 Linux machines and on FreeBSD
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
     target_os = "freebsd"
 ))]
 fn main() {
+    exit_if_root();
+
     init_logging();
 
     let incr_env_strs = ["CARGO_BUILD_INCREMENTAL", "CARGO_INCREMENTAL"];
