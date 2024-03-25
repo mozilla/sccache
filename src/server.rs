@@ -443,23 +443,32 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         }
     };
 
-    let cache_mode = runtime.block_on(async {
-        match raw_storage.check().await {
-            Ok(mode) => Ok(mode),
-            Err(err) => {
-                error!("storage check failed for: {err:?}");
+    let cache_mode = if let Some(rw_mode) = config.assume_rw_mode {
+        // We've been provided with a RW mode to assume this cache has.
+        // Use it.
+        Ok(rw_mode.into())
+    } else {
+        // Before starting to use this cache (raw_storage), we need to check whether it's ReadOnly or ReadWrite-
+        // or if it's altogether unreachable.
+        runtime.block_on(async {
+            match raw_storage.check().await {
+                Ok(mode) => Ok(mode),
+                Err(err) => {
+                    error!("storage check failed for: {err:?}");
 
-                notify_server_startup(
-                    &notify,
-                    ServerStartup::Err {
-                        reason: err.to_string(),
-                    },
-                )?;
+                    notify_server_startup(
+                        &notify,
+                        ServerStartup::Err {
+                            reason: err.to_string(),
+                        },
+                    )?;
 
-                Err(err)
+                    Err(err)
+                }
             }
-        }
-    })?;
+        })
+    }?;
+
     info!("server has setup with {cache_mode:?}");
 
     let storage = match cache_mode {

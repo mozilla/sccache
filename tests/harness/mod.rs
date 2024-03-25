@@ -146,6 +146,7 @@ pub fn sccache_client_cfg(
     };
     sccache::config::FileConfig {
         cache: sccache::config::CacheConfigs {
+            assume_rw_mode: None,
             azure: None,
             disk: Some(disk_cache),
             gcs: None,

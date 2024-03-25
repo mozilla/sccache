@@ -344,6 +344,10 @@ pub enum CacheType {
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfigs {
+    /// If set, assume that the configure cache has the given mode
+    /// (without checking at server startup).
+    pub assume_rw_mode: Option<CacheModeConfig>,
+
     pub azure: Option<AzureCacheConfig>,
     pub disk: Option<DiskCacheConfig>,
     pub gcs: Option<GCSCacheConfig>,
@@ -358,8 +362,9 @@ pub struct CacheConfigs {
 impl CacheConfigs {
     /// Return cache type in an arbitrary but
     /// consistent ordering
-    fn into_fallback(self) -> (Option<CacheType>, DiskCacheConfig) {
+    fn into_fallback(self) -> (Option<CacheModeConfig>, Option<CacheType>, DiskCacheConfig) {
         let CacheConfigs {
+            assume_rw_mode,
             azure,
             disk,
             gcs,
@@ -383,12 +388,13 @@ impl CacheConfigs {
 
         let fallback = disk.unwrap_or_default();
 
-        (cache_type, fallback)
+        (assume_rw_mode, cache_type, fallback)
     }
 
     /// Override self with any existing fields from other
     fn merge(&mut self, other: Self) {
         let CacheConfigs {
+            assume_rw_mode,
             azure,
             disk,
             gcs,
@@ -399,6 +405,10 @@ impl CacheConfigs {
             webdav,
             oss,
         } = other;
+
+        if assume_rw_mode.is_some() {
+            self.assume_rw_mode = assume_rw_mode;
+        }
 
         if azure.is_some() {
             self.azure = azure
@@ -904,7 +914,21 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    let assume_rw_mode = match env::var("SCCACHE_ASSUME_RW_MODE")
+        .as_ref()
+        .map(String::as_str)
+    {
+        Ok("READ_ONLY") => Some(CacheModeConfig::ReadOnly),
+        Ok("READ_WRITE") => Some(CacheModeConfig::ReadWrite),
+        Ok(_) => {
+            warn!("Invalid SCCACHE_ASSUME_RW_MODE; ignoring value. The server may check the mode explicitly.");
+            None
+        }
+        _ => None,
+    };
+
     let cache = CacheConfigs {
+        assume_rw_mode,
         azure,
         disk,
         gcs,
@@ -948,6 +972,10 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+
+    /// If set, skip the check on `cache`'s RW/RO mode on server startup.
+    /// Assume that it has this mode instead.
+    pub assume_rw_mode: Option<CacheModeConfig>,
 }
 
 impl Config {
@@ -978,12 +1006,13 @@ impl Config {
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
-        let (caches, fallback_cache) = conf_caches.into_fallback();
+        let (assume_rw_mode, caches, fallback_cache) = conf_caches.into_fallback();
         Self {
             cache: caches,
             fallback_cache,
             dist,
             server_startup_timeout,
+            assume_rw_mode,
         }
     }
 }
@@ -1234,6 +1263,7 @@ fn test_parse_size() {
 fn config_overrides() {
     let env_conf = EnvConfig {
         cache: CacheConfigs {
+            assume_rw_mode: Some(CacheModeConfig::ReadOnly),
             azure: Some(AzureCacheConfig {
                 connection_string: String::new(),
                 container: String::new(),
@@ -1260,6 +1290,7 @@ fn config_overrides() {
 
     let file_conf = FileConfig {
         cache: CacheConfigs {
+            assume_rw_mode: Some(CacheModeConfig::ReadWrite),
             disk: Some(DiskCacheConfig {
                 dir: "/file-cache".into(),
                 size: 15,
@@ -1287,6 +1318,7 @@ fn config_overrides() {
     assert_eq!(
         Config::from_env_and_file_configs(env_conf, file_conf),
         Config {
+            assume_rw_mode: Some(CacheModeConfig::ReadOnly),
             cache: Some(CacheType::Redis(RedisCacheConfig {
                 endpoint: Some("myotherredisurl".to_owned()),
                 ttl: 24 * 3600,
@@ -1421,6 +1453,9 @@ fn full_toml_parse() {
     const CONFIG_STR: &str = r#"
 server_startup_timeout_ms = 10000
 
+[cache]
+assume_rw_mode = "READ_ONLY"
+
 [dist]
 # where to find the scheduler
 scheduler_url = "http://1.2.3.4:10600"
@@ -1502,6 +1537,7 @@ no_credentials = true
         file_config,
         FileConfig {
             cache: CacheConfigs {
+                assume_rw_mode: Some(CacheModeConfig::ReadOnly),
                 azure: None, // TODO not sure how to represent a unit struct in TOML Some(AzureCacheConfig),
                 disk: Some(DiskCacheConfig {
                     dir: PathBuf::from("/tmp/.cache/sccache"),
