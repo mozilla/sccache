@@ -31,7 +31,7 @@ impl S3Cache {
         server_side_encryption: Option<bool>,
     ) -> Result<Operator> {
         let mut builder = S3::default();
-        builder.http_client(build_http_client());
+        builder.http_client(set_user_agent());
         builder.bucket(bucket);
         builder.root(key_prefix);
 
@@ -66,7 +66,8 @@ impl S3Cache {
     }
 }
 
-fn build_http_client() -> HttpClient {
+/// Set the user agent (helps with monitoring on the server side)
+fn set_user_agent() -> HttpClient {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     let client_builder = ClientBuilder::new().user_agent(user_agent);
     HttpClient::build(client_builder).unwrap()
