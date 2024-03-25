@@ -114,7 +114,7 @@ nix = { version = "0.27.1", optional = true, features = [
   "signal",
   "process",
 ] }
-object = "0.32"
+object = "0.34"
 rouille = { version = "3.6", optional = true, default-features = false, features = [
   "ssl",
 ] }
