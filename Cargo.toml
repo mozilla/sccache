@@ -164,7 +164,7 @@ memcached = ["opendal/services-memcached"]
 native-zlib = []
 oss = ["opendal/services-oss", "reqsign"]
 redis = ["url", "opendal/services-redis"]
-s3 = ["opendal/services-s3", "reqsign"]
+s3 = ["opendal/services-s3", "reqsign", "reqwest"]
 webdav = ["opendal/services-webdav"]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl

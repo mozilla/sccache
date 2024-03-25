@@ -11,8 +11,10 @@
 // limitations under the License.
 
 use opendal::layers::LoggingLayer;
+use opendal::raw::HttpClient;
 use opendal::services::S3;
 use opendal::Operator;
+use reqwest::ClientBuilder;
 
 use crate::errors::*;
 
@@ -29,6 +31,7 @@ impl S3Cache {
         server_side_encryption: Option<bool>,
     ) -> Result<Operator> {
         let mut builder = S3::default();
+        builder.http_client(set_user_agent());
         builder.bucket(bucket);
         builder.root(key_prefix);
 
@@ -61,6 +64,13 @@ impl S3Cache {
             .finish();
         Ok(op)
     }
+}
+
+/// Set the user agent (helps with monitoring on the server side)
+fn set_user_agent() -> HttpClient {
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    let client_builder = ClientBuilder::new().user_agent(user_agent);
+    HttpClient::build(client_builder).unwrap()
 }
 
 /// Resolve given endpoint along with use_ssl settings.
