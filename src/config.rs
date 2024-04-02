@@ -213,6 +213,11 @@ pub struct GHACacheConfig {
     /// Version for gha cache is a namespace. By setting different versions,
     /// we can avoid mixed caches.
     pub version: String,
+    /// Download the entire cache to be used like a local cache, then upload
+    /// it back if anything changed.
+    /// This is useful in CI contexts to reduce the number of requests,
+    /// hence avoiding rate limiting and improving overall cache speed.
+    pub as_local: bool,
 }
 
 /// Memcached's default value of expiration is 10800s (3 hours), which is too
@@ -784,12 +789,13 @@ fn config_from_env() -> Result<EnvConfig> {
     });
 
     // ======= GHA =======
-    let gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
+    let mut gha = if let Ok(version) = env::var("SCCACHE_GHA_VERSION") {
         // If SCCACHE_GHA_VERSION has been set, we don't need to check
         // SCCACHE_GHA_ENABLED's value anymore.
         Some(GHACacheConfig {
             enabled: true,
             version,
+            as_local: false,
         })
     } else if bool_from_env_var("SCCACHE_GHA_ENABLED")?.unwrap_or(false) {
         // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
@@ -797,10 +803,15 @@ fn config_from_env() -> Result<EnvConfig> {
         Some(GHACacheConfig {
             enabled: true,
             version: "".to_string(),
+            as_local: false,
         })
     } else {
         None
     };
+
+    if let Some(gha) = &mut gha {
+        gha.as_local = bool_from_env_var("SCCACHE_GHA_AS_LOCAL")?.unwrap_or(false);
+    }
 
     // ======= Azure =======
     let azure = if let (Ok(connection_string), Ok(container)) = (
@@ -1453,6 +1464,7 @@ service_account = "example_service_account"
 [cache.gha]
 enabled = true
 version = "sccache"
+as_local = false
 
 [cache.memcached]
 # Deprecated alias for `endpoint`
@@ -1519,7 +1531,8 @@ no_credentials = true
                 }),
                 gha: Some(GHACacheConfig {
                     enabled: true,
-                    version: "sccache".to_string()
+                    version: "sccache".to_string(),
+                    as_local: false,
                 }),
                 redis: Some(RedisCacheConfig {
                     url: Some("redis://user:passwd@1.2.3.4:6379/?db=1".to_owned()),

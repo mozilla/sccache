@@ -13,6 +13,8 @@
 // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
 
 use crate::cache::readonly::ReadOnlyStorage;
+#[cfg(feature = "gha")]
+use crate::cache::upload_local_cache;
 use crate::cache::{storage_from_config, CacheMode, Storage};
 use crate::compiler::{
     get_compiler_info, CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher,
@@ -466,7 +468,6 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         CacheMode::ReadOnly => Arc::new(ReadOnlyStorage(raw_storage)),
         _ => raw_storage,
     };
-
     let res =
         SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
     match res {
@@ -474,7 +475,12 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
             let port = srv.port();
             info!("server started, listening on port {}", port);
             notify_server_startup(&notify, ServerStartup::Ok { port })?;
-            srv.run(future::pending::<()>())?;
+            let runtime = srv.run(future::pending::<()>())?;
+
+            // TODO How do we propagate this error to the client?
+            #[cfg(feature = "gha")]
+            runtime.block_on(upload_local_cache(config))?;
+
             Ok(())
         }
         Err(e) => {
@@ -589,7 +595,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     /// If the `shutdown` future resolves then the server will be shut down,
     /// otherwise the server may naturally shut down if it becomes idle for too
     /// long anyway.
-    pub fn run<F>(self, shutdown: F) -> io::Result<()>
+    pub fn run<F>(self, shutdown: F) -> io::Result<Runtime>
     where
         F: Future,
         C: Send,
@@ -676,7 +682,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
         info!("ok, fully shutting down now");
 
-        Ok(())
+        Ok(runtime)
     }
 }
 
