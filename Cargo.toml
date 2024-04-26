@@ -141,7 +141,14 @@ optional = true
 version = "0.1.15"
 
 [target.'cfg(windows)'.dependencies.winapi]
-features = ["fileapi", "handleapi", "stringapiset", "winnls"]
+features = [
+  "fileapi",
+  "handleapi",
+  "stringapiset",
+  "winnls",
+  "processenv",
+  "std",
+]
 version = "0.3"
 
 [features]
