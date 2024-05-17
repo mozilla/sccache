@@ -382,6 +382,7 @@ where
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        // Disable preprocessor cache when doing distributed compilation
         let mut preprocessor_key =
             if !may_dist && preprocessor_cache_mode_config.use_preprocessor_cache_mode {
                 preprocessor_cache_entry_hash_key(
