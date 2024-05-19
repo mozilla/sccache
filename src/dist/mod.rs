@@ -92,7 +92,7 @@ mod path_transform {
         }
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct PathTransformer {
         dist_to_local_path: HashMap<String, PathBuf>,
     }
@@ -189,7 +189,7 @@ mod path_transform {
 
     #[test]
     fn test_basic() {
-        let mut pt = PathTransformer::default();
+        let mut pt = PathTransformer::new();
         assert_eq!(pt.as_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(
             pt.as_dist(Path::new(r#"C:\a\b.c"#)).unwrap(),
@@ -221,7 +221,7 @@ mod path_transform {
 
     #[test]
     fn test_relative_paths() {
-        let mut pt = PathTransformer::default();
+        let mut pt = PathTransformer::new();
         assert_eq!(pt.as_dist(Path::new("a/b")).unwrap(), "a/b");
         assert_eq!(pt.as_dist(Path::new(r#"a\b"#)).unwrap(), "a/b");
         assert_eq!(pt.to_local("a/b").unwrap(), Path::new("a/b"));
@@ -229,7 +229,7 @@ mod path_transform {
 
     #[test]
     fn test_verbatim_disks() {
-        let mut pt = PathTransformer::default();
+        let mut pt = PathTransformer::new();
         assert_eq!(
             pt.as_dist(Path::new("X:/other.c")).unwrap(),
             "/prefix/disk-X/other.c"
@@ -256,7 +256,7 @@ mod path_transform {
 
     #[test]
     fn test_slash_directions() {
-        let mut pt = PathTransformer::default();
+        let mut pt = PathTransformer::new();
         assert_eq!(pt.as_dist(Path::new("C:/a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(pt.as_dist(Path::new("C:\\a")).unwrap(), "/prefix/disk-C/a");
         assert_eq!(pt.to_local("/prefix/disk-C/a").unwrap(), Path::new("C:/a"));
@@ -269,10 +269,13 @@ mod path_transform {
     use std::iter;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct PathTransformer;
 
     impl PathTransformer {
+        pub fn new() -> Self {
+            PathTransformer
+        }
         pub fn as_dist_abs(&mut self, p: &Path) -> Option<String> {
             if !p.is_absolute() {
                 return None;

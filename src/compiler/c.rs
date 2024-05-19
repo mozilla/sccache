@@ -275,7 +275,7 @@ where
                     .map(|f| f.path())
                     .collect()
             })
-            .unwrap_or(Vec::default())
+            .unwrap_or_default()
     }
 }
 
@@ -485,16 +485,14 @@ where
             debug!("removing files {:?}", &outputs);
 
             let v: std::result::Result<(), std::io::Error> =
-                outputs.values().fold(Ok(()), |r, output| {
-                    r.and_then(|_| {
-                        let mut path = args_cwd.clone();
-                        path.push(&output.path);
-                        match fs::metadata(&path) {
-                            // File exists, remove it.
-                            Ok(_) => fs::remove_file(&path),
-                            _ => Ok(()),
-                        }
-                    })
+                outputs.values().try_for_each(|output| {
+                    let mut path = args_cwd.clone();
+                    path.push(&output.path);
+                    match fs::metadata(&path) {
+                        // File exists, remove it.
+                        Ok(_) => fs::remove_file(&path),
+                        _ => Ok(()),
+                    }
                 });
             if v.is_err() {
                 warn!("Could not remove files after preprocessing failed!");
@@ -624,7 +622,7 @@ const INCBIN_DIRECTIVE: &[u8] = b".incbin";
 fn process_preprocessed_file(
     input_file: &Path,
     cwd: &Path,
-    bytes: &mut Vec<u8>,
+    bytes: &mut [u8],
     included_files: &mut HashMap<PathBuf, String>,
     config: PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,

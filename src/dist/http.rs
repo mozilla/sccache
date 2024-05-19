@@ -35,7 +35,6 @@ mod common {
     pub trait ReqwestRequestBuilderExt: Sized {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self>;
         fn bytes(self, bytes: Vec<u8>) -> Self;
-        fn bearer_auth(self, token: String) -> Self;
     }
     impl ReqwestRequestBuilderExt for reqwest::blocking::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
@@ -51,9 +50,6 @@ mod common {
             .header(header::CONTENT_LENGTH, bytes.len())
             .body(bytes)
         }
-        fn bearer_auth(self, token: String) -> Self {
-            self.bearer_auth(token)
-        }
     }
     impl ReqwestRequestBuilderExt for reqwest::RequestBuilder {
         fn bincode<T: serde::Serialize + ?Sized>(self, bincode: &T) -> Result<Self> {
@@ -68,9 +64,6 @@ mod common {
             )
             .header(header::CONTENT_LENGTH, bytes.len())
             .body(bytes)
-        }
-        fn bearer_auth(self, token: String) -> Self {
-            self.bearer_auth(token)
         }
     }
 
