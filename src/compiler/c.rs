@@ -382,20 +382,22 @@ where
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
-        let mut preprocessor_key = if preprocessor_cache_mode_config.use_preprocessor_cache_mode {
-            preprocessor_cache_entry_hash_key(
-                &executable_digest,
-                parsed_args.language,
-                &preprocessor_and_arch_args,
-                &extra_hashes,
-                &env_vars,
-                &absolute_input_path,
-                compiler.plusplus(),
-                preprocessor_cache_mode_config,
-            )?
-        } else {
-            None
-        };
+        // Disable preprocessor cache when doing distributed compilation
+        let mut preprocessor_key =
+            if !may_dist && preprocessor_cache_mode_config.use_preprocessor_cache_mode {
+                preprocessor_cache_entry_hash_key(
+                    &executable_digest,
+                    parsed_args.language,
+                    &preprocessor_and_arch_args,
+                    &extra_hashes,
+                    &env_vars,
+                    &absolute_input_path,
+                    compiler.plusplus(),
+                    preprocessor_cache_mode_config,
+                )?
+            } else {
+                None
+            };
         if let Some(preprocessor_key) = &preprocessor_key {
             if cache_control == CacheControl::Default {
                 if let Some(mut seekable) =
