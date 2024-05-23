@@ -175,7 +175,7 @@ impl Storage for DiskCache {
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.preprocessor_cache_mode_config
     }
-    fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
+    async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
         let key = normalize_key(key);
         Ok(self
             .preprocessor_cache
@@ -185,7 +185,7 @@ impl Storage for DiskCache {
             .get(key)
             .ok())
     }
-    fn put_preprocessor_cache_entry(
+    async fn put_preprocessor_cache_entry(
         &self,
         key: &str,
         preprocessor_cache_entry: PreprocessorCacheEntry,

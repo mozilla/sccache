@@ -67,17 +67,17 @@ impl Storage for ReadOnlyStorage {
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
     /// Only applicable when using preprocessor cache mode.
-    fn get_preprocessor_cache_entry(
+    async fn get_preprocessor_cache_entry(
         &self,
-        _key: &str,
+        key: &str,
     ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
-        self.0.get_preprocessor_cache_entry(_key)
+        self.0.get_preprocessor_cache_entry(key).await
     }
 
     /// Insert a preprocessor cache entry at the given preprocessor key,
     /// overwriting the entry if it exists.
     /// Only applicable when using preprocessor cache mode.
-    fn put_preprocessor_cache_entry(
+    async fn put_preprocessor_cache_entry(
         &self,
         _key: &str,
         _preprocessor_cache_entry: PreprocessorCacheEntry,
@@ -142,6 +142,7 @@ mod test {
             assert_eq!(
                 storage
                     .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                    .await
                     .unwrap_err()
                     .to_string(),
                 "Cannot write to read-only storage"
