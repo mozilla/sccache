@@ -375,7 +375,7 @@ pub trait Storage: Send + Sync {
     /// Return the preprocessor cache entry for a given preprocessor key,
     /// if it exists.
     /// Only applicable when using preprocessor cache mode.
-    fn get_preprocessor_cache_entry(
+    async fn get_preprocessor_cache_entry(
         &self,
         _key: &str,
     ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
@@ -384,7 +384,7 @@ pub trait Storage: Send + Sync {
     /// Insert a preprocessor cache entry at the given preprocessor key,
     /// overwriting the entry if it exists.
     /// Only applicable when using preprocessor cache mode.
-    fn put_preprocessor_cache_entry(
+    async fn put_preprocessor_cache_entry(
         &self,
         _key: &str,
         _preprocessor_cache_entry: PreprocessorCacheEntry,
@@ -784,6 +784,7 @@ mod test {
                 cache.put("test1", CacheWrite::default()).await.unwrap();
                 cache
                     .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                    .await
                     .unwrap();
             });
         }
@@ -806,6 +807,7 @@ mod test {
                 assert_eq!(
                     cache
                         .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+                        .await
                         .unwrap_err()
                         .to_string(),
                     "Cannot write to a read-only cache"
