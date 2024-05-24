@@ -17,7 +17,6 @@ use directories::ProjectDirs;
 use fs::File;
 use fs_err as fs;
 use once_cell::sync::Lazy;
-use regex::Regex;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use serde::ser::Serializer;
 use serde::{
@@ -79,20 +78,19 @@ fn default_toolchain_cache_size() -> u64 {
 }
 
 pub fn parse_size(val: &str) -> Option<u64> {
-    let re = Regex::new(r"^(\d+)([KMGT])$").expect("Fixed regex parse failure");
-    re.captures(val)
-        .and_then(|caps| {
-            caps.get(1)
-                .and_then(|size| u64::from_str(size.as_str()).ok())
-                .map(|size| (size, caps.get(2)))
-        })
-        .and_then(|(size, suffix)| match suffix.map(|s| s.as_str()) {
-            Some("K") => Some(1024 * size),
-            Some("M") => Some(1024 * 1024 * size),
-            Some("G") => Some(1024 * 1024 * 1024 * size),
-            Some("T") => Some(1024 * 1024 * 1024 * 1024 * size),
-            _ => None,
-        })
+    let multiplier = match val.chars().last() {
+        Some('K') => 1024,
+        Some('M') => 1024 * 1024,
+        Some('G') => 1024 * 1024 * 1024,
+        Some('T') => 1024 * 1024 * 1024 * 1024,
+        _ => 1,
+    };
+    let val = if multiplier > 1 && !val.is_empty() {
+        val.split_at(val.len() - 1).0
+    } else {
+        val
+    };
+    u64::from_str(val).ok().map(|size| size * multiplier)
 }
 
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -1223,7 +1221,8 @@ pub mod server {
 #[test]
 fn test_parse_size() {
     assert_eq!(None, parse_size(""));
-    assert_eq!(None, parse_size("100"));
+    assert_eq!(None, parse_size("bogus value"));
+    assert_eq!(Some(100), parse_size("100"));
     assert_eq!(Some(2048), parse_size("2K"));
     assert_eq!(Some(10 * 1024 * 1024), parse_size("10M"));
     assert_eq!(Some(TEN_GIGS), parse_size("10G"));
