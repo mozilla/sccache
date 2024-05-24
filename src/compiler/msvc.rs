@@ -2450,7 +2450,7 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let mut path_transformer = dist::PathTransformer::default();
+        let mut path_transformer = dist::PathTransformer::new();
         let (command, dist_command, cacheable) = generate_compile_commands(
             &mut path_transformer,
             compiler,
@@ -2478,7 +2478,7 @@ mod test {
         };
         let f = TestFixture::new();
         let compiler = &f.bins[0];
-        let mut path_transformer = dist::PathTransformer::default();
+        let mut path_transformer = dist::PathTransformer::new();
         let (command, _, _) = generate_compile_commands(
             &mut path_transformer,
             compiler,
@@ -2535,7 +2535,7 @@ mod test {
         let compiler = &f.bins[0];
         // Compiler invocation.
         next_command(&creator, Ok(MockChild::new(exit_status(0), "", "")));
-        let mut path_transformer = dist::PathTransformer::default();
+        let mut path_transformer = dist::PathTransformer::new();
         let (command, dist_command, cacheable) = generate_compile_commands(
             &mut path_transformer,
             compiler,

@@ -285,10 +285,9 @@ impl<K: Eq + Hash, V, S: BuildHasher> LruCache<K, V, S, Count> {
     /// assert_eq!(cache.get_mut(&1), None);
     /// assert_eq!(cache.get_mut(&2), Some(&mut "c"));
     /// ```
-    pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    pub fn get_mut<Q: Hash + Eq + ?Sized>(&mut self, k: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.map.get_refresh(k)
     }
@@ -367,18 +366,16 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// cache.insert(1, "a");
     /// assert!(cache.contains_key(&1));
     /// ```
-    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
+    pub fn contains_key<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.map.contains_key(key)
     }
 
-    pub fn get<Q: ?Sized>(&mut self, k: &Q) -> Option<&V>
+    pub fn get<Q: Hash + Eq + ?Sized>(&mut self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.map.get_refresh(k).map(|v| v as &V)
     }
@@ -429,10 +426,9 @@ impl<K: Eq + Hash, V, S: BuildHasher, M: CountableMeter<K, V>> LruCache<K, V, S,
     /// assert_eq!(cache.remove(&2), None);
     /// assert_eq!(cache.len(), 0);
     /// ```
-    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
+    pub fn remove<Q: Hash + Eq + ?Sized>(&mut self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.map.remove(k).map(|v| {
             self.current_measure = self

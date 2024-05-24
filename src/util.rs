@@ -203,7 +203,7 @@ impl TimeMacroFinder {
                     // importance compared to just getting many small reads.
                     self.previous_small_read.extend(visit);
                 } else {
-                    self.previous_small_read = visit.to_owned();
+                    visit.clone_into(&mut self.previous_small_read);
                 }
                 self.find_macros(&self.previous_small_read);
                 return;

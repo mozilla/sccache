@@ -2202,7 +2202,7 @@ fn test_rust_outputs_rewriter() {
     use crate::test::utils::create_file;
     use std::io::Write;
 
-    let mut pt = dist::PathTransformer::default();
+    let mut pt = dist::PathTransformer::new();
     pt.as_dist(Path::new("c:\\")).unwrap();
     let mappings: Vec<_> = pt.disk_mappings().collect();
     assert!(mappings.len() == 1);

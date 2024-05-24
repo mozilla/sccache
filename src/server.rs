@@ -398,7 +398,7 @@ thread_local! {
     /// catch_unwind doesn't provide panic location, so we store that
     /// information via a panic hook to be used when catch_unwind
     /// catches a panic.
-    static PANIC_LOCATION: Cell<Option<(String, u32, u32)>> = Cell::new(None);
+    static PANIC_LOCATION: Cell<Option<(String, u32, u32)>> = const { Cell::new(None) };
 }
 
 /// Start an sccache server, listening on `port`.

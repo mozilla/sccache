@@ -524,7 +524,7 @@ async fn dist_or_local_compile<T>(
 where
     T: CommandCreatorSync,
 {
-    let mut path_transformer = dist::PathTransformer::default();
+    let mut path_transformer = dist::PathTransformer::new();
     let (compile_cmd, _dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, true)
         .context("Failed to generate compile commands")?;
@@ -554,7 +554,7 @@ where
         Some(ref client) => client.rewrite_includes_only(),
         _ => false,
     };
-    let mut path_transformer = dist::PathTransformer::default();
+    let mut path_transformer = dist::PathTransformer::new();
     let (compile_cmd, dist_compile_cmd, cacheable) = compilation
         .generate_compile_commands(&mut path_transformer, rewrite_includes_only)
         .context("Failed to generate compile commands")?;
@@ -1875,7 +1875,7 @@ LLVM version: 6.0",
         let runtime = single_threaded_runtime();
         let pool = runtime.handle();
         let output = "compiler_id=clang\ncompiler_version=\"16.0.0\"";
-        let arguments = vec![
+        let arguments = [
             ovec!["-c", "foo.c", "-o", "foo.o", "-DHELLO"],
             ovec!["-c", "foo.c", "-o", "foo.o", "-DHI"],
             ovec!["-c", "foo.c", "-o", "foo.o"],
