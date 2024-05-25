@@ -1,0 +1,67 @@
+FROM rust:alpine AS bootstrap_os
+  # hadolint ignore=DL3018
+  RUN apk upgrade --update-cache --available
+
+
+FROM bootstrap_os AS bootstrap_build_deps
+  RUN set -ex; \
+    apk add --no-cache --virtual .rust-builder cmake clang \
+        musl-dev make pkgconfig \
+    && apk add --no-cache --virtual .bootstrap-sccache libressl-dev \
+    && apk add --no-cache --virtual .runtime-sccache libressl
+
+
+FROM bootstrap_build_deps AS bootstrap_builder
+  ENV RUST_BACKTRACE=1 \
+      CC=clang \
+      CXX=clang++ \
+      MAKEOPTS="-j$(getconf _NPROCESSORS_ONLN)"
+
+  RUN cargo install sccache --message-format short \
+      && apk del .bootstrap-sccache \
+      && apk del .rust-builder
+
+# docker build -f docker/Dockerfile.alpine -t sccache:latest --compress . --target=pipeline
+FROM alpine:3.13.3 AS pipeline
+  # hadolint ignore=SC2016
+  RUN --mount=type=bind,source=/etc,target=/mnt_etc,from=bootstrap_os set -ex; \
+      cp /mnt_etc/apk/repositories /etc/apk/repositories \
+      && apk upgrade --update-cache --available \
+      && { \
+        echo '#!/bin/sh'; \
+        echo 'set -eu'; \
+        echo 'if [ "${#}" -gt 0 ] && [ "${1#-}" = "${1}" ] \'; \
+        echo '  && command -v "${1}" > "/dev/null" 2>&1; then'; \
+        echo '  exec "${@}"'; \
+        echo 'else exec /bin/shfmt "${@}"; fi'; \
+        echo 'exit 0'; \
+      } > /init && chmod +x /init
+
+  COPY --from=bootstrap_builder /usr/local/cargo/bin/sccache /usr/local/cargo/bin/
+
+  WORKDIR /usr/local/cargo/bin
+
+  SHELL [ "/bin/ash", "-o", "pipefail", "-c" ]
+
+  RUN find . -type f -executable -not \( -name '*tkinter*' \) -exec ldd '{}' ';' \
+      | awk '/=>/ { so = $(NF-1); if (index(so, "/usr/local/") == 1) { next }; gsub("^/(usr/)?", "", so); gsub(".*/", "", so); print so }' \
+      | xargs -r apk search -f | awk '{ so = $(NF-1); gsub(/-\d+.*$/, "", so); print so }' \
+      | xargs -r apk add --no-cache --virtual .runtime
+
+  ENV PATH="/usr/local/cargo/bin:${PATH}"
+
+  WORKDIR /root
+
+  HEALTHCHECK --retries=1 --timeout=15s CMD /usr/local/cargo/bin/sccache --version
+
+  ENTRYPOINT [ "/init" ]
+
+
+FROM scratch
+  COPY --from=bootstrap_builder /usr/local/cargo/bin/sccache /bin/
+
+  ENTRYPOINT [ "/bin/sccache" ]
+
+  CMD [ "/bin/sccache" ]
+
+# vi: nospell
