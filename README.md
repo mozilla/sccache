@@ -178,8 +178,49 @@ cmake -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache 
 And you can build code as usual without any additional flags in the command line, which is useful for IDEs.
 
 
----
+----
+Pipeline Integration
+--------------------
 
+Some CI/CD pipelines leverage repository cloning. Below is a copy-paste-able example to build docker images for such workflows.
+As no official image exists (at this time), an image must first be built.
+
+#### Building the most compatible base image
+
+```sh
+docker build -f docker/Dockerfile.alpine -t sccache:latest --compress . --target=pipeline
+```
+
+#### Building the least bits-on-the-wire base image (Debian)
+
+```sh
+docker build -f docker/Dockerfile.bookworm -t sccache:latest --compress . --target=pipeline
+```
+
+#### Integration into existing pipelines
+
+If a `Dockerfile` currently uses something like `RUN ./configure && make && make install`, first build the sccache base image:
+
+```sh
+docker build -f docker/Dockerfile.alpine -t sccache:latest --compress .
+```
+
+Then copy the binary into the existing `Dockerfile`
+
+```dockerfile
+COPY --from sccache:latest /bin/sccache /usr/local/bin/
+```
+
+... and read the usage instructions here:
+https://github.com/mozilla/sccache?tab=readme-ov-file#usage
+
+Cache persistence is specific to CI/CD pipeline architecture. Therefore, it is necessary to configure cache persistence on a per pipeline basis. See https://github.com/mozilla/sccache?tab=readme-ov-file#storage-options for more information. For local storage, that would mean mounting docker volumes.
+
+```sh
+docker run -it -v "$(cd;pwd)"/.sccache:/root/.sccache sccache:latest
+```
+
+---
 Build Requirements
 ------------------
 
