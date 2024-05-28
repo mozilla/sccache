@@ -190,7 +190,7 @@ docker build -f docker/Dockerfile.alpine -t sccache:latest --compress . --target
 docker build -f docker/Dockerfile.bookworm -t sccache:latest --compress . --target=pipeline
 ```
 
-#### into existing pipelines
+#### Integration into existing pipelines
 
 If a `Dockerfile` currently uses something like `RUN ./configure && make && make install`, first build the sccache base image:
 
