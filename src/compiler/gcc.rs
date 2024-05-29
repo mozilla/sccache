@@ -350,6 +350,7 @@ where
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => {
+                too_hard_for_preprocessor_cache_mode = true;
                 need_explicit_dep_target = true;
                 if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
                     need_explicit_dep_argument_path = DepArgumentRequirePath::Missing;
