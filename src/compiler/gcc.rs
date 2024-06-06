@@ -289,7 +289,7 @@ where
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
 
-    let mut too_hard_for_preprocessor_cache_mode = false;
+    let mut too_hard_for_preprocessor_cache_mode = None;
 
     let mut args_iter = ArgsIter::new(it, arg_info);
     if kind == CCompilerKind::Clang {
@@ -350,7 +350,7 @@ where
             }
             Some(Output(p)) => output_arg = Some(p.clone()),
             Some(NeedDepTarget) => {
-                too_hard_for_preprocessor_cache_mode = true;
+                too_hard_for_preprocessor_cache_mode = Some(arg.to_os_string());
                 need_explicit_dep_target = true;
                 if let DepArgumentRequirePath::NotNeeded = need_explicit_dep_argument_path {
                     need_explicit_dep_argument_path = DepArgumentRequirePath::Missing;
@@ -437,8 +437,8 @@ where
             }
             Some(PreprocessorArgument(_)) => {
                 too_hard_for_preprocessor_cache_mode = match arg.flag_str() {
-                    Some(s) => s == "-Xpreprocessor" || s == "-Wp",
-                    _ => false,
+                    Some(s) if s == "-Xpreprocessor" || s == "-Wp" => Some(arg.to_os_string()),
+                    _ => None,
                 };
                 &mut preprocessor_args
             }
@@ -2031,7 +2031,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
-            too_hard_for_preprocessor_cache_mode: false,
+            too_hard_for_preprocessor_cache_mode: None,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2194,20 +2194,26 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(!parsed_args.too_hard_for_preprocessor_cache_mode);
+        assert!(parsed_args.too_hard_for_preprocessor_cache_mode.is_none());
 
         let args = stringvec!["-c", "foo.c", "-o", "foo.o", "-Xpreprocessor", "-M"];
         let parsed_args = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(parsed_args.too_hard_for_preprocessor_cache_mode);
+        assert_eq!(
+            parsed_args.too_hard_for_preprocessor_cache_mode,
+            Some("-Xpreprocessor".into())
+        );
 
         let args = stringvec!["-c", "foo.c", "-o", "foo.o", r#"-Wp,-DFOO="something""#];
         let parsed_args = match parse_arguments_(args, false) {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
-        assert!(parsed_args.too_hard_for_preprocessor_cache_mode);
+        assert_eq!(
+            parsed_args.too_hard_for_preprocessor_cache_mode,
+            Some("-Wp".into())
+        );
     }
 }
