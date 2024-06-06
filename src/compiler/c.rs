@@ -383,21 +383,23 @@ where
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
         // Disable preprocessor cache when doing distributed compilation
-        let mut preprocessor_key =
-            if !may_dist && preprocessor_cache_mode_config.use_preprocessor_cache_mode {
-                preprocessor_cache_entry_hash_key(
-                    &executable_digest,
-                    parsed_args.language,
-                    &preprocessor_and_arch_args,
-                    &extra_hashes,
-                    &env_vars,
-                    &absolute_input_path,
-                    compiler.plusplus(),
-                    preprocessor_cache_mode_config,
-                )?
-            } else {
-                None
-            };
+        let mut preprocessor_key = if !may_dist
+            && preprocessor_cache_mode_config.use_preprocessor_cache_mode
+            && !parsed_args.too_hard_for_preprocessor_cache_mode
+        {
+            preprocessor_cache_entry_hash_key(
+                &executable_digest,
+                parsed_args.language,
+                &preprocessor_and_arch_args,
+                &extra_hashes,
+                &env_vars,
+                &absolute_input_path,
+                compiler.plusplus(),
+                preprocessor_cache_mode_config,
+            )?
+        } else {
+            None
+        };
         if let Some(preprocessor_key) = &preprocessor_key {
             if cache_control == CacheControl::Default {
                 if let Some(mut seekable) = storage
