@@ -833,11 +833,6 @@ impl<'a> Hasher for HashToDigest<'a> {
     }
 }
 
-/// Turns a slice of environment var tuples into the type expected by Command::envs.
-pub fn ref_env(env: &[(OsString, OsString)]) -> impl Iterator<Item = (&OsString, &OsString)> {
-    env.iter().map(|(k, v)| (k, v))
-}
-
 /// Pipe `cmd`'s stdio to `/dev/null`, unless a specific env var is set.
 #[cfg(not(windows))]
 pub fn daemonize() -> Result<()> {
