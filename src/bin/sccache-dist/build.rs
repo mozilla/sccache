@@ -351,8 +351,8 @@ impl OverlayBuilder {
                     //   first, otherwise proc and dev get hidden
                     let mut cmd = Command::new(bubblewrap);
                     cmd.arg("--die-with-parent")
-                        .args(&["--cap-drop", "ALL"])
-                        .args(&[
+                        .args(["--cap-drop", "ALL"])
+                        .args([
                             "--unshare-user",
                             "--unshare-cgroup",
                             "--unshare-ipc",
@@ -363,8 +363,8 @@ impl OverlayBuilder {
                         .arg("--bind")
                         .arg(&target_dir)
                         .arg("/")
-                        .args(&["--proc", "/proc"])
-                        .args(&["--dev", "/dev"])
+                        .args(["--proc", "/proc"])
+                        .args(["--dev", "/dev"])
                         .arg("--chdir")
                         .arg(cwd);
 
@@ -467,7 +467,7 @@ const DOCKER_SHELL_INIT: &str = "while true; do /busybox sleep 365d && /busybox 
 // Check the diff and clean up the FS
 fn docker_diff(cid: &str) -> Result<String> {
     Command::new("docker")
-        .args(&["diff", cid])
+        .args(["diff", cid])
         .check_stdout_trim()
         .context("Failed to Docker diff container")
 }
@@ -475,7 +475,7 @@ fn docker_diff(cid: &str) -> Result<String> {
 // Force remove the container
 fn docker_rm(cid: &str) -> Result<()> {
     Command::new("docker")
-        .args(&["rm", "-f", cid])
+        .args(["rm", "-f", cid])
         .check_run()
         .context("Failed to force delete container")
 }
@@ -506,7 +506,7 @@ impl DockerBuilder {
         info!("Performing initial Docker cleanup");
 
         let containers = Command::new("docker")
-            .args(&["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
+            .args(["ps", "-a", "--format", "{{.ID}} {{.Image}}"])
             .check_stdout_trim()
             .context("Unable to list all Docker containers")?;
         if !containers.is_empty() {
@@ -519,7 +519,7 @@ impl DockerBuilder {
                 let image_name = iter
                     .next()
                     .context("Malformed container listing - no image name")?;
-                if iter.next() != None {
+                if iter.next().is_some() {
                     bail!("Malformed container listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
@@ -528,7 +528,7 @@ impl DockerBuilder {
             }
             if !containers_to_rm.is_empty() {
                 Command::new("docker")
-                    .args(&["rm", "-f"])
+                    .args(["rm", "-f"])
                     .args(containers_to_rm)
                     .check_run()
                     .context("Failed to start command to remove old containers")?;
@@ -536,7 +536,7 @@ impl DockerBuilder {
         }
 
         let images = Command::new("docker")
-            .args(&["images", "--format", "{{.ID}} {{.Repository}}"])
+            .args(["images", "--format", "{{.ID}} {{.Repository}}"])
             .check_stdout_trim()
             .context("Failed to list all docker images")?;
         if !images.is_empty() {
@@ -549,7 +549,7 @@ impl DockerBuilder {
                 let image_name = iter
                     .next()
                     .context("Malformed image listing - no image name")?;
-                if iter.next() != None {
+                if iter.next().is_some() {
                     bail!("Malformed image listing - third field on row")
                 }
                 if image_name.starts_with("sccache-builder-") {
@@ -558,7 +558,7 @@ impl DockerBuilder {
             }
             if !images_to_rm.is_empty() {
                 Command::new("docker")
-                    .args(&["rmi"])
+                    .args(["rmi"])
                     .args(images_to_rm)
                     .check_run()
                     .context("Failed to remove image")?
@@ -575,7 +575,7 @@ impl DockerBuilder {
     fn get_container(&self, tc: &Toolchain, tccache: &Mutex<TcCache>) -> Result<String> {
         let container = {
             let mut map = self.container_lists.lock().unwrap();
-            map.entry(tc.clone()).or_insert_with(Vec::new).pop()
+            map.entry(tc.clone()).or_default().pop()
         };
         match container {
             Some(cid) => Ok(cid),
@@ -602,7 +602,7 @@ impl DockerBuilder {
     fn clean_container(&self, cid: &str) -> Result<()> {
         // Clean up any running processes
         Command::new("docker")
-            .args(&["exec", cid, "/busybox", "kill", "-9", "-1"])
+            .args(["exec", cid, "/busybox", "kill", "-9", "-1"])
             .check_run()
             .context("Failed to run kill on all processes in container")?;
 
@@ -617,7 +617,7 @@ impl DockerBuilder {
                 let changepath = iter
                     .next()
                     .context("Malformed container diff - no change path")?;
-                if iter.next() != None {
+                if iter.next().is_some() {
                     bail!("Malformed container diff - third field on row")
                 }
                 // TODO: If files are created in this dir, it gets marked as modified.
@@ -641,7 +641,7 @@ impl DockerBuilder {
                 }
                 lastpath = Some(changepath);
                 if let Err(e) = Command::new("docker")
-                    .args(&["exec", cid, "/busybox", "rm", "-rf", changepath])
+                    .args(["exec", cid, "/busybox", "rm", "-rf", changepath])
                     .check_run()
                 {
                     // We do a final check anyway, so just continue
@@ -695,7 +695,7 @@ impl DockerBuilder {
 
     fn make_image(tc: &Toolchain, tccache: &Mutex<TcCache>) -> Result<String> {
         let cid = Command::new("docker")
-            .args(&["create", BASE_DOCKER_IMAGE, "/busybox", "true"])
+            .args(["create", BASE_DOCKER_IMAGE, "/busybox", "true"])
             .check_stdout_trim()
             .context("Failed to create docker container")?;
 
@@ -713,7 +713,7 @@ impl DockerBuilder {
 
         trace!("Copying in toolchain");
         Command::new("docker")
-            .args(&["cp", "-", &format!("{}:/", cid)])
+            .args(["cp", "-", &format!("{}:/", cid)])
             .check_piped(&mut |stdin| {
                 io::copy(&mut toolchain_rdr, stdin)?;
                 Ok(())
@@ -723,12 +723,12 @@ impl DockerBuilder {
 
         let imagename = format!("sccache-builder-{}", &tc.archive_id);
         Command::new("docker")
-            .args(&["commit", &cid, &imagename])
+            .args(["commit", &cid, &imagename])
             .check_run()
             .context("Failed to commit container after build")?;
 
         Command::new("docker")
-            .args(&["rm", "-f", &cid])
+            .args(["rm", "-f", &cid])
             .check_run()
             .context("Failed to remove temporary build container")?;
 
@@ -737,7 +737,7 @@ impl DockerBuilder {
 
     fn start_container(image: &str) -> Result<String> {
         Command::new("docker")
-            .args(&[
+            .args([
                 "run",
                 "-d",
                 image,
@@ -765,7 +765,7 @@ impl DockerBuilder {
 
         trace!("copying in inputs");
         Command::new("docker")
-            .args(&["cp", "-", &format!("{}:/", cid)])
+            .args(["cp", "-", &format!("{}:/", cid)])
             .check_piped(&mut |stdin| {
                 io::copy(&mut inputs_rdr, stdin)?;
                 Ok(())
@@ -784,7 +784,7 @@ impl DockerBuilder {
         trace!("creating output directories");
         assert!(!output_paths.is_empty());
         let mut cmd = Command::new("docker");
-        cmd.args(&["exec", cid, "/busybox", "mkdir", "-p"]).arg(cwd);
+        cmd.args(["exec", cid, "/busybox", "mkdir", "-p"]).arg(cwd);
         for path in output_paths.iter() {
             // If it doesn't have a parent, nothing needs creating
             let output_parent = if let Some(p) = Path::new(path).parent() {
@@ -812,7 +812,7 @@ impl DockerBuilder {
             cmd.arg("-e").arg(env);
         }
         let shell_cmd = "cd \"$1\" && shift && exec \"$@\"";
-        cmd.args(&[cid, "/busybox", "sh", "-c", shell_cmd]);
+        cmd.args([cid, "/busybox", "sh", "-c", shell_cmd]);
         cmd.arg(&executable);
         cmd.arg(cwd);
         cmd.arg(executable);
@@ -826,7 +826,7 @@ impl DockerBuilder {
             let abspath = cwd.join(&path); // Resolve in case it's relative since we copy it from the root level
                                            // TODO: this isn't great, but cp gives it out as a tar
             let output = Command::new("docker")
-                .args(&["exec", cid, "/busybox", "cat"])
+                .args(["exec", cid, "/busybox", "cat"])
                 .arg(abspath)
                 .output()
                 .context("Failed to start command to retrieve output file")?;
