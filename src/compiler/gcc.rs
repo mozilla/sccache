@@ -726,7 +726,7 @@ fn preprocess_cmd<T>(
     }
     cmd.arg(&parsed_args.input)
         .env_clear()
-        .envs(env_vars.iter().map(|(k, v)| (k, v)))
+        .envs(env_vars.to_vec())
         .current_dir(cwd);
     debug!("cmd after -arch rewrite: {:?}", cmd);
 }

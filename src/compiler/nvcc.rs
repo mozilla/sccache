@@ -143,7 +143,7 @@ impl CCompilerImpl for Nvcc {
             dep_cmd
                 .args(&transformed_deps)
                 .env_clear()
-                .envs(env_vars.iter().map(|(k, v)| (k, v)))
+                .envs(env_vars.to_vec())
                 .current_dir(cwd);
 
             if log_enabled!(Trace) {
@@ -169,7 +169,7 @@ impl CCompilerImpl for Nvcc {
         cmd.arg("-E")
             .arg(no_line_num_flag)
             .env_clear()
-            .envs(env_vars.iter().map(|(k, v)| (k, v)))
+            .envs(env_vars.to_vec())
             .current_dir(cwd);
         if log_enabled!(Trace) {
             trace!("preprocess: {:?}", cmd);
