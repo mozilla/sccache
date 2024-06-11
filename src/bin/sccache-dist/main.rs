@@ -145,7 +145,7 @@ fn run(command: Command) -> Result<i32> {
             server_id,
         }) => {
             let header = jwt::Header::new(jwt::Algorithm::HS256);
-            let secret_key = BASE64_URL_SAFE_ENGINE.decode(&secret_key)?;
+            let secret_key = BASE64_URL_SAFE_ENGINE.decode(secret_key)?;
             let token = create_jwt_server_token(server_id, &header, &secret_key)
                 .context("Failed to create server token")?;
             println!("{}", token);
@@ -191,7 +191,7 @@ fn run(command: Command) -> Result<i32> {
                 }
                 scheduler_config::ServerAuth::JwtHS256 { secret_key } => {
                     let secret_key = BASE64_URL_SAFE_ENGINE
-                        .decode(&secret_key)
+                        .decode(secret_key)
                         .context("Secret key base64 invalid")?;
                     if secret_key.len() != 256 / 8 {
                         bail!("Size of secret key incorrect")
