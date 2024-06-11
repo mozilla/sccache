@@ -340,7 +340,7 @@ impl PreprocessorCacheEntry {
                     };
                     let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
                     new_digest.delimiter(b"timestamp");
-                    new_digest.update(&mtime.naive_local().timestamp().to_le_bytes());
+                    new_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
                     include.digest = new_digest.finish();
                     // Signal that the preprocessor cache entry has been updated and needs to be
                     // written to disk.
