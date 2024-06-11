@@ -26,7 +26,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output, Digest};
-use crate::util::{ref_env, HashToDigest, OsStrExt};
+use crate::util::{HashToDigest, OsStrExt};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -242,7 +242,7 @@ where
         .arg("-o")
         .arg(&dep_file)
         .env_clear()
-        .envs(ref_env(env_vars))
+        .envs(env_vars.to_vec())
         .current_dir(cwd);
     trace!("[{}]: get dep-info: {:?}", crate_name, cmd);
     // Output of command is in file under dep_file, so we ignore stdout&stderr
@@ -364,7 +364,7 @@ where
     cmd.args(&arguments)
         .args(&["--print", "file-names"])
         .env_clear()
-        .envs(ref_env(env_vars))
+        .envs(env_vars.to_vec())
         .current_dir(cwd);
     if log_enabled!(Trace) {
         trace!("get_compiler_outputs: {:?}", cmd);
@@ -406,7 +406,7 @@ impl Rust {
             .stderr(process::Stdio::null())
             .arg("--print=sysroot")
             .env_clear()
-            .envs(ref_env(env_vars));
+            .envs(env_vars.to_vec());
         let sysroot_and_libs = async move {
             let output = run_input_output(cmd, None).await?;
             //debug!("output.and_then: {}", output);
@@ -549,7 +549,7 @@ where
         child
             .current_dir(&cwd)
             .env_clear()
-            .envs(ref_env(env))
+            .envs(env.to_vec())
             .args(&["which", "rustc"]);
 
         Box::pin(async move {
@@ -632,7 +632,7 @@ impl RustupProxy {
 
         // verify rustc is proxy
         let mut child = creator.new_command_sync(compiler_executable);
-        child.env_clear().envs(ref_env(env)).args(&["+stable"]);
+        child.env_clear().envs(env.to_vec()).args(&["+stable"]);
         let state = run_input_output(child, None).await.map(move |output| {
             if output.status.success() {
                 trace!("proxy: Found a compiler proxy managed by rustup");
@@ -695,7 +695,7 @@ impl RustupProxy {
             Ok(ProxyPath::Candidate(proxy_executable)) => {
                 // verify the candidate is a rustup
                 let mut child = creator.new_command_sync(&proxy_executable);
-                child.env_clear().envs(ref_env(env)).args(&["--version"]);
+                child.env_clear().envs(env.to_vec()).args(&["--version"]);
                 let rustup_candidate_check = run_input_output(child, None).await?;
 
                 let stdout = String::from_utf8(rustup_candidate_check.stdout)
@@ -2305,7 +2305,7 @@ impl RlibDepReader {
             .arg(&temp_rlib)
             .arg("-")
             .env_clear()
-            .envs(ref_env(env_vars));
+            .envs(env_vars.to_vec());
 
         let process::Output {
             status,
@@ -2377,7 +2377,7 @@ impl RlibDepReader {
         cmd.args(["-Z", "ls"])
             .arg(rlib)
             .env_clear()
-            .envs(ref_env(env_vars))
+            .envs(env_vars.to_vec())
             .env("RUSTC_BOOTSTRAP", "1"); // TODO: this is fairly naughty
 
         let process::Output {
