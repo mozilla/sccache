@@ -530,6 +530,7 @@ jobs:
     env:
       LLVM_VERSION: "16"
       SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_SERVER_UDS: "\\x00sccache.socket"
 
     steps:
       - uses: actions/checkout@v4

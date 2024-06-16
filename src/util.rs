@@ -1132,9 +1132,9 @@ mod tests {
         loop {
             input.clear();
             output.clear();
-            for i in 0..3 {
-                if alphabet_indexes[i] < alphabet.len() {
-                    input.push(alphabet[alphabet_indexes[i]]);
+            for idx in alphabet_indexes {
+                if idx < alphabet.len() {
+                    input.push(alphabet[idx]);
                 }
             }
             if input.is_empty() {
@@ -1144,11 +1144,11 @@ mod tests {
             let result = super::ascii_unescape_default(&output).unwrap();
             assert_eq!(input, result, "{:?}", output);
             tested_cases += 1;
-            for i in 0..3 {
-                alphabet_indexes[i] += 1;
-                if alphabet_indexes[i] > alphabet.len() {
+            for idx in &mut alphabet_indexes {
+                *idx += 1;
+                if *idx > alphabet.len() {
                     // Use `>` so we can test various input length.
-                    alphabet_indexes[i] = 0;
+                    *idx = 0;
                 } else {
                     break;
                 }

@@ -46,6 +46,8 @@ use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::linux::net::SocketAddrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
@@ -404,7 +406,7 @@ thread_local! {
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
 pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
-    info!("start_server: port: {addr}");
+    info!("start_server: {addr}");
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         PANIC_LOCATION.with(|l| {
@@ -466,19 +468,21 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
     };
 
     let res = (|| -> io::Result<_> {
-        match &addr {
+        match addr {
             crate::net::SocketAddr::Net(addr) => {
+                trace!("binding TCP {addr}");
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
                 let srv =
                     SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
                 Ok((
-                    srv.local_addr(),
+                    srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
             crate::net::SocketAddr::Unix(path) => {
+                trace!("binding unix socket {}", path.display());
                 // Unix socket will report addr in use on any unlink file.
-                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(path);
                 let l = {
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(path)?
@@ -486,23 +490,25 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                 let srv =
                     SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
                 Ok((
-                    srv.local_addr(),
+                    srv.local_addr().unwrap(),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             crate::net::SocketAddr::UnixAbstract(p) => {
-                let addr = std::os::unix::net::SocketAddr::from_abstract_name(p);
-                let l = std::os::unix::net::UnixListener::bind_addr(&addr)?;
+                trace!("binding abstract unix socket {}", p.escape_ascii());
+                let abstract_addr = std::os::unix::net::SocketAddr::from_abstract_name(p)?;
+                let l = std::os::unix::net::UnixListener::bind_addr(&abstract_addr)?;
                 l.set_nonblocking(true)?;
                 let l = {
                     let _guard = runtime.enter();
-                    tokio::net::UnixListener::from_std(l)
+                    tokio::net::UnixListener::from_std(l)?
                 };
                 let srv =
                     SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
                 Ok((
-                    srv.local_addr(),
+                    srv.local_addr()
+                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.to_vec())),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
@@ -621,7 +627,7 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 
     /// Returns the port that this server is bound to
     #[allow(dead_code)]
-    pub fn local_addr(&self) -> crate::net::SocketAddr {
+    pub fn local_addr(&self) -> Option<crate::net::SocketAddr> {
         self.listener.local_addr().unwrap()
     }
 

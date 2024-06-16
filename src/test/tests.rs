@@ -91,7 +91,7 @@ where
         let client = unsafe { Client::new() };
         let srv = SccacheServer::new(0, runtime, client, dist_client, storage).unwrap();
         let mut srv: SccacheServer<_, Arc<Mutex<MockCommandCreator>>> = srv;
-        let addr = srv.local_addr();
+        let addr = srv.local_addr().unwrap();
         assert!(matches!(addr, crate::net::SocketAddr::Net(a) if a.port() > 0));
         if let Some(options) = options {
             if let Some(timeout) = options.idle_timeout {
@@ -308,6 +308,7 @@ fn test_server_port_in_use() {
             "SCCACHE_SERVER_PORT",
             listener.local_addr().unwrap().port().to_string(),
         )
+        .env_remove("SCCACHE_SERVER_UDS")
         .output()
         .unwrap();
     assert!(!output.status.success());
