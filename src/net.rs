@@ -11,6 +11,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[derive(Debug)]
 pub enum SocketAddr {
     Net(std::net::SocketAddr),
+    // This could work on Windows in the future. See also rust-lang/rust#56533.
+    #[cfg(unix)]
     Unix(std::path::PathBuf),
     #[cfg(any(target_os = "linux", target_os = "android"))]
     UnixAbstract(Vec<u8>),
@@ -20,6 +22,7 @@ impl fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SocketAddr::Net(addr) => write!(f, "{}", addr),
+            #[cfg(unix)]
             SocketAddr::Unix(p) => write!(f, "{}", p.display()),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             SocketAddr::UnixAbstract(p) => write!(f, "\\x00{}", p.escape_ascii()),
@@ -31,6 +34,7 @@ impl SocketAddr {
     /// Parse a string as a unix domain socket.
     ///
     /// The string should follow the format of `self.to_string()`.
+    #[cfg(unix)]
     pub fn parse_uds(s: &str) -> std::io::Result<Self> {
         // Parse abstract socket address first as it can contain any chars.
         #[cfg(any(target_os = "linux", target_os = "android"))]
