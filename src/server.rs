@@ -479,6 +479,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }
+            #[cfg(unix)]
             crate::net::SocketAddr::Unix(path) => {
                 trace!("binding unix socket {}", path.display());
                 // Unix socket will report addr in use on any unlink file.
