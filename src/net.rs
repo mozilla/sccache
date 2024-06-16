@@ -60,6 +60,16 @@ impl SocketAddr {
         let path = std::path::PathBuf::from(s);
         Ok(SocketAddr::Unix(path))
     }
+
+    #[cfg(unix)]
+    pub fn is_unix_path(&self) -> bool {
+        matches!(self, SocketAddr::Unix(_))
+    }
+
+    #[cfg(not(unix))]
+    pub fn is_unix_path(&self) -> bool {
+        false
+    }
 }
 
 // A helper trait to unify the behavior of TCP and UDS listener.
