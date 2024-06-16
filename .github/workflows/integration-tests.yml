@@ -651,6 +651,7 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "on"
+      SCCACHE_SERVER_UDS: "/tmp/sccache.socket"
 
     steps:
       - uses: actions/checkout@v4

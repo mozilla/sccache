@@ -945,6 +945,67 @@ pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
         .expect("http client must build with success")
 }
 
+fn unhex(b: u8) -> std::io::Result<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid hex digit",
+        )),
+    }
+}
+
+/// A reverse version of std::ascii::escape_default
+pub fn ascii_unescape_default(s: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() + 4);
+    let mut offset = 0;
+    while offset < s.len() {
+        let c = s[offset];
+        if c == b'\\' {
+            offset += 1;
+            if offset >= s.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "incomplete escape",
+                ));
+            }
+            let c = s[offset];
+            match c {
+                b'n' => out.push(b'\n'),
+                b'r' => out.push(b'\r'),
+                b't' => out.push(b'\t'),
+                b'\'' => out.push(b'\''),
+                b'"' => out.push(b'"'),
+                b'\\' => out.push(b'\\'),
+                b'x' => {
+                    offset += 1;
+                    if offset + 1 >= s.len() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "incomplete hex escape",
+                        ));
+                    }
+                    let v = unhex(s[offset])? << 4 | unhex(s[offset + 1])?;
+                    out.push(v);
+                    offset += 1;
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid escape",
+                    ));
+                }
+            }
+        } else {
+            out.push(c);
+        }
+        offset += 1;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
@@ -1054,5 +1115,46 @@ mod tests {
         assert!(!finder.found_timestamp());
         finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
         assert!(finder.found_timestamp());
+    }
+
+    #[test]
+    fn test_ascii_unescape_default() {
+        let mut alphabet = r#"\\'"\t\n\r"#.as_bytes().to_vec();
+        alphabet.push(b'a');
+        alphabet.push(b'1');
+        alphabet.push(0);
+        alphabet.push(0xff);
+        let mut input = vec![];
+        let mut output = vec![];
+        let mut alphabet_indexes = [0; 3];
+        let mut tested_cases = 0;
+        // Following loop may test duplicated inputs, but it's not a problem
+        loop {
+            input.clear();
+            output.clear();
+            for i in 0..3 {
+                if alphabet_indexes[i] < alphabet.len() {
+                    input.push(alphabet[alphabet_indexes[i]]);
+                }
+            }
+            if input.is_empty() {
+                break;
+            }
+            output.extend(input.as_slice().escape_ascii());
+            let result = super::ascii_unescape_default(&output).unwrap();
+            assert_eq!(input, result, "{:?}", output);
+            tested_cases += 1;
+            for i in 0..3 {
+                alphabet_indexes[i] += 1;
+                if alphabet_indexes[i] > alphabet.len() { // Use `>` so we can test various input length.
+                    alphabet_indexes[i] = 0;
+                } else {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tested_cases, (alphabet.len() + 1).pow(3) - 1);
+        let empty_result = super::ascii_unescape_default(&[]).unwrap();
+        assert!(empty_result.is_empty(), "{:?}", empty_result);
     }
 }
