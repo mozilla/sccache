@@ -49,7 +49,7 @@ impl SocketAddr {
 pub trait Acceptor {
     type Socket: AsyncRead + AsyncWrite + Unpin + Send;
 
-    fn accept(&self) -> impl Future<Output=tokio::io::Result<Self::Socket>> + Send;
+    fn accept(&self) -> impl Future<Output = tokio::io::Result<Self::Socket>> + Send;
     fn local_addr(&self) -> tokio::io::Result<SocketAddr>;
 }
 
@@ -57,7 +57,7 @@ impl Acceptor for tokio::net::TcpListener {
     type Socket = tokio::net::TcpStream;
 
     #[inline]
-    fn accept(&self) -> impl Future<Output=tokio::io::Result<Self::Socket>> + Send {
+    fn accept(&self) -> impl Future<Output = tokio::io::Result<Self::Socket>> + Send {
         tokio::net::TcpListener::accept(self).and_then(|(s, _)| futures::future::ok(s))
     }
 
@@ -84,13 +84,18 @@ impl Connection for std::net::TcpStream {
 // readable.
 pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
     match addr {
-        SocketAddr::Net(addr) => std::net::TcpStream::connect(addr).map(|s| Box::new(s) as Box<dyn Connection>),
+        SocketAddr::Net(addr) => {
+            std::net::TcpStream::connect(addr).map(|s| Box::new(s) as Box<dyn Connection>)
+        }
         #[cfg(unix)]
-        SocketAddr::Unix(p) => std::os::unix::net::UnixStream::connect(p).map(|s| Box::new(s) as Box<dyn Connection>),
+        SocketAddr::Unix(p) => {
+            std::os::unix::net::UnixStream::connect(p).map(|s| Box::new(s) as Box<dyn Connection>)
+        }
         #[cfg(any(target_os = "linux", target_os = "android"))]
         SocketAddr::UnixAbstract(p) => {
             let sock = std::os::unix::net::SocketAddr::from_abstract_name(p);
-            std::os::unix::net::UnixStream::connect_addr(sock).map(|s| Box::new(s) as Box<dyn Connection>)
+            std::os::unix::net::UnixStream::connect_addr(sock)
+                .map(|s| Box::new(s) as Box<dyn Connection>)
         }
     }
 }
@@ -107,7 +112,7 @@ mod unix_imp {
         type Socket = tokio::net::UnixStream;
 
         #[inline]
-        fn accept(&self) -> impl Future<Output=tokio::io::Result<Self::Socket>> + Send {
+        fn accept(&self) -> impl Future<Output = tokio::io::Result<Self::Socket>> + Send {
             tokio::net::UnixListener::accept(self).and_then(|(s, _)| futures::future::ok(s))
         }
 
