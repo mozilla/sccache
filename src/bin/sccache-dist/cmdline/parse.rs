@@ -131,7 +131,7 @@ fn get_clap_command() -> ClapCommand {
                         ])
                         .group(
                             ArgGroup::new("key_source_mutual_exclusion")
-                                .args(&["config", "secret-key"])
+                                .args(["config", "secret-key"])
                                 .required(true),
                         ),
                 )

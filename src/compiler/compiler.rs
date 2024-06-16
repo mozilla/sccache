@@ -31,7 +31,7 @@ use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
 use crate::mock_command::{exit_status, CommandChild, CommandCreatorSync, RunCommand};
-use crate::util::{fmt_duration_as_secs, ref_env, run_input_output};
+use crate::util::{fmt_duration_as_secs, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -1100,7 +1100,7 @@ where
         child.arg(&rustc_executable);
     }
 
-    child.env_clear().envs(ref_env(env)).args(&["-vV"]);
+    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 
     let rustc_vv = run_input_output(child, None).await.map(|output| {
         if let Ok(stdout) = String::from_utf8(output.stdout.clone()) {

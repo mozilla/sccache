@@ -4,22 +4,22 @@ adopt-info: sccache
 
 summary: sccache is ccache with cloud storage
 description: |
-    sccache is a ccache-like compiler caching tool. It is used as a compiler
-    wrapper and avoids compilation when possible, storing cached results either
-    on local disk or in one of several cloud storage backends.
-
-    sccache includes support for caching the compilation of C/C++ code, Rust, as
-    well as NVIDIA's CUDA using nvcc.
-
-    sccache also provides icecream-style distributed compilation (automatic
-    packaging of local toolchains) for all supported compilers (including Rust).
-    The distributed compilation system includes several security features that
-    icecream lacks such as authentication, transport layer encryption, and
-    sandboxed compiler execution on build servers. See the distributed quickstart
-    guide for more information.
-
-    sccache is also available as a GitHub Actions to facilitate the deployment
-    using GitHub Actions cache.
+  sccache is a ccache-like compiler caching tool. It is used as a compiler
+  wrapper and avoids compilation when possible, storing cached results either
+  on local disk or in one of several cloud storage backends.
+  
+  sccache includes support for caching the compilation of C/C++ code, Rust, as
+  well as NVIDIA's CUDA using nvcc.
+  
+  sccache also provides icecream-style distributed compilation (automatic
+  packaging of local toolchains) for all supported compilers (including Rust).
+  The distributed compilation system includes several security features that
+  icecream lacks such as authentication, transport layer encryption, and
+  sandboxed compiler execution on build servers. See the distributed quickstart
+  guide for more information.
+  
+  sccache is also available as a GitHub Actions to facilitate the deployment
+  using GitHub Actions cache.
 website: https://github.com/mozilla/sccache
 contact: https://github.com/mozilla/sccache/issues
 license: "Apache-2.0"
@@ -27,26 +27,26 @@ grade: stable
 confinement: classic
 
 apps:
-    sccache:
-        command: bin/sccache
-    sccache-dist:
-        command: bin/sccache-dist
+  sccache:
+    command: bin/sccache
+  sccache-dist:
+    command: bin/sccache-dist
 
 parts:
-    sccache:
-        plugin: rust
-        rust-channel: 1.70.0
-        rust-use-global-lto: true
-        source: .
-        override-pull: |
-          craftctl default
-          craftctl set version="$( git -C "${CRAFT_PART_SRC}" describe --tags )"
-        build-packages:
-        - libssl-dev
-        - make
-        - pkg-config
-        rust-features:
-        - all
-        - dist-server
-        build-attributes:
-        - enable-patchelf
+  sccache:
+    plugin: rust
+    rust-channel: 1.75.0
+    rust-use-global-lto: true
+    source: .
+    override-pull: |
+      craftctl default
+      craftctl set version="$( git -C "${CRAFT_PART_SRC}" describe --tags )"
+    build-packages:
+      - libssl-dev
+      - make
+      - pkg-config
+    rust-features:
+      - all
+      - dist-server
+    build-attributes:
+      - enable-patchelf

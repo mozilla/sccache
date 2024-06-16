@@ -231,7 +231,7 @@ impl DistSystem {
     pub fn new(sccache_dist: &Path, tmpdir: &Path) -> Self {
         // Make sure the docker image is available, building it if necessary
         let mut child = Command::new("docker")
-            .args(&["build", "-q", "-t", DIST_IMAGE, "-"])
+            .args(["build", "-q", "-t", DIST_IMAGE, "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -265,7 +265,7 @@ impl DistSystem {
         let scheduler_cfg_container_path =
             Path::new(CONFIGS_CONTAINER_PATH).join(scheduler_cfg_relpath);
         let scheduler_cfg = sccache_scheduler_cfg();
-        fs::File::create(&scheduler_cfg_path)
+        fs::File::create(scheduler_cfg_path)
             .unwrap()
             .write_all(&serde_json::to_vec(&scheduler_cfg).unwrap())
             .unwrap();
@@ -273,7 +273,7 @@ impl DistSystem {
         // Create the scheduler
         let scheduler_name = make_container_name("scheduler");
         let output = Command::new("docker")
-            .args(&[
+            .args([
                 "run",
                 "--name",
                 &scheduler_name,
@@ -341,7 +341,7 @@ impl DistSystem {
 
         let server_name = make_container_name("server");
         let output = Command::new("docker")
-            .args(&[
+            .args([
                 "run",
                 // Important for the bubblewrap builder
                 "--privileged",
@@ -436,7 +436,7 @@ impl DistSystem {
         match handle {
             ServerHandle::Container { cid, url: _ } => {
                 let output = Command::new("docker")
-                    .args(&["restart", cid])
+                    .args(["restart", cid])
                     .output()
                     .unwrap();
                 check_output(&output);
@@ -519,29 +519,29 @@ impl Drop for DistSystem {
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
             droperr!(Command::new("docker")
-                .args(&["logs", scheduler_name])
+                .args(["logs", scheduler_name])
                 .output()
                 .map(|o| logs.push((scheduler_name, o))));
             droperr!(Command::new("docker")
-                .args(&["kill", scheduler_name])
+                .args(["kill", scheduler_name])
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
             droperr!(Command::new("docker")
-                .args(&["rm", "-f", scheduler_name])
+                .args(["rm", "-f", scheduler_name])
                 .output()
                 .map(|o| outputs.push((scheduler_name, o))));
         }
         for server_name in self.server_names.iter() {
             droperr!(Command::new("docker")
-                .args(&["logs", server_name])
+                .args(["logs", server_name])
                 .output()
                 .map(|o| logs.push((server_name, o))));
             droperr!(Command::new("docker")
-                .args(&["kill", server_name])
+                .args(["kill", server_name])
                 .output()
                 .map(|o| outputs.push((server_name, o))));
             droperr!(Command::new("docker")
-                .args(&["rm", "-f", server_name])
+                .args(["rm", "-f", server_name])
                 .output()
                 .map(|o| outputs.push((server_name, o))));
         }

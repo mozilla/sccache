@@ -15,7 +15,12 @@ use std::path::{Path, PathBuf};
 
 use filetime::{set_file_times, FileTime};
 pub use lru_cache::{LruCache, Meter};
+use tempfile::NamedTempFile;
 use walkdir::WalkDir;
+
+use crate::util::OsStrExt;
+
+const TEMPFILE_PREFIX: &str = ".sccachetmp";
 
 struct FileSize;
 
@@ -60,6 +65,8 @@ fn get_all_files<P: AsRef<Path>>(path: P) -> Box<dyn Iterator<Item = (PathBuf, u
 pub struct LruDiskCache<S: BuildHasher = RandomState> {
     lru: LruCache<OsString, u64, S, FileSize>,
     root: PathBuf,
+    pending: Vec<OsString>,
+    pending_size: u64,
 }
 
 /// Errors returned by this crate.
@@ -112,6 +119,18 @@ enum AddFile<'a> {
     RelPath(&'a OsStr),
 }
 
+pub struct LruDiskCacheAddEntry {
+    file: NamedTempFile,
+    key: OsString,
+    size: u64,
+}
+
+impl LruDiskCacheAddEntry {
+    pub fn as_file_mut(&mut self) -> &mut std::fs::File {
+        self.file.as_file_mut()
+    }
+}
+
 impl LruDiskCache {
     /// Create an `LruDiskCache` that stores files in `path`, limited to `size` bytes.
     ///
@@ -128,13 +147,15 @@ impl LruDiskCache {
         LruDiskCache {
             lru: LruCache::with_meter(size, FileSize),
             root: PathBuf::from(path),
+            pending: vec![],
+            pending_size: 0,
         }
         .init()
     }
 
     /// Return the current size of all the files in the cache.
     pub fn size(&self) -> u64 {
-        self.lru.size()
+        self.lru.size() + self.pending_size
     }
 
     /// Return the count of entries in the cache.
@@ -165,7 +186,15 @@ impl LruDiskCache {
     fn init(mut self) -> Result<Self> {
         fs::create_dir_all(&self.root)?;
         for (file, size) in get_all_files(&self.root) {
-            if !self.can_store(size) {
+            if file
+                .file_name()
+                .expect("Bad path?")
+                .starts_with(TEMPFILE_PREFIX)
+            {
+                fs::remove_file(&file).unwrap_or_else(|e| {
+                    error!("Error removing temporary file `{}`: {}", file.display(), e)
+                });
+            } else if !self.can_store(size) {
                 fs::remove_file(file).unwrap_or_else(|e| {
                     error!(
                         "Error removing file `{}` which is too large for the cache ({} bytes)",
@@ -185,17 +214,12 @@ impl LruDiskCache {
         size <= self.lru.capacity()
     }
 
-    /// Add the file at `path` of size `size` to the cache.
-    fn add_file(&mut self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
+    fn make_space(&mut self, size: u64) -> Result<()> {
         if !self.can_store(size) {
             return Err(Error::FileTooLarge);
         }
-        let rel_path = match addfile_path {
-            AddFile::AbsPath(ref p) => p.strip_prefix(&self.root).expect("Bad path?").as_os_str(),
-            AddFile::RelPath(p) => p,
-        };
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
-        while self.lru.size() + size > self.lru.capacity() {
+        while self.size() + size > self.capacity() {
             let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
             let remove_path = self.rel_to_abs_path(rel_path);
             //TODO: check that files are removable during `init`, so that this is only
@@ -204,6 +228,16 @@ impl LruDiskCache {
                 panic!("Error removing file from cache: `{:?}`: {}", remove_path, e)
             });
         }
+        Ok(())
+    }
+
+    /// Add the file at `path` of size `size` to the cache.
+    fn add_file(&mut self, addfile_path: AddFile<'_>, size: u64) -> Result<()> {
+        let rel_path = match addfile_path {
+            AddFile::AbsPath(ref p) => p.strip_prefix(&self.root).expect("Bad path?").as_os_str(),
+            AddFile::RelPath(p) => p,
+        };
+        self.make_space(size)?;
         self.lru.insert(rel_path.to_owned(), size);
         Ok(())
     }
@@ -273,13 +307,60 @@ impl LruDiskCache {
         })
     }
 
-    /// Return `true` if a file with path `key` is in the cache.
+    /// Prepare the insertion of a file at path `key`. The resulting entry must be
+    /// committed with `LruDiskCache::commit`.
+    pub fn prepare_add<'a, K: AsRef<OsStr> + 'a>(
+        &mut self,
+        key: K,
+        size: u64,
+    ) -> Result<LruDiskCacheAddEntry> {
+        // Ensure we have enough space for the advertized space.
+        self.make_space(size)?;
+        let key = key.as_ref().to_owned();
+        self.pending.push(key.clone());
+        self.pending_size += size;
+        tempfile::Builder::new()
+            .prefix(TEMPFILE_PREFIX)
+            .tempfile_in(&self.root)
+            .map(|file| LruDiskCacheAddEntry { file, key, size })
+            .map_err(Into::into)
+    }
+
+    /// Commit an entry coming from `LruDiskCache::prepare_add`.
+    pub fn commit(&mut self, entry: LruDiskCacheAddEntry) -> Result<()> {
+        let LruDiskCacheAddEntry {
+            mut file,
+            key,
+            size,
+        } = entry;
+        file.flush()?;
+        let real_size = file.as_file().metadata()?.len();
+        // If the file is larger than the size that had been advertized, ensure
+        // we have enough space for it.
+        self.make_space(real_size.saturating_sub(size))?;
+        self.pending
+            .iter()
+            .position(|k| k == &key)
+            .map(|i| self.pending.remove(i))
+            .unwrap();
+        self.pending_size -= size;
+        let path = self.rel_to_abs_path(&key);
+        fs::create_dir_all(path.parent().unwrap())?;
+        file.persist(path).map_err(|e| e.error)?;
+        self.lru.insert(key, real_size);
+        Ok(())
+    }
+
+    /// Return `true` if a file with path `key` is in the cache. Entries created
+    /// by `LruDiskCache::prepare_add` but not yet committed return `false`.
     pub fn contains_key<K: AsRef<OsStr>>(&self, key: K) -> bool {
         self.lru.contains_key(key.as_ref())
     }
 
     /// Get an opened `File` for `key`, if one exists and can be opened. Updates the LRU state
     /// of the file if present. Avoid using this method if at all possible, prefer `.get`.
+    /// Entries created by `LruDiskCache::prepare_add` but not yet committed return
+    /// `Err(Error::FileNotInCache)`.
     pub fn get_file<K: AsRef<OsStr>>(&mut self, key: K) -> Result<File> {
         let rel_path = key.as_ref();
         let path = self.rel_to_abs_path(rel_path);
@@ -295,6 +376,8 @@ impl LruDiskCache {
 
     /// Get an opened readable and seekable handle to the file at `key`, if one exists and can
     /// be opened. Updates the LRU state of the file if present.
+    /// Entries created by `LruDiskCache::prepare_add` but not yet committed return
+    /// `Err(Error::FileNotInCache)`.
     pub fn get<K: AsRef<OsStr>>(&mut self, key: K) -> Result<Box<dyn ReadSeek>> {
         self.get_file(key).map(|f| Box::new(f) as Box<dyn ReadSeek>)
     }
@@ -317,7 +400,7 @@ impl LruDiskCache {
 #[cfg(test)]
 mod tests {
     use super::fs::{self, File};
-    use super::{Error, LruDiskCache};
+    use super::{get_all_files, Error, LruDiskCache, LruDiskCacheAddEntry};
 
     use filetime::{set_file_times, FileTime};
     use std::io::{self, Read, Write};
@@ -534,6 +617,69 @@ mod tests {
         assert!(!p1.exists());
         assert!(!p2.exists());
         assert!(!p3.exists());
+    }
+
+    #[test]
+    fn test_prepare_and_commit() {
+        let f = TestFixture::new();
+        let cache_dir = f.tmp();
+        let mut c = LruDiskCache::new(cache_dir, 25).unwrap();
+        let mut tmp = c.prepare_add("a/b/c", 10).unwrap();
+        // An entry added but not committed doesn't count, except for the
+        // (reserved) size of the disk cache.
+        assert!(!c.contains_key("a/b/c"));
+        assert_eq!(c.size(), 10);
+        assert_eq!(c.lru.size(), 0);
+        tmp.as_file_mut().write_all(&[0; 10]).unwrap();
+        c.commit(tmp).unwrap();
+        // Once committed, the file appears.
+        assert!(c.contains_key("a/b/c"));
+        assert_eq!(c.size(), 10);
+        assert_eq!(c.lru.size(), 10);
+
+        let mut tmp = c.prepare_add("a/b/d", 10).unwrap();
+        assert_eq!(c.size(), 20);
+        assert_eq!(c.lru.size(), 10);
+        // Even though we haven't committed the second file, preparing for
+        // the addition of the third one should put the cache above the
+        // limit and trigger cleanup.
+        let mut tmp2 = c.prepare_add("x/y/z", 10).unwrap();
+        assert_eq!(c.size(), 20);
+        assert_eq!(c.lru.size(), 0);
+        // At this point, we expect the first entry to have been removed entirely.
+        assert!(!c.contains_key("a/b/c"));
+        assert!(!f.tmp().join("a/b/c").exists());
+        tmp.as_file_mut().write_all(&[0; 10]).unwrap();
+        tmp2.as_file_mut().write_all(&[0; 10]).unwrap();
+        c.commit(tmp).unwrap();
+        assert_eq!(c.size(), 20);
+        assert_eq!(c.lru.size(), 10);
+        c.commit(tmp2).unwrap();
+        assert_eq!(c.size(), 20);
+        assert_eq!(c.lru.size(), 20);
+
+        let mut tmp = c.prepare_add("a/b/c", 5).unwrap();
+        assert_eq!(c.size(), 25);
+        assert_eq!(c.lru.size(), 20);
+        // Committing a file bigger than the promised size should properly
+        // handle the case where the real size makes the cache go over the limit.
+        tmp.as_file_mut().write_all(&[0; 10]).unwrap();
+        c.commit(tmp).unwrap();
+        assert_eq!(c.size(), 20);
+        assert_eq!(c.lru.size(), 20);
+        assert!(!c.contains_key("a/b/d"));
+        assert!(!f.tmp().join("a/b/d").exists());
+
+        // If for some reason, the cache still contains a temporary file on
+        // initialization, the temporary file is removed.
+        let LruDiskCacheAddEntry { file, .. } = c.prepare_add("a/b/d", 5).unwrap();
+        let (_, path) = file.keep().unwrap();
+        std::mem::drop(c);
+        // Ensure that the temporary file is indeed there.
+        assert!(get_all_files(cache_dir).any(|(file, _)| file == path));
+        LruDiskCache::new(cache_dir, 25).unwrap();
+        // The temporary file should not be there anymore.
+        assert!(get_all_files(cache_dir).all(|(file, _)| file != path));
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl CCompilerImpl for Nvhpc {
             dep_cmd
                 .args(&transformed_deps)
                 .env_clear()
-                .envs(env_vars.iter().map(|(k, v)| (k, v)))
+                .envs(env_vars.to_vec())
                 .current_dir(cwd);
 
             if log_enabled!(Trace) {
@@ -135,7 +135,7 @@ impl CCompilerImpl for Nvhpc {
         //NVHPC doesn't support disabling line info when outputting to console
         cmd.arg("-E")
             .env_clear()
-            .envs(env_vars.iter().map(|(k, v)| (k, v)))
+            .envs(env_vars.to_vec())
             .current_dir(cwd);
         if log_enabled!(Trace) {
             trace!("preprocess: {:?}", cmd);

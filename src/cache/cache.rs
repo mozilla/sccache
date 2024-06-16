@@ -459,7 +459,7 @@ impl Storage for opendal::Operator {
     async fn get(&self, key: &str) -> Result<Cache> {
         match self.read(&normalize_key(key)).await {
             Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res))?;
+                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
                 Ok(Cache::Hit(hit))
             }
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
