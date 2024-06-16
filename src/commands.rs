@@ -312,8 +312,9 @@ fn connect_or_start_server(
     match connect_to_server(addr) {
         Ok(server) => Ok(server),
         Err(ref e)
-            if e.kind() == io::ErrorKind::ConnectionRefused
-                || e.kind() == io::ErrorKind::TimedOut =>
+            if (e.kind() == io::ErrorKind::ConnectionRefused
+                || e.kind() == io::ErrorKind::TimedOut)
+                || (e.kind() == io::ErrorKind::NotFound && addr.is_unix_path()) =>
         {
             // If the connection was refused we probably need to start
             // the server.
