@@ -22,7 +22,7 @@ impl fmt::Display for SocketAddr {
             SocketAddr::Net(addr) => write!(f, "{}", addr),
             SocketAddr::Unix(p) => write!(f, "{}", p.display()),
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            SocketAddr::UnixAbstract(p) => write!(f, "{}", p.escape_ascii()),
+            SocketAddr::UnixAbstract(p) => write!(f, "\\x00{}", p.escape_ascii()),
         }
     }
 }
@@ -35,9 +35,10 @@ impl SocketAddr {
         // Parse abstract socket address first as it can contain any chars.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            if s.starts_with('\x00') {
-                let data = crate::util::ascii_unescape_default(s.as_bytes())?;
-                return SocketAddr::UnixAbstract(data);
+            if s.starts_with("\\x00") {
+                // Rust abstract path expects no prepand '\x00'.
+                let data = crate::util::ascii_unescape_default(&s.as_bytes()[4..])?;
+                return Ok(SocketAddr::UnixAbstract(data));
             }
         }
         let path = std::path::PathBuf::from(s);
@@ -50,7 +51,7 @@ pub trait Acceptor {
     type Socket: AsyncRead + AsyncWrite + Unpin + Send;
 
     fn accept(&self) -> impl Future<Output = tokio::io::Result<Self::Socket>> + Send;
-    fn local_addr(&self) -> tokio::io::Result<SocketAddr>;
+    fn local_addr(&self) -> tokio::io::Result<Option<SocketAddr>>;
 }
 
 impl Acceptor for tokio::net::TcpListener {
@@ -62,8 +63,8 @@ impl Acceptor for tokio::net::TcpListener {
     }
 
     #[inline]
-    fn local_addr(&self) -> tokio::io::Result<SocketAddr> {
-        tokio::net::TcpListener::local_addr(&self).map(SocketAddr::Net)
+    fn local_addr(&self) -> tokio::io::Result<Option<SocketAddr>> {
+        tokio::net::TcpListener::local_addr(self).map(|a| Some(SocketAddr::Net(a)))
     }
 }
 
@@ -93,8 +94,8 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
         }
         #[cfg(any(target_os = "linux", target_os = "android"))]
         SocketAddr::UnixAbstract(p) => {
-            let sock = std::os::unix::net::SocketAddr::from_abstract_name(p);
-            std::os::unix::net::UnixStream::connect_addr(sock)
+            let sock = std::os::unix::net::SocketAddr::from_abstract_name(p)?;
+            std::os::unix::net::UnixStream::connect_addr(&sock)
                 .map(|s| Box::new(s) as Box<dyn Connection>)
         }
     }
@@ -102,8 +103,6 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
 
 #[cfg(unix)]
 mod unix_imp {
-    use std::path::PathBuf;
-
     use futures::TryFutureExt;
 
     use super::*;
@@ -117,16 +116,18 @@ mod unix_imp {
         }
 
         #[inline]
-        fn local_addr(&self) -> tokio::io::Result<SocketAddr> {
+        fn local_addr(&self) -> tokio::io::Result<Option<SocketAddr>> {
             let addr = tokio::net::UnixListener::local_addr(self)?;
             if let Some(p) = addr.as_pathname() {
-                return Ok(SocketAddr::Unix(p.to_path_buf()));
+                return Ok(Some(SocketAddr::Unix(p.to_path_buf())));
             }
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            if let Some(p) = addr.as_abstract_name() {
-                return Ok(SocketAddr::UnixAbstract(p.to_vec()));
-            }
-            Ok(SocketAddr::Unix(PathBuf::new()))
+            // TODO: support get addr from abstract socket.
+            // tokio::net::SocketAddr needs to support `as_abstract_name`.
+            // #[cfg(any(target_os = "linux", target_os = "android"))]
+            // if let Some(p) = addr.0.as_abstract_name() {
+            //     return Ok(SocketAddr::UnixAbstract(p.to_vec()));
+            // }
+            Ok(None)
         }
     }
 

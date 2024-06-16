@@ -52,7 +52,9 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 /// Get the port on which the server should listen.
 fn get_addr() -> crate::net::SocketAddr {
     if let Ok(addr) = env::var("SCCACHE_SERVER_UDS") {
-        return crate::net::SocketAddr::parse_uds(&addr);
+        if let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr) {
+            return uds;
+        }
     }
     let port = env::var("SCCACHE_SERVER_PORT")
         .ok()
