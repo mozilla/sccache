@@ -1,6 +1,8 @@
 //! The module is used to provide abstraction over TCP socket and UDS.
 
 use std::fmt;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::linux::net::SocketAddrExt;
 
 use futures::{Future, TryFutureExt};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -29,17 +31,17 @@ impl SocketAddr {
     /// Parse a string as a unix domain socket.
     ///
     /// The string should follow the format of `self.to_string()`.
-    pub fn parse_uds(s: &str) -> Self {
+    pub fn parse_uds(s: &str) -> std::io::Result<Self> {
         // Parse abstract socket address first as it can contain any chars.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             if s.starts_with('\x00') {
-                let data = crate::util::ascii_unescape_default(s.as_bytes());
+                let data = crate::util::ascii_unescape_default(s.as_bytes())?;
                 return SocketAddr::UnixAbstract(data);
             }
         }
         let path = std::path::PathBuf::from(s);
-        SocketAddr::Unix(path)
+        Ok(SocketAddr::Unix(path))
     }
 }
 

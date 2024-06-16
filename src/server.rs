@@ -485,7 +485,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
             #[cfg(any(target_os = "linux", target_os = "android"))]
             crate::net::SocketAddr::UnixAbstract(p) => {
                 let addr = std::os::unix::net::SocketAddr::from_abstract_name(p);
-                let l = std::os::unix::net::UnixListener::bind_addr(&addr);
+                let l = std::os::unix::net::UnixListener::bind_addr(&addr)?;
                 l.set_nonblocking(true)?;
                 let l = {
                     let _guard = runtime.enter();
