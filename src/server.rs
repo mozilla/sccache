@@ -469,9 +469,13 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
         match &addr {
             crate::net::SocketAddr::Net(addr) => {
                 let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
-                let srv = SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
-                Ok((srv.local_addr(), Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>))
-            },
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr(),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
             crate::net::SocketAddr::Unix(path) => {
                 // Unix socket will report addr in use on any unlink file.
                 let _ = std::fs::remove_file(&path);
@@ -479,9 +483,13 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::bind(path)?
                 };
-                let srv = SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
-                Ok((srv.local_addr(), Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>))
-            },
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr(),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             crate::net::SocketAddr::UnixAbstract(p) => {
                 let addr = std::os::unix::net::SocketAddr::from_abstract_name(p);
@@ -491,15 +499,24 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                     let _guard = runtime.enter();
                     tokio::net::UnixListener::from_std(l)
                 };
-                let srv = SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
-                Ok((srv.local_addr(), Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>))
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr(),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
             }
         }
     })();
     match res {
         Ok((addr, run)) => {
             info!("server started, listening on {addr}");
-            notify_server_startup(&notify, ServerStartup::Ok { addr: addr.to_string() })?;
+            notify_server_startup(
+                &notify,
+                ServerStartup::Ok {
+                    addr: addr.to_string(),
+                },
+            )?;
             run(future::pending::<()>())?;
             Ok(())
         }

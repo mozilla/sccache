@@ -1146,7 +1146,8 @@ mod tests {
             tested_cases += 1;
             for i in 0..3 {
                 alphabet_indexes[i] += 1;
-                if alphabet_indexes[i] > alphabet.len() { // Use `>` so we can test various input length.
+                if alphabet_indexes[i] > alphabet.len() {
+                    // Use `>` so we can test various input length.
                     alphabet_indexes[i] = 0;
                 } else {
                     break;

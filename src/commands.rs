@@ -55,11 +55,13 @@ fn get_addr() -> crate::net::SocketAddr {
         return crate::net::SocketAddr::parse_uds(&addr);
     }
     let port = env::var("SCCACHE_SERVER_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_PORT);
-    crate::net::SocketAddr::Net(std::net::SocketAddr::new("127.0.0.1".parse().unwrap(), port))
-    
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+    crate::net::SocketAddr::Net(std::net::SocketAddr::new(
+        "127.0.0.1".parse().unwrap(),
+        port,
+    ))
 }
 
 /// Check if ignoring all response errors
