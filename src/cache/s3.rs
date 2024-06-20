@@ -21,6 +21,7 @@ use crate::errors::*;
 pub struct S3Cache;
 
 impl S3Cache {
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         bucket: &str,
         region: Option<&str>,
@@ -29,11 +30,21 @@ impl S3Cache {
         endpoint: Option<&str>,
         use_ssl: Option<bool>,
         server_side_encryption: Option<bool>,
+        access_key_id: Option<&str>,
+        secret_access_key: Option<&str>,
     ) -> Result<Operator> {
         let mut builder = S3::default();
         builder.http_client(set_user_agent());
         builder.bucket(bucket);
         builder.root(key_prefix);
+
+        if let Some(access_key_id) = access_key_id {
+            builder.access_key_id(access_key_id);
+        }
+
+        if let Some(secret_access_key) = secret_access_key {
+            builder.secret_access_key(secret_access_key);
+        }
 
         if let Some(region) = region {
             builder.region(region);
