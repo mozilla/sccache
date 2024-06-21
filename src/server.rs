@@ -38,7 +38,7 @@ use futures::{future, stream, Sink, SinkExt, Stream, StreamExt, TryFutureExt};
 use number_prefix::NumberPrefix;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
@@ -1510,6 +1510,17 @@ impl Default for ServerStats {
     }
 }
 
+macro_rules! set_percentage_stat {
+    ($vec:ident, $count:expr, $sum:expr, $name:expr) => {
+        if $sum == 0 {
+            $vec.push(($name.to_string(), "-".to_string(), 0));
+        } else {
+            let ratio = $count as f64 / $sum as f64;
+            $vec.push(($name.to_string(), format!("{:.2} %", ratio * 100.0), 2));
+        }
+    };
+}
+
 impl ServerStats {
     /// Print stats to stdout in a human-readable format.
     ///
@@ -1570,6 +1581,9 @@ impl ServerStats {
             set_lang_stat!(stats_vec, self.cache_hits, "Cache hits");
             set_lang_stat!(stats_vec, self.cache_misses, "Cache misses");
         }
+
+        self.set_percentage_stats(&mut stats_vec, advanced);
+
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");
@@ -1665,6 +1679,57 @@ impl ServerStats {
             println!();
         }
         (name_width, stat_width)
+    }
+
+    fn set_percentage_stats(&self, stats_vec: &mut Vec<(String, String, usize)>, advanced: bool) {
+        set_percentage_stat!(
+            stats_vec,
+            self.cache_hits.all(),
+            self.cache_misses.all() + self.cache_hits.all(),
+            "Cache hits rate"
+        );
+
+        let (stats_hits, stats_misses): (Vec<_>, Vec<_>) = if advanced {
+            (
+                self.cache_hits.adv_counts.iter().collect(),
+                self.cache_misses.adv_counts.iter().collect(),
+            )
+        } else {
+            (
+                self.cache_hits.counts.iter().collect(),
+                self.cache_misses.counts.iter().collect(),
+            )
+        };
+
+        let mut all_languages: HashSet<&String> = HashSet::new();
+        for (lang, _) in &stats_hits {
+            all_languages.insert(lang);
+        }
+        for (lang, _) in &stats_misses {
+            all_languages.insert(lang);
+        }
+
+        let mut all_languages: Vec<&String> = all_languages.into_iter().collect();
+        all_languages.sort();
+
+        for lang in all_languages {
+            let count_hits = stats_hits
+                .iter()
+                .find(|&&(l, _)| l == lang)
+                .map_or(0, |&(_, &count)| count);
+
+            let count_misses = stats_misses
+                .iter()
+                .find(|&&(l, _)| l == lang)
+                .map_or(0, |&(_, &count)| count);
+
+            set_percentage_stat!(
+                stats_vec,
+                count_hits,
+                count_hits + count_misses,
+                format!("Cache hits rate ({})", lang)
+            );
+        }
     }
 }
 
