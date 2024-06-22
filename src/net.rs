@@ -43,6 +43,20 @@ impl fmt::Display for SocketAddr {
 }
 
 impl SocketAddr {
+    /// Get a Net address that with IP part set to "127.0.0.1".
+    #[inline]
+    pub fn with_port(port: u16) -> Self {
+        SocketAddr::Net(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+    }
+
+    #[inline]
+    pub fn as_net(&self) -> Option<&std::net::SocketAddr> {
+        match self {
+            SocketAddr::Net(addr) => Some(addr),
+            _ => None,
+        }
+    }
+
     /// Parse a string as a unix domain socket.
     ///
     /// The string should follow the format of `self.to_string()`.
