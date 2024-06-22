@@ -61,10 +61,7 @@ fn get_addr() -> crate::net::SocketAddr {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    crate::net::SocketAddr::Net(std::net::SocketAddr::new(
-        "127.0.0.1".parse().unwrap(),
-        port,
-    ))
+    crate::net::SocketAddr::with_port(port)
 }
 
 /// Check if ignoring all response errors
@@ -323,7 +320,7 @@ fn connect_or_start_server(
                     if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
                         bail!(
-                            "sccache: Listening on port {actual_addr} instead of {addr}"
+                            "sccache: Listening on address {actual_addr} instead of {addr}"
                         );
                     }
                 }
@@ -676,7 +673,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 run_server_process(startup_timeout).context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { addr } => {
-                    println!("sccache: Listening on port {addr}");
+                    println!("sccache: Listening on address {addr}");
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
                 ServerStartup::AddrInUse => bail!("Server startup failed: Address in use"),

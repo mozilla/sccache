@@ -564,8 +564,8 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
     ) -> Result<Self> {
-        let addr = std::net::SocketAddr::new("127.0.0.1".parse().unwrap(), port);
-        let listener = runtime.block_on(tokio::net::TcpListener::bind(&addr))?;
+        let addr = crate::net::SocketAddr::with_port(port);
+        let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
 
         Ok(Self::with_listener(
             listener,
