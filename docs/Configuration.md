@@ -133,7 +133,7 @@ configuration variables
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
 * `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
-* `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.
+* `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`. For example, in `10`, about 90% size with about 160% time than default `3` for making cache of compiling sccache code.
 
 ### cache configs
 
