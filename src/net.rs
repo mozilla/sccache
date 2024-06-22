@@ -53,6 +53,7 @@ impl SocketAddr {
     pub fn as_net(&self) -> Option<&std::net::SocketAddr> {
         match self {
             SocketAddr::Net(addr) => Some(addr),
+            #[cfg(unix)]
             _ => None,
         }
     }
