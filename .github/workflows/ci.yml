@@ -86,7 +86,7 @@ jobs:
             extra_args: --no-default-features
             allow_failure: true
           - os: ubuntu-22.04
-          - os: macOS-11
+          - os: macos-13
           # M1 CPU
           - os: macos-14
           - os: windows-2019
@@ -151,11 +151,9 @@ jobs:
           - os: ubuntu-20.04
             target: i686-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:i686-musl"}'
-          - os: macOS-11
+          - os: macos-13
             target: x86_64-apple-darwin
             macosx_deployment_target: 10.13
-            developer_dir: /Applications/Xcode_11.7.app
-            sdkroot: /Applications/Xcode_11.7.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
@@ -209,7 +207,7 @@ jobs:
             rustc: nightly
             allow_failure: true
             extra_args: --features=unstable
-          - os: macOS-11
+          - os: macos-13
             rustc: nightly
     # Disable on Windows for now as it fails with:
     # found invalid metadata files for crate `vte_generate_state_changes`
