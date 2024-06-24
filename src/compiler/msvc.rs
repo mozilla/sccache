@@ -823,7 +823,7 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode: false,
+        too_hard_for_preprocessor_cache_mode: None,
     })
 }
 
@@ -891,7 +891,7 @@ pub fn preprocess_cmd<T>(
         .args(&parsed_args.dependency_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.iter().map(|(k, v)| (k, v)))
+        .envs(env_vars.to_vec())
         .current_dir(cwd);
 
     if is_clang {
@@ -2445,7 +2445,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
-            too_hard_for_preprocessor_cache_mode: false,
+            too_hard_for_preprocessor_cache_mode: None,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
@@ -2530,7 +2530,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
-            too_hard_for_preprocessor_cache_mode: false,
+            too_hard_for_preprocessor_cache_mode: None,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.

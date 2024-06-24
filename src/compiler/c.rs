@@ -116,7 +116,7 @@ pub struct ParsedArguments {
     /// arguments are incompatible with rewrite_includes_only
     pub suppress_rewrite_includes_only: bool,
     /// Arguments are incompatible with preprocessor cache mode
-    pub too_hard_for_preprocessor_cache_mode: bool,
+    pub too_hard_for_preprocessor_cache_mode: Option<OsString>,
 }
 
 impl ParsedArguments {
@@ -382,22 +382,32 @@ where
         // Try to look for a cached preprocessing step for this compilation
         // request.
         let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let too_hard_for_preprocessor_cache_mode =
+            parsed_args.too_hard_for_preprocessor_cache_mode.is_some();
+        if let Some(arg) = &parsed_args.too_hard_for_preprocessor_cache_mode {
+            debug!(
+                "parse_arguments: Cannot use preprocessor cache because of {:?}",
+                arg
+            );
+        }
         // Disable preprocessor cache when doing distributed compilation
-        let mut preprocessor_key =
-            if !may_dist && preprocessor_cache_mode_config.use_preprocessor_cache_mode {
-                preprocessor_cache_entry_hash_key(
-                    &executable_digest,
-                    parsed_args.language,
-                    &preprocessor_and_arch_args,
-                    &extra_hashes,
-                    &env_vars,
-                    &absolute_input_path,
-                    compiler.plusplus(),
-                    preprocessor_cache_mode_config,
-                )?
-            } else {
-                None
-            };
+        let mut preprocessor_key = if !may_dist
+            && preprocessor_cache_mode_config.use_preprocessor_cache_mode
+            && !too_hard_for_preprocessor_cache_mode
+        {
+            preprocessor_cache_entry_hash_key(
+                &executable_digest,
+                parsed_args.language,
+                &preprocessor_and_arch_args,
+                &extra_hashes,
+                &env_vars,
+                &absolute_input_path,
+                compiler.plusplus(),
+                preprocessor_cache_mode_config,
+            )?
+        } else {
+            None
+        };
         if let Some(preprocessor_key) = &preprocessor_key {
             if cache_control == CacheControl::Default {
                 if let Some(mut seekable) = storage

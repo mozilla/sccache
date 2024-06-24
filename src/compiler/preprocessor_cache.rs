@@ -77,7 +77,7 @@ impl PreprocessorCacheEntry {
     }
 
     /// Serialize the preprocessor cache entry to `buf`
-    pub fn serialize_to(&self, buf: &mut impl Write) -> Result<(), Error> {
+    pub fn serialize_to(&self, mut buf: impl Write) -> Result<(), Error> {
         // Add the starting byte for version check since `bincode` doesn't
         // support it.
         buf.write_all(&[FORMAT_VERSION])?;
@@ -340,7 +340,7 @@ impl PreprocessorCacheEntry {
                     };
                     let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
                     new_digest.delimiter(b"timestamp");
-                    new_digest.update(&mtime.naive_local().timestamp().to_le_bytes());
+                    new_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
                     include.digest = new_digest.finish();
                     // Signal that the preprocessor cache entry has been updated and needs to be
                     // written to disk.

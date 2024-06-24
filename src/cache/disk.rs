@@ -18,6 +18,7 @@ use crate::lru_disk_cache::LruDiskCache;
 use crate::lru_disk_cache::{Error as LruError, ReadSeek};
 use async_trait::async_trait;
 use std::ffi::{OsStr, OsString};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -117,8 +118,7 @@ impl Storage for DiskCache {
 
         self.pool
             .spawn_blocking(move || {
-                let mut lru = lru.lock().unwrap();
-                let io = match lru.get_or_init()?.get(&path) {
+                let io = match lru.lock().unwrap().get_or_init()?.get(&path) {
                     Ok(f) => f,
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get({}): FileNotInCache", key);
@@ -152,7 +152,13 @@ impl Storage for DiskCache {
             .spawn_blocking(move || {
                 let start = Instant::now();
                 let v = entry.finish()?;
-                lru.lock().unwrap().get_or_init()?.insert_bytes(key, &v)?;
+                let mut f = lru
+                    .lock()
+                    .unwrap()
+                    .get_or_init()?
+                    .prepare_add(key, v.len() as u64)?;
+                f.as_file_mut().write_all(&v)?;
+                lru.lock().unwrap().get().unwrap().commit(f)?;
                 Ok(start.elapsed())
             })
             .await?
@@ -195,13 +201,19 @@ impl Storage for DiskCache {
         }
 
         let key = normalize_key(key);
-        let mut buf = vec![];
-        preprocessor_cache_entry.serialize_to(&mut buf)?;
-        Ok(self
+        let mut f = self
             .preprocessor_cache
             .lock()
             .unwrap()
             .get_or_init()?
-            .insert_bytes(key, &buf)?)
+            .prepare_add(key, 0)?;
+        preprocessor_cache_entry.serialize_to(BufWriter::new(f.as_file_mut()))?;
+        Ok(self
+            .preprocessor_cache
+            .lock()
+            .unwrap()
+            .get()
+            .unwrap()
+            .commit(f)?)
     }
 }

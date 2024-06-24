@@ -301,7 +301,7 @@ where
         // FIXME: Implement me.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode: false,
+        too_hard_for_preprocessor_cache_mode: None,
     })
 }
 
@@ -323,7 +323,7 @@ where
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.common_args)
         .env_clear()
-        .envs(env_vars.iter().map(|(k, v)| (k, v)))
+        .envs(env_vars.to_vec())
         .current_dir(cwd);
 
     if log_enabled!(Trace) {
@@ -768,7 +768,7 @@ mod test {
             profile_generate: false,
             color_mode: ColorMode::Auto,
             suppress_rewrite_includes_only: false,
-            too_hard_for_preprocessor_cache_mode: false,
+            too_hard_for_preprocessor_cache_mode: None,
         };
         let compiler = &f.bins[0];
         // Compiler invocation.
