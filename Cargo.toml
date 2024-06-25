@@ -98,7 +98,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 toml = "0.8"
 tower = "0.4"
 url = { version = "2", optional = true }
-uuid = { version = "1.7", features = ["v4"] }
+uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
 # by default which pulls in an outdated failure version
 which = { version = "6", default-features = false }
