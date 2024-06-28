@@ -1510,17 +1510,6 @@ impl Default for ServerStats {
     }
 }
 
-macro_rules! set_percentage_stat {
-    ($vec:ident, $count:expr, $sum:expr, $name:expr) => {
-        if $sum == 0 {
-            $vec.push(($name.to_string(), "-".to_string(), 0));
-        } else {
-            let ratio = $count as f64 / $sum as f64;
-            $vec.push(($name.to_string(), format!("{:.2} %", ratio * 100.0), 2));
-        }
-    };
-}
-
 impl ServerStats {
     /// Print stats to stdout in a human-readable format.
     ///
@@ -1682,11 +1671,11 @@ impl ServerStats {
     }
 
     fn set_percentage_stats(&self, stats_vec: &mut Vec<(String, String, usize)>, advanced: bool) {
-        set_percentage_stat!(
+        set_percentage_stat(
             stats_vec,
             self.cache_hits.all(),
             self.cache_misses.all() + self.cache_hits.all(),
-            "Cache hits rate"
+            "Cache hits rate",
         );
 
         let (stats_hits, stats_misses): (Vec<_>, Vec<_>) = if advanced {
@@ -1723,13 +1712,27 @@ impl ServerStats {
                 .find(|&&(l, _)| l == lang)
                 .map_or(0, |&(_, &count)| count);
 
-            set_percentage_stat!(
+            set_percentage_stat(
                 stats_vec,
                 count_hits,
                 count_hits + count_misses,
-                format!("Cache hits rate ({})", lang)
+                &format!("Cache hits rate ({})", lang),
             );
         }
+    }
+}
+
+fn set_percentage_stat(
+    vec: &mut Vec<(String, String, usize)>,
+    count_hits: u64,
+    total: u64,
+    name: &str,
+) {
+    if total == 0 {
+        vec.push((name.to_string(), "-".to_string(), 0));
+    } else {
+        let ratio = count_hits as f64 / total as f64;
+        vec.push((name.to_string(), format!("{:.2} %", ratio * 100.0), 2));
     }
 }
 
