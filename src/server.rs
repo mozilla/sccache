@@ -1510,11 +1510,23 @@ impl Default for ServerStats {
     }
 }
 
+pub trait ServerStatsWriter {
+    fn write(&mut self, text: &str);
+}
+
+pub struct StdoutServerStatsWriter;
+
+impl ServerStatsWriter for StdoutServerStatsWriter {
+    fn write(&mut self, text: &str) {
+        println!("{text}");
+    }
+}
+
 impl ServerStats {
-    /// Print stats to stdout in a human-readable format.
+    /// Print stats in a human-readable format.
     ///
     /// Return the formatted width of each of the (name, value) columns.
-    fn print(&self, advanced: bool) -> (usize, usize) {
+    fn print<T: ServerStatsWriter>(&self, writer: &mut T, advanced: bool) -> (usize, usize) {
         macro_rules! set_stat {
             ($vec:ident, $var:expr, $name:expr) => {{
                 // name, value, suffix length
@@ -1630,42 +1642,42 @@ impl ServerStats {
         let name_width = stats_vec.iter().map(|(n, _, _)| n.len()).max().unwrap();
         let stat_width = stats_vec.iter().map(|(_, s, _)| s.len()).max().unwrap();
         for (name, stat, suffix_len) in stats_vec {
-            println!(
+            writer.write(&format!(
                 "{:<name_width$} {:>stat_width$}",
                 name,
                 stat,
                 name_width = name_width,
                 stat_width = stat_width + suffix_len
-            );
+            ));
         }
         if !self.dist_compiles.is_empty() {
-            println!("\nSuccessful distributed compiles");
+            writer.write("\nSuccessful distributed compiles");
             let mut counts: Vec<_> = self.dist_compiles.iter().collect();
             counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
             for (reason, count) in counts {
-                println!(
+                writer.write(&format!(
                     "  {:<name_width$} {:>stat_width$}",
                     reason,
                     count,
                     name_width = name_width - 2,
-                    stat_width = stat_width
-                );
+                    stat_width = stat_width,
+                ));
             }
         }
         if !self.not_cached.is_empty() {
-            println!("\nNon-cacheable reasons:");
+            writer.write("\nNon-cacheable reasons:");
             let mut counts: Vec<_> = self.not_cached.iter().collect();
             counts.sort_by(|(_, c1), (_, c2)| c1.cmp(c2).reverse());
             for (reason, count) in counts {
-                println!(
+                writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",
                     reason,
                     count,
                     name_width = name_width,
-                    stat_width = stat_width
-                );
+                    stat_width = stat_width,
+                ));
             }
-            println!();
+            writer.write("");
         }
         (name_width, stat_width)
     }
@@ -1768,7 +1780,7 @@ impl ServerInfo {
 
     /// Print info to stdout in a human-readable format.
     pub fn print(&self, advanced: bool) {
-        let (name_width, stat_width) = self.stats.print(advanced);
+        let (name_width, stat_width) = self.stats.print(&mut StdoutServerStatsWriter, advanced);
         println!(
             "{:<name_width$} {}",
             "Cache location",
@@ -2045,4 +2057,109 @@ fn waits_until_zero() {
     drop(active);
     drop(active2);
     assert_eq!(wait.now_or_never(), Some(()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct StringWriter {
+        buffer: String,
+    }
+
+    impl StringWriter {
+        fn new() -> StringWriter {
+            StringWriter {
+                buffer: String::new(),
+            }
+        }
+
+        fn get_output(self) -> String {
+            self.buffer
+        }
+    }
+
+    impl ServerStatsWriter for StringWriter {
+        fn write(&mut self, text: &str) {
+            self.buffer.push_str(&format!("{}\n", text));
+        }
+    }
+
+    #[test]
+    fn test_print_cache_hits_rate_default_server_stats() {
+        let stats = ServerStats::default();
+
+        let mut writer = StringWriter::new();
+        stats.print(&mut writer, false);
+
+        let output = writer.get_output();
+
+        assert!(output.contains("Cache hits rate                       -"));
+    }
+
+    #[test]
+    fn test_print_cache_hits_rate_server_stats() {
+        let mut cache_hits_counts = HashMap::new();
+        cache_hits_counts.insert("Rust".to_string(), 100);
+        cache_hits_counts.insert("C/C++".to_string(), 200);
+
+        let mut cache_misses_counts = HashMap::new();
+        cache_misses_counts.insert("Rust".to_string(), 50);
+        cache_misses_counts.insert("Cuda".to_string(), 300);
+
+        let stats = ServerStats {
+            cache_hits: PerLanguageCount {
+                counts: cache_hits_counts,
+                ..Default::default()
+            },
+            cache_misses: PerLanguageCount {
+                counts: cache_misses_counts,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut writer = StringWriter::new();
+        stats.print(&mut writer, false);
+
+        let output = writer.get_output();
+
+        assert!(output.contains("Cache hits rate                    46.15 %"));
+        assert!(output.contains("Cache hits rate (C/C++)           100.00 %"));
+        assert!(output.contains("Cache hits rate (Cuda)              0.00 %"));
+        assert!(output.contains("Cache hits rate (Rust)             66.67 %"));
+    }
+
+    #[test]
+    fn test_print_cache_hits_rate_advanced_server_stats() {
+        let mut cache_hits_counts = HashMap::new();
+        cache_hits_counts.insert("rust".to_string(), 50);
+        cache_hits_counts.insert("c/c++ [clang]".to_string(), 30);
+
+        let mut cache_misses_counts = HashMap::new();
+        cache_misses_counts.insert("rust".to_string(), 100);
+        cache_misses_counts.insert("cuda".to_string(), 70);
+
+        let stats = ServerStats {
+            cache_hits: PerLanguageCount {
+                adv_counts: cache_hits_counts,
+                ..Default::default()
+            },
+            cache_misses: PerLanguageCount {
+                adv_counts: cache_misses_counts,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut writer = StringWriter::new();
+        stats.print(&mut writer, true);
+
+        let output = writer.get_output();
+
+        assert!(output.contains("Cache hits rate                        -"));
+        assert!(output.contains("Cache hits rate (c/c++ [clang])   100.00 %"));
+        assert!(output.contains("Cache hits rate (cuda)              0.00 %"));
+        assert!(output.contains("Cache hits rate (rust)             33.33 %"));
+    }
 }
