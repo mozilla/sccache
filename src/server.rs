@@ -46,7 +46,8 @@ use std::io::{self, Write};
 use std::marker::Unpin;
 #[cfg(feature = "dist-client")]
 use std::mem;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::linux::net::SocketAddrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
@@ -60,7 +61,6 @@ use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::TcpListener,
     runtime::Runtime,
     time::{self, sleep, Sleep},
 };
@@ -81,8 +81,8 @@ const DIST_CLIENT_RECREATE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Result of background server startup.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ServerStartup {
-    /// Server started successfully on `port`.
-    Ok { port: u16 },
+    /// Server started successfully on `addr`.
+    Ok { addr: String },
     /// Server Addr already in suse
     AddrInUse,
     /// Timed out waiting for server startup.
@@ -401,12 +401,12 @@ thread_local! {
     static PANIC_LOCATION: Cell<Option<(String, u32, u32)>> = const { Cell::new(None) };
 }
 
-/// Start an sccache server, listening on `port`.
+/// Start an sccache server, listening on `addr`.
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
-pub fn start_server(config: &Config, port: u16) -> Result<()> {
-    info!("start_server: port: {}", port);
+pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
+    info!("start_server: {addr}");
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         PANIC_LOCATION.with(|l| {
@@ -467,59 +467,105 @@ pub fn start_server(config: &Config, port: u16) -> Result<()> {
         _ => raw_storage,
     };
 
-    let res =
-        SccacheServer::<ProcessCommandCreator>::new(port, runtime, client, dist_client, storage);
+    let res = (|| -> io::Result<_> {
+        match addr {
+            crate::net::SocketAddr::Net(addr) => {
+                trace!("binding TCP {addr}");
+                let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr().unwrap(),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
+            #[cfg(unix)]
+            crate::net::SocketAddr::Unix(path) => {
+                trace!("binding unix socket {}", path.display());
+                // Unix socket will report addr in use on any unlink file.
+                let _ = std::fs::remove_file(path);
+                let l = {
+                    let _guard = runtime.enter();
+                    tokio::net::UnixListener::bind(path)?
+                };
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr().unwrap(),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            crate::net::SocketAddr::UnixAbstract(p) => {
+                trace!("binding abstract unix socket {}", p.escape_ascii());
+                let abstract_addr = std::os::unix::net::SocketAddr::from_abstract_name(p)?;
+                let l = std::os::unix::net::UnixListener::bind_addr(&abstract_addr)?;
+                l.set_nonblocking(true)?;
+                let l = {
+                    let _guard = runtime.enter();
+                    tokio::net::UnixListener::from_std(l)?
+                };
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr()
+                        .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.to_vec())),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
+        }
+    })();
     match res {
-        Ok(srv) => {
-            let port = srv.port();
-            info!("server started, listening on port {}", port);
-            notify_server_startup(&notify, ServerStartup::Ok { port })?;
-            srv.run(future::pending::<()>())?;
+        Ok((addr, run)) => {
+            info!("server started, listening on {addr}");
+            notify_server_startup(
+                &notify,
+                ServerStartup::Ok {
+                    addr: addr.to_string(),
+                },
+            )?;
+            run(future::pending::<()>())?;
             Ok(())
         }
         Err(e) => {
             error!("failed to start server: {}", e);
-            match e.downcast_ref::<io::Error>() {
-                Some(io_err) if io::ErrorKind::AddrInUse == io_err.kind() => {
-                    notify_server_startup(&notify, ServerStartup::AddrInUse)?;
-                }
-                Some(io_err) if cfg!(windows) && Some(10013) == io_err.raw_os_error() => {
-                    // 10013 is the "WSAEACCES" error, which can occur if the requested port
-                    // has been allocated for other purposes, such as winNAT or Hyper-V.
-                    let windows_help_message =
-                        "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
-                    let reason: String = format!("{windows_help_message}\n{e}");
-                    notify_server_startup(&notify, ServerStartup::Err { reason })?;
-                }
-                _ => {
-                    let reason = e.to_string();
-                    notify_server_startup(&notify, ServerStartup::Err { reason })?;
-                }
-            };
-            Err(e)
+            if io::ErrorKind::AddrInUse == e.kind() {
+                notify_server_startup(&notify, ServerStartup::AddrInUse)?;
+            } else if cfg!(windows) && Some(10013) == e.raw_os_error() {
+                // 10013 is the "WSAEACCES" error, which can occur if the requested port
+                // has been allocated for other purposes, such as winNAT or Hyper-V.
+                let windows_help_message =
+                    "A Windows port exclusion is blocking use of the configured port.\nTry setting SCCACHE_SERVER_PORT to a new value.";
+                let reason: String = format!("{windows_help_message}\n{e}");
+                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+            } else {
+                let reason = e.to_string();
+                notify_server_startup(&notify, ServerStartup::Err { reason })?;
+            }
+            Err(e.into())
         }
     }
 }
 
-pub struct SccacheServer<C: CommandCreatorSync> {
+pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = ProcessCommandCreator> {
     runtime: Runtime,
-    listener: TcpListener,
+    listener: A,
     rx: mpsc::Receiver<ServerMessage>,
     timeout: Duration,
     service: SccacheService<C>,
     wait: WaitUntilZero,
 }
 
-impl<C: CommandCreatorSync> SccacheServer<C> {
+impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
     pub fn new(
         port: u16,
         runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
-    ) -> Result<SccacheServer<C>> {
-        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
-        let listener = runtime.block_on(TcpListener::bind(&SocketAddr::V4(addr)))?;
+    ) -> Result<Self> {
+        let addr = crate::net::SocketAddr::with_port(port);
+        let listener = runtime.block_on(tokio::net::TcpListener::bind(addr.as_net().unwrap()))?;
 
         Ok(Self::with_listener(
             listener,
@@ -529,14 +575,16 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             storage,
         ))
     }
+}
 
+impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
     pub fn with_listener(
-        listener: TcpListener,
+        listener: A,
         runtime: Runtime,
         client: Client,
         dist_client: DistClientContainer,
         storage: Arc<dyn Storage>,
-    ) -> SccacheServer<C> {
+    ) -> Self {
         // Prepare the service which we'll use to service all incoming TCP
         // connections.
         let (tx, rx) = mpsc::channel(1);
@@ -580,8 +628,8 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
 
     /// Returns the port that this server is bound to
     #[allow(dead_code)]
-    pub fn port(&self) -> u16 {
-        self.listener.local_addr().unwrap().port()
+    pub fn local_addr(&self) -> Option<crate::net::SocketAddr> {
+        self.listener.local_addr().unwrap()
     }
 
     /// Runs this server to completion.
@@ -593,6 +641,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
     where
         F: Future,
         C: Send,
+        A::Socket: 'static,
     {
         let SccacheServer {
             runtime,
@@ -607,7 +656,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         // connections in separate tasks.
         let server = async move {
             loop {
-                let (socket, _) = listener.accept().await?;
+                let socket = listener.accept().await?;
                 trace!("incoming connection");
                 let conn = service.clone().bind(socket).map_err(|res| {
                     error!("Failed to bind socket: {}", res);
