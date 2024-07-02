@@ -591,12 +591,24 @@ pub fn storage_from_config(
                 return Ok(Arc::new(storage));
             }
             #[cfg(feature = "gha")]
-            CacheType::GHA(config::GHACacheConfig { ref version, .. }) => {
-                debug!("Init gha cache with version {version}");
-
-                let storage = GHACache::build(version)
-                    .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
-                return Ok(Arc::new(storage));
+            CacheType::GHA(config::GHACacheConfig {
+                ref version,
+                as_local,
+                ..
+            }) => {
+                if *as_local {
+                    debug!("Init gha as local cache");
+                    let downloaded_path = pool
+                        .block_on(GHACache::download_to_local(config, version))
+                        .map_err(|err| anyhow!("download gha cache as local failed: {err:?}"))?;
+                    let storage = disk_cache_from_config(config, pool, downloaded_path)?;
+                    return Ok(storage);
+                } else {
+                    debug!("Init gha cache with version {version}");
+                    let storage = GHACache::build(version)
+                        .map_err(|err| anyhow!("create gha cache failed: {err:?}"))?;
+                    return Ok(Arc::new(storage));
+                }
             }
             #[cfg(feature = "memcached")]
             CacheType::Memcached(config::MemcachedCacheConfig {
@@ -724,7 +736,21 @@ pub fn storage_from_config(
         }
     }
 
-    let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
+    disk_cache_from_config(config, pool, None)
+}
+
+fn disk_cache_from_config(
+    config: &Config,
+    pool: &tokio::runtime::Handle,
+    root_override: Option<PathBuf>,
+) -> Result<Arc<dyn Storage>> {
+    let (mut dir, size) = (
+        config.fallback_cache.dir.to_owned(),
+        config.fallback_cache.size,
+    );
+    if let Some(new_root) = root_override {
+        dir = dir.join(new_root);
+    }
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
@@ -735,6 +761,27 @@ pub fn storage_from_config(
         preprocessor_cache_mode_config,
         rw_mode,
     )))
+}
+
+#[cfg(feature = "gha")]
+pub async fn upload_local_cache(config: &Config) -> Result<()> {
+    match &config.cache {
+        Some(CacheType::GHA(gha_config)) => {
+            if !gha_config.enabled {
+                debug!("GHA cache is disabled in config");
+                return Ok(());
+            }
+            if !gha_config.as_local {
+                debug!("GHA not configured `as_local`");
+                return Ok(());
+            }
+            GHACache::upload_local_cache(config).await
+        }
+        _ => {
+            debug!("Uploading the local cache is only possible when using GitHub Actions");
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
