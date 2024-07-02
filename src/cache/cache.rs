@@ -290,7 +290,12 @@ impl CacheWrite {
         self.zip
             .start_file(name, opts)
             .context("Failed to start cache entry object")?;
-        zstd::stream::copy_encode(from, &mut self.zip, 3)?;
+
+        let compression_level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(3);
+        zstd::stream::copy_encode(from, &mut self.zip, compression_level)?;
         Ok(())
     }
 
