@@ -285,10 +285,13 @@ where
             .read_dir()
             .ok()
             .map(|f| {
-                f.flatten()
+                let mut device_libs = f
+                    .flatten()
                     .filter(|f| f.path().extension().is_some_and(|ext| ext == "bc"))
                     .map(|f| f.path())
-                    .collect()
+                    .collect::<Vec<_>>();
+                device_libs.sort_unstable();
+                device_libs
             })
             .unwrap_or_default()
     }
