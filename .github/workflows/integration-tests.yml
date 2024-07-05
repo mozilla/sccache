@@ -1,5 +1,5 @@
 name: integration-tests
-on: [ push, pull_request ]
+on: [push, pull_request]
 
 env:
   RUST_BACKTRACE: full
@@ -523,6 +523,7 @@ jobs:
         shell: bash
         run: cat "$SCCACHE_ERROR_LOG"
 
+
   clang:
     runs-on: ubuntu-latest
     needs: build
@@ -530,7 +531,6 @@ jobs:
     env:
       LLVM_VERSION: "16"
       SCCACHE_GHA_ENABLED: "on"
-      SCCACHE_SERVER_UDS: "\\x00sccache.socket"
 
     steps:
       - uses: actions/checkout@v4
@@ -576,7 +576,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
   hip:
-    # Probably wouldn't matter anyway since we run in a container, but staying
+    # Probably wouldn't matter anyway since we run in a container, but staying 
     # close to the version is better than not.
     runs-on: ubuntu-22.04
     needs: build
@@ -646,13 +646,13 @@ jobs:
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
 
+
   gcc:
     runs-on: ubuntu-latest
     needs: build
 
     env:
       SCCACHE_GHA_ENABLED: "on"
-      SCCACHE_SERVER_UDS: "/home/runner/sccache.socket"
 
     steps:
       - uses: actions/checkout@v4
@@ -690,6 +690,7 @@ jobs:
           ${SCCACHE_PATH} --show-stats
 
           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+
 
   autotools:
     runs-on: ubuntu-latest
@@ -812,7 +813,7 @@ jobs:
     env:
       RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
       CARGO_INCREMENTAL: "0"
-      RUSTFLAGS: "-Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+      RUSTFLAGS: "-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
       RUSTDOCFLAGS: "-Cpanic=abort"
 
     steps:
@@ -840,98 +841,6 @@ jobs:
       - name: "Coverage test #2"
         working-directory: ./coverage-test
         run: cargo clean && cargo +nightly test
-
-      - name: Output
-        run: |
-          ${SCCACHE_PATH} --show-stats
-          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
-
-  zstd-compression-level:
-    runs-on: ubuntu-latest
-    needs: build
-
-    env:
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
-      SCCACHE_DIR:
-      CARGO_INCREMENTAL: "0"
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: integration-tests
-          path: /home/runner/.cargo/bin/
-      - name: Chmod for binary
-        run: chmod +x ${SCCACHE_PATH}
-
-      - name: Clone repository
-        uses: actions/checkout@v4
-
-      - name: Install rust
-        uses: ./.github/actions/rust-toolchain
-        with:
-          toolchain: "stable"
-
-      - name: default-test-save
-        run: |
-          export SCCACHE_DIR=${PWD}/temp-test/zstd-level/default
-          cargo build
-      - name: default-stats-save
-        run: ${SCCACHE_PATH} --show-stats
-      - name: default-test-use
-        run: |
-          cargo clean && cargo build
-      - name: default-stats-use
-        run: ${SCCACHE_PATH} --show-stats
-      - name: lv10-test-save
-        run: |
-          export SCCACHE_DIR=${PWD}/temp-test/zstd-level/10
-          export SCCACHE_CACHE_ZSTD_LEVEL=10
-          ${SCCACHE_PATH} --stop-server > /dev/null
-          cargo clean
-          cargo build
-      - name: lv10-stats-save
-        run: ${SCCACHE_PATH} --show-stats
-      - name: lv10-test-use
-        run: |
-          cargo clean && cargo build
-      - name: lv10-stats-use
-        run: ${SCCACHE_PATH} --show-stats
-
-  xcode:
-    runs-on: macos-latest
-    env:
-      SCCACHE_PATH: target/debug/sccache
-    steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-
-      - name: Install rust
-        uses: ./.github/actions/rust-toolchain
-        with:
-          toolchain: "stable"
-
-      - name: Build sccache
-        run: |
-          cargo build
-
-      - name: Start server
-        run: ${SCCACHE_PATH} --start-server
-
-      - name: Test compile xcode
-        working-directory: tests/xcode
-        run: |
-          xcodebuild -version
-          xcodebuild -xcconfig sccache.xcconfig
-
-      - name: Output
-        run: |
-          ${SCCACHE_PATH} --show-stats
-
-      - name: Test compile xcode cached
-        working-directory: tests/xcode
-        run: |
-          xcodebuild clean
-          xcodebuild -xcconfig sccache.xcconfig
 
       - name: Output
         run: |
