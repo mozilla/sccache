@@ -869,28 +869,28 @@ jobs:
         with:
           toolchain: "stable"
 
-      - name: 💾 test-default-save -------------------------------
+      - name: default-test-save
         run: |
           export SCCACHE_DIR=${PWD}/temp-test/zstd-level/default
           cargo build
-      - name: 🖨️ Stats-save
+      - name: default-stats-save
         run: ${SCCACHE_PATH} --show-stats
-      - name: 💽 test-default-use
+      - name: default-test-use
         run: |
           cargo clean && cargo build
-      - name: 🖨️ Stats-use
+      - name: default-stats-use
         run: ${SCCACHE_PATH} --show-stats
-      - name: 💾 test-lv10-save -------------------------------
+      - name: lv10-test-save
         run: |
           export SCCACHE_DIR=${PWD}/temp-test/zstd-level/10
           export SCCACHE_CACHE_ZSTD_LEVEL=10
           ${SCCACHE_PATH} --stop-server > /dev/null
           cargo clean
           cargo build
-      - name: 🖨️ Stats-save
+      - name: lv10-stats-save
         run: ${SCCACHE_PATH} --show-stats
-      - name: 💽 test-lv10-use
+      - name: lv10-test-use
         run: |
           cargo clean && cargo build
-      - name: 🖨️ Stats-use
+      - name: lv10-stats-use
         run: ${SCCACHE_PATH} --show-stats
