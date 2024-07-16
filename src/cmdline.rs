@@ -119,6 +119,12 @@ fn get_clap_command() -> clap::Command {
             "\n",
             "    Azure:     ",
             cfg!(feature = "azure"),
+            "\n",
+            "    WebDAV:    ",
+            cfg!(feature = "webdav"),
+            "\n",
+            "    OSS:       ",
+            cfg!(feature = "oss"),
             "\n"
         ))
         .args(&[
