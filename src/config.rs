@@ -645,6 +645,11 @@ fn config_from_env() -> Result<EnvConfig> {
         let access_key_id = env::var("SCCACHE_AWS_ACCESS_KEY_ID").ok();
         let secret_access_key = env::var("SCCACHE_AWS_SECRET_ACCESS_KEY").ok();
 
+        match (&access_key_id, &secret_access_key) {
+            (Some(_), Some(_)) | (None, None) => (),
+            _ => bail!("Both SCCACHE_AWS_ACCESS_KEY_ID and SCCACHE_AWS_SECRET_ACCESS_KEY must be set or both must be unset."),
+        }
+
         Some(S3CacheConfig {
             bucket,
             region,

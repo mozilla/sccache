@@ -38,12 +38,15 @@ impl S3Cache {
         builder.bucket(bucket);
         builder.root(key_prefix);
 
-        if let Some(access_key_id) = access_key_id {
-            builder.access_key_id(access_key_id);
-        }
-
-        if let Some(secret_access_key) = secret_access_key {
-            builder.secret_access_key(secret_access_key);
+        match (access_key_id, secret_access_key) {
+            (Some(access_key_id), Some(secret_access_key)) => {
+                builder.access_key_id(access_key_id);
+                builder.secret_access_key(secret_access_key);
+            }
+            (None, None) => (),
+            _ => {
+                bail!("Both access_key_id and secret_access_key must be set or both must be unset.")
+            }
         }
 
         if let Some(region) = region {
