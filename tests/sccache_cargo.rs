@@ -94,6 +94,8 @@ fn test_rust_cargo_run_with_env_dep_parsing() -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_check_nightly() -> Result<()> {
+    use std::ffi::OsString;
+
     test_rust_cargo_cmd(
         "check",
         SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
@@ -104,6 +106,8 @@ fn test_rust_cargo_check_nightly() -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_check_nightly_readonly() -> Result<()> {
+    use std::ffi::OsString;
+
     test_rust_cargo_cmd_readonly(
         "check",
         SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
@@ -114,6 +118,8 @@ fn test_rust_cargo_check_nightly_readonly() -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_build_nightly() -> Result<()> {
+    use std::ffi::OsString;
+
     test_rust_cargo_cmd(
         "build",
         SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
@@ -124,6 +130,8 @@ fn test_rust_cargo_build_nightly() -> Result<()> {
 #[test]
 #[serial]
 fn test_rust_cargo_build_nightly_readonly() -> Result<()> {
+    use std::ffi::OsString;
+
     test_rust_cargo_cmd_readonly(
         "build",
         SccacheTest::new(Some(&[("RUSTFLAGS", OsString::from("-Zprofile"))]))?,
