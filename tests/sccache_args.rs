@@ -2,31 +2,17 @@
 //!
 //! Any copyright is dedicated to the Public Domain.
 //! http://creativecommons.org/publicdomain/zero/1.0/
+pub mod helpers;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use assert_cmd::prelude::*;
-use once_cell::sync::Lazy;
+use helpers::{stop_sccache, SCCACHE_BIN};
 use predicates::prelude::*;
 use serial_test::serial;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[macro_use]
 extern crate log;
-
-static SCCACHE_BIN: Lazy<PathBuf> = Lazy::new(|| assert_cmd::cargo::cargo_bin("sccache"));
-
-fn stop_sccache() -> Result<()> {
-    trace!("sccache --stop-server");
-
-    Command::new(SCCACHE_BIN.as_os_str())
-        .arg("--stop-server")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("Failed to stop sccache server")?;
-    Ok(())
-}
 
 #[test]
 #[serial]
