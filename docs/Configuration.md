@@ -129,6 +129,7 @@ configuration variables
 * `SCCACHE_CONF` configuration file path
 * `SCCACHE_CACHED_CONF`
 * `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
+* `SCCACHE_CONNECTION_TIMEOUT` how long clients should try to connect to the server before continuing, in seconds.
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
