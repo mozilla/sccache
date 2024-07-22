@@ -19,6 +19,18 @@ use byteorder::{BigEndian, ByteOrder};
 use retry::{delay::Fixed, retry};
 use std::io::{self, BufReader, BufWriter, Read};
 use std::net::TcpStream;
+use std::time::Duration;
+use std::{env, net::ToSocketAddrs};
+
+const DEFAULT_CONNECTION_TIMEOUT: u64 = 20;
+
+/// Get the time clients should try to connect to the server before continuing, in seconds.
+pub(crate) fn get_connection_timeout() -> u64 {
+    env::var("SCCACHE_CONNECTION_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_CONNECTION_TIMEOUT)
+}
 
 /// A connection to an sccache server.
 pub struct ServerConnection {
@@ -65,7 +77,10 @@ impl ServerConnection {
 /// Establish a TCP connection to an sccache server listening on `port`.
 pub fn connect_to_server(port: u16) -> io::Result<ServerConnection> {
     trace!("connect_to_server({})", port);
-    let stream = TcpStream::connect(("127.0.0.1", port))?;
+    let stream = TcpStream::connect_timeout(
+        &("127.0.0.1", port).to_socket_addrs()?.next().unwrap(),
+        Duration::from_secs(get_connection_timeout()),
+    )?;
     ServerConnection::new(stream)
 }
 
