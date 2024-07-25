@@ -2605,7 +2605,7 @@ dependencies = [
  "version-compare",
  "walkdir",
  "which",
- "winapi",
+ "windows-sys 0.52.0",
  "zip",
  "zstd",
 ]

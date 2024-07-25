@@ -112,8 +112,10 @@ fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
 
 #[cfg(windows)]
 pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
-    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+
+    let codepage = CP_OEMCP;
+    let flags = MB_ERR_INVALID_CHARS;
 
     // Empty string
     if multi_byte_str.is_empty() {
@@ -121,7 +123,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
     }
     unsafe {
         // Get length of UTF-16 string
-        let len = winapi::um::stringapiset::MultiByteToWideChar(
+        let len = MultiByteToWideChar(
             codepage,
             flags,
             multi_byte_str.as_ptr() as _,
@@ -132,7 +134,7 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
         if len > 0 {
             // Convert to UTF-16
             let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::MultiByteToWideChar(
+            let len = MultiByteToWideChar(
                 codepage,
                 flags,
                 multi_byte_str.as_ptr() as _,
@@ -832,10 +834,10 @@ fn normpath(path: &str) -> String {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
-    use winapi::um::fileapi::GetFinalPathNameByHandleW;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
     File::open(path)
         .and_then(|f| {
-            let handle = f.as_raw_handle();
+            let handle = f.as_raw_handle() as _;
             let size = unsafe { GetFinalPathNameByHandleW(handle, ptr::null_mut(), 0, 0) };
             if size == 0 {
                 return Err(io::Error::last_os_error());
@@ -2582,7 +2584,7 @@ mod test {
     #[cfg(windows)]
     fn local_oem_codepage_conversions() {
         use crate::util::wide_char_to_multi_byte;
-        use winapi::um::winnls::GetOEMCP;
+        use windows_sys::Win32::Globalization::GetOEMCP;
 
         let current_oemcp = unsafe { GetOEMCP() };
         // We don't control the local OEM codepage so test only if it is one of:

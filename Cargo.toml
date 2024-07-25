@@ -140,16 +140,15 @@ daemonize = "0.5"
 optional = true
 version = "0.1.15"
 
-[target.'cfg(windows)'.dependencies.winapi]
+[target.'cfg(windows)'.dependencies.windows-sys]
 features = [
-  "fileapi",
-  "handleapi",
-  "stringapiset",
-  "winnls",
-  "processenv",
-  "std",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+  "Win32_System_Console",
 ]
-version = "0.3"
+version = "0.52"
 
 [features]
 all = [
