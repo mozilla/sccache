@@ -112,8 +112,14 @@ fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
 
 #[cfg(windows)]
 pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
-    let codepage = winapi::um::winnls::CP_OEMCP;
-    let flags = winapi::um::winnls::MB_ERR_INVALID_CHARS;
+    use windows::{
+        core::PWSTR,
+        Win32::Globalization::{GetACP, GetOEMCP, WideCharToMultiByte},
+        Win32::System::SystemServices::{CP_ACP, CP_OEMCP},
+    };
+
+    let codepage = unsafe { CP_OEMCP };
+    let flags = 0;
 
     // Empty string
     if multi_byte_str.is_empty() {
@@ -121,33 +127,38 @@ pub fn from_local_codepage(multi_byte_str: &[u8]) -> io::Result<String> {
     }
     unsafe {
         // Get length of UTF-16 string
-        let len = winapi::um::stringapiset::MultiByteToWideChar(
+        let len = WideCharToMultiByte(
             codepage,
             flags,
-            multi_byte_str.as_ptr() as _,
-            multi_byte_str.len() as i32,
-            std::ptr::null_mut(),
+            PWSTR(wide_char_str.as_ptr() as _),
+            wide_char_str.len() as i32,
+            None,
             0,
+            None,
+            None,
         );
         if len > 0 {
             // Convert to UTF-16
-            let mut wstr: Vec<u16> = Vec::with_capacity(len as usize);
-            let len = winapi::um::stringapiset::MultiByteToWideChar(
+            let mut wstr: Vec<u16> = vec![0u8; len as usize];
+            let len = WideCharToMultiByte(
                 codepage,
                 flags,
-                multi_byte_str.as_ptr() as _,
-                multi_byte_str.len() as i32,
-                wstr.as_mut_ptr() as _,
+                PWSTR(wide_char_str.as_ptr() as _),
+                wide_char_str.len() as i32,
+                Some(buffer.as_mut_slice()),
                 len,
+                None,
+                None,
             );
-            if len > 0 {
-                // wstr's contents have now been initialized
-                wstr.set_len(len as usize);
-                return String::from_utf16(&wstr[0..(len as usize)])
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+            if result > 0 {
+                buffer.truncate(result as usize);
+                Ok(buffer)
+            } else {
+                Err(std::io::Error::last_os_error())
             }
+        } else {
+            Err(io::Error::last_os_error())
         }
-        Err(io::Error::last_os_error())
     }
 }
 
@@ -829,32 +840,64 @@ pub fn parse_arguments(
 
 #[cfg(windows)]
 fn normpath(path: &str) -> String {
-    use std::os::windows::ffi::OsStringExt;
-    use std::os::windows::io::AsRawHandle;
-    use std::ptr;
-    use winapi::um::fileapi::GetFinalPathNameByHandleW;
-    File::open(path)
-        .and_then(|f| {
-            let handle = f.as_raw_handle();
-            let size = unsafe { GetFinalPathNameByHandleW(handle, ptr::null_mut(), 0, 0) };
-            if size == 0 {
-                return Err(io::Error::last_os_error());
+    use windows::{
+        core::PWSTR,
+        Win32::Foundation::HANDLE,
+        Win32::Storage::FileSystem::{
+            CreateFileW, GetFinalPathNameByHandleW, FILE_GENERIC_READ, FILE_SHARE_READ,
+            OPEN_EXISTING,
+        },
+        Win32::System::WindowsProgramming::FILE_NAME_NORMALIZED,
+    };
+
+    let path_wide: Vec<u16> = Path::new(path)
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    unsafe {
+        let handle = CreateFileW(
+            PWSTR(path_wide.as_ptr() as _),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ,
+            None,
+            OPEN_EXISTING,
+            0,
+            HANDLE::default(),
+        );
+
+        if handle.is_invalid() {
+            return path.replace('\\', "/");
+        }
+
+        let mut buffer = vec![0u16; 260]; // MAX_PATH
+        let mut size = buffer.len() as u32;
+
+        loop {
+            let result = GetFinalPathNameByHandleW(
+                handle,
+                PWSTR(buffer.as_mut_ptr()),
+                size,
+                FILE_NAME_NORMALIZED.0,
+            );
+
+            if result == 0 {
+                return path.replace('\\', "/");
             }
-            let mut wchars = vec![0; size as usize];
-            if unsafe {
-                GetFinalPathNameByHandleW(handle, wchars.as_mut_ptr(), wchars.len() as u32, 0)
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
+
+            if result < size {
+                buffer.truncate(result as usize);
+                break;
             }
-            // The return value of GetFinalPathNameByHandleW uses the
-            // '\\?\' prefix.
-            let o = OsString::from_wide(&wchars[4..wchars.len() - 1]);
-            o.into_string()
-                .map(|s| s.replace('\\', "/"))
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Error converting string"))
-        })
-        .unwrap_or_else(|_| path.replace('\\', "/"))
+
+            size = result + 1;
+            buffer.resize(size as usize, 0);
+        }
+
+        String::from_utf16_lossy(&buffer[4..]) // Remove '\\?\' prefix
+            .replace('\\', "/")
+    }
 }
 
 #[cfg(not(windows))]
@@ -2582,7 +2625,7 @@ mod test {
     #[cfg(windows)]
     fn local_oem_codepage_conversions() {
         use crate::util::wide_char_to_multi_byte;
-        use winapi::um::winnls::GetOEMCP;
+        use windows::Win32::Globalization::GetOEMCP;
 
         let current_oemcp = unsafe { GetOEMCP() };
         // We don't control the local OEM codepage so test only if it is one of:
