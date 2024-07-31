@@ -320,3 +320,29 @@ fn test_server_port_in_use() {
         s
     );
 }
+
+#[test]
+#[serial]
+// test fails intermittently on macos:
+// https://github.com/mozilla/sccache/issues/234
+#[cfg(not(target_os = "macos"))]
+fn test_server_port_from_cli() {
+    // Bind an arbitrary free port.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sccache = find_sccache_binary();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let output = Command::new(sccache)
+        .arg("--start-server")
+        .arg(port)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let s = String::from_utf8_lossy(&output.stderr);
+    const MSG: &str = "Server startup failed:";
+    assert!(
+        s.contains(MSG),
+        "Output did not contain '{}':\n========\n{}\n========",
+        MSG,
+        s
+    );
+}
