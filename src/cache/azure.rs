@@ -24,9 +24,9 @@ pub struct AzureBlobCache;
 
 impl AzureBlobCache {
     pub fn build(connection_string: &str, container: &str, key_prefix: &str) -> Result<Operator> {
-        let mut builder = Azblob::from_connection_string(connection_string)?;
-        builder.container(container);
-        builder.root(key_prefix);
+        let builder = Azblob::from_connection_string(connection_string)?
+            .container(container)
+            .root(key_prefix);
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
