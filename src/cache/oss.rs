@@ -26,18 +26,16 @@ impl OSSCache {
         endpoint: Option<&str>,
         no_credentials: bool,
     ) -> Result<Operator> {
-        let mut builder = Oss::default();
-        builder.bucket(bucket);
-        builder.root(key_prefix);
+        let mut builder = Oss::default().bucket(bucket).root(key_prefix);
 
         if let Some(endpoint) = endpoint {
-            builder.endpoint(endpoint);
+            builder = builder.endpoint(endpoint);
         }
 
         if no_credentials {
             // Allow anonymous access to OSS so that OpenDAL will not
             // throw error when no credentials are provided.
-            builder.allow_anonymous();
+            builder = builder.allow_anonymous();
         }
 
         let op = Operator::new(builder)?

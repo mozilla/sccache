@@ -27,18 +27,12 @@ impl WebdavCache {
         password: Option<&str>,
         token: Option<&str>,
     ) -> Result<Operator> {
-        let mut builder = Webdav::default();
-        builder.endpoint(endpoint);
-        builder.root(key_prefix);
-        if let Some(username) = username {
-            builder.username(username);
-        }
-        if let Some(password) = password {
-            builder.password(password);
-        }
-        if let Some(token) = token {
-            builder.token(token);
-        }
+        let builder = Webdav::default()
+            .endpoint(endpoint)
+            .root(key_prefix)
+            .username(username.unwrap_or_default())
+            .password(password.unwrap_or_default())
+            .token(token.unwrap_or_default());
 
         let op = Operator::new(builder)?
             .layer(LoggingLayer::default())
