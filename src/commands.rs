@@ -51,10 +51,16 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
-    env::var("SCCACHE_SERVER_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
+    let fallback = || -> u16 {
+        env::var("SCCACHE_SERVER_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_PORT)
+    };
+    match &Config::load() {
+        Ok(config) => config.port.unwrap_or_else(fallback),
+        Err(_) => fallback(),
+    }
 }
 
 /// Check if ignoring all response errors
