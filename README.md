@@ -114,9 +114,9 @@ sccache supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cu
 
 If you don't [specify otherwise](#storage-options), sccache will use a local disk cache.
 
-sccache works using a client-server model, where the server runs locally on the same machine as the client. The client-server model allows the server to be more efficient by keeping some state in memory. The sccache command will spawn a server process if one is not already running, or you can run `sccache --start-server` to start the background server process without performing any compilation.
+sccache works using a client-server model, where the server runs locally on the same machine as the client. The client-server model allows the server to be more efficient by keeping some state in memory. The sccache command will spawn a server process if one is not already running, or you can run `sccache --start-server[=port]` to start the background server process without performing any compilation.
 
-You can run `sccache --stop-server` to terminate the server. It will also terminate after (by default) 10 minutes of inactivity.
+You can run `sccache --stop-server[=port]` to terminate the server. It will also terminate after (by default) 10 minutes of inactivity.
 
 Running `sccache --show-stats` will print a summary of cache statistics.
 

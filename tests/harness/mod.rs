@@ -165,6 +165,7 @@ pub fn sccache_client_cfg(
             rewrite_includes_only: false, // TODO
         },
         server_startup_timeout_ms: None,
+        port: None,
     }
 }
 
