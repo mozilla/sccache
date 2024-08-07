@@ -160,6 +160,9 @@ jobs:
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
+          - os: windows-2019
+            target: aarch64-pc-windows-msvc
+            rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
