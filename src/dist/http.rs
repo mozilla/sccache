@@ -1437,6 +1437,7 @@ mod server {
                 }
                 // Finish the client
                 let new_client = client_builder
+                    .timeout(std::time::Duration::from_secs(30))
                     // Disable connection pool to avoid broken connection
                     // between runtime
                     .pool_max_idle_per_host(0)

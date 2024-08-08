@@ -3674,7 +3674,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "thirtyfour",
- "thiserror 1.0.56",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-serde",
  "tokio-util",
@@ -3966,7 +3966,7 @@ checksum = "adc4e5204eb1910f40f9cfa375f6f05b68c3abac4b6fd879c8ff5e7ae8a0a085"
 dependencies = [
  "num-bigint",
  "num-traits",
- "thiserror 1.0.56",
+ "thiserror 1.0.69",
  "time",
 ]
 
@@ -4290,11 +4290,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.56"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d54378c645627613241d077a3a79db965db602882668f9136ac42af9ecb730ad"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl 1.0.56",
+ "thiserror-impl 1.0.69",
 ]
 
 [[package]]
@@ -4308,9 +4308,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.56"
+version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa0faa943b50f3db30a20aa7e265dbc66076993efed8463e8de414e5d06d3471"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4646,7 +4646,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "sha1 0.10.7",
- "thiserror 1.0.56",
+ "thiserror 1.0.69",
  "url",
  "utf-8",
 ]
