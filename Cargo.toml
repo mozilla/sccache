@@ -107,7 +107,7 @@ zstd = "0.13"
 
 # dist-server only
 memmap2 = "0.9.4"
-native-tls = "0.2.8"
+native-tls = "0.2.12"
 nix = { version = "0.28.0", optional = true, features = [
   "mount",
   "user",
@@ -117,9 +117,9 @@ nix = { version = "0.28.0", optional = true, features = [
 ] }
 object = "0.32"
 syslog = { version = "6", optional = true }
-thiserror = { version = "1.0.30", optional = true }
+thiserror = { version = "1.0.63", optional = true }
 version-compare = { version = "0.1.1", optional = true }
-warp = { version = "0.3.2", optional = true, features = ["tls"] }
+warp = { version = "0.3.7", optional = true, features = ["tls"] }
 
 [dev-dependencies]
 assert_cmd = "2.0.13"

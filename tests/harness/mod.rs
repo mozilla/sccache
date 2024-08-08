@@ -1,5 +1,4 @@
 use fs_err as fs;
-// use nix::unistd::ForkResult;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
@@ -422,7 +421,7 @@ impl DistSystem {
     ) -> ServerHandle {
         let server_addr = {
             let ip = IpAddr::from_str("127.0.0.1").unwrap();
-            let listener = net::TcpListener::bind(SocketAddr::from((ip, 12346)))
+            let listener = net::TcpListener::bind(SocketAddr::from((ip, 0)))
                 .await
                 .unwrap();
             listener.local_addr().unwrap()

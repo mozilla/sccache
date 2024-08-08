@@ -640,7 +640,6 @@ mod server {
                     requester,
                 ))
                 .recover(handle_rejection)
-                .with(warp::log("warp::requests"))
             }
 
             fn make_401_with_body(short_err: &str, body: Option<ClientVisibleMsg>) -> Response {
@@ -975,7 +974,6 @@ mod server {
                 .or(job_state(check_server_auth, s.clone()))
                 .or(status(s))
                 .recover(handle_rejection)
-                .with(warp::log("warp::requests"))
             }
 
             // POST /api/v1/scheduler/alloc_job
