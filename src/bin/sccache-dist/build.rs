@@ -231,7 +231,7 @@ impl OverlayBuilder {
                     for (tc, _) in entries {
                         warn!("Removing old un-compressed toolchain: {:?}", tc);
                         assert!(toolchain_dir_map.remove(tc).is_some());
-                        fs::remove_dir_all(&self.dir.join("toolchains").join(&tc.archive_id))
+                        fs::remove_dir_all(self.dir.join("toolchains").join(&tc.archive_id))
                             .context("Failed to remove old toolchain directory")?;
                     }
                 }
