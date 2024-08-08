@@ -1,28 +1,24 @@
 use fs_err as fs;
+// use nix::unistd::ForkResult;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 use sccache::config::HTTPUrl;
 use sccache::dist::{self, SchedulerStatusResult, ServerId};
 use sccache::server::ServerInfo;
 use std::env;
 use std::io::Write;
-use std::net::{self, IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::str::{self, FromStr};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::net;
 
 use assert_cmd::prelude::*;
-#[cfg(feature = "dist-server")]
-use nix::{
-    sys::{
-        signal::Signal,
-        wait::{WaitPidFlag, WaitStatus},
-    },
-    unistd::{ForkResult, Pid},
-};
 use predicates::prelude::*;
 use serde::Serialize;
+#[cfg(feature = "dist-server")]
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const CONTAINER_NAME_PREFIX: &str = "sccache_dist_test";
@@ -212,8 +208,14 @@ fn create_server_token(server_id: ServerId, auth_token: &str) -> String {
 
 #[cfg(feature = "dist-server")]
 pub enum ServerHandle {
-    Container { cid: String, url: HTTPUrl },
-    Process { pid: Pid, url: HTTPUrl },
+    Container {
+        cid: String,
+        url: HTTPUrl,
+    },
+    AsyncTask {
+        handle: JoinHandle<()>,
+        url: HTTPUrl,
+    },
 }
 
 #[cfg(feature = "dist-server")]
@@ -223,7 +225,8 @@ pub struct DistSystem {
 
     scheduler_name: Option<String>,
     server_names: Vec<String>,
-    server_pids: Vec<Pid>,
+    server_handles: Vec<JoinHandle<()>>,
+    client: reqwest::Client,
 }
 
 #[cfg(feature = "dist-server")]
@@ -249,17 +252,20 @@ impl DistSystem {
         let tmpdir = tmpdir.join("distsystem");
         fs::create_dir(&tmpdir).unwrap();
 
+        let client = native_tls_no_sni_client_builder_danger().build().unwrap();
+
         Self {
             sccache_dist: sccache_dist.to_owned(),
             tmpdir,
 
             scheduler_name: None,
             server_names: vec![],
-            server_pids: vec![],
+            server_handles: vec![],
+            client,
         }
     }
 
-    pub fn add_scheduler(&mut self) {
+    pub async fn add_scheduler(&mut self) {
         let scheduler_cfg_relpath = "scheduler-cfg.json";
         let scheduler_cfg_path = self.tmpdir.join(scheduler_cfg_relpath);
         let scheduler_cfg_container_path =
@@ -312,29 +318,40 @@ impl DistSystem {
         check_output(&output);
 
         let scheduler_url = self.scheduler_url();
-        wait_for_http(scheduler_url, Duration::from_millis(100), MAX_STARTUP_WAIT);
-        wait_for(
-            || {
-                let status = self.scheduler_status();
-                if matches!(
-                    status,
-                    SchedulerStatusResult {
-                        num_servers: 0,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
-                    Ok(())
-                } else {
-                    Err(format!("{:?}", status))
-                }
-            },
+        wait_for_http(
+            &self.client,
+            scheduler_url,
             Duration::from_millis(100),
             MAX_STARTUP_WAIT,
-        );
+        )
+        .await;
+
+        let status_fut = async move {
+            loop {
+                let status = self.scheduler_status();
+
+                tokio::select! {
+                    s = status => {
+                        if matches!(
+                            s,
+                            SchedulerStatusResult {
+                                num_servers: 0,
+                                num_cpus: _,
+                                in_progress: 0
+                        }
+                        ) {
+                            break Ok(());
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        };
+
+        wait_for(status_fut, MAX_STARTUP_WAIT).await;
     }
 
-    pub fn add_server(&mut self) -> ServerHandle {
+    pub async fn add_server(&mut self) -> ServerHandle {
         let server_cfg_relpath = format!("server-cfg-{}.json", self.server_names.len());
         let server_cfg_path = self.tmpdir.join(&server_cfg_relpath);
         let server_cfg_container_path = Path::new(CONFIGS_CONTAINER_PATH).join(server_cfg_relpath);
@@ -395,86 +412,90 @@ impl DistSystem {
             cid: server_name,
             url,
         };
-        self.wait_server_ready(&handle);
+        self.wait_server_ready(&handle).await;
         handle
     }
 
-    pub fn add_custom_server<S: dist::ServerIncoming + 'static>(
+    pub async fn add_custom_server<S: dist::ServerIncoming + 'static>(
         &mut self,
         handler: S,
     ) -> ServerHandle {
         let server_addr = {
             let ip = IpAddr::from_str("127.0.0.1").unwrap();
-            let listener = net::TcpListener::bind(SocketAddr::from((ip, 0))).unwrap();
+            let listener = net::TcpListener::bind(SocketAddr::from((ip, 12346)))
+                .await
+                .unwrap();
             listener.local_addr().unwrap()
         };
         let token = create_server_token(ServerId::new(server_addr), DIST_SERVER_TOKEN);
         let server =
             dist::http::Server::new(server_addr, self.scheduler_url().to_url(), token, handler)
                 .unwrap();
-        let pid = match unsafe { nix::unistd::fork() }.unwrap() {
-            ForkResult::Parent { child } => {
-                self.server_pids.push(child);
-                child
-            }
-            ForkResult::Child => {
-                env::set_var("SCCACHE_LOG", "sccache=trace");
-                env_logger::try_init().unwrap();
-                server.start().unwrap();
-                unreachable!();
-            }
-        };
+
+        let handle = tokio::spawn(async move {
+            println!("Starting server");
+            server.start().await.unwrap();
+            println!("Should be unreachable");
+            unreachable!();
+        });
 
         let url =
             HTTPUrl::from_url(reqwest::Url::parse(&format!("https://{}", server_addr)).unwrap());
-        let handle = ServerHandle::Process { pid, url };
-        self.wait_server_ready(&handle);
+        let handle = ServerHandle::AsyncTask { handle, url };
+        self.wait_server_ready(&handle).await;
         handle
     }
 
-    pub fn restart_server(&mut self, handle: &ServerHandle) {
+    pub async fn restart_server(&mut self, handle: &ServerHandle) {
         match handle {
             ServerHandle::Container { cid, url: _ } => {
-                let output = Command::new("docker")
-                    .args(["restart", cid])
-                    .output()
-                    .unwrap();
+                let output = Command::new("docker").args(["restart", cid]).unwrap();
                 check_output(&output);
             }
-            ServerHandle::Process { pid: _, url: _ } => {
+            ServerHandle::AsyncTask { handle: _, url: _ } => {
                 // TODO: pretty easy, just no need yet
                 panic!("restart not yet implemented for pids")
             }
         }
-        self.wait_server_ready(handle)
+        self.wait_server_ready(handle).await
     }
 
-    pub fn wait_server_ready(&mut self, handle: &ServerHandle) {
+    pub async fn wait_server_ready(&mut self, handle: &ServerHandle) {
         let url = match handle {
-            ServerHandle::Container { cid: _, url } | ServerHandle::Process { pid: _, url } => {
-                url.clone()
-            }
+            ServerHandle::Container { cid: _, url }
+            | ServerHandle::AsyncTask { handle: _, url } => url.clone(),
         };
-        wait_for_http(url, Duration::from_millis(100), MAX_STARTUP_WAIT);
-        wait_for(
-            || {
-                let status = self.scheduler_status();
-                if matches!(
-                    status,
-                    SchedulerStatusResult {
-                        num_servers: 1,
-                        num_cpus: _,
-                        in_progress: 0
-                    }
-                ) {
-                    Ok(())
-                } else {
-                    Err(format!("{:?}", status))
-                }
-            },
+        wait_for_http(
+            &self.client,
+            url,
             Duration::from_millis(100),
             MAX_STARTUP_WAIT,
-        );
+        )
+        .await;
+
+        let status_fut = async move {
+            loop {
+                let status = self.scheduler_status();
+
+                tokio::select! {
+                    s = status => {
+                        if matches!(
+                            s,
+                            SchedulerStatusResult {
+                                num_servers: 1,
+                                num_cpus: _,
+                                in_progress: 0
+                            }
+                        ) {
+                            break Ok(());
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        };
+
+        wait_for(status_fut, MAX_STARTUP_WAIT).await;
     }
 
     pub fn scheduler_url(&self) -> HTTPUrl {
@@ -482,13 +503,14 @@ impl DistSystem {
         HTTPUrl::from_url(reqwest::Url::parse(&url).unwrap())
     }
 
-    fn scheduler_status(&self) -> SchedulerStatusResult {
-        let res = reqwest::blocking::get(dist::http::urls::scheduler_status(
-            &self.scheduler_url().to_url(),
-        ))
-        .unwrap();
+    async fn scheduler_status(&self) -> SchedulerStatusResult {
+        let url = dist::http::urls::scheduler_status(&self.scheduler_url().to_url());
+        let client = reqwest::Client::new();
+
+        let res = client.get(url).send().await.unwrap();
         assert!(res.status().is_success());
-        bincode::deserialize_from(res).unwrap()
+        let bytes = res.bytes().await.unwrap();
+        bincode::deserialize_from(bytes.as_ref()).unwrap()
     }
 }
 
@@ -515,7 +537,6 @@ impl Drop for DistSystem {
 
         let mut logs = vec![];
         let mut outputs = vec![];
-        let mut exits = vec![];
 
         if let Some(scheduler_name) = self.scheduler_name.as_ref() {
             droperr!(Command::new("docker")
@@ -545,31 +566,9 @@ impl Drop for DistSystem {
                 .output()
                 .map(|o| outputs.push((server_name, o))));
         }
-        for &pid in self.server_pids.iter() {
-            droperr!(nix::sys::signal::kill(pid, Signal::SIGINT));
-            thread::sleep(Duration::from_millis(100));
-            let mut killagain = true; // Default to trying to kill again, e.g. if there was an error waiting on the pid
-            droperr!(
-                nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG)).map(|ws| {
-                    if ws != WaitStatus::StillAlive {
-                        killagain = false;
-                        exits.push(ws)
-                    }
-                })
-            );
-            if killagain {
-                eprintln!("SIGINT didn't kill process, trying SIGKILL");
-                droperr!(nix::sys::signal::kill(pid, Signal::SIGKILL));
-                droperr!(nix::sys::wait::waitpid(pid, Some(WaitPidFlag::WNOHANG))
-                    .map_err(|e| e.to_string())
-                    .and_then(|ws| if ws == WaitStatus::StillAlive {
-                        Err("process alive after sigkill".to_owned())
-                    } else {
-                        exits.push(ws);
-                        Ok(())
-                    }));
-            }
-        }
+        // TODO: they will die with the runtime, but correctly waiting for them
+        // may be only possible when we have async Drop.
+        for _handle in self.server_handles.iter() {}
 
         for (
             container,
@@ -605,9 +604,6 @@ impl Drop for DistSystem {
                 String::from_utf8_lossy(&stderr)
             );
         }
-        for exit in exits {
-            println!("EXIT: {:?}", exit)
-        }
 
         if did_err && !thread::panicking() {
             panic!("Encountered failures during dist system teardown")
@@ -633,34 +629,46 @@ fn check_output(output: &Output) {
 }
 
 #[cfg(feature = "dist-server")]
-fn wait_for_http(url: HTTPUrl, interval: Duration, max_wait: Duration) {
-    // TODO: after upgrading to reqwest >= 0.9, use 'danger_accept_invalid_certs' and stick with that rather than tcp
-    wait_for(
-        || {
-            let url = url.to_url();
-            let url = url.socket_addrs(|| None).unwrap();
-            match net::TcpStream::connect(url.as_slice()) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e.to_string()),
-            }
-        },
-        interval,
-        max_wait,
-    )
+fn native_tls_no_sni_client_builder_danger() -> reqwest::ClientBuilder {
+    let tls = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .use_sni(false)
+        .build()
+        .unwrap();
+
+    reqwest::ClientBuilder::new()
+        .pool_max_idle_per_host(0)
+        .use_native_tls()
+        .use_preconfigured_tls(tls)
 }
 
-fn wait_for<F: Fn() -> Result<(), String>>(f: F, interval: Duration, max_wait: Duration) {
-    let start = Instant::now();
-    let mut lasterr;
-    loop {
-        match f() {
-            Ok(()) => return,
-            Err(e) => lasterr = e,
+#[cfg(feature = "dist-server")]
+async fn wait_for_http(
+    client: &reqwest::Client,
+    url: HTTPUrl,
+    interval: Duration,
+    max_wait: Duration,
+) {
+    let try_connect = async move {
+        let url = url.to_url();
+
+        loop {
+            if let Ok(Ok(_)) = tokio::time::timeout(interval, client.get(url.clone()).send()).await
+            {
+                break;
+            }
         }
-        if start.elapsed() > max_wait {
-            break;
-        }
-        thread::sleep(interval)
+    };
+
+    if let Err(e) = tokio::time::timeout(max_wait, try_connect).await {
+        panic!("wait timed out, last error result: {}", e)
     }
-    panic!("wait timed out, last error result: {}", lasterr)
+}
+
+async fn wait_for<F: std::future::Future<Output = Result<(), String>>>(f: F, max_wait: Duration) {
+    tokio::time::timeout(max_wait, f)
+        .await
+        .unwrap()
+        .expect("wait timed out");
 }

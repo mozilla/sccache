@@ -938,11 +938,48 @@ pub fn daemonize() -> Result<()> {
 ///
 /// More details could be found at https://github.com/mozilla/sccache/pull/1563
 #[cfg(any(feature = "dist-server", feature = "dist-client"))]
-pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+pub fn new_reqwest_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .pool_max_idle_per_host(0)
         .build()
         .expect("http client must build with success")
+}
+
+// This function builds a custom `native-tls`-based `reqwest` client.
+//
+// It main goal is to dodge the currently existing issue that `request`
+// is not able to connect to tls hosts by their IP addrs since it tries
+// to put these addrs into the SNI extentions. As of this day falling back
+// to a `native-tls` backend seems to be the only way to disable the `SNI` feature
+// in `request`. Also all the intended root certificates have to be passed
+// to the `native-tls` builder; using the higher-level `request` bulider API will
+// not work.
+//
+// More context:
+// https://github.com/seanmonstar/reqwest/issues/1328
+// https://github.com/briansmith/webpki/issues/54
+#[cfg(any(feature = "dist-client", feature = "dist-server"))]
+pub fn native_tls_no_sni_client_builder<I, T>(root_certs: I) -> Result<reqwest::ClientBuilder>
+where
+    I: Iterator<Item = T>,
+    T: AsRef<[u8]>,
+{
+    let mut tls_builder = native_tls::TlsConnector::builder();
+
+    for root_cert in root_certs {
+        tls_builder.add_root_certificate(native_tls::Certificate::from_pem(root_cert.as_ref())?);
+    }
+
+    tls_builder.use_sni(false);
+
+    let tls = tls_builder.build()?;
+
+    let client_builder = reqwest::ClientBuilder::new()
+        .pool_max_idle_per_host(0)
+        .use_native_tls()
+        .use_preconfigured_tls(tls);
+
+    Ok(client_builder)
 }
 
 #[cfg(test)]

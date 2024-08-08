@@ -1460,7 +1460,6 @@ mod test {
     use std::io::{Cursor, Write};
     use std::sync::Arc;
     use std::time::Duration;
-    use std::u64;
     use test_case::test_case;
     use tokio::runtime::Runtime;
 
