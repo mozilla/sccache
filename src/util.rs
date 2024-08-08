@@ -1172,26 +1172,13 @@ pub(crate) fn new_reqwest_client_builder() -> reqwest::Result<reqwest::ClientBui
     Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
 }
 
-/// Create a blocking reqwest client builder using the platform verifier, augmented with
-/// Mozilla roots when the verifier supports additional trust anchors.
-#[cfg(any_dist)]
-pub(crate) fn new_reqwest_blocking_builder() -> reqwest::Result<reqwest::blocking::ClientBuilder> {
-    let builder = reqwest::blocking::Client::builder();
-
-    // See `new_reqwest_client_builder`: Android cannot merge extra verifier roots.
-    #[cfg(target_os = "android")]
-    return Ok(builder);
-
-    #[cfg(not(target_os = "android"))]
-    Ok(builder.tls_certs_merge(mozilla_root_certificates()?))
-}
-
-/// Build the blocking HTTP client used by distributed sccache components.
+/// Build the HTTP client used by distributed sccache components.
 ///
 /// `sccache-dist` is a separate crate in this package, so this helper is public.
 #[cfg(any_dist)]
-pub fn new_reqwest_blocking_client() -> reqwest::Result<reqwest::blocking::Client> {
-    new_reqwest_blocking_builder()?
+pub fn new_reqwest_client() -> reqwest::Result<reqwest::Client> {
+    new_reqwest_client_builder()?
+        .timeout(Duration::from_secs(30))
         // Disable pooling while sccache uses multiple runtimes; pooled connections can
         // otherwise outlive the runtime that created them. See #1563.
         .pool_max_idle_per_host(0)
@@ -1782,7 +1769,9 @@ mod tests {
     #[cfg(all(any_dist, target_os = "linux"))]
     #[test]
     #[serial_test::serial(reqwest_tls_env)]
-    fn blocking_http_client_builds_with_invalid_native_ca_paths() -> reqwest::Result<()> {
+    fn http_client_builds_with_invalid_native_ca_paths() -> reqwest::Result<()> {
+        let runtime = single_threaded_runtime();
+        let _guard = runtime.enter();
         temp_env::with_vars(
             [
                 ("SSL_CERT_FILE", Some("/sccache-test-no-cert-file.crt")),
@@ -1790,10 +1779,10 @@ mod tests {
             ],
             || {
                 assert!(
-                    reqwest::blocking::Client::builder().build().is_err(),
+                    reqwest::Client::builder().build().is_err(),
                     "test environment must reproduce the empty native trust-store failure"
                 );
-                super::new_reqwest_blocking_client().map(drop)
+                super::new_reqwest_client().map(drop)
             },
         )
     }
