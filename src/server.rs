@@ -658,11 +658,12 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
             }
         })?;
 
-        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+        let config = Config::load().unwrap_or_default();
+        let shutdown_timeout: Duration = config.server_timing.shutdown_timeout.unwrap_or(Duration::from_secs(10));
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
              for all client requests to complete",
-            SHUTDOWN_TIMEOUT.as_secs()
+             shutdown_timeout.as_secs()
         );
 
         // Once our server has shut down either due to inactivity or a manual
@@ -672,7 +673,7 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         //
         // Note that we cap the amount of time this can take, however, as we
         // don't want to wait *too* long.
-        runtime.block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })?;
+        runtime.block_on(async { time::timeout(shutdown_timeout, wait).await })?;
 
         info!("ok, fully shutting down now");
 
