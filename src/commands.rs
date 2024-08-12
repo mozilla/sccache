@@ -133,11 +133,10 @@ fn redirect_stderr(f: File) {
 #[cfg(windows)]
 fn redirect_stderr(f: File) {
     use std::os::windows::io::IntoRawHandle;
-    use winapi::um::processenv::SetStdHandle;
-    use winapi::um::winbase::STD_ERROR_HANDLE;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
     // Ignore errors here.
     unsafe {
-        SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle());
+        SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
     }
 }
 
@@ -176,11 +175,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     use std::ptr;
     use tokio::net::windows::named_pipe;
     use uuid::Uuid;
-    use winapi::shared::minwindef::{DWORD, FALSE, LPVOID, TRUE};
-    use winapi::um::handleapi::CloseHandle;
-    use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
-    use winapi::um::winbase::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
+        PROCESS_INFORMATION, STARTUPINFOW,
     };
 
     trace!("run_server_process");
@@ -227,26 +225,26 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
     //       standard library's `Command` type and then use that instead.
     let mut pi = PROCESS_INFORMATION {
-        hProcess: ptr::null_mut(),
-        hThread: ptr::null_mut(),
+        hProcess: 0,
+        hThread: 0,
         dwProcessId: 0,
         dwThreadId: 0,
     };
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
-    si.cb = mem::size_of::<STARTUPINFOW>() as DWORD;
+    si.cb = mem::size_of::<STARTUPINFOW>() as _;
     if unsafe {
         CreateProcessW(
             exe.as_mut_ptr(),
             ptr::null_mut(),
             ptr::null_mut(),
             ptr::null_mut(),
-            FALSE,
+            0,
             CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-            envp.as_mut_ptr() as LPVOID,
+            envp.as_mut_ptr().cast(),
             workdir.as_ptr(),
-            &mut si,
+            &si,
             &mut pi,
-        ) == TRUE
+        ) != 0
     } {
         unsafe {
             CloseHandle(pi.hProcess);
