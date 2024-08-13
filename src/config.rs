@@ -1615,7 +1615,6 @@ no_credentials = true
 
 #[test]
 fn test_port_config() {
-    // just set up a config file with just port, then have it read it in, and ensure port is defined in the struct
     const CONFIG_STR: &str = "port = 8080";
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
     assert_eq!(
@@ -1626,6 +1625,22 @@ fn test_port_config() {
             server_startup_timeout_ms: None,
             server_shutdown_timeout_ms: None,
             port: Some(8080),
+        }
+    )
+}
+
+#[test]
+fn test_shutdown_config() {
+    const CONFIG_STR: &str = "server_shutdown_timeout_ms = 10000";
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: Default::default(),
+            dist: Default::default(),
+            server_startup_timeout_ms: None,
+            server_shutdown_timeout_ms: Some(10_000),
+            port: None,
         }
     )
 }
