@@ -30,33 +30,34 @@ impl S3Cache {
         use_ssl: Option<bool>,
         server_side_encryption: Option<bool>,
     ) -> Result<Operator> {
-        let mut builder = S3::default();
-        builder.http_client(set_user_agent());
-        builder.bucket(bucket);
-        builder.root(key_prefix);
+        let mut builder = S3::default()
+            .http_client(set_user_agent())
+            .bucket(bucket)
+            .root(key_prefix);
 
         if let Some(region) = region {
-            builder.region(region);
+            builder = builder.region(region);
         }
 
         if no_credentials {
-            builder.disable_config_load();
-            // Disable EC2 metadata to avoid OpenDAL trying to load
-            // credentials from EC2 metadata.
-            //
-            // A.k.a, don't try to visit `http://169.254.169.254`
-            builder.disable_ec2_metadata();
-            // Allow anonymous access to S3 so that OpenDAL will not
-            // throw error when no credentials are provided.
-            builder.allow_anonymous();
+            builder = builder
+                .disable_config_load()
+                // Disable EC2 metadata to avoid OpenDAL trying to load
+                // credentials from EC2 metadata.
+                //
+                // A.k.a, don't try to visit `http://169.254.169.254`
+                .disable_ec2_metadata()
+                // Allow anonymous access to S3 so that OpenDAL will not
+                // throw error when no credentials are provided.
+                .allow_anonymous();
         }
 
         if let Some(endpoint) = endpoint {
-            builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
+            builder = builder.endpoint(&endpoint_resolver(endpoint, use_ssl)?);
         }
 
         if server_side_encryption.unwrap_or_default() {
-            builder.server_side_encryption_with_s3_key();
+            builder = builder.server_side_encryption_with_s3_key();
         }
 
         let op = Operator::new(builder)?
