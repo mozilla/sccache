@@ -21,7 +21,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::daemonize;
+use crate::util::{self, daemonize};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -55,7 +55,13 @@ fn get_port() -> u16 {
         env::var("SCCACHE_SERVER_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_PORT)
+            .unwrap_or(
+                util::get_from_client_cache("recent_port")
+                    .ok()
+                    .and_then(|port| port)
+                    .and_then(|port| port.parse().ok())
+                    .unwrap_or(DEFAULT_PORT),
+            )
     };
     match &Config::load() {
         Ok(config) => config.port.unwrap_or_else(fallback),
@@ -90,7 +96,7 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 #[cfg(not(windows))]
 fn run_server_process(
     startup_timeout: Option<Duration>,
-    _port: Option<u16>,
+    cli_port: Option<u16>,
 ) -> Result<ServerStartup> {
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
@@ -107,7 +113,10 @@ fn run_server_process(
         tokio::net::UnixListener::bind(&socket_path)?
     };
 
-    let port = _port.unwrap_or_else(get_port);
+    let port = cli_port.unwrap_or_else(get_port);
+    if cli_port.is_some() {
+        util::write_to_client_cache("recent_port", port.to_string().as_str())?;
+    }
 
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)

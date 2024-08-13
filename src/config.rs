@@ -1591,7 +1591,6 @@ no_credentials = true
 
 #[test]
 fn test_port_config() {
-    // just set up a config file with just port, then have it read it in, and ensure port is defined in the struct
     const CONFIG_STR: &str = "port = 8080";
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
     assert_eq!(
