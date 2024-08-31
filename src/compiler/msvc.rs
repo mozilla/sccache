@@ -908,7 +908,8 @@ pub fn preprocess_cmd<T>(
         }
         // Windows SDK generates C4668 during preprocessing, but compiles fine.
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
-        cmd.arg("/wd4668");
+        // And here: https://github.com/mozilla/sccache/issues/2250
+        cmd.arg("/WX-");
     }
 
     if rewrite_includes_only && is_clang {
