@@ -148,6 +148,7 @@ ArgData! { pub
     Arch(OsString),
     PedanticFlag,
     Standard(OsString),
+    SerializeDiagnostics(PathBuf),
 }
 
 use self::ArgData::*;
@@ -160,7 +161,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--coverage", Coverage),
     take_arg!("--param", OsString, Separated, PassThrough),
     flag!("--save-temps", TooHardFlag),
-    take_arg!("--serialize-diagnostics", PathBuf, Separated, PassThroughPath),
+    take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
@@ -271,6 +272,7 @@ where
     let mut language_extensions = true; // by default, GCC allows extensions
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    let mut dep_path = None;
     enum DepArgumentRequirePath {
         NotNeeded,
         Missing,
@@ -284,6 +286,7 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
+    let mut serialize_diagnostics = None;
     let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
@@ -361,8 +364,12 @@ where
                 dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
                 dep_target = Some(s.clone());
             }
-            Some(DepArgumentPath(_)) => {
-                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided
+            Some(DepArgumentPath(path)) => {
+                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided;
+                dep_path = Some(path.clone());
+            }
+            Some(SerializeDiagnostics(path)) => {
+                serialize_diagnostics = Some(path.clone());
             }
             Some(ExtraHashFile(_))
             | Some(PassThroughFlag)
@@ -447,8 +454,12 @@ where
                 &mut preprocessor_args
             }
             Some(DepArgumentPath(_)) | Some(NeedDepTarget) => &mut dependency_args,
-            Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
-            | Some(DepTarget(_)) => continue,
+            Some(DoCompilation)
+            | Some(Language(_))
+            | Some(Output(_))
+            | Some(XClang(_))
+            | Some(DepTarget(_))
+            | Some(SerializeDiagnostics(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
             None => match arg {
                 Argument::Raw(_) => continue,
@@ -507,7 +518,8 @@ where
             | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughFlag)
-            | Some(PassThroughPath(_)) => &mut common_args,
+            | Some(PassThroughPath(_))
+            | Some(SerializeDiagnostics(_)) => &mut common_args,
             Some(Unhashed(_)) => &mut unhashed_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
@@ -608,6 +620,27 @@ where
         dependency_args.push(OsString::from("-MF"));
         dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
     }
+
+    if let Some(path) = dep_path {
+        outputs.insert(
+            "d",
+            ArtifactDescriptor {
+                path: path.clone(),
+                optional: false,
+            },
+        );
+    }
+
+    if let Some(path) = serialize_diagnostics {
+        outputs.insert(
+            "dia",
+            ArtifactDescriptor {
+                path: path.clone(),
+                optional: false,
+            },
+        );
+    }
+
     outputs.insert(
         "obj",
         ArtifactDescriptor {
@@ -802,6 +835,7 @@ pub fn generate_compile_commands(
         out_file.into(),
     ]);
     arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.dependency_args);
     arguments.extend_from_slice(&parsed_args.unhashed_args);
     arguments.extend_from_slice(&parsed_args.common_args);
     arguments.extend_from_slice(&parsed_args.arch_args);
