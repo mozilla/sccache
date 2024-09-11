@@ -210,6 +210,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-imacros", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-imultilib", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-include", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-index-store-path", OsString, Separated, TooHard),
     take_arg!("-install_name", OsString, Separated, PassThrough),
     take_arg!("-iprefix", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-iquote", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
