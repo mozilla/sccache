@@ -1958,6 +1958,24 @@ mod test {
     }
 
     #[test]
+    fn test_parse_index_store_path() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-index-store-path", None),
+            parse_arguments_(
+                stringvec![
+                    "-c",
+                    "foo.c",
+                    "-index-store-path",
+                    "index.store",
+                    "-o",
+                    "foo.o"
+                ],
+                false
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
         with_var_unset("SCCACHE_CACHE_MULTIARCH", || {
             assert_eq!(
