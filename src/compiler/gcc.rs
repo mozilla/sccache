@@ -1367,7 +1367,7 @@ mod test {
             "foo.c",
             "-fabc",
             "-MF",
-            "file",
+            "foo.o.d",
             "-o",
             "foo.o",
             "-MQ",
@@ -1397,9 +1397,16 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file"], dependency_args);
+        assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
         assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -1467,7 +1474,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
         let args =
-            stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"];
+            stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o"];
         let ParsedArguments {
             input,
             language,
@@ -1490,9 +1497,16 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file"], dependency_args);
+        assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1500,7 +1514,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
         let args = stringvec![
-            "-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"
+            "-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"
         ];
         let ParsedArguments {
             input,
@@ -1525,10 +1539,17 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
-            ovec!["-MF", "file", "-MD", "-MT", "depfile"],
+            ovec!["-MF", "foo.o.d", "-MD", "-MT", "depfile"],
             dependency_args
         );
         assert!(preprocessor_args.is_empty());
@@ -1539,7 +1560,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_mq_dep_target_needed() {
         let args = stringvec![
-            "-c", "foo.c", "-MQ", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"
+            "-c", "foo.c", "-MQ", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"
         ];
         let ParsedArguments {
             input,
@@ -1564,10 +1585,17 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
-            ovec!["-MF", "file", "-MD", "-MQ", "depfile"],
+            ovec!["-MF", "foo.o.d", "-MD", "-MQ", "depfile"],
             dependency_args
         );
         assert!(preprocessor_args.is_empty());
@@ -1775,7 +1803,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_dep_target_needed() {
-        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
+        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"];
         let ParsedArguments {
             input,
             language,
@@ -1798,9 +1826,19 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], dependency_args);
+        assert_eq!(
+            ovec!["-MF", "foo.o.d", "-MD", "-MT", "foo.o"],
+            dependency_args
+        );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
