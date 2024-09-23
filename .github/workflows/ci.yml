@@ -278,7 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare, build and test
-        uses: vmactions/freebsd-vm@v1.0.8
+        uses: vmactions/freebsd-vm@v1.1.3
         with:
           mem: 8192
           usesh: true
