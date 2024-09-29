@@ -575,6 +575,7 @@ where
     };
     if split_dwarf {
         let dwo = output.with_extension("dwo");
+        common_args.push(OsString::from("-D_gsplit_dwarf_path=".to_owned() + dwo.to_str().unwrap()));
         // -gsplit-dwarf doesn't guarantee .dwo file if no -g is specified
         outputs.insert(
             "dwo",
@@ -1075,6 +1076,12 @@ mod test {
             CompilerArguments::Ok(args) => args,
             o => panic!("Got unexpected parse result: {:?}", o),
         };
+        let mut common_and_arch_args = common_args.clone();
+        common_and_arch_args.extend(common_args.to_vec());
+        debug!(
+            "common_and_arch_args: {:?}",
+            common_and_arch_args
+        );
         assert_eq!(Some("foo.cpp"), input.to_str());
         assert_eq!(Language::Cxx, language);
         assert_map_contains!(
@@ -1095,7 +1102,9 @@ mod test {
             )
         );
         assert!(preprocessor_args.is_empty());
-        assert_eq!(ovec!["-gsplit-dwarf"], common_args);
+        assert!(common_args.contains(&"-gsplit-dwarf".into())
+            && common_args.contains(&"-D_gsplit_dwarf_path=foo.dwo".into())
+        );
         assert!(!msvc_show_includes);
     }
 

@@ -558,6 +558,11 @@ where
         // use in creating a hash key
         let mut common_and_arch_args = parsed_args.common_args.clone();
         common_and_arch_args.extend(parsed_args.arch_args.to_vec());
+        debug!(
+            "[{}]: common_and_arch_args: {:?}",
+            parsed_args.output_pretty(),
+            common_and_arch_args
+        );
 
         let key = {
             hash_key(
