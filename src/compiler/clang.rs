@@ -210,6 +210,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-MT", OsString, CanBeSeparated, DepTarget),
     flag!("-Wno-unknown-cuda-version", PassThroughFlag),
     flag!("-Wno-unused-parameter", PassThroughFlag),
+    take_arg!("-Xarch", OsString, ConcatenatedAndSeparated('_'), PassThrough),
     take_arg!("-Xclang", OsString, Separated, XClang),
     take_arg!("-add-plugin", OsString, Separated, PassThrough),
     take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),

@@ -93,6 +93,8 @@ pub enum ArgDisposition {
     CanBeSeparated(Delimiter),
     /// As "-arg<delimiter>value"
     Concatenated(Delimiter),
+    /// As "-arg<delimiter>suffix value"
+    ConcatenatedAndSeparated(Delimiter),
 }
 
 pub enum NormalizedDisposition {
@@ -456,6 +458,20 @@ impl<T: ArgumentValue> ArgInfo<T> {
                     a => a?,
                 }
             }
+            ArgInfo::TakeArg(s, create, ArgDisposition::ConcatenatedAndSeparated(_)) => {
+                let len = s.len();
+                debug_assert_eq!(&arg[..len], s);
+
+                if let Some(a) = get_next_arg() {
+                    Argument::WithValue(
+                        arg.to_string().leak(),
+                        create(a)?,
+                        ArgDisposition::Separated,
+                    )
+                } else {
+                    return Err(ArgParseError::UnexpectedEndOfArgs);
+                }
+            }
         })
     }
 
@@ -471,6 +487,7 @@ impl<T: ArgumentValue> ArgInfo<T> {
             }
             &ArgInfo::TakeArg(s, _, ArgDisposition::CanBeSeparated(Some(d)))
             | &ArgInfo::TakeArg(s, _, ArgDisposition::Concatenated(Some(d)))
+            | &ArgInfo::TakeArg(s, _, ArgDisposition::ConcatenatedAndSeparated(Some(d)))
                 if arg.len() > s.len() && arg.starts_with(s) =>
             {
                 arg.as_bytes()[s.len()].cmp(&d)
@@ -854,6 +871,16 @@ mod tests {
         assert_eq!(
             info.process("-foo", || Some("bar".into())).unwrap(),
             arg!(WithValue("-foo", Foo("bar"), CanBeConcatenated('=')))
+        );
+
+        let info = take_arg!("-foo", OsString, ConcatenatedAndSeparated('_'), Foo);
+        assert_eq!(
+            info.clone().process("-foo_bar", || None).unwrap_err(),
+            ArgParseError::UnexpectedEndOfArgs
+        );
+        assert_eq!(
+            info.process("-foo_bar", || Some("baz".into())).unwrap(),
+            arg!(WithValue("-foo_bar", Foo("baz"), Separated))
         );
     }
 
