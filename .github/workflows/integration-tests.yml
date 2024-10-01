@@ -912,6 +912,10 @@ jobs:
         run: |
           cargo build
 
+      # Wrapper for the compiler invocation, so that we have a single command
+      # that calls sccache with the actual compiler argument.
+      # Just setting CC to be `sccache clang++` doesn't work as it is
+      # interpreted as the whole command that just happens to contain spaces.
       - name: Create wrapper script
         working-directory: tests/xcode
         run: |
