@@ -894,3 +894,53 @@ jobs:
           cargo clean && cargo build
       - name: lv10-stats-use
         run: ${SCCACHE_PATH} --show-stats
+
+  xcode:
+    runs-on: macos-latest
+    env:
+      SCCACHE_PATH: target/debug/sccache
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          toolchain: "stable"
+
+      - name: Build sccache
+        run: |
+          cargo build
+
+      - name: Create wrapper script
+        working-directory: tests/xcode
+        run: |
+          echo '#!/bin/sh' > wrapper.sh
+          echo "$GITHUB_WORKSPACE/${SCCACHE_PATH} $(xcrun -f cc) \$@" >> wrapper.sh
+          chmod +x wrapper.sh
+          echo "Wrapper script:"
+          cat wrapper.sh
+
+      - name: Start server
+        run: ${SCCACHE_PATH} --start-server
+
+      - name: Test compile xcode
+        working-directory: tests/xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -xcconfig sccache.xcconfig
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+
+      - name: Test compile xcode cached
+        working-directory: tests/xcode
+        run: |
+          xcodebuild clean
+          xcodebuild -xcconfig sccache.xcconfig
+
+      - name: Output
+        run: |
+          ${SCCACHE_PATH} --show-stats
+          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
