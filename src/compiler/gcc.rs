@@ -388,7 +388,7 @@ where
                     "c++-header" => Some(Language::CxxHeader),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
-                    "objective-c++-header" => Some(Language::ObjectiveCxx),
+                    "objective-c++-header" => Some(Language::ObjectiveCxxHeader),
                     "cu" => Some(Language::Cuda),
                     "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),

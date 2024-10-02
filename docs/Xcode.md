@@ -44,27 +44,25 @@ Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAg
 ```
 
 ### Setting it up for `xcodebuild`
-When you override the `CC` variable for `xcodebuild`, it seems to always escape the spaces, so its not enough to just set it, but we need a wrapper script, something like
 
-```sh
-echo "#\!/bin/sh\nsccache $(xcrun -f cc) \$@" > wrapper.sh
-chmod +x wrapper.sh
-```
-(YMMV if you need to select another sdk or toolchain for the xcrun)
+Xcode seems to support barely documented `C_COMPILER_LAUNCHER` attribute, for 
+having a custom launcher program.
 
 Then you can invoke `xcodebuild` like so
 ```sh
-xcodebuild CC="$(pwd)/wrapper.sh"
+xcodebuild C_COMPILER_LAUNCHER=sccache
            CLANG_ENABLE_MODULES=NO
            COMPILER_INDEX_STORE_ENABLE=NO
+           CLANG_USE_RESPONSE_FILE=NO
 ```
 Where the additional arguments are for disabling some features that `sccache` can't cache currently.
 
 These build settings can also be put in a xcconfig file, like `sccache.xcconfig`
 ```
-CC=$(SRCROOT)/wrapper.sh
+C_COMPILER_LAUNCHER=sccache
 CLANG_ENABLE_MODULES=NO
 COMPILER_INDEX_STORE_ENABLE=NO
+CLANG_USE_RESPONSE_FILE=NO
 ```
 Which can then be invoked with
 ```sh
@@ -75,39 +73,23 @@ xcodebuild -xcconfig sccache.xcconfig
 ### Setting it up for `cmake` Xcode generator
 While `cmake` has the convenient `CMAKE_<LANG>_COMPILER_LAUNCHER` for prepending tools like `sccache`, it is not supported for the Xcode generator.
 
-It can be then integrated with having a template file for the wrapper script, `launcher.sh.in`:
-```sh
-#!/bin/sh
-exec "${CCACHE_EXE}" "${LAUNCHER_COMPILER}" "$@"
-```
-
-And then configuring it something like
+But you can configuring it directly with something like
 ```cmake
 
 # This bit before the first `project()`, as the COMPILER_LAUNCHER variables are read in then
 if(DEFINED CCACHE)
-	find_program(CCACHE_EXE ${CCACHE} REQUIRED)
-	if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
-		# Support for other generators should work with these
-		set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_EXE}")
-		set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_EXE}")
-	endif()
-endif()
-
-# .. your project stuff ..
-
-# This bit needs to be after the first `project()` call, to have valid `CMAKE_C_COMPILER` variable.
-# Alternatively in a file included with CMAKE_PROJECT_INCLUDE
-if(DEFINED CCACHE)
-	if(CMAKE_GENERATOR STREQUAL "Xcode")
-		set(LAUNCHER_COMPILER ${CMAKE_C_COMPILER})
-		configure_file(${CMAKE_CURRENT_LIST_DIR}/launcher.sh.in launcher-cc.sh)
-		execute_process(COMMAND chmod a+rx
-		"${CMAKE_CURRENT_BINARY_DIR}/launcher-cc.sh")
-		set(CMAKE_XCODE_ATTRIBUTE_CC "${CMAKE_CURRENT_BINARY_DIR}/launcher-cc.sh")
-		set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES "NO")
-		set(CMAKE_XCODE_ATTRIBUTE_COMPILER_INDEX_STORE_ENABLE "NO")
-	endif()
+    find_program(CCACHE_EXE ${CCACHE} REQUIRED)
+    if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+        # Support for other generators should work with these
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_EXE}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_EXE}")
+    else()
+        # And this should work for Xcode generator
+        set(CMAKE_XCODE_ATTRIBUTE_C_COMPILER_LAUNCHER ${CCACHE_EXE})
+        set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES "NO")
+        set(CMAKE_XCODE_ATTRIBUTE_COMPILER_INDEX_STORE_ENABLE "NO")
+        set(CMAKE_XCODE_ATTRIBUTE_CLANG_USE_RESPONSE_FILE "NO")
+    endif()
 endif()
 ```
 Then configuring with `-DCCACHE=sccache` should work on all generators.
