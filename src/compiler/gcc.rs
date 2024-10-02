@@ -217,6 +217,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-iquote", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-isysroot", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-isystem", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-ivfsstatcache", PathBuf, CanBeSeparated, PassThroughPath),
     take_arg!("-iwithprefix", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-iwithprefixbefore", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     flag!("-nostdinc", PreprocessorArgumentFlag),
