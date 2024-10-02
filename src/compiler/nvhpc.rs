@@ -340,6 +340,13 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
