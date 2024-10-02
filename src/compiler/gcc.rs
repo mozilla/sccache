@@ -387,6 +387,7 @@ where
                     "c++-header" => Some(Language::CxxHeader),
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
+                    "objective-c++-header" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
                     "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),
@@ -678,6 +679,7 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::CxxHeader => Some("c++-header"),
         Language::ObjectiveC => Some("objective-c"),
         Language::ObjectiveCxx => Some("objective-c++"),
+        Language::ObjectiveCxxHeader => Some("objective-c++-header"),
         Language::Cuda => Some("cu"),
         Language::Rust => None, // Let the compiler decide
         Language::Hip => Some("hip"),
