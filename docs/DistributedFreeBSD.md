@@ -25,7 +25,7 @@ It's up to the user to create the reference pot that serves as a template
 to clone from when instantiating image and build containers, e.g.:
 
 ```sh
-pot create -p sccache-template -N alias -i "lo0|127.0.0.2" -t single -b 13.2
+pot create -p sccache-template -N alias -i "lo0|127.0.0.2" -t single -b 14.1
 pot set-cmd -p sccache-template -c /usr/bin/true
 pot set-attr -p sccache-template -A no-rc-script -V YES
 pot snapshot -p sccache-template

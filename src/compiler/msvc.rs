@@ -666,7 +666,8 @@ pub fn parse_arguments(
                 | Some(PassThrough(_))
                 | Some(PassThroughPath(_))
                 | Some(PedanticFlag)
-                | Some(Standard(_)) => &mut common_args,
+                | Some(Standard(_))
+                | Some(SerializeDiagnostics(_)) => &mut common_args,
                 Some(Unhashed(_)) => &mut unhashed_args,
 
                 Some(ProfileGenerate) => {
@@ -908,7 +909,8 @@ pub fn preprocess_cmd<T>(
         }
         // Windows SDK generates C4668 during preprocessing, but compiles fine.
         // Read for more info: https://github.com/mozilla/sccache/issues/1725
-        cmd.arg("/wd4668");
+        // And here: https://github.com/mozilla/sccache/issues/2250
+        cmd.arg("/WX-");
     }
 
     if rewrite_includes_only && is_clang {
