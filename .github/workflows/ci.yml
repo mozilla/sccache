@@ -160,6 +160,9 @@ jobs:
           - os: windows-2019
             target: x86_64-pc-windows-msvc
             rustflags: -Ctarget-feature=+crt-static
+          - os: windows-2019
+            target: aarch64-pc-windows-msvc
+            rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
@@ -264,7 +267,7 @@ jobs:
           fail_ci_if_error: false
 
   test_freebsd:
-    name: test freebsd-13.2 rust stable
+    name: test freebsd-14.1 rust stable
     runs-on: ${{ matrix.job.os }}
     timeout-minutes: 70
     strategy:
@@ -275,7 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare, build and test
-        uses: vmactions/freebsd-vm@v1.0.8
+        uses: vmactions/freebsd-vm@v1
         with:
           mem: 8192
           usesh: true
@@ -323,7 +326,7 @@ jobs:
         if: failure()
         uses: ./.github/actions/artifact_failure
         with:
-          name: test-freebsd-13.2-stable
+          name: test-freebsd-14.1-stable
 
   release:
     name: release
