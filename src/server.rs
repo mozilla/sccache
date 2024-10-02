@@ -659,11 +659,14 @@ impl<C: CommandCreatorSync> SccacheServer<C> {
         })?;
 
         let config = Config::load().unwrap_or_default();
-        let shutdown_timeout: Duration = config.server_timing.shutdown_timeout.unwrap_or(Duration::from_secs(10));
+        let shutdown_timeout: Duration = config
+            .server_timing
+            .shutdown_timeout
+            .unwrap_or(Duration::from_secs(10));
         info!(
             "moving into the shutdown phase now, waiting at most {} seconds \
              for all client requests to complete",
-             shutdown_timeout.as_secs()
+            shutdown_timeout.as_secs()
         );
 
         // Once our server has shut down either due to inactivity or a manual

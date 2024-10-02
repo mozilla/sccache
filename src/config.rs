@@ -997,7 +997,6 @@ impl Config {
             shutdown_timeout: server_shutdown_timeout,
         };
 
-
         let EnvConfig { cache } = env_conf;
         conf_caches.merge(cache);
 
