@@ -148,6 +148,7 @@ ArgData! { pub
     Arch(OsString),
     PedanticFlag,
     Standard(OsString),
+    SerializeDiagnostics(PathBuf),
 }
 
 use self::ArgData::*;
@@ -160,7 +161,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--coverage", Coverage),
     take_arg!("--param", OsString, Separated, PassThrough),
     flag!("--save-temps", TooHardFlag),
-    take_arg!("--serialize-diagnostics", PathBuf, Separated, PassThroughPath),
+    take_arg!("--serialize-diagnostics", PathBuf, Separated, SerializeDiagnostics),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
@@ -210,6 +211,7 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     take_arg!("-imacros", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-imultilib", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-include", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
+    take_arg!("-index-store-path", OsString, Separated, TooHard),
     take_arg!("-install_name", OsString, Separated, PassThrough),
     take_arg!("-iprefix", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     take_arg!("-iquote", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
@@ -270,6 +272,7 @@ where
     let mut language_extensions = true; // by default, GCC allows extensions
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
+    let mut dep_path = None;
     enum DepArgumentRequirePath {
         NotNeeded,
         Missing,
@@ -283,6 +286,7 @@ where
     let mut xclangs: Vec<OsString> = vec![];
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
+    let mut serialize_diagnostics = None;
     let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
@@ -360,8 +364,12 @@ where
                 dep_flag = OsString::from(arg.flag_str().expect("Dep target flag expected"));
                 dep_target = Some(s.clone());
             }
-            Some(DepArgumentPath(_)) => {
-                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided
+            Some(DepArgumentPath(path)) => {
+                need_explicit_dep_argument_path = DepArgumentRequirePath::Provided;
+                dep_path = Some(path.clone());
+            }
+            Some(SerializeDiagnostics(path)) => {
+                serialize_diagnostics = Some(path.clone());
             }
             Some(ExtraHashFile(_))
             | Some(PassThroughFlag)
@@ -446,8 +454,12 @@ where
                 &mut preprocessor_args
             }
             Some(DepArgumentPath(_)) | Some(NeedDepTarget) => &mut dependency_args,
-            Some(DoCompilation) | Some(Language(_)) | Some(Output(_)) | Some(XClang(_))
-            | Some(DepTarget(_)) => continue,
+            Some(DoCompilation)
+            | Some(Language(_))
+            | Some(Output(_))
+            | Some(XClang(_))
+            | Some(DepTarget(_))
+            | Some(SerializeDiagnostics(_)) => continue,
             Some(TooHardFlag) | Some(TooHard(_)) => unreachable!(),
             None => match arg {
                 Argument::Raw(_) => continue,
@@ -506,7 +518,8 @@ where
             | Some(Arch(_))
             | Some(PassThrough(_))
             | Some(PassThroughFlag)
-            | Some(PassThroughPath(_)) => &mut common_args,
+            | Some(PassThroughPath(_))
+            | Some(SerializeDiagnostics(_)) => &mut common_args,
             Some(Unhashed(_)) => &mut unhashed_args,
             Some(ExtraHashFile(path)) => {
                 extra_hash_files.push(cwd.join(path));
@@ -607,6 +620,27 @@ where
         dependency_args.push(OsString::from("-MF"));
         dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
     }
+
+    if let Some(path) = dep_path {
+        outputs.insert(
+            "d",
+            ArtifactDescriptor {
+                path: path.clone(),
+                optional: false,
+            },
+        );
+    }
+
+    if let Some(path) = serialize_diagnostics {
+        outputs.insert(
+            "dia",
+            ArtifactDescriptor {
+                path: path.clone(),
+                optional: false,
+            },
+        );
+    }
+
     outputs.insert(
         "obj",
         ArtifactDescriptor {
@@ -801,6 +835,7 @@ pub fn generate_compile_commands(
         out_file.into(),
     ]);
     arguments.extend_from_slice(&parsed_args.preprocessor_args);
+    arguments.extend_from_slice(&parsed_args.dependency_args);
     arguments.extend_from_slice(&parsed_args.unhashed_args);
     arguments.extend_from_slice(&parsed_args.common_args);
     arguments.extend_from_slice(&parsed_args.arch_args);
@@ -1332,7 +1367,7 @@ mod test {
             "foo.c",
             "-fabc",
             "-MF",
-            "file",
+            "foo.o.d",
             "-o",
             "foo.o",
             "-MQ",
@@ -1362,9 +1397,16 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file"], dependency_args);
+        assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
         assert_eq!(ovec!["-nostdinc"], preprocessor_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
@@ -1432,7 +1474,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
         let args =
-            stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o"];
+            stringvec!["-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o"];
         let ParsedArguments {
             input,
             language,
@@ -1455,9 +1497,16 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file"], dependency_args);
+        assert_eq!(ovec!["-MF", "foo.o.d"], dependency_args);
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1465,7 +1514,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
         let args = stringvec![
-            "-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"
+            "-c", "foo.c", "-MT", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"
         ];
         let ParsedArguments {
             input,
@@ -1490,10 +1539,17 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
-            ovec!["-MF", "file", "-MD", "-MT", "depfile"],
+            ovec!["-MF", "foo.o.d", "-MD", "-MT", "depfile"],
             dependency_args
         );
         assert!(preprocessor_args.is_empty());
@@ -1504,7 +1560,7 @@ mod test {
     #[test]
     fn test_parse_arguments_explicit_mq_dep_target_needed() {
         let args = stringvec![
-            "-c", "foo.c", "-MQ", "depfile", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"
+            "-c", "foo.c", "-MQ", "depfile", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"
         ];
         let ParsedArguments {
             input,
@@ -1529,10 +1585,17 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
         assert_eq!(
-            ovec!["-MF", "file", "-MD", "-MQ", "depfile"],
+            ovec!["-MF", "foo.o.d", "-MD", "-MQ", "depfile"],
             dependency_args
         );
         assert!(preprocessor_args.is_empty());
@@ -1740,7 +1803,7 @@ mod test {
 
     #[test]
     fn test_parse_arguments_dep_target_needed() {
-        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "file", "-o", "foo.o", "-MD"];
+        let args = stringvec!["-c", "foo.c", "-fabc", "-MF", "foo.o.d", "-o", "foo.o", "-MD"];
         let ParsedArguments {
             input,
             language,
@@ -1763,9 +1826,19 @@ mod test {
                     path: "foo.o".into(),
                     optional: false
                 }
+            ),
+            (
+                "d",
+                ArtifactDescriptor {
+                    path: "foo.o.d".into(),
+                    optional: false
+                }
             )
         );
-        assert_eq!(ovec!["-MF", "file", "-MD", "-MT", "foo.o"], dependency_args);
+        assert_eq!(
+            ovec!["-MF", "foo.o.d", "-MD", "-MT", "foo.o"],
+            dependency_args
+        );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
@@ -1881,6 +1954,24 @@ mod test {
         assert_eq!(
             CompilerArguments::CannotCache("@", None),
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"], false)
+        );
+    }
+
+    #[test]
+    fn test_parse_index_store_path() {
+        assert_eq!(
+            CompilerArguments::CannotCache("-index-store-path", None),
+            parse_arguments_(
+                stringvec![
+                    "-c",
+                    "foo.c",
+                    "-index-store-path",
+                    "index.store",
+                    "-o",
+                    "foo.o"
+                ],
+                false
+            )
         );
     }
 
