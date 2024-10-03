@@ -680,7 +680,7 @@ pub fn parse_arguments(
                 | Some(PedanticFlag)
                 | Some(Standard(_))
                 | Some(SerializeDiagnostics(_)) => &mut common_args,
-                Some(Unhashed(_)) => &mut unhashed_args,
+                Some(UnhashedFlag) | Some(Unhashed(_)) => &mut unhashed_args,
 
                 Some(ProfileGenerate) => {
                     profile_generate = true;
