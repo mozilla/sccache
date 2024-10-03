@@ -390,11 +390,38 @@ where
                 arg
             );
         }
+
+        let use_preprocessor_cache_mode = {
+            let can_use_preprocessor_cache_mode = !may_dist
+                && preprocessor_cache_mode_config.use_preprocessor_cache_mode
+                && !too_hard_for_preprocessor_cache_mode;
+
+            let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
+
+            // Allow overrides from the env
+            for (key, val) in env_vars.iter() {
+                if key == "SCCACHE_DIRECT" {
+                    if let Some(val) = val.to_str() {
+                        use_preprocessor_cache_mode = match val.to_lowercase().as_str() {
+                            "false" | "off" | "0" => false,
+                            _ => can_use_preprocessor_cache_mode,
+                        };
+                    }
+                    break;
+                }
+            }
+
+            if can_use_preprocessor_cache_mode && !use_preprocessor_cache_mode {
+                debug!(
+                    "parse_arguments: Disabling preprocessor cache because SCCACHE_DIRECT=false"
+                );
+            }
+
+            use_preprocessor_cache_mode
+        };
+
         // Disable preprocessor cache when doing distributed compilation
-        let mut preprocessor_key = if !may_dist
-            && preprocessor_cache_mode_config.use_preprocessor_cache_mode
-            && !too_hard_for_preprocessor_cache_mode
-        {
+        let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
                 &executable_digest,
                 parsed_args.language,
@@ -482,7 +509,7 @@ where
                 &env_vars,
                 may_dist,
                 rewrite_includes_only,
-                preprocessor_cache_mode_config.use_preprocessor_cache_mode,
+                use_preprocessor_cache_mode,
             )
             .await;
         let out_pretty = parsed_args.output_pretty().into_owned();
