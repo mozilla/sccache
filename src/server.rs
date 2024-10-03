@@ -144,7 +144,7 @@ pub struct DistClientContainer {
 }
 
 #[cfg(feature = "dist-client")]
-struct DistClientConfig {
+pub struct DistClientConfig {
     // Reusable items tied to an SccacheServer instance
     pool: tokio::runtime::Handle,
 
@@ -158,7 +158,7 @@ struct DistClientConfig {
 }
 
 #[cfg(feature = "dist-client")]
-enum DistClientState {
+pub enum DistClientState {
     #[cfg(feature = "dist-client")]
     Some(Box<DistClientConfig>, Arc<dyn dist::Client>),
     #[cfg(feature = "dist-client")]
@@ -179,6 +179,11 @@ impl DistClientContainer {
     }
 
     pub fn new_disabled() -> Self {
+        Self {}
+    }
+
+    #[cfg(feature = "dist-client")]
+    pub fn new_with_state(_: DistClientState) -> Self {
         Self {}
     }
 
@@ -207,6 +212,13 @@ impl DistClientContainer {
         };
         let state = Self::create_state(config);
         let state = pool.block_on(state);
+        Self {
+            state: futures::lock::Mutex::new(state),
+        }
+    }
+
+    #[cfg(feature = "dist-client")]
+    pub fn new_with_state(state: DistClientState) -> Self {
         Self {
             state: futures::lock::Mutex::new(state),
         }
@@ -757,7 +769,7 @@ impl<C> CompilerCacheEntry<C> {
 }
 /// Service implementation for sccache
 #[derive(Clone)]
-struct SccacheService<C>
+pub struct SccacheService<C>
 where
     C: Send,
 {
@@ -804,7 +816,7 @@ where
 }
 
 type SccacheRequest = Message<Request, Body<()>>;
-type SccacheResponse = Message<Response, Body<Response>>;
+type SccacheResponse = Message<Response, Pin<Box<dyn Future<Output = Result<Response>> + Send>>>;
 
 /// Messages sent from all services to the main event loop indicating activity.
 ///
@@ -913,6 +925,60 @@ where
         }
     }
 
+    pub fn mock_with_storage(
+        storage: Arc<dyn Storage>,
+        rt: tokio::runtime::Handle,
+    ) -> SccacheService<C> {
+        let (tx, _) = mpsc::channel(1);
+        let (_, info) = WaitUntilZero::new();
+        let client = Client::new_num(1);
+        let dist_client = DistClientContainer::new_disabled();
+        SccacheService {
+            stats: Arc::default(),
+            dist_client: Arc::new(dist_client),
+            storage,
+            compilers: Arc::default(),
+            compiler_proxies: Arc::default(),
+            rt,
+            creator: C::new(&client),
+            tx,
+            info,
+        }
+    }
+
+    #[cfg(feature = "dist-client")]
+    pub fn mock_with_dist_client(
+        dist_client: Arc<dyn dist::Client>,
+        storage: Arc<dyn Storage>,
+        rt: tokio::runtime::Handle,
+    ) -> SccacheService<C> {
+        let (tx, _) = mpsc::channel(1);
+        let (_, info) = WaitUntilZero::new();
+        let client = Client::new_num(1);
+        SccacheService {
+            stats: Arc::default(),
+            dist_client: Arc::new(DistClientContainer::new_with_state(DistClientState::Some(
+                Box::new(DistClientConfig {
+                    pool: rt.clone(),
+                    scheduler_url: None,
+                    auth: config::DistAuth::Token { token: "".into() },
+                    cache_dir: "".into(),
+                    toolchain_cache_size: 0,
+                    toolchains: vec![],
+                    rewrite_includes_only: false,
+                }),
+                dist_client,
+            ))),
+            storage,
+            compilers: Arc::default(),
+            compiler_proxies: Arc::default(),
+            rt: rt.clone(),
+            creator: C::new(&client),
+            tx,
+            info,
+        }
+    }
+
     fn bind<T>(self, socket: T) -> impl Future<Output = Result<()>> + Send + Sized + 'static
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -937,15 +1003,18 @@ where
         stream
             .err_into::<Error>()
             .and_then(move |input| me.clone().call(input))
-            .and_then(move |message| async move {
-                let fut = match message {
+            .and_then(move |response| async move {
+                let fut = match response {
                     Message::WithoutBody(message) => {
                         let stream = stream::once(async move { Ok(Frame::Message { message }) });
                         Either::Left(stream)
                     }
                     Message::WithBody(message, body) => {
                         let stream = stream::once(async move { Ok(Frame::Message { message }) })
-                            .chain(body.map_ok(|chunk| Frame::Body { chunk: Some(chunk) }))
+                            .chain(
+                                body.into_stream()
+                                    .map_ok(|chunk| Frame::Body { chunk: Some(chunk) }),
+                            )
                             .chain(stream::once(async move { Ok(Frame::Body { chunk: None }) }));
                         Either::Right(stream)
                     }
@@ -992,7 +1061,7 @@ where
 
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
-    async fn compiler_info(
+    pub async fn compiler_info(
         &self,
         path: PathBuf,
         cwd: PathBuf,
@@ -1173,11 +1242,45 @@ where
                 match c.parse_arguments(&cmd, &cwd, &env_vars) {
                     CompilerArguments::Ok(hasher) => {
                         debug!("parse_arguments: Ok: {:?}", cmd);
-                        self.stats.lock().await.requests_executed += 1;
-                        let (tx, rx) = Body::pair();
-                        self.start_compile_task(c, hasher, cmd, cwd, env_vars, tx);
-                        let res = CompileResponse::CompileStarted;
-                        return Message::WithBody(Response::Compile(res), rx);
+                        let me = self.clone();
+
+                        let body = self
+                            .rt
+                            .spawn(async move {
+                                std::panic::AssertUnwindSafe(
+                                    me.start_compile_task(c, hasher, cmd, cwd, env_vars)
+                                )
+                                .catch_unwind()
+                                .await
+                                .map_err(|e| {
+                                    let panic = e
+                                        .downcast_ref::<&str>()
+                                        .map(|s| &**s)
+                                        .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
+                                        .unwrap_or("An unknown panic was caught.");
+                                    let thread = std::thread::current();
+                                    let thread_name = thread.name().unwrap_or("unnamed");
+                                    if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
+                                        anyhow!("thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}")
+                                    } else {
+                                        anyhow!("thread '{thread_name}' panicked: {panic}")
+                                    }
+                                })
+                                .and_then(std::convert::identity)
+                            })
+                            .map_err(anyhow::Error::new)
+                            .and_then(|res| async {
+                                match res {
+                                    Ok(res) => Ok(Response::CompileFinished(res)),
+                                    Err(err) => Err(err),
+                                }
+                            })
+                            .boxed();
+
+                        return Message::WithBody(
+                            Response::Compile(CompileResponse::CompileStarted),
+                            body,
+                        );
                     }
                     CompilerArguments::CannotCache(why, extra_info) => {
                         if let Some(extra_info) = extra_info {
@@ -1207,223 +1310,200 @@ where
     /// Given compiler arguments `arguments`, look up
     /// a compile result in the cache or execute the compilation and store
     /// the result in the cache.
-    fn start_compile_task(
+    pub async fn start_compile_task(
         &self,
         compiler: Box<dyn Compiler<C>>,
         hasher: Box<dyn CompilerHasher<C>>,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
-        mut tx: mpsc::Sender<Result<Response>>,
-    ) {
+    ) -> Result<CompileFinished> {
+        self.stats.lock().await.requests_executed += 1;
+
         let force_recache = env_vars
             .iter()
             .any(|(k, _v)| k.as_os_str() == OsStr::new("SCCACHE_RECACHE"));
+
         let cache_control = if force_recache {
             CacheControl::ForceRecache
         } else {
             CacheControl::Default
         };
+
         let out_pretty = hasher.output_pretty().into_owned();
         let color_mode = hasher.color_mode();
-        let me = self.clone();
         let kind = compiler.kind();
         let lang = hasher.language();
-        let creator = self.creator.clone();
-        let storage = self.storage.clone();
-        let pool = self.rt.clone();
 
-        let task = async move {
-            let dist_client = me.dist_client.get_client().await;
-            let result = match dist_client {
-                Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
-                    client,
-                    creator,
-                    storage,
-                    arguments,
-                    cwd,
-                    env_vars,
-                    cache_control,
-                    pool,
-                ))
-                .catch_unwind()
-                .await
-                .map_err(|e| {
-                    let panic = e
-                        .downcast_ref::<&str>()
-                        .map(|s| &**s)
-                        .or_else(|| e.downcast_ref::<String>().map(|s| &**s))
-                        .unwrap_or("An unknown panic was caught.");
-                    let thread = std::thread::current();
-                    let thread_name = thread.name().unwrap_or("unnamed");
-                    if let Some((file, line, column)) = PANIC_LOCATION.with(|l| l.take()) {
-                        anyhow!(
-                            "thread '{thread_name}' panicked at {file}:{line}:{column}: {panic}"
-                        )
-                    } else {
-                        anyhow!("thread '{thread_name}' panicked: {panic}")
-                    }
-                })
-                .and_then(std::convert::identity),
-                Err(e) => Err(e),
-            };
-            let mut cache_write = None;
-            let mut res = CompileFinished {
-                color_mode,
-                ..Default::default()
-            };
-            match result {
-                Ok((compiled, out)) => {
-                    let mut stats = me.stats.lock().await;
-                    match compiled {
-                        CompileResult::Error => {
-                            debug!("compile result: cache error");
-
-                            stats.cache_errors.increment(&kind, &lang);
-                        }
-                        CompileResult::CacheHit(duration) => {
-                            debug!("compile result: cache hit");
-
-                            stats.cache_hits.increment(&kind, &lang);
-                            stats.cache_read_hit_duration += duration;
-                        }
-                        CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
-                            debug!("compile result: cache miss");
-
-                            match dist_type {
-                                DistType::NoDist => {}
-                                DistType::Ok(id) => {
-                                    let server = id.addr().to_string();
-                                    let server_count =
-                                        stats.dist_compiles.entry(server).or_insert(0);
-                                    *server_count += 1;
-                                }
-                                DistType::Error => stats.dist_errors += 1,
-                            }
-                            match miss_type {
-                                MissType::Normal => {}
-                                MissType::ForcedRecache => {
-                                    stats.forced_recaches += 1;
-                                }
-                                MissType::TimedOut => {
-                                    stats.cache_timeouts += 1;
-                                }
-                                MissType::CacheReadError => {
-                                    stats.cache_errors.increment(&kind, &lang);
-                                }
-                            }
-                            stats.cache_misses.increment(&kind, &lang);
-                            stats.compiler_write_duration += duration;
-                            debug!("stats after compile result: {stats:?}");
-                            cache_write = Some(future);
-                        }
-                        CompileResult::NotCacheable => {
-                            debug!("compile result: not cacheable");
-
-                            stats.cache_misses.increment(&kind, &lang);
-                            stats.non_cacheable_compilations += 1;
-                        }
-                        CompileResult::CompileFailed => {
-                            debug!("compile result: compile failed");
-
-                            stats.compile_fails += 1;
-                        }
-                    };
-                    // Make sure the write guard has been dropped ASAP.
-                    drop(stats);
-
-                    let Output {
-                        status,
-                        stdout,
-                        stderr,
-                    } = out;
-                    trace!("CompileFinished retcode: {}", status);
-                    match status.code() {
-                        Some(code) => res.retcode = Some(code),
-                        None => res.signal = Some(get_signal(status)),
-                    };
-                    res.stdout = stdout;
-                    res.stderr = stderr;
-                }
-                Err(err) => {
-                    let mut stats = me.stats.lock().await;
-                    match err.downcast::<ProcessError>() {
-                        Ok(ProcessError(output)) => {
-                            debug!("Compilation failed: {:?}", output);
-                            stats.compile_fails += 1;
-                            match output.status.code() {
-                                Some(code) => res.retcode = Some(code),
-                                None => res.signal = Some(get_signal(output.status)),
-                            };
-                            res.stdout = output.stdout;
-                            res.stderr = output.stderr;
-                        }
-                        Err(err) => match err.downcast::<HttpClientError>() {
-                            Ok(HttpClientError(msg)) => {
-                                me.dist_client.reset_state().await;
-                                let errmsg =
-                                    format!("[{:?}] http error status: {}", out_pretty, msg);
-                                error!("{}", errmsg);
-                                res.retcode = Some(1);
-                                res.stderr = errmsg.as_bytes().to_vec();
-                            }
-                            Err(err) => {
-                                use std::fmt::Write;
-
-                                error!("[{:?}] fatal error: {}", out_pretty, err);
-
-                                let mut error = "sccache: encountered fatal error\n".to_string();
-                                let _ = writeln!(error, "sccache: error: {}", err);
-                                for e in err.chain() {
-                                    error!("[{:?}] \t{}", out_pretty, e);
-                                    let _ = writeln!(error, "sccache: caused by: {}", e);
-                                }
-                                stats.cache_errors.increment(&kind, &lang);
-                                //TODO: figure out a better way to communicate this?
-                                res.retcode = Some(-2);
-                                res.stderr = error.into_bytes();
-                            }
-                        },
-                    }
-                }
-            };
-            let send = tx
-                .send(Ok(Response::CompileFinished(res)))
-                .map_err(|e| anyhow!("send on finish failed").context(e));
-
-            let me = me.clone();
-            let cache_write = async move {
-                if let Some(cache_write) = cache_write {
-                    match cache_write.await {
-                        Err(e) => {
-                            debug!("Error executing cache write: {}", e);
-                            me.stats.lock().await.cache_write_errors += 1;
-                        }
-                        //TODO: save cache stats!
-                        Ok(info) => {
-                            debug!(
-                                "[{}]: Cache write finished in {}",
-                                info.object_file_pretty,
-                                util::fmt_duration_as_secs(&info.duration)
-                            );
-                            let mut stats = me.stats.lock().await;
-                            stats.cache_writes += 1;
-                            stats.cache_write_duration += info.duration;
-                        }
-                    }
-                }
-                Ok(())
-            };
-
-            futures::future::try_join(send, cache_write).await?;
-
-            Ok::<_, Error>(())
+        let result = match self.dist_client.get_client().await {
+            Ok(client) => {
+                hasher
+                    .get_cached_or_compile(
+                        client,
+                        self.creator.clone(),
+                        self.storage.clone(),
+                        arguments,
+                        cwd,
+                        env_vars,
+                        cache_control,
+                        self.rt.clone(),
+                    )
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        let mut cache_write = None;
+        let mut res = CompileFinished {
+            color_mode,
+            ..Default::default()
         };
 
-        self.rt.spawn(async move {
-            task.await
-                .unwrap_or_else(|e| warn!("Failed to execute task: {:?}", e));
-        });
+        let mut stats = self.stats.lock().await;
+
+        match result {
+            Ok((compiled, out)) => {
+                match compiled {
+                    CompileResult::Error => {
+                        debug!("compile result: cache error");
+
+                        stats.cache_errors.increment(&kind, &lang);
+                    }
+                    CompileResult::CacheHit(duration) => {
+                        debug!("compile result: cache hit");
+
+                        stats.cache_hits.increment(&kind, &lang);
+                        stats.cache_read_hit_duration += duration;
+                    }
+                    CompileResult::CacheMiss(miss_type, dist_type, duration, future) => {
+                        debug!("compile result: cache miss");
+
+                        match dist_type {
+                            DistType::NoDist => {}
+                            DistType::Ok(id) => {
+                                let server = id.addr().to_string();
+                                let server_count = stats.dist_compiles.entry(server).or_insert(0);
+                                *server_count += 1;
+                            }
+                            DistType::Error => stats.dist_errors += 1,
+                        }
+                        match miss_type {
+                            MissType::Normal => {}
+                            MissType::ForcedRecache => {
+                                stats.forced_recaches += 1;
+                            }
+                            MissType::TimedOut => {
+                                stats.cache_timeouts += 1;
+                            }
+                            MissType::CacheReadError => {
+                                stats.cache_errors.increment(&kind, &lang);
+                            }
+                        }
+                        stats.cache_misses.increment(&kind, &lang);
+                        stats.compiler_write_duration += duration;
+                        debug!("stats after compile result: {stats:?}");
+                        cache_write = Some(future);
+                    }
+                    CompileResult::NotCacheable => {
+                        debug!("compile result: not cacheable");
+
+                        stats.cache_misses.increment(&kind, &lang);
+                        stats.non_cacheable_compilations += 1;
+                    }
+                    CompileResult::CompileFailed => {
+                        debug!("compile result: compile failed");
+
+                        stats.compile_fails += 1;
+                    }
+                };
+                // Make sure the write guard has been dropped ASAP.
+                drop(stats);
+
+                let Output {
+                    status,
+                    stdout,
+                    stderr,
+                } = out;
+
+                trace!("CompileFinished retcode: {}", status);
+
+                match status.code() {
+                    Some(code) => res.retcode = Some(code),
+                    None => res.signal = Some(get_signal(status)),
+                };
+
+                res.stdout = stdout;
+                res.stderr = stderr;
+            }
+            Err(err) => {
+                match err.downcast::<ProcessError>() {
+                    Ok(ProcessError(output)) => {
+                        debug!("Compilation failed: {:?}", output);
+                        stats.compile_fails += 1;
+                        // Make sure the write guard has been dropped ASAP.
+                        drop(stats);
+
+                        match output.status.code() {
+                            Some(code) => res.retcode = Some(code),
+                            None => res.signal = Some(get_signal(output.status)),
+                        };
+                        res.stdout = output.stdout;
+                        res.stderr = output.stderr;
+                    }
+                    Err(err) => match err.downcast::<HttpClientError>() {
+                        Ok(HttpClientError(msg)) => {
+                            // Make sure the write guard has been dropped ASAP.
+                            drop(stats);
+                            self.dist_client.reset_state().await;
+                            let errmsg = format!("[{:?}] http error status: {}", out_pretty, msg);
+                            error!("{}", errmsg);
+                            res.retcode = Some(1);
+                            res.stderr = errmsg.as_bytes().to_vec();
+                        }
+                        Err(err) => {
+                            stats.cache_errors.increment(&kind, &lang);
+                            // Make sure the write guard has been dropped ASAP.
+                            drop(stats);
+
+                            use std::fmt::Write;
+
+                            error!("[{:?}] fatal error: {}", out_pretty, err);
+
+                            let mut error = "sccache: encountered fatal error\n".to_string();
+                            let _ = writeln!(error, "sccache: error: {}", err);
+                            for e in err.chain() {
+                                error!("[{:?}] \t{}", out_pretty, e);
+                                let _ = writeln!(error, "sccache: caused by: {}", e);
+                            }
+                            //TODO: figure out a better way to communicate this?
+                            res.retcode = Some(-2);
+                            res.stderr = error.into_bytes();
+                        }
+                    },
+                }
+            }
+        };
+
+        if let Some(cache_write) = cache_write {
+            match cache_write.await {
+                Err(e) => {
+                    debug!("Error executing cache write: {}", e);
+                    self.stats.lock().await.cache_write_errors += 1;
+                }
+                //TODO: save cache stats!
+                Ok(info) => {
+                    debug!(
+                        "[{}]: Cache write finished in {}",
+                        info.object_file_pretty,
+                        util::fmt_duration_as_secs(&info.duration)
+                    );
+                    let mut stats = self.stats.lock().await;
+                    stats.cache_writes += 1;
+                    stats.cache_write_duration += info.duration;
+                }
+            }
+        }
+
+        Ok(res)
     }
 }
 
@@ -1886,13 +1966,6 @@ struct Body<R> {
     receiver: mpsc::Receiver<Result<R>>,
 }
 
-impl<R> Body<R> {
-    fn pair() -> (mpsc::Sender<Result<R>>, Self) {
-        let (tx, rx) = mpsc::channel(0);
-        (tx, Body { receiver: rx })
-    }
-}
-
 impl<R> futures::Stream for Body<R> {
     type Item = Result<R>;
     fn poll_next(
@@ -2047,7 +2120,7 @@ struct WaitUntilZero {
 
 #[derive(Clone)]
 #[allow(dead_code)]
-struct ActiveInfo {
+pub struct ActiveInfo {
     info: Arc<std::sync::Mutex<Info>>,
 }
 
