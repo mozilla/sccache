@@ -105,6 +105,8 @@ pub struct ParsedArguments {
     pub arch_args: Vec<OsString>,
     /// Commandline arguments for the preprocessor or the compiler that don't affect the computed hash.
     pub unhashed_args: Vec<OsString>,
+    /// Extra files that need to be sent along with dist compiles.
+    pub extra_dist_files: Vec<PathBuf>,
     /// Extra files that need to have their contents hashed.
     pub extra_hash_files: Vec<PathBuf>,
     /// Whether or not the `-showIncludes` argument is passed on MSVC
@@ -1188,6 +1190,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             input_path,
             preprocessed_input,
             path_transformer,
+            extra_dist_files: parsed_args.extra_dist_files,
             extra_hash_files: parsed_args.extra_hash_files,
         });
         let toolchain_packager = Box::new(CToolchainPackager {
@@ -1217,6 +1220,7 @@ struct CInputsPackager {
     input_path: PathBuf,
     path_transformer: dist::PathTransformer,
     preprocessed_input: Vec<u8>,
+    extra_dist_files: Vec<PathBuf>,
     extra_hash_files: Vec<PathBuf>,
 }
 
@@ -1227,6 +1231,7 @@ impl pkg::InputsPackager for CInputsPackager {
             input_path,
             mut path_transformer,
             preprocessed_input,
+            extra_dist_files,
             extra_hash_files,
         } = *self;
 
@@ -1244,8 +1249,8 @@ impl pkg::InputsPackager for CInputsPackager {
             builder.append(&file_header, preprocessed_input.as_slice())?;
         }
 
-        for input_path in extra_hash_files {
-            let input_path = pkg::simplify_path(&input_path)?;
+        for input_path in extra_hash_files.iter().chain(extra_dist_files.iter()) {
+            let input_path = pkg::simplify_path(input_path)?;
 
             if !super::CAN_DIST_DYLIBS
                 && input_path
