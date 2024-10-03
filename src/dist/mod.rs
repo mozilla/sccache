@@ -310,8 +310,10 @@ pub fn osstring_tuples_to_strings(
 }
 
 // TODO: TryFrom
-pub fn try_compile_command_to_dist(command: compiler::CompileCommand) -> Option<CompileCommand> {
-    let compiler::CompileCommand {
+pub fn try_compile_command_to_dist(
+    command: compiler::SingleCompileCommand,
+) -> Option<CompileCommand> {
+    let compiler::SingleCompileCommand {
         executable,
         arguments,
         env_vars,
