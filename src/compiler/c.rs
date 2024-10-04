@@ -153,8 +153,12 @@ pub enum CCompilerKind {
     Diab,
     /// Microsoft Visual C++
     Msvc,
-    /// NVIDIA cuda compiler
+    /// NVIDIA CUDA compiler
     Nvcc,
+    /// NVIDIA CUDA optimizer and PTX generator
+    Cicc,
+    /// NVIDIA CUDA PTX assembler
+    Ptxas,
     /// NVIDIA hpc c, c++ compiler
     Nvhpc,
     /// Tasking VX
@@ -1160,6 +1164,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
             ref env_vars,
             ..
         } = *self;
+
         compiler.generate_compile_commands(
             path_transformer,
             executable,
@@ -1378,6 +1383,10 @@ impl pkg::ToolchainPackager for CToolchainPackager {
                 add_named_file(&mut package_builder, "specs")?;
                 add_named_file(&mut package_builder, "liblto_plugin.so")?;
             }
+
+            CCompilerKind::Cicc => {}
+
+            CCompilerKind::Ptxas => {}
 
             CCompilerKind::Nvcc => {
                 // Various programs called by the nvcc front end.
