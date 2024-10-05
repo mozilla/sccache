@@ -146,8 +146,10 @@ impl Language {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Language::C | Language::CHeader => "c",
-            Language::Cxx | Language::CxxHeader => "c++",
+            Language::C => "c",
+            Language::CHeader => "cHeader",
+            Language::Cxx => "c++",
+            Language::CxxHeader => "c++Header",
             Language::GenericHeader => "c/c++",
             Language::ObjectiveC => "objc",
             Language::ObjectiveCxx => "objc++",

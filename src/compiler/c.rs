@@ -1449,6 +1449,42 @@ mod test {
     }
 
     #[test]
+    fn test_header_differs() {
+        let args = ovec!["a", "b", "c"];
+        const PREPROCESSED: &[u8] = b"hello world";
+        assert_neq!(
+            hash_key("abcd", Language::C, &args, &[], &[], PREPROCESSED, false),
+            hash_key(
+                "abcd",
+                Language::CHeader,
+                &args,
+                &[],
+                &[],
+                PREPROCESSED,
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn test_plusplus_header_differs() {
+        let args = ovec!["a", "b", "c"];
+        const PREPROCESSED: &[u8] = b"hello world";
+        assert_neq!(
+            hash_key("abcd", Language::Cxx, &args, &[], &[], PREPROCESSED, true),
+            hash_key(
+                "abcd",
+                Language::CxxHeader,
+                &args,
+                &[],
+                &[],
+                PREPROCESSED,
+                true
+            )
+        );
+    }
+
+    #[test]
     fn test_hash_key_executable_contents_differs() {
         let args = ovec!["a", "b", "c"];
         const PREPROCESSED: &[u8] = b"hello world";
