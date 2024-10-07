@@ -43,6 +43,7 @@ pub mod dist;
 mod jobserver;
 pub mod lru_disk_cache;
 mod mock_command;
+mod net;
 mod protocol;
 pub mod server;
 #[doc(hidden)]
