@@ -15,6 +15,7 @@
 #[macro_use]
 mod args;
 mod c;
+mod cicc;
 mod clang;
 #[macro_use]
 #[allow(clippy::module_inception)]
@@ -25,6 +26,7 @@ mod msvc;
 mod nvcc;
 mod nvhpc;
 mod preprocessor_cache;
+mod ptxas;
 mod rust;
 mod tasking_vx;
 #[macro_use]

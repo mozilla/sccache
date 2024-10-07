@@ -15,8 +15,9 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::args::*;
 use crate::compiler::{
-    c::ArtifactDescriptor, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    c::ArtifactDescriptor, CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand,
+    Compiler, CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+    SingleCompileCommand,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, OutputsRewriter};
@@ -33,7 +34,6 @@ use filetime::FileTime;
 use fs_err as fs;
 use log::Level::Trace;
 use once_cell::sync::Lazy;
-#[cfg(feature = "dist-client")]
 #[cfg(feature = "dist-client")]
 use std::borrow::Borrow;
 use std::borrow::Cow;
@@ -1290,7 +1290,7 @@ where
         _rewrite_includes_only: bool,
         _storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
-    ) -> Result<HashResult> {
+    ) -> Result<HashResult<T>> {
         let RustHasher {
             executable,
             host,
@@ -1600,12 +1600,16 @@ where
     }
 }
 
-impl Compilation for RustCompilation {
+impl<T: CommandCreatorSync> Compilation<T> for RustCompilation {
     fn generate_compile_commands(
         &self,
         path_transformer: &mut dist::PathTransformer,
         _rewrite_includes_only: bool,
-    ) -> Result<(CompileCommand, Option<dist::CompileCommand>, Cacheable)> {
+    ) -> Result<(
+        Box<dyn CompileCommand<T>>,
+        Option<dist::CompileCommand>,
+        Cacheable,
+    )> {
         let RustCompilation {
             ref executable,
             ref arguments,
@@ -1627,7 +1631,7 @@ impl Compilation for RustCompilation {
 
         trace!("[{}]: compile", crate_name);
 
-        let command = CompileCommand {
+        let command = SingleCompileCommand {
             executable: executable.to_owned(),
             arguments: arguments
                 .iter()
@@ -1742,7 +1746,7 @@ impl Compilation for RustCompilation {
             })
         })();
 
-        Ok((command, dist_command, Cacheable::Yes))
+        Ok((CCompileCommand::new(command), dist_command, Cacheable::Yes))
     }
 
     #[cfg(feature = "dist-client")]

@@ -1078,7 +1078,7 @@ mod client {
     use super::urls;
     use crate::errors::*;
 
-    const REQUEST_TIMEOUT_SECS: u64 = 600;
+    const REQUEST_TIMEOUT_SECS: u64 = 1200;
     const CONNECT_TIMEOUT_SECS: u64 = 5;
 
     pub struct Client {
