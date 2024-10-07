@@ -111,6 +111,7 @@ pub enum Language {
     CxxHeader,
     ObjectiveC,
     ObjectiveCxx,
+    ObjectiveCxxHeader,
     Cuda,
     Rust,
     Hip,
@@ -152,7 +153,7 @@ impl Language {
             Language::CxxHeader => "c++Header",
             Language::GenericHeader => "c/c++",
             Language::ObjectiveC => "objc",
-            Language::ObjectiveCxx => "objc++",
+            Language::ObjectiveCxx | Language::ObjectiveCxxHeader => "objc++",
             Language::Cuda => "cuda",
             Language::Rust => "rust",
             Language::Hip => "hip",
@@ -169,7 +170,8 @@ impl CompilerKind {
             | Language::CxxHeader
             | Language::GenericHeader
             | Language::ObjectiveC
-            | Language::ObjectiveCxx => "C/C++",
+            | Language::ObjectiveCxx
+            | Language::ObjectiveCxxHeader => "C/C++",
             Language::Cuda => "CUDA",
             Language::Rust => "Rust",
             Language::Hip => "HIP",
