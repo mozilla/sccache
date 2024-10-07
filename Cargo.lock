@@ -2526,7 +2526,7 @@ dependencies = [
  "ar",
  "assert_cmd",
  "async-trait",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bincode",
  "blake3",
  "byteorder",
