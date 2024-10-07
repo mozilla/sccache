@@ -22,9 +22,6 @@
 
 #[macro_use]
 extern crate log;
-#[cfg(feature = "rouille")]
-#[macro_use(router)]
-extern crate rouille;
 // To get macros in scope, this has to be first.
 #[cfg(test)]
 #[macro_use]

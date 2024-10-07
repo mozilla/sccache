@@ -609,15 +609,18 @@ pub struct BuildResult {
 // bound on the instance (e.g. scheduler) we pass to the actual communication (e.g.
 // http implementation) they need to be public, which has knock-on effects for private
 // structs
-
-pub struct ToolchainReader<'a>(Box<dyn Read + 'a>);
+#[cfg(feature = "dist-server")]
+pub struct ToolchainReader<'a>(Box<dyn Read + Send + 'a>);
+#[cfg(feature = "dist-server")]
 impl<'a> Read for ToolchainReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
     }
 }
 
+#[cfg(feature = "dist-server")]
 pub struct InputsReader<'a>(Box<dyn Read + Send + 'a>);
+#[cfg(feature = "dist-server")]
 impl<'a> Read for InputsReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
@@ -628,9 +631,10 @@ impl<'a> Read for InputsReader<'a> {
 type ExtResult<T, E> = ::std::result::Result<T, E>;
 
 #[cfg(feature = "dist-server")]
-pub trait SchedulerOutgoing {
+#[async_trait]
+pub trait SchedulerOutgoing: Send + Sync {
     // To Server
-    fn do_assign_job(
+    async fn do_assign_job(
         &self,
         server_id: ServerId,
         job_id: JobId,
@@ -640,22 +644,28 @@ pub trait SchedulerOutgoing {
 }
 
 #[cfg(feature = "dist-server")]
-pub trait ServerOutgoing {
+#[async_trait]
+pub trait ServerOutgoing: Send + Sync {
     // To Scheduler
-    fn do_update_job_state(&self, job_id: JobId, state: JobState) -> Result<UpdateJobStateResult>;
+    async fn do_update_job_state(
+        &self,
+        job_id: JobId,
+        state: JobState,
+    ) -> Result<UpdateJobStateResult>;
 }
 
 // Trait to handle the creation and verification of job authorization tokens
 #[cfg(feature = "dist-server")]
-pub trait JobAuthorizer: Send {
+pub trait JobAuthorizer: Send + Sync {
     fn generate_token(&self, job_id: JobId) -> Result<String>;
     fn verify_token(&self, job_id: JobId, token: &str) -> Result<()>;
 }
 
 #[cfg(feature = "dist-server")]
+#[async_trait]
 pub trait SchedulerIncoming: Send + Sync {
     // From Client
-    fn handle_alloc_job(
+    async fn handle_alloc_job(
         &self,
         requester: &dyn SchedulerOutgoing,
         tc: Toolchain,
@@ -680,18 +690,23 @@ pub trait SchedulerIncoming: Send + Sync {
 }
 
 #[cfg(feature = "dist-server")]
+#[async_trait]
 pub trait ServerIncoming: Send + Sync {
     // From Scheduler
-    fn handle_assign_job(&self, job_id: JobId, tc: Toolchain) -> ExtResult<AssignJobResult, Error>;
+    async fn handle_assign_job(
+        &self,
+        job_id: JobId,
+        tc: Toolchain,
+    ) -> ExtResult<AssignJobResult, Error>;
     // From Client
-    fn handle_submit_toolchain(
+    async fn handle_submit_toolchain(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
         tc_rdr: ToolchainReader<'_>,
     ) -> ExtResult<SubmitToolchainResult, Error>;
     // From Client
-    fn handle_run_job(
+    async fn handle_run_job(
         &self,
         requester: &dyn ServerOutgoing,
         job_id: JobId,
