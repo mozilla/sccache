@@ -15,6 +15,7 @@
 use crate::mock_command::{CommandChild, RunCommand};
 use blake3::Hasher as blake3_Hasher;
 use byteorder::{BigEndian, ByteOrder};
+use directories::BaseDirs;
 use fs::File;
 use fs_err as fs;
 use object::{macho, read::archive::ArchiveFile, read::macho::FatArch};
@@ -945,6 +946,104 @@ pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
         .expect("http client must build with success")
 }
 
+pub fn write_to_client_cache(key: &str, value: &str) -> Result<()> {
+    if let Some(base_dirs) = BaseDirs::new() {
+        let cache_dir = base_dirs.cache_dir();
+        let cache_dir = cache_dir.join("sccache");
+        std::fs::create_dir_all(&cache_dir)?;
+        let cache_file = cache_dir.join("client_cache");
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(cache_file)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        let mut new_contents = String::new();
+        let mut found = false;
+        for line in contents.lines() {
+            if line.starts_with(key) {
+                found = true;
+                new_contents.push_str(&format!("{} = \"{}\"\n", key, value));
+            } else {
+                new_contents.push_str(line);
+                new_contents.push('\n');
+            }
+        }
+        if !found {
+            new_contents.push_str(&format!("{} = \"{}\"\n", key, value));
+        }
+        file.write_all(new_contents.as_bytes())?;
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "no valid home directory path could be retrieved from OS"
+        ))
+    }
+}
+
+pub fn get_from_client_cache(key: &str) -> Result<Option<String>> {
+    if let Some(base_dirs) = BaseDirs::new() {
+        let cache_dir = base_dirs.cache_dir();
+        let cache_dir = cache_dir.join("sccache");
+        let cache_file = cache_dir.join("client_cache");
+        if !cache_file.exists() {
+            return Ok(None);
+        }
+        let mut file = std::fs::File::open(&cache_file)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        for line in contents.lines() {
+            let mut parts = line.splitn(2, '=');
+            if let Some(k) = parts.next() {
+                if k.trim() == key {
+                    if let Some(v) = parts.next() {
+                        return Ok(Some(v.trim().trim_matches('"').to_string()));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    } else {
+        Err(anyhow!(
+            "no valid home directory path could be retrieved from OS"
+        ))
+    }
+}
+
+pub fn remove_key_from_client_cache(key: &str) -> Result<()> {
+    if let Some(base_dirs) = BaseDirs::new() {
+        let cache_dir = base_dirs.cache_dir();
+        let cache_dir = cache_dir.join("sccache");
+        let cache_file = cache_dir.join("client_cache");
+        if !cache_file.exists() {
+            return Ok(());
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(cache_file)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let mut new_contents = String::new();
+        for line in contents.lines() {
+            if !line.starts_with(key) {
+                new_contents.push_str(line);
+                new_contents.push('\n');
+            }
+        }
+        file.write_all(new_contents.as_bytes())?;
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "no valid home directory path could be retrieved from OS"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{OsStrExt, TimeMacroFinder};
@@ -1054,5 +1153,17 @@ mod tests {
         assert!(!finder.found_timestamp());
         finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
         assert!(finder.found_timestamp());
+    }
+
+    #[test]
+    fn test_client_cache() {
+        let key = "test_key";
+        let value = "test_value";
+        super::write_to_client_cache(key, value).unwrap();
+        let result = super::get_from_client_cache(key).unwrap();
+        assert_eq!(result, Some(value.to_string()));
+        super::remove_key_from_client_cache(key).unwrap();
+        let result = super::get_from_client_cache(key).unwrap();
+        assert_eq!(result, None);
     }
 }

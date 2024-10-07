@@ -21,7 +21,7 @@ use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
-use crate::util::daemonize;
+use crate::util::{self, daemonize};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
 use fs_err as fs;
@@ -51,10 +51,22 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 
 /// Get the port on which the server should listen.
 fn get_port() -> u16 {
-    env::var("SCCACHE_SERVER_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
+    let fallback = || -> u16 {
+        env::var("SCCACHE_SERVER_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(
+                util::get_from_client_cache("recent_port")
+                    .ok()
+                    .and_then(|port| port)
+                    .and_then(|port| port.parse().ok())
+                    .unwrap_or(DEFAULT_PORT),
+            )
+    };
+    match &Config::load() {
+        Ok(config) => config.port.unwrap_or_else(fallback),
+        Err(_) => fallback(),
+    }
 }
 
 /// Check if ignoring all response errors
@@ -82,7 +94,10 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 /// Re-execute the current executable as a background server, and wait
 /// for it to start up.
 #[cfg(not(windows))]
-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
+fn run_server_process(
+    startup_timeout: Option<Duration>,
+    cli_port: Option<u16>,
+) -> Result<ServerStartup> {
     trace!("run_server_process");
     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
     let socket_path = tempdir.path().join("sock");
@@ -98,11 +113,17 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         tokio::net::UnixListener::bind(&socket_path)?
     };
 
+    let port = cli_port.unwrap_or_else(get_port);
+    if cli_port.is_some() {
+        util::write_to_client_cache("recent_port", port.to_string().as_str())?;
+    }
+
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
+        .env("SCCACHE_SERVER_PORT", port.to_string())
         .spawn()?;
 
     let startup = async move {
@@ -168,7 +189,10 @@ fn redirect_error_log(f: File) -> Result<()> {
 
 /// Re-execute the current executable as a background server.
 #[cfg(windows)]
-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
+fn run_server_process(
+    startup_timeout: Option<Duration>,
+    _port: Option<u16>,
+) -> Result<ServerStartup> {
     use futures::StreamExt;
     use std::mem;
     use std::os::windows::ffi::OsStrExt;
@@ -188,6 +212,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let pipe_name = &format!(r"\\.\pipe\{}", Uuid::new_v4().as_simple());
 
     // Spawn a server which should come back and connect to us
+    let port = _port.unwrap_or_else(get_port);
     let exe_path = env::current_exe()?;
     let mut exe = OsStr::new(&exe_path)
         .encode_wide()
@@ -202,6 +227,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
                 OsString::from(&pipe_name),
             ),
             (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
+            (
+                OsString::from("SCCACHE_SERVER_PORT"),
+                OsString::from(port.to_string()),
+            ),
         ];
         for (key, val) in env::vars_os().chain(extra_vars) {
             v.extend(
@@ -307,7 +336,7 @@ fn connect_or_start_server(
         {
             // If the connection was refused we probably need to start
             // the server.
-            match run_server_process(startup_timeout)? {
+            match run_server_process(startup_timeout, Some(port))? {
                 ServerStartup::Ok { port: actualport } => {
                     if port != actualport {
                         // bail as the next connect_with_retry will fail
@@ -660,11 +689,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             }
             server::start_server(config, get_port())?;
         }
-        Command::StartServer => {
+        Command::StartServer(_port) => {
             trace!("Command::StartServer");
             println!("sccache: Starting the server...");
-            let startup =
-                run_server_process(startup_timeout).context("failed to start server process")?;
+            let startup = run_server_process(startup_timeout, _port)
+                .context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { port } => {
                     if port != DEFAULT_PORT {
@@ -676,10 +705,11 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 ServerStartup::Err { reason } => bail!("Server startup failed: {}", reason),
             }
         }
-        Command::StopServer => {
+        Command::StopServer(port) => {
             trace!("Command::StopServer");
             println!("Stopping sccache server...");
-            let server = connect_to_server(get_port()).context("couldn't connect to server")?;
+            let server = connect_to_server(port.unwrap_or_else(get_port))
+                .context("couldn't connect to server")?;
             let stats = request_shutdown(server)?;
             stats.print(false);
         }

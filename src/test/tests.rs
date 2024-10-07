@@ -299,7 +299,6 @@ fn test_server_compile() {
 // https://github.com/mozilla/sccache/issues/234
 #[cfg(not(target_os = "macos"))]
 fn test_server_port_in_use() {
-    // Bind an arbitrary free port.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let sccache = find_sccache_binary();
     let output = Command::new(sccache)
@@ -319,4 +318,41 @@ fn test_server_port_in_use() {
         MSG,
         s
     );
+}
+
+#[test]
+#[serial]
+// test fails intermittently on macos:
+// https://github.com/mozilla/sccache/issues/234
+#[cfg(not(target_os = "macos"))]
+fn test_server_port_from_cli() {
+    let sccache = find_sccache_binary();
+    loop {
+        let port = 10_000 + rand::random::<u16>() % 30_000;
+        let output = Command::new(sccache.clone())
+            .arg("--start-server")
+            .arg(port.to_string())
+            .output()
+            .unwrap();
+        let s = String::from_utf8_lossy(&output.stderr);
+        const PORT_IN_USE: &str = "Address in use";
+        if s.contains(PORT_IN_USE) {
+            continue;
+        }
+        assert!(output.status.success());
+        break;
+    }
+    // try to compile something to ensure our compile requests use the most recent port
+    let output = Command::new(sccache.clone())
+        .arg("gcc")
+        .arg("-c")
+        .arg("test.c")
+        .arg("-o")
+        .arg("test.o")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let output = Command::new(sccache).arg("--stop-server").output().unwrap();
+    assert!(output.status.success());
 }

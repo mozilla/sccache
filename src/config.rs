@@ -556,6 +556,7 @@ pub struct FileConfig {
     pub cache: CacheConfigs,
     pub dist: DistConfig,
     pub server_startup_timeout_ms: Option<u64>,
+    pub port: Option<u16>,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -946,6 +947,7 @@ pub struct Config {
     pub fallback_cache: DiskCacheConfig,
     pub dist: DistConfig,
     pub server_startup_timeout: Option<std::time::Duration>,
+    pub port: Option<u16>,
 }
 
 impl Config {
@@ -967,6 +969,7 @@ impl Config {
             cache,
             dist,
             server_startup_timeout_ms,
+            port,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -982,6 +985,7 @@ impl Config {
             fallback_cache,
             dist,
             server_startup_timeout,
+            port,
         }
     }
 }
@@ -1281,6 +1285,7 @@ fn config_overrides() {
         },
         dist: Default::default(),
         server_startup_timeout_ms: None,
+        port: None,
     };
 
     assert_eq!(
@@ -1303,6 +1308,7 @@ fn config_overrides() {
             },
             dist: Default::default(),
             server_startup_timeout: None,
+            port: None,
         }
     );
 }
@@ -1578,6 +1584,22 @@ no_credentials = true
                 rewrite_includes_only: false,
             },
             server_startup_timeout_ms: Some(10000),
+            port: None,
+        }
+    )
+}
+
+#[test]
+fn test_port_config() {
+    const CONFIG_STR: &str = "port = 8080";
+    let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");
+    assert_eq!(
+        file_config,
+        FileConfig {
+            cache: Default::default(),
+            dist: Default::default(),
+            server_startup_timeout_ms: None,
+            port: Some(8080),
         }
     )
 }

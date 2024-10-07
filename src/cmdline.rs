@@ -62,9 +62,9 @@ pub enum Command {
     /// Run background server.
     InternalStartServer,
     /// Start background server as a subprocess.
-    StartServer,
+    StartServer(Option<u16>),
     /// Stop background server.
-    StopServer,
+    StopServer(Option<u16>),
     /// Zero cache statistics and exit.
     ZeroStats,
     /// Show the status of the distributed client.
@@ -136,13 +136,19 @@ fn get_clap_command() -> clap::Command {
                 .action(ArgAction::SetTrue),
             flag_infer_long("start-server")
                 .help("start background server")
-                .action(ArgAction::SetTrue),
+                .value_name("port")
+                .num_args(0..=1)
+                .default_missing_value("None")
+                .action(ArgAction::Append),
             flag_infer_long("debug-preprocessor-cache")
                 .help("show all preprocessor cache entries")
                 .action(ArgAction::SetTrue),
             flag_infer_long("stop-server")
                 .help("stop background server")
-                .action(ArgAction::SetTrue),
+                .value_name("port")
+                .num_args(0..=1)
+                .default_missing_value("None")
+                .action(ArgAction::Append),
             flag_infer_long_and_short("zero-stats")
                 .help("zero statistics counters")
                 .action(ArgAction::SetTrue),
@@ -268,12 +274,18 @@ pub fn try_parse() -> Result<Command> {
                     .cloned()
                     .expect("There is a default value");
                 Ok(Command::ShowStats(fmt, true))
-            } else if matches.get_flag("start-server") {
-                Ok(Command::StartServer)
+            } else if matches.contains_id("start-server") {
+                let port = matches
+                    .get_one::<String>("start-server")
+                    .and_then(|s| s.parse::<u16>().ok());
+                Ok(Command::StartServer(port))
             } else if matches.get_flag("debug-preprocessor-cache") {
                 Ok(Command::DebugPreprocessorCacheEntries)
-            } else if matches.get_flag("stop-server") {
-                Ok(Command::StopServer)
+            } else if matches.contains_id("stop-server") {
+                let port = matches
+                    .get_one::<String>("stop-server")
+                    .and_then(|s| s.parse::<u16>().ok());
+                Ok(Command::StopServer(port))
             } else if matches.get_flag("zero-stats") {
                 Ok(Command::ZeroStats)
             } else if matches.get_flag("dist-auth") {
