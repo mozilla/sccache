@@ -15,7 +15,7 @@ use tokio::runtime::Runtime;
 use url::Url;
 use uuid::Uuid;
 
-use crate::errors::*;
+use crate::{client::get_connection_timeout, errors::*};
 
 // These (arbitrary) ports need to be registered as valid redirect urls in the oauth provider you're using
 pub const VALID_PORTS: &[u16] = &[12731, 32492, 56909];
@@ -503,7 +503,7 @@ async fn try_bind() -> Result<HyperBuilderWrap> {
             .expect("Expected at least one address in parsed socket address");
 
         // Hyper binds with reuseaddr and reuseport so binding won't fail as you'd expect on Linux
-        match TcpStream::connect(addr) {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(get_connection_timeout())) {
             // Already open
             Ok(_) => continue,
             // Doesn't seem to be open
