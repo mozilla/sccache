@@ -125,6 +125,9 @@ fn get_clap_command() -> clap::Command {
             "\n",
             "    OSS:       ",
             cfg!(feature = "oss"),
+            "\n",
+            "    TOPSCC:    ",
+            cfg!(feature = "topscc"),
             "\n"
         ))
         .args(&[

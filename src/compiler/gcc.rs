@@ -123,6 +123,8 @@ ArgData! { pub
     PassThroughFlag,
     PassThrough(OsString),
     PassThroughPath(PathBuf),
+    TopsDeviceLibPath(PathBuf),
+    TopsDeviceLib(OsString),
     PreprocessorArgumentFlag,
     PreprocessorArgument(OsString),
     PreprocessorArgumentPath(PathBuf),
@@ -162,6 +164,8 @@ counted_array!(pub static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("--save-temps", TooHardFlag),
     take_arg!("--serialize-diagnostics", PathBuf, Separated, PassThroughPath),
     take_arg!("--sysroot", PathBuf, Separated, PassThroughPath),
+    take_arg!("--tops-device-lib", OsString, Concatenated('='), TopsDeviceLib),
+    take_arg!("--tops-device-lib-path", PathBuf, Concatenated('='), TopsDeviceLibPath),
     take_arg!("-A", OsString, Separated, PassThrough),
     take_arg!("-B", PathBuf, CanBeSeparated, PassThroughPath),
     take_arg!("-D", OsString, CanBeSeparated, PassThrough),
@@ -284,6 +288,7 @@ where
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
     let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
+    let mut tops_device_lib_path = PathBuf::new();
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -329,6 +334,13 @@ where
                 compilation = true;
                 compilation_flag =
                     OsString::from(arg.flag_str().expect("Compilation flag expected"));
+            }
+            Some(TopsDeviceLibPath(_tops_device_lib_path)) => tops_device_lib_path = _tops_device_lib_path.to_path_buf(),
+            Some(TopsDeviceLib(tops_device_lib_)) => {
+                if ! tops_device_lib_path.as_os_str().is_empty() {
+                    let tops_device_lib = tops_device_lib_path.join(tops_device_lib_);
+                    extra_hash_files.push(tops_device_lib.clone());
+                }
             }
             Some(ProfileGenerate) => profile_generate = true,
             Some(ClangProfileUse(path)) => {
@@ -380,6 +392,7 @@ where
                     "objective-c" => Some(Language::ObjectiveC),
                     "objective-c++" => Some(Language::ObjectiveCxx),
                     "cu" => Some(Language::Cuda),
+                    "tops" => Some(Language::Tops),
                     "rs" => Some(Language::Rust),
                     "cuda" => Some(Language::Cuda),
                     "hip" => Some(Language::Hip),
@@ -428,6 +441,8 @@ where
             | Some(NoDiagnosticsColorFlag)
             | Some(PassThroughFlag)
             | Some(PassThrough(_))
+            | Some(TopsDeviceLibPath(_))
+            | Some(TopsDeviceLib(_))
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Unhashed(_)) => &mut unhashed_args,
             Some(Arch(_)) => &mut arch_args,
@@ -505,6 +520,8 @@ where
             | Some(NoDiagnosticsColorFlag)
             | Some(Arch(_))
             | Some(PassThrough(_))
+            | Some(TopsDeviceLibPath(_))
+            | Some(TopsDeviceLib(_))
             | Some(PassThroughFlag)
             | Some(PassThroughPath(_)) => &mut common_args,
             Some(Unhashed(_)) => &mut unhashed_args,
@@ -646,6 +663,7 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
         Language::ObjectiveC => Some("objective-c"),
         Language::ObjectiveCxx => Some("objective-c++"),
         Language::Cuda => Some("cu"),
+        Language::Tops => Some("tops"),
         Language::Rust => None, // Let the compiler decide
         Language::Hip => Some("hip"),
         Language::GenericHeader => None, // Let the compiler decide
@@ -669,7 +687,7 @@ fn preprocess_cmd<T>(
     if let Some(lang) = &language {
         cmd.arg("-x").arg(lang);
     }
-    cmd.arg("-E");
+    cmd.arg("-E").arg("-o").arg("-");
     // When performing distributed compilation, line number info is important for error
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).

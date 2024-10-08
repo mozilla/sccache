@@ -327,6 +327,15 @@ pub struct OSSCacheConfig {
     pub no_credentials: bool,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TOPSCCCacheConfig {
+    pub enabled: bool,
+    /// Version for topscc cache is a namespace. By setting different versions,
+    /// we can avoid mixed caches.
+    pub version: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheType {
     Azure(AzureCacheConfig),
@@ -337,6 +346,7 @@ pub enum CacheType {
     S3(S3CacheConfig),
     Webdav(WebdavCacheConfig),
     OSS(OSSCacheConfig),
+    TOPSCC(TOPSCCCacheConfig),
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,6 +361,7 @@ pub struct CacheConfigs {
     pub s3: Option<S3CacheConfig>,
     pub webdav: Option<WebdavCacheConfig>,
     pub oss: Option<OSSCacheConfig>,
+    pub topscc: Option<TOPSCCCacheConfig>,
 }
 
 impl CacheConfigs {
@@ -367,6 +378,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            topscc,
         } = self;
 
         let cache_type = s3
@@ -377,7 +389,8 @@ impl CacheConfigs {
             .or_else(|| gha.map(CacheType::GHA))
             .or_else(|| azure.map(CacheType::Azure))
             .or_else(|| webdav.map(CacheType::Webdav))
-            .or_else(|| oss.map(CacheType::OSS));
+            .or_else(|| oss.map(CacheType::OSS))
+            .or_else(|| topscc.map(CacheType::TOPSCC));
 
         let fallback = disk.unwrap_or_default();
 
@@ -396,6 +409,7 @@ impl CacheConfigs {
             s3,
             webdav,
             oss,
+            topscc,
         } = other;
 
         if azure.is_some() {
@@ -422,9 +436,11 @@ impl CacheConfigs {
         if webdav.is_some() {
             self.webdav = webdav
         }
-
         if oss.is_some() {
             self.oss = oss
+        }
+        if topscc.is_some() {
+            self.topscc = topscc
         }
     }
 }
@@ -800,6 +816,26 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
+    // ======= TOPSCC =======
+    let topscc = if let Ok(version) = env::var("SCCACHE_TOPSCC_VERSION") {
+        // If SCCACHE_GHA_VERSION has been set, we don't need to check
+        // SCCACHE_GHA_ENABLED's value anymore.
+        Some(TOPSCCCacheConfig {
+            enabled: true,
+            version,
+        })
+    } else if bool_from_env_var("SCCACHE_TOPSCC_ENABLED")?.unwrap_or(false) {
+        // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
+        // default version.
+        Some(TOPSCCCacheConfig {
+            enabled: true,
+            version: "".to_string(),
+        })
+    } else {
+        None
+    };
+
+
     // ======= Azure =======
     let azure = if let (Ok(connection_string), Ok(container)) = (
         env::var("SCCACHE_AZURE_CONNECTION_STRING"),
@@ -912,6 +948,7 @@ fn config_from_env() -> Result<EnvConfig> {
         s3,
         webdav,
         oss,
+        topscc,
     };
 
     Ok(EnvConfig { cache })
@@ -1494,6 +1531,10 @@ bucket = "name"
 endpoint = "oss-us-east-1.aliyuncs.com"
 key_prefix = "ossprefix"
 no_credentials = true
+
+[cache.topscc]
+enabled = true
+version = "sccache"
 "#;
 
     let file_config: FileConfig = toml::from_str(CONFIG_STR).expect("Is valid toml.");

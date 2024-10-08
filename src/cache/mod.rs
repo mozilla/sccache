@@ -32,5 +32,7 @@ pub mod redis;
 pub mod s3;
 #[cfg(feature = "webdav")]
 pub mod webdav;
+#[cfg(feature = "topscc")]
+pub mod topscc;
 
 pub use crate::cache::cache::*;

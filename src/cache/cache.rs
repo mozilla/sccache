@@ -29,6 +29,8 @@ use crate::cache::redis::RedisCache;
 use crate::cache::s3::S3Cache;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
+#[cfg(feature = "topscc")]
+use crate::cache::topscc::TOPSCCCache;
 use crate::compiler::PreprocessorCacheEntry;
 use crate::config::Config;
 #[cfg(any(
@@ -39,7 +41,8 @@ use crate::config::Config;
     feature = "redis",
     feature = "s3",
     feature = "webdav",
-    feature = "oss"
+    feature = "oss",
+    feature = "topscc"
 ))]
 use crate::config::{self, CacheType};
 use async_trait::async_trait;
@@ -720,6 +723,14 @@ pub fn storage_from_config(
                 )
                 .map_err(|err| anyhow!("create oss cache failed: {err:?}"))?;
 
+                return Ok(Arc::new(storage));
+            }
+            #[cfg(feature = "topscc")]
+            CacheType::TOPSCC(config::TOPSCCCacheConfig { ref version, .. }) => {
+                debug!("Init topscc cache with version {version}");
+
+                let storage = TOPSCCCache::build(version)
+                    .map_err(|err| anyhow!("create topscc cache failed: {err:?}"))?;
                 return Ok(Arc::new(storage));
             }
             #[allow(unreachable_patterns)]

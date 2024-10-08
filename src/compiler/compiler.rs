@@ -114,6 +114,7 @@ pub enum Language {
     Cuda,
     Rust,
     Hip,
+    Tops,
 }
 
 impl Language {
@@ -134,6 +135,8 @@ impl Language {
             Some("M") | Some("mm") => Some(Language::ObjectiveCxx),
             // TODO mii
             Some("cu") => Some(Language::Cuda),
+            // TODO topscc
+            Some("tops") => Some(Language::Tops),
             // TODO cy
             Some("rs") => Some(Language::Rust),
             Some("hip") => Some(Language::Hip),
@@ -154,6 +157,7 @@ impl Language {
             Language::Cuda => "cuda",
             Language::Rust => "rust",
             Language::Hip => "hip",
+            Language::Tops => "tops",
         }
     }
 }
@@ -171,6 +175,7 @@ impl CompilerKind {
             Language::Cuda => "CUDA",
             Language::Rust => "Rust",
             Language::Hip => "HIP",
+            Language::Tops => "TOPS",
         }
         .to_string()
     }
@@ -1286,7 +1291,7 @@ compiler_version=__VERSION__
         }
     }
 
-    cmd.arg("-E").arg(src);
+    cmd.arg("-E").arg(src).arg("-o").arg("-");
     trace!("compiler {:?}", cmd);
     let child = cmd.spawn().await?;
     let output = child
@@ -1295,7 +1300,6 @@ compiler_version=__VERSION__
         .context("failed to read child output")?;
 
     drop(tempdir);
-
     let stdout = match str::from_utf8(&output.stdout) {
         Ok(s) => s,
         Err(_) => bail!("Failed to parse output"),

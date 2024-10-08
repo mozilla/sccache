@@ -181,6 +181,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     take_arg!("-debug-info-kind", OsString, Concatenated('='), PassThrough),
     take_arg!("-dependency-file", PathBuf, Separated, DepArgumentPath),
     flag!("-emit-pch", PassThroughFlag),
+    flag!("-fallow-half-arguments-and-returns", PassThroughFlag),
     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
     flag!("-fcxx-modules", TooHardFlag),
     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
