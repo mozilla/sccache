@@ -978,7 +978,6 @@ impl IntoArg for ArgTarget {
 
 ArgData! {
     TooHardFlag,
-    TooHard(OsString),
     TooHardPath(PathBuf),
     NotCompilationFlag,
     NotCompilation(OsString),
@@ -1064,7 +1063,7 @@ fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<Pars
     for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
-            Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
+            Some(TooHardFlag) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
             Some(NotCompilationFlag) | Some(NotCompilation(_)) => {
